@@ -41290,7 +41290,21 @@ async def create_dealer_ticket(
     }
     
     await db.dealer_tickets.insert_one(ticket_doc)
-    
+
+    # Upsert into dealer's customer book if customer info was provided
+    if customer_phone:
+        cust_id = await _upsert_dealer_customer(
+            dealer_id=dealer["id"],
+            dealer_name=dealer.get("firm_name"),
+            customer={"name": customer_name, "phone": customer_phone},
+            source="ticket",
+            source_id=ticket_id,
+        )
+        if cust_id:
+            c = await db.dealer_customers.find_one({"id": cust_id}, {"phone_normalized": 1})
+            if c:
+                await _refresh_dealer_customer_counters(dealer["id"], c["phone_normalized"])
+
     # Notify admin
     await create_notification(
         title="New Dealer Ticket",
@@ -41300,7 +41314,7 @@ async def create_dealer_ticket(
         target_roles=["admin"],
         priority="normal"
     )
-    
+
     return {"id": ticket_id, "ticket_number": ticket_number, "message": "Ticket created"}
 
 
@@ -41778,7 +41792,8 @@ async def download_dealer_certificate(user: dict = Depends(require_roles(["deale
         import base64
         
         # Generate QR code for verification
-        verification_url = f"https://crm.musclegrid.in/verify-dealer/{dealer['certificate_token']}"
+        verification_base = os.environ.get("FRONTEND_URL", "https://newcrm.musclegrid.in")
+        verification_url = f"{verification_base}/verify-dealer/{dealer['certificate_token']}"
         qr = qrcode.QRCode(version=1, box_size=10, border=2)
         qr.add_data(verification_url)
         qr.make(fit=True)
@@ -42091,7 +42106,23 @@ async def get_dealer_catalogue(user: dict = Depends(require_roles(["dealer", "ad
     """Get full product catalogue with datasheets and live stock visibility for dealers"""
     dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0})
     if not dealer and user["role"] != "admin":
-        raise HTTPException(status_code=404, detail="Dealer profile not found")
+        # Self-heal: some legacy/imported dealer records carry a stale ObjectId-style
+        # user_id that no longer matches the live (UUID) user. Fall back to phone/email
+        # and repair the linkage so subsequent dealer endpoints keep working.
+        fallback = None
+        if user.get("phone"):
+            fallback = await db.dealers.find_one({"phone": user["phone"]}, {"_id": 0})
+        if not fallback and user.get("email"):
+            fallback = await db.dealers.find_one({"email": user["email"]}, {"_id": 0})
+        if fallback:
+            await db.dealers.update_one(
+                {"id": fallback["id"]},
+                {"$set": {"user_id": user["id"]}},
+            )
+            fallback["user_id"] = user["id"]
+            dealer = fallback
+        else:
+            raise HTTPException(status_code=404, detail="Dealer profile not found")
     
     firm_id = dealer.get("firm_id") if dealer else None
     
@@ -42408,11 +42439,32 @@ async def create_warranty_registration(
     }
     
     await db.warranty_registrations.insert_one(registration)
-    
+
+    # Upsert into dealer's customer book + refresh counters
+    cust_id = await _upsert_dealer_customer(
+        dealer_id=dealer["id"],
+        dealer_name=dealer.get("firm_name"),
+        customer={
+            "name": customer_name,
+            "phone": customer_phone,
+            "customer_email": customer_email,
+            "customer_address": customer_address,
+            "customer_city": customer_city,
+            "customer_state": customer_state,
+            "customer_pincode": customer_pincode,
+        },
+        source="warranty",
+        source_id=registration["id"],
+    )
+    if cust_id:
+        c = await db.dealer_customers.find_one({"id": cust_id}, {"phone_normalized": 1})
+        if c:
+            await _refresh_dealer_customer_counters(dealer["id"], c["phone_normalized"])
+
     # Send warranty confirmation email to customer
     if customer_email:
         asyncio.create_task(send_warranty_email(registration, "registered"))
-    
+
     return {"message": "Warranty registered successfully", "id": registration["id"]}
 
 
@@ -43390,6 +43442,2012 @@ async def admin_get_dealer_products(
         result.append(p)
     
     return result
+
+
+# =========================================================================
+# DEALER TERMS & CONDITIONS — versioned acceptance, audit trail, branded PDF
+# =========================================================================
+
+DEALER_TNC_CURRENT_VERSION = "1.0"
+DEALER_TNC_EFFECTIVE_DATE = "2026-05-23"
+
+
+def _load_dealer_tnc_markdown() -> str:
+    """Read the canonical T&C markdown from the repo.
+
+    Searches a few well-known locations so it works in dev, Docker and prod.
+    """
+    candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs", "DEALER_TERMS_AND_CONDITIONS.md"),
+        "/var/www/crm/docs/DEALER_TERMS_AND_CONDITIONS.md",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs", "DEALER_TERMS_AND_CONDITIONS.md"),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read()
+    raise FileNotFoundError("Dealer T&C document not found in any expected location")
+
+
+def _render_dealer_tnc_pdf_html(markdown_text: str, dealer_ctx: dict, acceptance: dict) -> str:
+    """Convert T&C markdown to a print-ready branded HTML document.
+
+    `acceptance` may contain version / accepted_at / accepted_ip — included
+    in a footer for legal audit. If empty, renders as an unsigned reference copy.
+    """
+    import markdown as md
+    body_html = md.markdown(
+        markdown_text,
+        extensions=["tables", "fenced_code", "sane_lists", "attr_list"],
+    )
+
+    # Brand logo (base64 inlined so PDF is self-contained)
+    logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "branding", "musclegrid_logo.png")
+    logo_b64 = ""
+    if os.path.exists(logo_path):
+        import base64
+        with open(logo_path, "rb") as f:
+            logo_b64 = base64.b64encode(f.read()).decode("ascii")
+
+    dealer_name = dealer_ctx.get("business_name") or f"{dealer_ctx.get('first_name','')} {dealer_ctx.get('last_name','')}".strip() or "Authorised Dealer"
+    dealer_email = dealer_ctx.get("email", "")
+    dealer_gstin = dealer_ctx.get("gstin", "")
+
+    accepted_block = ""
+    if acceptance.get("accepted_at"):
+        accepted_block = f"""
+        <div class="signed-block">
+          <div class="signed-title">DIGITALLY ACCEPTED</div>
+          <table class="signed-meta">
+            <tr><td>Dealer</td><td>{dealer_name}</td></tr>
+            <tr><td>Email</td><td>{dealer_email}</td></tr>
+            <tr><td>GSTIN</td><td>{dealer_gstin or '—'}</td></tr>
+            <tr><td>Version Accepted</td><td>v{acceptance.get('version', DEALER_TNC_CURRENT_VERSION)}</td></tr>
+            <tr><td>Accepted At (UTC)</td><td>{acceptance.get('accepted_at', '')}</td></tr>
+            <tr><td>IP Address</td><td>{acceptance.get('accepted_ip') or '—'}</td></tr>
+          </table>
+          <div class="signed-note">
+            This document was electronically accepted by the Dealer through the MuscleGrid Dealer Portal.
+            The acceptance is logged in the MuscleGrid CRM with the timestamp and IP address shown above,
+            and constitutes a legally binding execution of this Agreement under the Information Technology Act, 2000.
+          </div>
+        </div>
+        """
+
+    css = """
+        @page { size: A4; margin: 22mm 18mm 24mm 18mm; @bottom-center { content: 'Page ' counter(page) ' of ' counter(pages); color: #888; font-size: 9pt; font-family: 'Helvetica', sans-serif; } }
+        body { font-family: 'Helvetica', 'Arial', sans-serif; font-size: 10.5pt; line-height: 1.55; color: #1f2937; }
+        .brand-header { display: flex; align-items: center; justify-content: space-between; border-bottom: 2px solid #f97316; padding-bottom: 12px; margin-bottom: 18px; }
+        .brand-header img { height: 42px; }
+        .brand-header .meta { font-size: 9pt; color: #6b7280; text-align: right; line-height: 1.4; }
+        .brand-header .meta b { color: #2d3133; }
+        h1 { color: #2d3133; font-size: 18pt; border-bottom: 1px solid #e5e7eb; padding-bottom: 6px; margin-top: 18px; }
+        h2 { color: #2d3133; font-size: 13.5pt; margin-top: 22px; border-left: 4px solid #f97316; padding-left: 10px; }
+        h3 { color: #374151; font-size: 11.5pt; margin-top: 14px; }
+        p { margin: 8px 0; text-align: justify; }
+        ul, ol { padding-left: 22px; } li { margin: 4px 0; }
+        table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 10pt; }
+        th, td { border: 1px solid #e5e7eb; padding: 7px 9px; text-align: left; vertical-align: top; }
+        th { background: #f9fafb; color: #2d3133; font-weight: 600; }
+        hr { border: none; border-top: 1px solid #e5e7eb; margin: 16px 0; }
+        strong { color: #2d3133; }
+        em { color: #6b7280; }
+        code { background: #f3f4f6; padding: 1px 4px; border-radius: 3px; font-size: 9.5pt; }
+        .signed-block { margin-top: 30px; border: 2px solid #f97316; border-radius: 6px; padding: 14px 16px; background: #fff7ed; page-break-inside: avoid; }
+        .signed-title { font-weight: 700; color: #c2410c; letter-spacing: 1.5px; font-size: 11pt; margin-bottom: 10px; }
+        .signed-meta { font-size: 9.5pt; }
+        .signed-meta td:first-child { color: #6b7280; width: 38%; padding: 3px 8px; border: none; }
+        .signed-meta td:last-child { color: #2d3133; font-weight: 500; padding: 3px 8px; border: none; }
+        .signed-note { margin-top: 10px; font-size: 8.5pt; color: #6b7280; line-height: 1.4; font-style: italic; }
+        blockquote { border-left: 3px solid #d1d5db; padding-left: 12px; color: #4b5563; margin: 10px 0; }
+    """
+
+    logo_tag = f'<img src="data:image/png;base64,{logo_b64}" alt="MuscleGrid" />' if logo_b64 else '<div style="font-size:20pt; font-weight:700; color:#f97316;">MuscleGrid</div>'
+
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>{css}</style></head>
+<body>
+  <div class="brand-header">
+    {logo_tag}
+    <div class="meta">
+      <b>MuscleGrid Energy Solutions Pvt. Ltd.</b><br/>
+      Authorised Dealer Agreement<br/>
+      Version {DEALER_TNC_CURRENT_VERSION} &middot; Effective {DEALER_TNC_EFFECTIVE_DATE}
+    </div>
+  </div>
+  {body_html}
+  {accepted_block}
+</body></html>"""
+
+
+@api_router.get("/dealer/terms")
+async def get_dealer_terms(user: dict = Depends(require_roles(["dealer", "admin", "supervisor", "call_support"]))):
+    """Return the current Dealer T&C document (markdown + version metadata)."""
+    try:
+        md_text = _load_dealer_tnc_markdown()
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "version": DEALER_TNC_CURRENT_VERSION,
+        "effective_date": DEALER_TNC_EFFECTIVE_DATE,
+        "markdown": md_text,
+    }
+
+
+@api_router.get("/dealer/terms/status")
+async def get_dealer_terms_status(user: dict = Depends(require_roles(["dealer"]))):
+    """Has the calling dealer accepted the current T&C version?"""
+    u = await db.users.find_one({"id": user["id"]}) or {}
+    accepted_version = u.get("tnc_accepted_version")
+    return {
+        "current_version": DEALER_TNC_CURRENT_VERSION,
+        "effective_date": DEALER_TNC_EFFECTIVE_DATE,
+        "accepted_version": accepted_version,
+        "accepted_at": u.get("tnc_accepted_at"),
+        "accepted_ip": u.get("tnc_accepted_ip"),
+        "needs_acceptance": accepted_version != DEALER_TNC_CURRENT_VERSION,
+    }
+
+
+@api_router.post("/dealer/terms/accept")
+async def accept_dealer_terms(request: Request, user: dict = Depends(require_roles(["dealer"]))):
+    """Stamp the dealer's acceptance of the current T&C version (versioned, IP-logged, immutable history)."""
+    now = datetime.now(timezone.utc).isoformat()
+    client_ip = request.client.host if request.client else None
+    # Prefer X-Forwarded-For when behind Cloudflare/traefik
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        client_ip = xff.split(",")[0].strip()
+    user_agent = (request.headers.get("user-agent") or "")[:512]
+
+    acceptance_fields = {
+        "tnc_accepted_version": DEALER_TNC_CURRENT_VERSION,
+        "tnc_accepted_at": now,
+        "tnc_accepted_ip": client_ip,
+        "tnc_accepted_user_agent": user_agent,
+    }
+
+    await db.users.update_one({"id": user["id"]}, {"$set": acceptance_fields})
+
+    history_entry = {
+        "version": DEALER_TNC_CURRENT_VERSION,
+        "accepted_at": now,
+        "ip": client_ip,
+        "user_agent": user_agent,
+    }
+    await db.dealers.update_one(
+        {"user_id": user["id"]},
+        {"$set": acceptance_fields, "$push": {"tnc_acceptance_history": history_entry}},
+    )
+
+    # Append to immutable audit log (append-only, never updated/deleted in business code)
+    await db.dealer_tnc_log.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "dealer_email": user.get("email"),
+        "dealer_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+        "version": DEALER_TNC_CURRENT_VERSION,
+        "accepted_at": now,
+        "ip_address": client_ip,
+        "user_agent": user_agent,
+    })
+
+    # Confirmation email (background, doesn't block the response)
+    asyncio.create_task(_send_dealer_tnc_confirmation_email(user["id"], now, client_ip))
+
+    return {
+        "success": True,
+        "version": DEALER_TNC_CURRENT_VERSION,
+        "accepted_at": now,
+        "accepted_ip": client_ip,
+    }
+
+
+@api_router.get("/dealer/terms/pdf")
+async def download_dealer_terms_pdf(user: dict = Depends(require_roles(["dealer", "admin"]))):
+    """Stream the T&C as a branded PDF. Includes the dealer's acceptance block if they have accepted."""
+    from weasyprint import HTML
+    md_text = _load_dealer_tnc_markdown()
+
+    target_user_id = user["id"]
+    u = await db.users.find_one({"id": target_user_id}, {"_id": 0}) or {}
+    dealer = await db.dealers.find_one({"user_id": target_user_id}, {"_id": 0}) or {}
+    dealer_ctx = {**u, **dealer}
+    acceptance = {
+        "version": u.get("tnc_accepted_version"),
+        "accepted_at": u.get("tnc_accepted_at"),
+        "accepted_ip": u.get("tnc_accepted_ip"),
+    }
+
+    html_content = _render_dealer_tnc_pdf_html(md_text, dealer_ctx, acceptance)
+    pdf_buffer = BytesIO()
+    HTML(string=html_content).write_pdf(pdf_buffer)
+    pdf_buffer.seek(0)
+
+    fname = f"MuscleGrid_Dealer_TandC_v{DEALER_TNC_CURRENT_VERSION}.pdf"
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@api_router.get("/admin/dealer-terms/acceptance")
+async def admin_dealer_terms_audit(user: dict = Depends(require_roles(["admin"]))):
+    """Admin audit table — acceptance status for every dealer user."""
+    rows = []
+    cursor = db.users.find(
+        {"role": "dealer"},
+        {"_id": 0, "id": 1, "email": 1, "first_name": 1, "last_name": 1, "phone": 1,
+         "tnc_accepted_version": 1, "tnc_accepted_at": 1, "tnc_accepted_ip": 1, "created_at": 1},
+    )
+    async for u in cursor:
+        dealer = await db.dealers.find_one(
+            {"user_id": u["id"]},
+            {"_id": 0, "business_name": 1, "gstin": 1, "city": 1, "state": 1,
+             "status": 1, "dealer_code": 1, "tier": 1},
+        ) or {}
+        accepted = u.get("tnc_accepted_version")
+        if accepted == DEALER_TNC_CURRENT_VERSION:
+            status = "current"
+        elif accepted:
+            status = "outdated"
+        else:
+            status = "never"
+        rows.append({
+            "user_id": u["id"],
+            "name": f"{u.get('first_name','')} {u.get('last_name','')}".strip(),
+            "email": u.get("email"),
+            "phone": u.get("phone"),
+            "user_created_at": u.get("created_at"),
+            "dealer_code": dealer.get("dealer_code"),
+            "business_name": dealer.get("business_name"),
+            "gstin": dealer.get("gstin"),
+            "city": dealer.get("city"),
+            "state": dealer.get("state"),
+            "tier": dealer.get("tier"),
+            "dealer_status": dealer.get("status"),
+            "accepted_version": accepted,
+            "accepted_at": u.get("tnc_accepted_at"),
+            "accepted_ip": u.get("tnc_accepted_ip"),
+            "status": status,
+        })
+
+    # Sort: never first (action required), then outdated, then current
+    rank = {"never": 0, "outdated": 1, "current": 2}
+    rows.sort(key=lambda r: (rank.get(r["status"], 9), (r.get("name") or "").lower()))
+
+    return {
+        "current_version": DEALER_TNC_CURRENT_VERSION,
+        "effective_date": DEALER_TNC_EFFECTIVE_DATE,
+        "total": len(rows),
+        "current": sum(1 for r in rows if r["status"] == "current"),
+        "outdated": sum(1 for r in rows if r["status"] == "outdated"),
+        "never": sum(1 for r in rows if r["status"] == "never"),
+        "rows": rows,
+    }
+
+
+@api_router.get("/admin/dealer-terms/log/{user_id}")
+async def admin_dealer_terms_log(user_id: str, user: dict = Depends(require_roles(["admin"]))):
+    """Full acceptance log for a single dealer — every version they have ever accepted."""
+    log = await db.dealer_tnc_log.find({"user_id": user_id}, {"_id": 0}).sort("accepted_at", -1).to_list(100)
+    return {"user_id": user_id, "log": log}
+
+
+async def _send_dealer_tnc_confirmation_email(user_id: str, accepted_at: str, client_ip: Optional[str]):
+    """Fire-and-forget email sender: confirmation of T&C acceptance with a download link."""
+    try:
+        u = await db.users.find_one({"id": user_id})
+        if not u or not u.get("email"):
+            return
+        dealer = await db.dealers.find_one({"user_id": user_id}) or {}
+        try:
+            from zoho_email_service import dealer_terms_accepted_email
+        except ImportError:
+            logger.warning("dealer_terms_accepted_email helper not found; skipping confirmation email")
+            return
+        ctx = {
+            **u,
+            "business_name": dealer.get("business_name"),
+            "gstin": dealer.get("gstin"),
+            "tnc_accepted_at": accepted_at,
+            "tnc_accepted_ip": client_ip,
+            "tnc_accepted_version": DEALER_TNC_CURRENT_VERSION,
+            "frontend_url": os.environ.get("FRONTEND_URL", "https://newcrm.musclegrid.in"),
+        }
+        subject, body = dealer_terms_accepted_email(ctx)
+        await send_email_background(
+            u["email"], subject, body,
+            email_type="dealer_tnc_accepted", reference_id=user_id,
+        )
+    except Exception as e:
+        logger.error(f"Failed to send dealer T&C confirmation email: {e}")
+
+
+# =========================================================================
+# DEALER CUSTOMER BOOK — per-dealer end-customer database
+#
+# Each dealer maintains their own customer list, scoped to (dealer_id, phone).
+# Auto-populated by warranty registrations and dealer tickets; also manually
+# editable. Powers the "Who's calling me?" lookup, warranty history per
+# customer, and "where did Mrs. Sharma buy from us?" queries.
+# =========================================================================
+
+def _normalize_phone(p: Optional[str]) -> Optional[str]:
+    """Reduce to 10-digit Indian number for indexed lookups.
+    Strips spaces, dashes, +, leading 91/0; returns None if <10 digits remain."""
+    if not p:
+        return None
+    digits = "".join(ch for ch in str(p) if ch.isdigit())
+    if len(digits) >= 10:
+        return digits[-10:]
+    return None
+
+
+async def _upsert_dealer_customer(
+    dealer_id: str,
+    dealer_name: Optional[str],
+    customer: dict,
+    source: str,
+    source_id: Optional[str] = None,
+) -> Optional[str]:
+    """Upsert a dealer_customers record. Idempotent on (dealer_id, phone_normalized).
+
+    `customer` must contain at least `phone` and `name`. Other fields are merged
+    only when present (never blanks out existing data). Returns the customer id,
+    or None if phone normalization fails (no key to dedup on).
+    """
+    phone = customer.get("phone") or customer.get("customer_phone")
+    name = customer.get("name") or customer.get("customer_name")
+    phone_n = _normalize_phone(phone)
+    if not phone_n:
+        return None  # cannot dedup without a phone
+    if not dealer_id:
+        return None
+
+    now = datetime.now(timezone.utc).isoformat()
+    existing = await db.dealer_customers.find_one({"dealer_id": dealer_id, "phone_normalized": phone_n})
+
+    # Build a set-on-insert payload + a set payload for updates
+    address_fields = {
+        k.replace("customer_", ""): customer.get(k) or customer.get(k.replace("customer_", ""))
+        for k in ["customer_email", "customer_address", "customer_city", "customer_state", "customer_pincode"]
+    }
+
+    set_on_create = {
+        "id": str(uuid.uuid4()),
+        "dealer_id": dealer_id,
+        "dealer_name": dealer_name,
+        "phone_normalized": phone_n,
+        "first_seen_at": now,
+        "source": source,
+        "tags": [],
+        "notes": [],
+        "total_products": 0,
+        "in_warranty_count": 0,
+        "total_tickets": 0,
+        "open_tickets": 0,
+        "created_at": now,
+    }
+
+    set_always = {
+        "last_contact_at": now,
+        "updated_at": now,
+    }
+    # Only set name/phone/email/address if they're provided (don't blank out existing)
+    if name and not (existing and existing.get("name")):
+        set_always["name"] = name
+    elif name and existing and not existing.get("name"):
+        set_always["name"] = name
+    elif not existing:
+        set_always["name"] = name or "(unknown)"
+
+    if phone:
+        set_always["phone"] = phone if not (existing and existing.get("phone")) else existing.get("phone")
+    elif not existing:
+        set_always["phone"] = phone
+
+    for k, v in address_fields.items():
+        if v and not (existing and existing.get(k)):
+            set_always[k] = v
+
+    update_doc = {
+        "$set": set_always,
+        "$setOnInsert": set_on_create,
+    }
+    if source_id:
+        update_doc["$addToSet"] = {"source_ids": source_id}
+
+    result = await db.dealer_customers.update_one(
+        {"dealer_id": dealer_id, "phone_normalized": phone_n},
+        update_doc,
+        upsert=True,
+    )
+    if result.upserted_id:
+        return set_on_create["id"]
+    return (existing or {}).get("id")
+
+
+async def _refresh_dealer_customer_counters(dealer_id: str, phone_normalized: str):
+    """Recompute total_products / in_warranty_count / total_tickets / open_tickets."""
+    if not (dealer_id and phone_normalized):
+        return
+    cust = await db.dealer_customers.find_one({"dealer_id": dealer_id, "phone_normalized": phone_normalized})
+    if not cust:
+        return
+
+    # Match warranty regs by dealer_id + normalized phone (we can't put a normalized index on warranty_registrations,
+    # so we do a small fan-out filter)
+    warr_cursor = db.warranty_registrations.find({"dealer_id": dealer_id})
+    total_products = 0
+    in_warranty = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+    async for w in warr_cursor:
+        if _normalize_phone(w.get("customer_phone")) != phone_normalized:
+            continue
+        total_products += 1
+        if (w.get("warranty_expires") or "") > now_iso and w.get("status", "active") == "active":
+            in_warranty += 1
+
+    # Tickets
+    total_tickets = 0
+    open_tickets = 0
+    tk_cursor = db.dealer_tickets.find({"dealer_id": dealer_id})
+    async for t in tk_cursor:
+        if _normalize_phone(t.get("customer_phone")) != phone_normalized:
+            continue
+        total_tickets += 1
+        if t.get("status", "open") == "open":
+            open_tickets += 1
+
+    await db.dealer_customers.update_one(
+        {"id": cust["id"]},
+        {"$set": {
+            "total_products": total_products,
+            "in_warranty_count": in_warranty,
+            "total_tickets": total_tickets,
+            "open_tickets": open_tickets,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+
+
+@api_router.get("/dealer/customers")
+async def list_dealer_customers(
+    q: Optional[str] = None,
+    filter: Optional[str] = None,   # 'in_warranty' | 'has_open_tickets' | 'recent'
+    tag: Optional[str] = None,
+    city: Optional[str] = None,
+    limit: int = 50,
+    skip: int = 0,
+    user: dict = Depends(require_roles(["dealer", "admin"])),
+):
+    """List the calling dealer's customer book, with search + filters."""
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0, "id": 1})
+    # Admin can view any dealer's book by passing ?dealer_id=... (omitted for now)
+    if not dealer and user["role"] != "admin":
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+
+    query = {}
+    if dealer:
+        query["dealer_id"] = dealer["id"]
+
+    if q:
+        q_norm = _normalize_phone(q)
+        or_clauses = [
+            {"name": {"$regex": q, "$options": "i"}},
+            {"email": {"$regex": q, "$options": "i"}},
+        ]
+        if q_norm:
+            or_clauses.append({"phone_normalized": q_norm})
+        else:
+            or_clauses.append({"phone": {"$regex": q.strip(), "$options": "i"}})
+        query["$or"] = or_clauses
+
+    if filter == "in_warranty":
+        query["in_warranty_count"] = {"$gt": 0}
+    elif filter == "has_open_tickets":
+        query["open_tickets"] = {"$gt": 0}
+    if tag:
+        query["tags"] = tag
+    if city:
+        query["city"] = {"$regex": f"^{city}$", "$options": "i"}
+
+    sort = [("last_contact_at", -1)] if filter == "recent" else [("last_contact_at", -1)]
+
+    total = await db.dealer_customers.count_documents(query)
+    cursor = db.dealer_customers.find(query, {"_id": 0}).sort(sort).skip(skip).limit(limit)
+    rows = await cursor.to_list(limit)
+
+    # Snapshot counters (per current dealer scope)
+    scope = {"dealer_id": dealer["id"]} if dealer else {}
+    stats = {
+        "total": await db.dealer_customers.count_documents(scope),
+        "in_warranty": await db.dealer_customers.count_documents({**scope, "in_warranty_count": {"$gt": 0}}),
+        "has_open_tickets": await db.dealer_customers.count_documents({**scope, "open_tickets": {"$gt": 0}}),
+    }
+    # Recent = last 30 days
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    stats["recent"] = await db.dealer_customers.count_documents({**scope, "last_contact_at": {"$gte": cutoff}})
+
+    return {
+        "customers": rows,
+        "total_filtered": total,
+        "stats": stats,
+        "limit": limit,
+        "skip": skip,
+    }
+
+
+@api_router.get("/dealer/customers/lookup")
+async def dealer_customer_lookup(phone: str, user: dict = Depends(require_roles(["dealer", "admin"]))):
+    """Quick phone-prefix lookup — for the 'who's calling me?' use case."""
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0, "id": 1})
+    if not dealer and user["role"] != "admin":
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+
+    phone_n = _normalize_phone(phone)
+    query = {}
+    if dealer:
+        query["dealer_id"] = dealer["id"]
+    if phone_n:
+        query["phone_normalized"] = phone_n
+    else:
+        query["phone"] = {"$regex": phone.strip(), "$options": "i"}
+
+    matches = await db.dealer_customers.find(query, {"_id": 0}).limit(5).to_list(5)
+    return {"matches": matches, "queried_phone": phone, "normalized": phone_n}
+
+
+@api_router.get("/dealer/customers/{customer_id}")
+async def get_dealer_customer(customer_id: str, user: dict = Depends(require_roles(["dealer", "admin"]))):
+    """Full customer profile — identity + products owned + tickets + notes."""
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0, "id": 1})
+    cust = await db.dealer_customers.find_one({"id": customer_id}, {"_id": 0})
+    if not cust:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    if user["role"] != "admin" and (not dealer or cust["dealer_id"] != dealer["id"]):
+        raise HTTPException(status_code=403, detail="Not your customer")
+
+    phone_n = cust["phone_normalized"]
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Products (warranty registrations) for this customer under this dealer
+    products = []
+    async for w in db.warranty_registrations.find({"dealer_id": cust["dealer_id"]}, {"_id": 0}):
+        if _normalize_phone(w.get("customer_phone")) != phone_n:
+            continue
+        products.append({
+            "id": w.get("id"),
+            "product_id": w.get("product_id"),
+            "product_name": w.get("product_name"),
+            "serial_number": w.get("serial_number"),
+            "purchase_date": w.get("purchase_date"),
+            "warranty_expires": w.get("warranty_expires"),
+            "warranty_status": "active" if (w.get("warranty_expires") or "") > now_iso else "expired",
+            "invoice_number": w.get("invoice_number"),
+        })
+    products.sort(key=lambda p: p.get("purchase_date") or "", reverse=True)
+
+    # Tickets for this customer
+    tickets = []
+    async for t in db.dealer_tickets.find({"dealer_id": cust["dealer_id"]}, {"_id": 0}):
+        if _normalize_phone(t.get("customer_phone")) != phone_n:
+            continue
+        tickets.append({
+            "id": t.get("id"),
+            "ticket_number": t.get("ticket_number"),
+            "issue_description": t.get("issue_description"),
+            "status": t.get("status"),
+            "product_name": t.get("product_name"),
+            "created_at": t.get("created_at"),
+        })
+    tickets.sort(key=lambda t: t.get("created_at") or "", reverse=True)
+
+    return {
+        "customer": cust,
+        "products": products,
+        "tickets": tickets,
+    }
+
+
+class DealerCustomerCreate(BaseModel):
+    name: str
+    phone: str
+    email: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+    tags: Optional[List[str]] = None
+    note: Optional[str] = None
+
+
+@api_router.post("/dealer/customers")
+async def create_dealer_customer(payload: DealerCustomerCreate, user: dict = Depends(require_roles(["dealer"]))):
+    """Manually add a customer (e.g. a prospect not yet linked to a warranty/ticket)."""
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+
+    customer = payload.dict(exclude_none=True)
+    cust_id = await _upsert_dealer_customer(
+        dealer_id=dealer["id"],
+        dealer_name=dealer.get("firm_name"),
+        customer=customer,
+        source="manual",
+    )
+    if not cust_id:
+        raise HTTPException(status_code=400, detail="Could not save — phone must be at least 10 digits")
+
+    # Apply tags + note on the same call if provided
+    updates = {}
+    if payload.tags:
+        updates["tags"] = list(set(payload.tags))
+    if updates:
+        await db.dealer_customers.update_one({"id": cust_id}, {"$set": updates})
+
+    if payload.note:
+        note_entry = {
+            "id": str(uuid.uuid4()),
+            "text": payload.note,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+        }
+        await db.dealer_customers.update_one({"id": cust_id}, {"$push": {"notes": note_entry}})
+
+    saved = await db.dealer_customers.find_one({"id": cust_id}, {"_id": 0})
+    return {"customer": saved}
+
+
+class DealerCustomerUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+    tags: Optional[List[str]] = None
+
+
+@api_router.patch("/dealer/customers/{customer_id}")
+async def update_dealer_customer(customer_id: str, payload: DealerCustomerUpdate, user: dict = Depends(require_roles(["dealer"]))):
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0, "id": 1})
+    cust = await db.dealer_customers.find_one({"id": customer_id})
+    if not cust:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    if not dealer or cust["dealer_id"] != dealer["id"]:
+        raise HTTPException(status_code=403, detail="Not your customer")
+
+    update = {k: v for k, v in payload.dict(exclude_none=True).items()}
+    if "tags" in update:
+        update["tags"] = list(set(update["tags"]))
+    update["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.dealer_customers.update_one({"id": customer_id}, {"$set": update})
+    saved = await db.dealer_customers.find_one({"id": customer_id}, {"_id": 0})
+    return {"customer": saved}
+
+
+class DealerCustomerNote(BaseModel):
+    text: str
+
+
+@api_router.post("/dealer/customers/{customer_id}/note")
+async def add_dealer_customer_note(customer_id: str, payload: DealerCustomerNote, user: dict = Depends(require_roles(["dealer"]))):
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0, "id": 1})
+    cust = await db.dealer_customers.find_one({"id": customer_id})
+    if not cust:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    if not dealer or cust["dealer_id"] != dealer["id"]:
+        raise HTTPException(status_code=403, detail="Not your customer")
+
+    note = {
+        "id": str(uuid.uuid4()),
+        "text": payload.text.strip(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+    }
+    await db.dealer_customers.update_one(
+        {"id": customer_id},
+        {"$push": {"notes": note}, "$set": {"last_contact_at": note["created_at"], "updated_at": note["created_at"]}},
+    )
+    return {"note": note}
+
+
+@api_router.get("/admin/dealer-customers/stats")
+async def admin_dealer_customers_stats(user: dict = Depends(require_roles(["admin"]))):
+    """Per-dealer customer-book stats — visibility into which dealers are actually using it."""
+    pipe = [
+        {"$group": {
+            "_id": "$dealer_id",
+            "dealer_name": {"$first": "$dealer_name"},
+            "total_customers": {"$sum": 1},
+            "in_warranty_customers": {"$sum": {"$cond": [{"$gt": ["$in_warranty_count", 0]}, 1, 0]}},
+            "with_open_tickets": {"$sum": {"$cond": [{"$gt": ["$open_tickets", 0]}, 1, 0]}},
+            "last_activity": {"$max": "$last_contact_at"},
+        }},
+        {"$sort": {"total_customers": -1}},
+    ]
+    rows = await db.dealer_customers.aggregate(pipe).to_list(500)
+    for r in rows:
+        r["dealer_id"] = r.pop("_id")
+    return {
+        "rows": rows,
+        "total_customers_all_dealers": sum(r["total_customers"] for r in rows),
+        "dealers_with_book": len(rows),
+    }
+
+
+@api_router.post("/admin/dealer-customers/backfill")
+async def admin_backfill_dealer_customers(user: dict = Depends(require_roles(["admin"]))):
+    """Idempotently re-sync the customer book from warranty_registrations + dealer_tickets.
+
+    Safe to run any time — uses upsert. Refreshes counters on every touched customer.
+    """
+    created_or_touched_ids: set = set()
+    counts = {"from_warranty": 0, "from_tickets": 0, "skipped_no_phone": 0}
+
+    # 1) Walk warranty_registrations
+    async for w in db.warranty_registrations.find({"dealer_id": {"$exists": True, "$ne": None}}):
+        dealer_id = w.get("dealer_id")
+        dealer_name = w.get("dealer_name")
+        cust_id = await _upsert_dealer_customer(
+            dealer_id=dealer_id,
+            dealer_name=dealer_name,
+            customer={
+                "name": w.get("customer_name"),
+                "phone": w.get("customer_phone"),
+                "customer_email": w.get("customer_email"),
+                "customer_address": w.get("customer_address"),
+                "customer_city": w.get("customer_city"),
+                "customer_state": w.get("customer_state"),
+                "customer_pincode": w.get("customer_pincode"),
+            },
+            source="warranty",
+            source_id=w.get("id"),
+        )
+        if cust_id:
+            created_or_touched_ids.add(cust_id)
+            counts["from_warranty"] += 1
+        else:
+            counts["skipped_no_phone"] += 1
+
+    # 2) Walk dealer_tickets
+    async for t in db.dealer_tickets.find({"dealer_id": {"$exists": True, "$ne": None}}):
+        if not _normalize_phone(t.get("customer_phone")):
+            continue
+        cust_id = await _upsert_dealer_customer(
+            dealer_id=t.get("dealer_id"),
+            dealer_name=t.get("dealer_name"),
+            customer={
+                "name": t.get("customer_name"),
+                "phone": t.get("customer_phone"),
+            },
+            source="ticket",
+            source_id=t.get("id"),
+        )
+        if cust_id:
+            created_or_touched_ids.add(cust_id)
+            counts["from_tickets"] += 1
+
+    # 3) Refresh counters on every touched customer
+    refreshed = 0
+    for cid in created_or_touched_ids:
+        c = await db.dealer_customers.find_one({"id": cid}, {"dealer_id": 1, "phone_normalized": 1})
+        if c:
+            await _refresh_dealer_customer_counters(c["dealer_id"], c["phone_normalized"])
+            refreshed += 1
+
+    return {"counts": counts, "unique_customers_touched": len(created_or_touched_ids), "refreshed": refreshed}
+
+
+# =========================================================================
+# WARRANTY CLAIMS — dealer files, admin processes, SLA-tracked (7 working days, T&C §5.1e)
+#
+# State machine:
+#   submitted ──► under_review ──► info_requested ──► (back to under_review)
+#                            ├──► approved ──► replacement_dispatched ──► closed
+#                            └──► rejected (terminal)
+# =========================================================================
+
+CLAIM_SLA_WORKING_DAYS = 7
+CLAIM_ISSUE_CATEGORIES = ["dead_unit", "reduced_backup", "physical_damage", "firmware", "noise", "leak", "other"]
+CLAIM_RESOLUTION_TYPES = ["replacement", "repair", "credit_note", "rejected"]
+CLAIM_TERMINAL = {"closed", "rejected"}
+CLAIM_OPEN = {"submitted", "under_review", "info_requested", "approved", "replacement_dispatched"}
+CLAIM_TRANSITIONS = {
+    "submitted":              {"under_review", "rejected"},
+    "under_review":           {"info_requested", "approved", "rejected"},
+    "info_requested":         {"under_review"},
+    "approved":               {"replacement_dispatched", "rejected"},
+    "replacement_dispatched": {"closed"},
+    "closed":                 set(),
+    "rejected":               set(),
+}
+
+
+def _add_business_days(dt: datetime, days: int) -> datetime:
+    """Add N business days (skip Sat/Sun)."""
+    d = dt
+    added = 0
+    while added < days:
+        d += timedelta(days=1)
+        if d.weekday() < 5:
+            added += 1
+    return d
+
+
+async def generate_claim_number() -> str:
+    return await _format_daily_number("MG-WC")
+
+
+async def _transition_claim(claim_id: str, new_status: str, by_user: dict, notes: Optional[str] = None, extra_set: Optional[dict] = None):
+    """Move a claim to new_status with audit, validating against CLAIM_TRANSITIONS."""
+    claim = await db.warranty_claims.find_one({"id": claim_id})
+    if not claim:
+        raise HTTPException(status_code=404, detail="Claim not found")
+    current = claim.get("status")
+    if new_status not in CLAIM_TRANSITIONS.get(current, set()):
+        raise HTTPException(status_code=400, detail=f"Cannot transition from {current} to {new_status}")
+    now = datetime.now(timezone.utc).isoformat()
+    entry = {
+        "status": new_status,
+        "at": now,
+        "by": by_user.get("id"),
+        "by_name": f"{by_user.get('first_name','')} {by_user.get('last_name','')}".strip() or by_user.get("email"),
+        "by_role": by_user.get("role"),
+        "notes": notes,
+    }
+    set_doc = {"status": new_status, "updated_at": now}
+    if new_status in CLAIM_TERMINAL:
+        set_doc["closed_at"] = now
+    if extra_set:
+        set_doc.update(extra_set)
+    await db.warranty_claims.update_one(
+        {"id": claim_id},
+        {"$set": set_doc, "$push": {"status_history": entry}},
+    )
+    return await db.warranty_claims.find_one({"id": claim_id}, {"_id": 0})
+
+
+# ---- DEALER endpoints ----
+
+@api_router.post("/dealer/warranty-claims")
+async def file_warranty_claim(
+    warranty_registration_id: str = Form(...),
+    issue_category: str = Form(...),
+    issue_description: str = Form(...),
+    attachments: List[UploadFile] = File(default=[]),
+    user: dict = Depends(require_roles(["dealer"])),
+):
+    """Dealer files a warranty claim against one of their warranty registrations."""
+    if issue_category not in CLAIM_ISSUE_CATEGORIES:
+        raise HTTPException(status_code=400, detail=f"Issue category must be one of {CLAIM_ISSUE_CATEGORIES}")
+    if len(issue_description.strip()) < 10:
+        raise HTTPException(status_code=400, detail="Please describe the issue in at least 10 characters")
+
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+
+    warr = await db.warranty_registrations.find_one({"id": warranty_registration_id}, {"_id": 0})
+    if not warr:
+        raise HTTPException(status_code=404, detail="Warranty registration not found")
+    if warr.get("dealer_id") != dealer["id"]:
+        raise HTTPException(status_code=403, detail="This warranty does not belong to your dealership")
+
+    # Reject if warranty has expired (still allow if user wants to log it for goodwill)
+    now = datetime.now(timezone.utc)
+    expires = warr.get("warranty_expires")
+    out_of_warranty = bool(expires and expires < now.isoformat())
+
+    # Handle attachments
+    attachment_urls = []
+    for f in (attachments or []):
+        if not f or not f.filename:
+            continue
+        try:
+            content = await f.read()
+            relative_path, _ = await storage_upload(
+                file_data=content,
+                folder="warranty_claims",
+                original_filename=f.filename,
+                filename_prefix=str(uuid.uuid4())[:8],
+            )
+            attachment_urls.append(f"/api/files/{relative_path}")
+        except StorageError as e:
+            logger.error(f"Warranty claim attachment upload failed: {e}")
+
+    claim_id = str(uuid.uuid4())
+    claim_number = await generate_claim_number()
+    now_iso = now.isoformat()
+    sla_due = _add_business_days(now, CLAIM_SLA_WORKING_DAYS).isoformat()
+
+    initial_entry = {
+        "status": "submitted",
+        "at": now_iso,
+        "by": user["id"],
+        "by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip() or user.get("email"),
+        "by_role": "dealer",
+        "notes": issue_description.strip()[:500],
+    }
+
+    claim = {
+        "id": claim_id,
+        "claim_number": claim_number,
+        # subject
+        "warranty_registration_id": warranty_registration_id,
+        "dealer_id": dealer["id"],
+        "dealer_name": dealer.get("firm_name"),
+        # product + customer denormalized
+        "product_id": warr.get("product_id"),
+        "product_name": warr.get("product_name"),
+        "serial_number": warr.get("serial_number"),
+        "purchase_date": warr.get("purchase_date"),
+        "warranty_expires": warr.get("warranty_expires"),
+        "out_of_warranty": out_of_warranty,
+        "customer_name": warr.get("customer_name"),
+        "customer_phone": warr.get("customer_phone"),
+        "customer_email": warr.get("customer_email"),
+        "customer_address": warr.get("customer_address"),
+        "customer_city": warr.get("customer_city"),
+        "customer_state": warr.get("customer_state"),
+        "customer_pincode": warr.get("customer_pincode"),
+        # issue
+        "issue_category": issue_category,
+        "issue_description": issue_description.strip(),
+        "attachments": attachment_urls,
+        # workflow
+        "status": "submitted",
+        "status_history": [initial_entry],
+        # resolution placeholders
+        "resolution_type": None,
+        "rejection_reason": None,
+        # reverse pickup
+        "reverse_pickup_initiated": False,
+        "reverse_pickup_tracking_id": None,
+        "defective_unit_received_at": None,
+        # replacement
+        "replacement_serial": None,
+        "replacement_dispatch_id": None,
+        "replacement_tracking_id": None,
+        "replacement_dispatched_at": None,
+        # SLA
+        "sla_due_at": sla_due,
+        "sla_breached": False,
+        "sla_breach_alerted_at": None,
+        # audit
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "created_by": user["id"],
+        "created_by_name": initial_entry["by_name"],
+        "closed_at": None,
+    }
+    await db.warranty_claims.insert_one(claim)
+
+    # Notify admin queue
+    await create_notification(
+        title="New Warranty Claim",
+        message=f"{dealer.get('firm_name','Dealer')} filed claim {claim_number} for {warr.get('product_name','product')} (S/N {warr.get('serial_number')})",
+        notification_type="warning" if out_of_warranty else "info",
+        link=f"/admin/warranty-claims?id={claim_id}",
+        target_roles=["admin"],
+        priority="high" if out_of_warranty else "normal",
+        data={"claim_id": claim_id, "claim_number": claim_number, "out_of_warranty": out_of_warranty},
+    )
+
+    # Confirmation email to customer (best-effort)
+    if warr.get("customer_email"):
+        try:
+            from zoho_email_service import warranty_claim_filed_email
+            subject, body = warranty_claim_filed_email(claim)
+            asyncio.create_task(send_email_background(
+                warr["customer_email"], subject, body,
+                email_type="warranty_claim_filed", reference_id=claim_id,
+            ))
+        except Exception as e:
+            logger.warning(f"warranty_claim_filed_email not wired or failed: {e}")
+
+    return {"claim": {**claim, "_id": None}, "message": "Claim filed"}
+
+
+@api_router.get("/dealer/warranty-claims")
+async def list_dealer_warranty_claims(
+    status: Optional[str] = None,
+    user: dict = Depends(require_roles(["dealer"])),
+):
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0, "id": 1})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+
+    query = {"dealer_id": dealer["id"]}
+    if status == "open":
+        query["status"] = {"$in": list(CLAIM_OPEN)}
+    elif status == "closed":
+        query["status"] = {"$in": list(CLAIM_TERMINAL)}
+    elif status:
+        query["status"] = status
+
+    claims = await db.warranty_claims.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
+
+    # KPIs
+    base = {"dealer_id": dealer["id"]}
+    stats = {
+        "total":  await db.warranty_claims.count_documents(base),
+        "open":   await db.warranty_claims.count_documents({**base, "status": {"$in": list(CLAIM_OPEN)}}),
+        "breached": await db.warranty_claims.count_documents({**base, "sla_breached": True, "status": {"$in": list(CLAIM_OPEN)}}),
+        "closed_30d": await db.warranty_claims.count_documents({
+            **base,
+            "status": {"$in": list(CLAIM_TERMINAL)},
+            "closed_at": {"$gte": (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()},
+        }),
+    }
+    return {"claims": claims, "stats": stats}
+
+
+@api_router.get("/dealer/warranty-claims/{claim_id}")
+async def get_dealer_warranty_claim(claim_id: str, user: dict = Depends(require_roles(["dealer"]))):
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0, "id": 1})
+    claim = await db.warranty_claims.find_one({"id": claim_id}, {"_id": 0})
+    if not claim:
+        raise HTTPException(status_code=404, detail="Claim not found")
+    if not dealer or claim["dealer_id"] != dealer["id"]:
+        raise HTTPException(status_code=403, detail="Not your claim")
+    return {"claim": claim}
+
+
+class WarrantyClaimRespond(BaseModel):
+    response: str
+
+
+@api_router.post("/dealer/warranty-claims/{claim_id}/respond")
+async def dealer_respond_to_info_request(claim_id: str, payload: WarrantyClaimRespond, user: dict = Depends(require_roles(["dealer"]))):
+    """Dealer responds when admin requested additional information."""
+    if len(payload.response.strip()) < 5:
+        raise HTTPException(status_code=400, detail="Response too short")
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0, "id": 1})
+    claim = await db.warranty_claims.find_one({"id": claim_id})
+    if not claim:
+        raise HTTPException(status_code=404, detail="Claim not found")
+    if claim["dealer_id"] != dealer["id"]:
+        raise HTTPException(status_code=403, detail="Not your claim")
+    updated = await _transition_claim(claim_id, "under_review", user, notes=f"DEALER RESPONSE: {payload.response.strip()}")
+    # Notify admin
+    await create_notification(
+        title="Warranty Claim Response",
+        message=f"Dealer responded on claim {claim['claim_number']}",
+        notification_type="info",
+        link=f"/admin/warranty-claims?id={claim_id}",
+        target_roles=["admin"],
+        data={"claim_id": claim_id},
+    )
+    return {"claim": updated}
+
+
+@api_router.post("/dealer/warranty-claims/{claim_id}/confirm-replacement")
+async def dealer_confirm_replacement_received(claim_id: str, user: dict = Depends(require_roles(["dealer"]))):
+    """Dealer confirms the replacement unit has been received and handed to the end customer."""
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0, "id": 1})
+    claim = await db.warranty_claims.find_one({"id": claim_id})
+    if not claim:
+        raise HTTPException(status_code=404, detail="Claim not found")
+    if claim["dealer_id"] != dealer["id"]:
+        raise HTTPException(status_code=403, detail="Not your claim")
+    updated = await _transition_claim(claim_id, "closed", user, notes="Dealer confirmed replacement received and delivered to customer")
+    await create_notification(
+        title="Warranty Claim Closed",
+        message=f"Claim {claim['claim_number']} closed — replacement delivered",
+        notification_type="success",
+        link=f"/admin/warranty-claims?id={claim_id}",
+        target_roles=["admin"],
+        data={"claim_id": claim_id},
+    )
+    return {"claim": updated}
+
+
+# ---- ADMIN endpoints ----
+
+@api_router.get("/admin/warranty-claims")
+async def admin_list_warranty_claims(
+    status: Optional[str] = None,
+    sla: Optional[str] = None,    # 'breached' | 'urgent' (>=5 days) | 'fresh' (<3 days)
+    dealer_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"])),
+):
+    query: Dict[str, Any] = {}
+    if status == "open":
+        query["status"] = {"$in": list(CLAIM_OPEN)}
+    elif status == "closed":
+        query["status"] = {"$in": list(CLAIM_TERMINAL)}
+    elif status:
+        query["status"] = status
+    if dealer_id:
+        query["dealer_id"] = dealer_id
+    if sla == "breached":
+        query["sla_breached"] = True
+        query["status"] = {"$in": list(CLAIM_OPEN)}
+    elif sla == "urgent":
+        # within 2 working days of breach
+        cutoff = _add_business_days(datetime.now(timezone.utc), -5).isoformat()
+        query["created_at"] = {"$lt": cutoff}
+        query["status"] = {"$in": list(CLAIM_OPEN)}
+
+    claims = await db.warranty_claims.find(query, {"_id": 0}).sort("created_at", 1).to_list(500)
+
+    # KPIs
+    stats = {
+        "total":    await db.warranty_claims.count_documents({}),
+        "open":     await db.warranty_claims.count_documents({"status": {"$in": list(CLAIM_OPEN)}}),
+        "breached": await db.warranty_claims.count_documents({"sla_breached": True, "status": {"$in": list(CLAIM_OPEN)}}),
+        "submitted":              await db.warranty_claims.count_documents({"status": "submitted"}),
+        "under_review":           await db.warranty_claims.count_documents({"status": "under_review"}),
+        "info_requested":         await db.warranty_claims.count_documents({"status": "info_requested"}),
+        "approved":               await db.warranty_claims.count_documents({"status": "approved"}),
+        "replacement_dispatched": await db.warranty_claims.count_documents({"status": "replacement_dispatched"}),
+        "closed":                 await db.warranty_claims.count_documents({"status": "closed"}),
+        "rejected":               await db.warranty_claims.count_documents({"status": "rejected"}),
+    }
+    return {"claims": claims, "stats": stats}
+
+
+@api_router.get("/admin/warranty-claims/{claim_id}")
+async def admin_get_warranty_claim(claim_id: str, user: dict = Depends(require_roles(["admin"]))):
+    claim = await db.warranty_claims.find_one({"id": claim_id}, {"_id": 0})
+    if not claim:
+        raise HTTPException(status_code=404, detail="Claim not found")
+    return {"claim": claim}
+
+
+class ClaimAdminNote(BaseModel):
+    notes: Optional[str] = None
+
+
+class ClaimAdminApprove(BaseModel):
+    resolution_type: str = "replacement"  # one of CLAIM_RESOLUTION_TYPES
+    notes: Optional[str] = None
+
+
+class ClaimAdminReject(BaseModel):
+    rejection_reason: str
+    notes: Optional[str] = None
+
+
+class ClaimAdminDispatch(BaseModel):
+    replacement_serial: Optional[str] = None
+    replacement_dispatch_id: Optional[str] = None
+    replacement_tracking_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class ClaimAdminReversePickup(BaseModel):
+    reverse_pickup_tracking_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
+async def _notify_dealer_of_claim_change(claim: dict, title: str, message: str, notif_type: str = "info", priority: str = "normal"):
+    """Notify the dealer who filed the claim about a status change."""
+    if not claim:
+        return
+    creator_id = claim.get("created_by")
+    if not creator_id:
+        return
+    await create_notification(
+        title=title,
+        message=message,
+        notification_type=notif_type,
+        link=f"/dealer/warranty-claims?id={claim['id']}",
+        target_user_ids=[creator_id],
+        target_roles=[],   # NOT a broadcast — only the dealer who filed it
+        priority=priority,
+        data={"claim_id": claim["id"], "claim_number": claim.get("claim_number")},
+    )
+
+
+@api_router.post("/admin/warranty-claims/{claim_id}/review")
+async def admin_review_claim(claim_id: str, payload: ClaimAdminNote, user: dict = Depends(require_roles(["admin"]))):
+    """Start reviewing — moves submitted → under_review."""
+    updated = await _transition_claim(claim_id, "under_review", user, notes=payload.notes)
+    await _notify_dealer_of_claim_change(
+        updated, f"Claim {updated['claim_number']} Under Review",
+        "Our team has started reviewing your warranty claim.",
+    )
+    return {"claim": updated}
+
+
+@api_router.post("/admin/warranty-claims/{claim_id}/request-info")
+async def admin_request_info(claim_id: str, payload: ClaimAdminNote, user: dict = Depends(require_roles(["admin"]))):
+    """Ask the dealer for more information."""
+    if not payload.notes or len(payload.notes.strip()) < 5:
+        raise HTTPException(status_code=400, detail="Please describe what information is needed")
+    updated = await _transition_claim(claim_id, "info_requested", user, notes=payload.notes.strip())
+    await _notify_dealer_of_claim_change(
+        updated, f"Info Requested — Claim {updated['claim_number']}",
+        f"Additional information needed: {payload.notes.strip()[:140]}",
+        notif_type="warning", priority="high",
+    )
+    return {"claim": updated}
+
+
+@api_router.post("/admin/warranty-claims/{claim_id}/approve")
+async def admin_approve_claim(claim_id: str, payload: ClaimAdminApprove, user: dict = Depends(require_roles(["admin"]))):
+    """Approve the claim with a resolution type (replacement, repair, credit_note)."""
+    if payload.resolution_type not in CLAIM_RESOLUTION_TYPES:
+        raise HTTPException(status_code=400, detail=f"Resolution must be one of {CLAIM_RESOLUTION_TYPES}")
+    extra = {
+        "resolution_type": payload.resolution_type,
+        "approved_at": datetime.now(timezone.utc).isoformat(),
+        "approved_by": user["id"],
+    }
+    updated = await _transition_claim(claim_id, "approved", user, notes=payload.notes, extra_set=extra)
+    await _notify_dealer_of_claim_change(
+        updated, f"Claim {updated['claim_number']} Approved ✅",
+        f"Resolution: {payload.resolution_type}. We'll dispatch shortly.",
+        notif_type="success",
+    )
+    # Customer email
+    if updated.get("customer_email"):
+        try:
+            from zoho_email_service import warranty_claim_approved_email
+            subject, body = warranty_claim_approved_email(updated)
+            asyncio.create_task(send_email_background(updated["customer_email"], subject, body, email_type="warranty_claim_approved", reference_id=claim_id))
+        except Exception as e:
+            logger.warning(f"warranty_claim_approved_email failed: {e}")
+    return {"claim": updated}
+
+
+@api_router.post("/admin/warranty-claims/{claim_id}/reject")
+async def admin_reject_claim(claim_id: str, payload: ClaimAdminReject, user: dict = Depends(require_roles(["admin"]))):
+    """Reject the claim with a reason."""
+    if len(payload.rejection_reason.strip()) < 5:
+        raise HTTPException(status_code=400, detail="Please provide a rejection reason")
+    extra = {
+        "resolution_type": "rejected",
+        "rejection_reason": payload.rejection_reason.strip(),
+    }
+    updated = await _transition_claim(claim_id, "rejected", user, notes=payload.notes or payload.rejection_reason, extra_set=extra)
+    await _notify_dealer_of_claim_change(
+        updated, f"Claim {updated['claim_number']} Rejected",
+        f"Reason: {payload.rejection_reason.strip()[:140]}",
+        notif_type="error", priority="high",
+    )
+    if updated.get("customer_email"):
+        try:
+            from zoho_email_service import warranty_claim_rejected_email
+            subject, body = warranty_claim_rejected_email(updated)
+            asyncio.create_task(send_email_background(updated["customer_email"], subject, body, email_type="warranty_claim_rejected", reference_id=claim_id))
+        except Exception as e:
+            logger.warning(f"warranty_claim_rejected_email failed: {e}")
+    return {"claim": updated}
+
+
+@api_router.post("/admin/warranty-claims/{claim_id}/dispatch-replacement")
+async def admin_dispatch_replacement(claim_id: str, payload: ClaimAdminDispatch, user: dict = Depends(require_roles(["admin"]))):
+    """Record the replacement dispatch — moves approved → replacement_dispatched."""
+    extra = {
+        "replacement_serial": payload.replacement_serial,
+        "replacement_dispatch_id": payload.replacement_dispatch_id,
+        "replacement_tracking_id": payload.replacement_tracking_id,
+        "replacement_dispatched_at": datetime.now(timezone.utc).isoformat(),
+    }
+    updated = await _transition_claim(claim_id, "replacement_dispatched", user, notes=payload.notes, extra_set=extra)
+    await _notify_dealer_of_claim_change(
+        updated, f"Replacement Dispatched — Claim {updated['claim_number']}",
+        f"Tracking: {payload.replacement_tracking_id or 'will share separately'}",
+        notif_type="success", priority="high",
+    )
+    if updated.get("customer_email"):
+        try:
+            from zoho_email_service import warranty_claim_dispatched_email
+            subject, body = warranty_claim_dispatched_email(updated)
+            asyncio.create_task(send_email_background(updated["customer_email"], subject, body, email_type="warranty_claim_dispatched", reference_id=claim_id))
+        except Exception as e:
+            logger.warning(f"warranty_claim_dispatched_email failed: {e}")
+    return {"claim": updated}
+
+
+@api_router.post("/admin/warranty-claims/{claim_id}/init-reverse-pickup")
+async def admin_init_reverse_pickup(claim_id: str, payload: ClaimAdminReversePickup, user: dict = Depends(require_roles(["admin"]))):
+    """Flag that reverse pickup of the defective unit has been initiated (no state transition)."""
+    claim = await db.warranty_claims.find_one({"id": claim_id})
+    if not claim:
+        raise HTTPException(status_code=404, detail="Claim not found")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    entry = {
+        "status": claim["status"],
+        "at": now_iso,
+        "by": user["id"],
+        "by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip() or user.get("email"),
+        "by_role": "admin",
+        "notes": f"Reverse pickup initiated. Tracking: {payload.reverse_pickup_tracking_id or 'pending'}. {payload.notes or ''}".strip(),
+    }
+    await db.warranty_claims.update_one(
+        {"id": claim_id},
+        {
+            "$set": {
+                "reverse_pickup_initiated": True,
+                "reverse_pickup_tracking_id": payload.reverse_pickup_tracking_id,
+                "updated_at": now_iso,
+            },
+            "$push": {"status_history": entry},
+        },
+    )
+    updated = await db.warranty_claims.find_one({"id": claim_id}, {"_id": 0})
+    await _notify_dealer_of_claim_change(
+        updated, f"Reverse Pickup Initiated — Claim {updated['claim_number']}",
+        f"We've initiated pickup of the defective unit. Tracking: {payload.reverse_pickup_tracking_id or 'pending'}",
+    )
+    return {"claim": updated}
+
+
+# ---- SLA scheduler ----
+
+async def check_warranty_claim_sla_breaches():
+    """Scan open claims that have exceeded their SLA window and flag them.
+
+    Mirrors the 24h alert-cooldown idempotency pattern from check_and_escalate_sla_breaches().
+    """
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    cooldown_cutoff = (now - timedelta(hours=24)).isoformat()
+
+    cursor = db.warranty_claims.find({
+        "status": {"$in": list(CLAIM_OPEN)},
+        "sla_due_at": {"$lt": now_iso},
+    })
+
+    flagged = 0
+    alerted = 0
+    async for claim in cursor:
+        already_flagged = claim.get("sla_breached", False)
+        last_alert = claim.get("sla_breach_alerted_at")
+        # Always set sla_breached so the queue shows it red
+        if not already_flagged:
+            await db.warranty_claims.update_one(
+                {"id": claim["id"]},
+                {"$set": {"sla_breached": True, "updated_at": now_iso}},
+            )
+            flagged += 1
+        # Throttled alert notification
+        if not last_alert or last_alert < cooldown_cutoff:
+            await create_notification(
+                title=f"Warranty Claim SLA Breach — {claim.get('claim_number')}",
+                message=f"Claim from {claim.get('dealer_name','dealer')} for {claim.get('product_name','product')} exceeded {CLAIM_SLA_WORKING_DAYS}-day SLA",
+                notification_type="alert",
+                link=f"/admin/warranty-claims?id={claim['id']}",
+                target_roles=["admin"],
+                priority="urgent",
+                data={"claim_id": claim["id"], "claim_number": claim.get("claim_number")},
+            )
+            await db.warranty_claims.update_one(
+                {"id": claim["id"]},
+                {"$set": {"sla_breach_alerted_at": now_iso}},
+            )
+            alerted += 1
+
+    if flagged or alerted:
+        logger.info(f"Warranty claim SLA scan: flagged={flagged}, alerted={alerted}")
+
+
+# =========================================================================
+# SPARE PARTS — distinct from resale orders
+#
+# T&C §5.1(b): "spare parts at dealer net prices for warranty + 5 years,
+# shipped within 5 working days, freight at MG's cost for in-warranty
+# replacements and at dealer's cost for out-of-warranty."
+#
+# Three order modes:
+#   - claim   → linked to a warranty_claim, freight free, auto-approved
+#   - service → linked to a dealer_ticket, freight free if linked product is in warranty
+#   - buffer  → dealer's standing stock, dealer pays freight + parts at dealer-net
+# =========================================================================
+
+SPARE_PART_CATEGORIES = ["pcb", "battery_post", "fan", "fuse", "mosfet", "transformer",
+                        "capacitor", "relay", "display", "cable", "casing", "accessory", "other"]
+
+SPARE_ORDER_TERMINAL = {"received", "rejected", "cancelled"}
+SPARE_ORDER_OPEN = {"submitted", "approved", "dispatched"}
+SPARE_ORDER_TRANSITIONS = {
+    "submitted": {"approved", "rejected", "cancelled"},
+    "approved":  {"dispatched", "rejected"},
+    "dispatched": {"received"},
+    "received":  set(),
+    "rejected":  set(),
+    "cancelled": set(),
+}
+SPARE_REASON_TYPES = ["claim", "service", "buffer"]
+SPARE_SLA_WORKING_DAYS = 5
+
+
+async def generate_spare_order_number() -> str:
+    return await _format_daily_number("MG-SP")
+
+
+async def _transition_spare_order(order_id: str, new_status: str, by_user: dict, notes: Optional[str] = None, extra_set: Optional[dict] = None):
+    order = await db.spare_parts_orders.find_one({"id": order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Spare order not found")
+    if new_status not in SPARE_ORDER_TRANSITIONS.get(order.get("status"), set()):
+        raise HTTPException(status_code=400, detail=f"Cannot transition from {order.get('status')} to {new_status}")
+    now = datetime.now(timezone.utc).isoformat()
+    entry = {
+        "status": new_status, "at": now,
+        "by": by_user.get("id"),
+        "by_name": f"{by_user.get('first_name','')} {by_user.get('last_name','')}".strip() or by_user.get("email"),
+        "by_role": by_user.get("role"),
+        "notes": notes,
+    }
+    set_doc = {"status": new_status, "updated_at": now}
+    if new_status in SPARE_ORDER_TERMINAL:
+        set_doc["closed_at"] = now
+    if extra_set:
+        set_doc.update(extra_set)
+    await db.spare_parts_orders.update_one({"id": order_id}, {"$set": set_doc, "$push": {"status_history": entry}})
+    return await db.spare_parts_orders.find_one({"id": order_id}, {"_id": 0})
+
+
+# ---- ADMIN: Spare Parts CATALOG (master) ----
+
+@api_router.get("/admin/spare-parts")
+async def admin_list_spare_parts(
+    category: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    q: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"])),
+):
+    query: Dict[str, Any] = {}
+    if category:  query["category"] = category
+    if is_active is not None: query["is_active"] = is_active
+    if q:
+        query["$or"] = [
+            {"name": {"$regex": q, "$options": "i"}},
+            {"part_code": {"$regex": q, "$options": "i"}},
+        ]
+    parts = await db.spare_parts_skus.find(query, {"_id": 0}).sort("part_code", 1).to_list(1000)
+    return {"parts": parts, "categories": SPARE_PART_CATEGORIES}
+
+
+@api_router.post("/admin/spare-parts")
+async def admin_create_spare_part(
+    name: str = Form(...),
+    part_code: str = Form(...),
+    category: str = Form(...),
+    description: Optional[str] = Form(None),
+    dealer_price: float = Form(...),
+    stock_qty: int = Form(0),
+    low_stock_threshold: int = Form(5),
+    warranty_months: int = Form(0),
+    compatible_master_sku_ids: Optional[str] = Form(None),  # JSON array as string
+    image: UploadFile = File(None),
+    user: dict = Depends(require_roles(["admin"])),
+):
+    if category not in SPARE_PART_CATEGORIES:
+        raise HTTPException(status_code=400, detail=f"Category must be one of {SPARE_PART_CATEGORIES}")
+    if dealer_price < 0:
+        raise HTTPException(status_code=400, detail="Dealer price must be ≥ 0")
+    existing = await db.spare_parts_skus.find_one({"part_code": part_code})
+    if existing:
+        raise HTTPException(status_code=409, detail="part_code already exists")
+
+    compat_ids = []
+    if compatible_master_sku_ids:
+        try:
+            import json as _json
+            compat_ids = _json.loads(compatible_master_sku_ids)
+            if not isinstance(compat_ids, list):
+                compat_ids = []
+        except Exception:
+            compat_ids = []
+
+    image_url = None
+    if image and image.filename:
+        try:
+            content = await image.read()
+            relative_path, _ = await storage_upload(
+                file_data=content,
+                folder="spare_parts",
+                original_filename=image.filename,
+                filename_prefix=part_code,
+            )
+            image_url = f"/api/files/{relative_path}"
+        except StorageError as e:
+            logger.error(f"Spare part image upload failed: {e}")
+
+    now = datetime.now(timezone.utc).isoformat()
+    spare = {
+        "id": str(uuid.uuid4()),
+        "name": name.strip(),
+        "part_code": part_code.strip(),
+        "category": category,
+        "description": (description or "").strip(),
+        "image_url": image_url,
+        "compatible_master_sku_ids": compat_ids,
+        "dealer_price": float(dealer_price),
+        "stock_qty": int(stock_qty),
+        "low_stock_threshold": int(low_stock_threshold),
+        "warranty_months": int(warranty_months),
+        "is_active": True,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.spare_parts_skus.insert_one(spare)
+    spare.pop("_id", None)
+    return {"part": spare}
+
+
+class SparePartUpdate(BaseModel):
+    name: Optional[str] = None
+    category: Optional[str] = None
+    description: Optional[str] = None
+    dealer_price: Optional[float] = None
+    stock_qty: Optional[int] = None
+    low_stock_threshold: Optional[int] = None
+    warranty_months: Optional[int] = None
+    compatible_master_sku_ids: Optional[List[str]] = None
+    is_active: Optional[bool] = None
+
+
+@api_router.patch("/admin/spare-parts/{part_id}")
+async def admin_update_spare_part(part_id: str, payload: SparePartUpdate, user: dict = Depends(require_roles(["admin"]))):
+    update = {k: v for k, v in payload.dict(exclude_none=True).items()}
+    if "category" in update and update["category"] not in SPARE_PART_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Invalid category")
+    update["updated_at"] = datetime.now(timezone.utc).isoformat()
+    result = await db.spare_parts_skus.update_one({"id": part_id}, {"$set": update})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Spare not found")
+    return {"part": await db.spare_parts_skus.find_one({"id": part_id}, {"_id": 0})}
+
+
+@api_router.post("/admin/spare-parts/{part_id}/adjust-stock")
+async def admin_adjust_spare_stock(part_id: str, delta: int = Body(..., embed=True), reason: Optional[str] = Body(None, embed=True), user: dict = Depends(require_roles(["admin"]))):
+    """Atomic stock adjustment with audit log."""
+    part = await db.spare_parts_skus.find_one({"id": part_id})
+    if not part:
+        raise HTTPException(status_code=404, detail="Spare not found")
+    new_qty = max(0, (part.get("stock_qty", 0) + delta))
+    await db.spare_parts_skus.update_one({"id": part_id}, {"$set": {"stock_qty": new_qty, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    await db.spare_parts_stock_log.insert_one({
+        "id": str(uuid.uuid4()),
+        "part_id": part_id,
+        "delta": delta,
+        "before": part.get("stock_qty", 0),
+        "after": new_qty,
+        "reason": (reason or "manual adjustment")[:200],
+        "by_user_id": user["id"],
+        "by_user_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+        "at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"part": await db.spare_parts_skus.find_one({"id": part_id}, {"_id": 0})}
+
+
+# ---- DEALER: spare parts catalog browsing ----
+
+@api_router.get("/dealer/spare-parts")
+async def dealer_browse_spare_parts(
+    category: Optional[str] = None,
+    compatible_with: Optional[str] = None,
+    q: Optional[str] = None,
+    user: dict = Depends(require_roles(["dealer"])),
+):
+    query: Dict[str, Any] = {"is_active": True}
+    if category:        query["category"] = category
+    if compatible_with: query["compatible_master_sku_ids"] = compatible_with
+    if q:
+        query["$or"] = [
+            {"name": {"$regex": q, "$options": "i"}},
+            {"part_code": {"$regex": q, "$options": "i"}},
+        ]
+    parts = await db.spare_parts_skus.find(query, {"_id": 0}).sort("part_code", 1).to_list(500)
+    return {"parts": parts, "categories": SPARE_PART_CATEGORIES}
+
+
+# ---- ORDERS ----
+
+class SpareOrderItem(BaseModel):
+    spare_id: str
+    qty: int
+
+
+class SpareOrderCreate(BaseModel):
+    items: List[SpareOrderItem]
+    reason_type: str   # 'claim' | 'service' | 'buffer'
+    claim_id: Optional[str] = None
+    ticket_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@api_router.post("/dealer/spare-orders")
+async def dealer_create_spare_order(payload: SpareOrderCreate, user: dict = Depends(require_roles(["dealer"]))):
+    if payload.reason_type not in SPARE_REASON_TYPES:
+        raise HTTPException(status_code=400, detail=f"reason_type must be one of {SPARE_REASON_TYPES}")
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="Order must have at least one item")
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+
+    # Validate reason linkage
+    linked_claim = None
+    if payload.reason_type == "claim":
+        if not payload.claim_id:
+            raise HTTPException(status_code=400, detail="claim_id required for reason_type=claim")
+        linked_claim = await db.warranty_claims.find_one({"id": payload.claim_id})
+        if not linked_claim:
+            raise HTTPException(status_code=404, detail="Linked warranty claim not found")
+        if linked_claim.get("dealer_id") != dealer["id"]:
+            raise HTTPException(status_code=403, detail="That claim is not yours")
+    elif payload.reason_type == "service":
+        if not payload.ticket_id:
+            raise HTTPException(status_code=400, detail="ticket_id required for reason_type=service")
+        # We're lenient about ticket existence check — dealer tickets may be informal
+
+    # Build line items with current pricing snapshot
+    line_items = []
+    subtotal = 0.0
+    for it in payload.items:
+        spare = await db.spare_parts_skus.find_one({"id": it.spare_id})
+        if not spare or not spare.get("is_active"):
+            raise HTTPException(status_code=400, detail=f"Spare {it.spare_id} not available")
+        if it.qty <= 0:
+            raise HTTPException(status_code=400, detail="Quantity must be > 0")
+        unit_price = float(spare.get("dealer_price", 0))
+        line_total = unit_price * it.qty
+        subtotal += line_total
+        line_items.append({
+            "spare_id": spare["id"],
+            "part_code": spare.get("part_code"),
+            "name": spare.get("name"),
+            "category": spare.get("category"),
+            "qty": int(it.qty),
+            "unit_price": unit_price,
+            "line_total": round(line_total, 2),
+            "image_url": spare.get("image_url"),
+        })
+
+    # Freight rule
+    if payload.reason_type == "claim":
+        freight_borne_by = "musclegrid"     # in-warranty replacements free
+    elif payload.reason_type == "service":
+        # Free if the underlying product is still in warranty (we can't always verify here — admin will adjust)
+        freight_borne_by = "musclegrid"
+    else:
+        freight_borne_by = "dealer"
+
+    now = datetime.now(timezone.utc)
+    order_id = str(uuid.uuid4())
+    order_number = await generate_spare_order_number()
+    sla_due = _add_business_days(now, SPARE_SLA_WORKING_DAYS).isoformat()
+    now_iso = now.isoformat()
+    initial_entry = {
+        "status": "submitted",
+        "at": now_iso,
+        "by": user["id"],
+        "by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip() or user.get("email"),
+        "by_role": "dealer",
+        "notes": payload.notes,
+    }
+    order = {
+        "id": order_id,
+        "order_number": order_number,
+        "dealer_id": dealer["id"],
+        "dealer_name": dealer.get("firm_name"),
+        "dealer_user_id": user["id"],
+        "items": line_items,
+        "subtotal": round(subtotal, 2),
+        "freight_borne_by": freight_borne_by,
+        "reason_type": payload.reason_type,
+        "claim_id": payload.claim_id,
+        "claim_number": (linked_claim or {}).get("claim_number") if linked_claim else None,
+        "ticket_id": payload.ticket_id,
+        "status": "submitted",
+        "status_history": [initial_entry],
+        "tracking_id": None,
+        "dispatched_at": None,
+        "received_at": None,
+        "rejection_reason": None,
+        "sla_due_at": sla_due,
+        "notes": payload.notes,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "closed_at": None,
+    }
+    await db.spare_parts_orders.insert_one(order)
+    order.pop("_id", None)
+
+    await create_notification(
+        title="New Spare Parts Order",
+        message=f"{dealer.get('firm_name')} ordered {len(line_items)} spare(s) — {order_number} ({payload.reason_type})",
+        notification_type="info",
+        link=f"/admin/spare-orders?id={order_id}",
+        target_roles=["admin"],
+        priority="high" if payload.reason_type == "claim" else "normal",
+        data={"order_id": order_id, "order_number": order_number, "reason_type": payload.reason_type},
+    )
+    return {"order": {**order, "_id": None}}
+
+
+@api_router.get("/dealer/spare-orders")
+async def dealer_list_spare_orders(status: Optional[str] = None, user: dict = Depends(require_roles(["dealer"]))):
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0, "id": 1})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    query: Dict[str, Any] = {"dealer_id": dealer["id"]}
+    if status == "open":  query["status"] = {"$in": list(SPARE_ORDER_OPEN)}
+    elif status == "closed": query["status"] = {"$in": list(SPARE_ORDER_TERMINAL)}
+    elif status: query["status"] = status
+
+    orders = await db.spare_parts_orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
+    base = {"dealer_id": dealer["id"]}
+    stats = {
+        "total": await db.spare_parts_orders.count_documents(base),
+        "open": await db.spare_parts_orders.count_documents({**base, "status": {"$in": list(SPARE_ORDER_OPEN)}}),
+        "dispatched": await db.spare_parts_orders.count_documents({**base, "status": "dispatched"}),
+        "closed_30d": await db.spare_parts_orders.count_documents({
+            **base, "status": {"$in": list(SPARE_ORDER_TERMINAL)},
+            "closed_at": {"$gte": (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()},
+        }),
+    }
+    return {"orders": orders, "stats": stats}
+
+
+@api_router.get("/dealer/spare-orders/{order_id}")
+async def dealer_get_spare_order(order_id: str, user: dict = Depends(require_roles(["dealer"]))):
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0, "id": 1})
+    order = await db.spare_parts_orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if not dealer or order["dealer_id"] != dealer["id"]:
+        raise HTTPException(status_code=403, detail="Not your order")
+    return {"order": order}
+
+
+@api_router.post("/dealer/spare-orders/{order_id}/cancel")
+async def dealer_cancel_spare_order(order_id: str, user: dict = Depends(require_roles(["dealer"]))):
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0, "id": 1})
+    order = await db.spare_parts_orders.find_one({"id": order_id})
+    if not order or order.get("dealer_id") != dealer["id"]:
+        raise HTTPException(status_code=403, detail="Not your order")
+    updated = await _transition_spare_order(order_id, "cancelled", user, notes="Cancelled by dealer")
+    return {"order": updated}
+
+
+@api_router.post("/dealer/spare-orders/{order_id}/confirm-received")
+async def dealer_confirm_spare_received(order_id: str, user: dict = Depends(require_roles(["dealer"]))):
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0, "id": 1})
+    order = await db.spare_parts_orders.find_one({"id": order_id})
+    if not order or order.get("dealer_id") != dealer["id"]:
+        raise HTTPException(status_code=403, detail="Not your order")
+    updated = await _transition_spare_order(order_id, "received", user, notes="Dealer confirmed receipt")
+    await create_notification(
+        title="Spare Parts Order Closed",
+        message=f"Order {order['order_number']} received by {order['dealer_name']}",
+        notification_type="success",
+        link=f"/admin/spare-orders?id={order_id}",
+        target_roles=["admin"],
+        data={"order_id": order_id},
+    )
+    return {"order": updated}
+
+
+# ---- ADMIN: spare orders queue ----
+
+@api_router.get("/admin/spare-orders")
+async def admin_list_spare_orders(
+    status: Optional[str] = None,
+    reason_type: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"])),
+):
+    query: Dict[str, Any] = {}
+    if status == "open":     query["status"] = {"$in": list(SPARE_ORDER_OPEN)}
+    elif status == "closed": query["status"] = {"$in": list(SPARE_ORDER_TERMINAL)}
+    elif status: query["status"] = status
+    if reason_type: query["reason_type"] = reason_type
+
+    orders = await db.spare_parts_orders.find(query, {"_id": 0}).sort("created_at", 1).to_list(500)
+    stats = {
+        "total":      await db.spare_parts_orders.count_documents({}),
+        "open":       await db.spare_parts_orders.count_documents({"status": {"$in": list(SPARE_ORDER_OPEN)}}),
+        "submitted":  await db.spare_parts_orders.count_documents({"status": "submitted"}),
+        "approved":   await db.spare_parts_orders.count_documents({"status": "approved"}),
+        "dispatched": await db.spare_parts_orders.count_documents({"status": "dispatched"}),
+        "received":   await db.spare_parts_orders.count_documents({"status": "received"}),
+        "rejected":   await db.spare_parts_orders.count_documents({"status": "rejected"}),
+    }
+    return {"orders": orders, "stats": stats}
+
+
+@api_router.get("/admin/spare-orders/{order_id}")
+async def admin_get_spare_order(order_id: str, user: dict = Depends(require_roles(["admin"]))):
+    order = await db.spare_parts_orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return {"order": order}
+
+
+class SpareOrderAdminNotes(BaseModel):
+    notes: Optional[str] = None
+
+
+class SpareOrderAdminReject(BaseModel):
+    rejection_reason: str
+    notes: Optional[str] = None
+
+
+class SpareOrderAdminDispatch(BaseModel):
+    tracking_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@api_router.post("/admin/spare-orders/{order_id}/approve")
+async def admin_approve_spare_order(order_id: str, payload: SpareOrderAdminNotes, user: dict = Depends(require_roles(["admin"]))):
+    updated = await _transition_spare_order(order_id, "approved", user, notes=payload.notes)
+    # Notify dealer (target user, not broadcast)
+    await create_notification(
+        title=f"Spare Order Approved — {updated['order_number']}",
+        message=f"Your order has been approved. We'll dispatch within {SPARE_SLA_WORKING_DAYS} working days.",
+        notification_type="success",
+        link=f"/dealer/spare-orders?id={order_id}",
+        target_user_ids=[updated["dealer_user_id"]],
+        target_roles=[],
+        data={"order_id": order_id, "order_number": updated["order_number"]},
+    )
+    return {"order": updated}
+
+
+@api_router.post("/admin/spare-orders/{order_id}/reject")
+async def admin_reject_spare_order(order_id: str, payload: SpareOrderAdminReject, user: dict = Depends(require_roles(["admin"]))):
+    if len(payload.rejection_reason.strip()) < 5:
+        raise HTTPException(status_code=400, detail="Please provide a rejection reason")
+    extra = {"rejection_reason": payload.rejection_reason.strip()}
+    updated = await _transition_spare_order(order_id, "rejected", user, notes=payload.notes or payload.rejection_reason, extra_set=extra)
+    await create_notification(
+        title=f"Spare Order Rejected — {updated['order_number']}",
+        message=f"Reason: {payload.rejection_reason.strip()[:140]}",
+        notification_type="error",
+        link=f"/dealer/spare-orders?id={order_id}",
+        target_user_ids=[updated["dealer_user_id"]],
+        target_roles=[],
+        priority="high",
+        data={"order_id": order_id},
+    )
+    return {"order": updated}
+
+
+@api_router.post("/admin/spare-orders/{order_id}/dispatch")
+async def admin_dispatch_spare_order(order_id: str, payload: SpareOrderAdminDispatch, user: dict = Depends(require_roles(["admin"]))):
+    order = await db.spare_parts_orders.find_one({"id": order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    # Auto-decrement stock for each line item
+    for it in order.get("items", []):
+        await db.spare_parts_skus.update_one({"id": it["spare_id"]}, {"$inc": {"stock_qty": -it["qty"]}})
+        await db.spare_parts_stock_log.insert_one({
+            "id": str(uuid.uuid4()),
+            "part_id": it["spare_id"],
+            "delta": -it["qty"],
+            "reason": f"Dispatched on spare order {order['order_number']}",
+            "by_user_id": user["id"],
+            "by_user_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+            "at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    extra = {
+        "tracking_id": payload.tracking_id,
+        "dispatched_at": datetime.now(timezone.utc).isoformat(),
+    }
+    updated = await _transition_spare_order(order_id, "dispatched", user, notes=payload.notes, extra_set=extra)
+    await create_notification(
+        title=f"Spare Order Dispatched — {updated['order_number']}",
+        message=f"Tracking: {payload.tracking_id or 'will share separately'}",
+        notification_type="info",
+        link=f"/dealer/spare-orders?id={order_id}",
+        target_user_ids=[updated["dealer_user_id"]],
+        target_roles=[],
+        priority="high",
+        data={"order_id": order_id},
+    )
+    return {"order": updated}
+
+
+# ---- Claim → Spare order integration ----
+
+class AttachSparesToClaim(BaseModel):
+    items: List[SpareOrderItem]
+    notes: Optional[str] = None
+
+
+@api_router.post("/admin/warranty-claims/{claim_id}/attach-spares")
+async def admin_attach_spares_to_claim(claim_id: str, payload: AttachSparesToClaim, user: dict = Depends(require_roles(["admin"]))):
+    """When approving a warranty claim, admin can pick spares from the catalog;
+    the system creates a pre-approved spare_parts_order linked to the claim with free freight."""
+    claim = await db.warranty_claims.find_one({"id": claim_id})
+    if not claim:
+        raise HTTPException(status_code=404, detail="Claim not found")
+    if claim.get("status") not in {"approved", "replacement_dispatched", "under_review"}:
+        raise HTTPException(status_code=400, detail=f"Cannot attach spares while claim is in {claim.get('status')}")
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="No spares selected")
+
+    # Look up dealer user id for notification target
+    dealer = await db.dealers.find_one({"id": claim["dealer_id"]}, {"_id": 0, "user_id": 1})
+
+    line_items = []
+    subtotal = 0.0
+    for it in payload.items:
+        spare = await db.spare_parts_skus.find_one({"id": it.spare_id})
+        if not spare:
+            raise HTTPException(status_code=400, detail=f"Spare {it.spare_id} not found")
+        unit_price = float(spare.get("dealer_price", 0))
+        line_total = unit_price * it.qty
+        subtotal += line_total
+        line_items.append({
+            "spare_id": spare["id"], "part_code": spare.get("part_code"),
+            "name": spare.get("name"), "category": spare.get("category"),
+            "qty": int(it.qty), "unit_price": unit_price,
+            "line_total": round(line_total, 2), "image_url": spare.get("image_url"),
+        })
+
+    now = datetime.now(timezone.utc)
+    order_id = str(uuid.uuid4())
+    order_number = await generate_spare_order_number()
+    now_iso = now.isoformat()
+
+    history = [
+        {"status": "submitted", "at": now_iso, "by": user["id"],
+         "by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+         "by_role": "admin", "notes": f"Auto-created from warranty claim {claim['claim_number']}"},
+        {"status": "approved", "at": now_iso, "by": user["id"],
+         "by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+         "by_role": "admin", "notes": "Auto-approved (claim-linked)"},
+    ]
+
+    order = {
+        "id": order_id,
+        "order_number": order_number,
+        "dealer_id": claim["dealer_id"],
+        "dealer_name": claim.get("dealer_name"),
+        "dealer_user_id": (dealer or {}).get("user_id"),
+        "items": line_items,
+        "subtotal": round(subtotal, 2),
+        "freight_borne_by": "musclegrid",
+        "reason_type": "claim",
+        "claim_id": claim_id,
+        "claim_number": claim.get("claim_number"),
+        "ticket_id": None,
+        "status": "approved",
+        "status_history": history,
+        "tracking_id": None,
+        "dispatched_at": None,
+        "received_at": None,
+        "rejection_reason": None,
+        "sla_due_at": _add_business_days(now, SPARE_SLA_WORKING_DAYS).isoformat(),
+        "notes": payload.notes,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "closed_at": None,
+    }
+    await db.spare_parts_orders.insert_one(order)
+    order.pop("_id", None)
+
+    # Mirror back to claim — add reference to the spare order
+    await db.warranty_claims.update_one(
+        {"id": claim_id},
+        {"$addToSet": {"linked_spare_order_ids": order_id}, "$set": {"updated_at": now_iso}},
+    )
+
+    if (dealer or {}).get("user_id"):
+        await create_notification(
+            title=f"Spares Allocated — Claim {claim['claim_number']}",
+            message=f"We've allocated {len(line_items)} spare(s) for your claim. They'll be dispatched soon.",
+            notification_type="success",
+            link=f"/dealer/spare-orders?id={order_id}",
+            target_user_ids=[dealer["user_id"]],
+            target_roles=[],
+            data={"order_id": order_id, "claim_id": claim_id},
+        )
+
+    return {"order": {**order, "_id": None}}
 
 
 @api_router.post("/admin/dealer-products")
