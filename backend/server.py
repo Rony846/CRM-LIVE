@@ -23528,7 +23528,25 @@ async def update_party(
             existing = await db.parties.find_one({"gstin": party_data.gstin.upper(), "id": {"$ne": party_id}})
             if existing:
                 raise HTTPException(status_code=400, detail=f"GSTIN already exists for: {existing['name']}")
-        update_data["gstin"] = party_data.gstin.upper() if party_data.gstin else None
+        canonical_gst = party_data.gstin.upper() if party_data.gstin else None
+        # Mirror into the legacy `gst_number` field. Older imports + the WA
+        # agent's _create_party write `gst_number`; newer code reads `gstin`.
+        # Keeping the two fields in sync prevents the drift we hit on
+        # Shaktishri (UI edited gstin, gst_number stayed stale, and the
+        # purchase register kept showing the old denormed snapshot).
+        update_data["gstin"] = canonical_gst
+        update_data["gst_number"] = canonical_gst
+
+        # Refresh denormalised supplier_gstin on this party's DRAFT purchases
+        # so the Purchase Register reflects the corrected GSTIN. Final / posted
+        # purchases stay snapshotted for audit — only drafts get refreshed.
+        await db.purchases.update_many(
+            {
+                "$or": [{"supplier_party_id": party_id}, {"supplier_id": party_id}],
+                "doc_status": {"$in": ["draft", "pending"]},
+            },
+            {"$set": {"supplier_gstin": canonical_gst, "updated_at": now.isoformat()}},
+        )
     
     for field in ["name", "pan", "state", "state_code", "address", "city", "pincode", 
                   "phone", "email", "contact_person", "credit_limit", "notes", "is_active"]:
