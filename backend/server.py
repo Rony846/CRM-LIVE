@@ -23012,6 +23012,8 @@ async def list_parties(
     party_type: Optional[str] = None,
     search: Optional[str] = None,
     is_active: Optional[bool] = True,
+    limit: int = 1000,
+    skip: int = 0,
     user: dict = Depends(require_roles(["admin", "accountant", "call_support"]))
 ):
     """List parties (firm-scoped for accountants).
@@ -23022,22 +23024,37 @@ async def list_parties(
     balance is also recomputed from the in-firm subset of the ledger, not the
     global running_balance, so a firm-A accountant does not see firm-B's
     balance against the same party.
+
+    The type filter matches BOTH the singular `party_type` (WA-agent and
+    newer code) and the plural `party_types` (legacy imports) fields, so a
+    `?party_type=supplier` request returns suppliers regardless of which
+    schema variant they were saved under.
     """
-    query = {}
+    # Clamp pagination
+    limit = max(1, min(limit, 5000))
+    skip = max(0, skip)
+
+    filters: List[dict] = []
 
     if is_active is not None:
-        query["is_active"] = is_active
+        filters.append({"is_active": is_active})
 
     if party_type:
-        query["party_types"] = party_type
+        # Match either schema variant. Mongo equality on `party_types` also
+        # matches arrays containing the value, so this covers both `"supplier"`
+        # and `["supplier", ...]` storage shapes.
+        filters.append({"$or": [
+            {"party_type": party_type},
+            {"party_types": party_type},
+        ]})
 
     if search:
-        query["$or"] = [
-            {"name": {"$regex": search, "$options": "i"}},
+        filters.append({"$or": [
+            {"name":  {"$regex": search, "$options": "i"}},
             {"phone": {"$regex": search, "$options": "i"}},
             {"gstin": {"$regex": search, "$options": "i"}},
-            {"email": {"$regex": search, "$options": "i"}}
-        ]
+            {"email": {"$regex": search, "$options": "i"}},
+        ]})
 
     scope = get_user_firm_scope(user)
     if scope:
@@ -23052,9 +23069,11 @@ async def list_parties(
                     scoped_party_ids.add(doc["party_id"])
         if not scoped_party_ids:
             return []
-        query["id"] = {"$in": list(scoped_party_ids)}
+        filters.append({"id": {"$in": list(scoped_party_ids)}})
 
-    parties = await db.parties.find(query, {"_id": 0}).sort("name", 1).to_list(500)
+    query = {"$and": filters} if filters else {}
+
+    parties = await db.parties.find(query, {"_id": 0}).sort("name", 1).skip(skip).limit(limit).to_list(limit)
 
     # Compute balances. For accountants the balance is firm-scoped (sum of
     # debits − credits on the in-firm ledger); for admin the legacy global
