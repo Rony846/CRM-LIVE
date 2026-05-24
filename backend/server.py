@@ -23036,8 +23036,14 @@ async def list_parties(
 
     filters: List[dict] = []
 
-    if is_active is not None:
-        filters.append({"is_active": is_active})
+    # is_active=True (default) should INCLUDE rows that simply never had the
+    # field written (older imports + WhatsApp-agent-created parties). Only
+    # exclude rows that are EXPLICITLY is_active=False.
+    if is_active is True:
+        filters.append({"is_active": {"$ne": False}})
+    elif is_active is False:
+        filters.append({"is_active": False})
+    # is_active=None → no filter (caller wants everything)
 
     if party_type:
         # Match either schema variant. Mongo equality on `party_types` also
@@ -23049,11 +23055,14 @@ async def list_parties(
         ]})
 
     if search:
+        # GST number is stored as `gstin` on newer rows and `gst_number` on
+        # legacy ones — search both so a GST-number lookup finds either.
         filters.append({"$or": [
-            {"name":  {"$regex": search, "$options": "i"}},
-            {"phone": {"$regex": search, "$options": "i"}},
-            {"gstin": {"$regex": search, "$options": "i"}},
-            {"email": {"$regex": search, "$options": "i"}},
+            {"name":       {"$regex": search, "$options": "i"}},
+            {"phone":      {"$regex": search, "$options": "i"}},
+            {"gstin":      {"$regex": search, "$options": "i"}},
+            {"gst_number": {"$regex": search, "$options": "i"}},
+            {"email":      {"$regex": search, "$options": "i"}},
         ]})
 
     scope = get_user_firm_scope(user)
