@@ -39484,11 +39484,19 @@ async def get_dealer_products(user: dict = Depends(require_roles(["dealer", "adm
         selling_price = master_sku.get("selling_price", 0)
         if not selling_price:
             continue
-        
-        product_discount = master_sku.get("dealer_discount_percent", 15)
+
+        # dict.get(key, default) only falls back when the key is missing — not when
+        # the value is explicitly None, which several legacy master_skus have. Guard
+        # both fields before any arithmetic.
+        product_discount = master_sku.get("dealer_discount_percent")
+        if product_discount is None:
+            product_discount = 15
+        gst_rate = master_sku.get("gst_rate")
+        if gst_rate is None:
+            gst_rate = 18
         dealer_price = selling_price * (1 - product_discount / 100)
         seen_sku_ids.add(master_sku_id)
-        
+
         enriched_products.append({
             "id": master_sku_id,
             "master_sku_id": master_sku_id,
@@ -39499,7 +39507,7 @@ async def get_dealer_products(user: dict = Depends(require_roles(["dealer", "adm
             "selling_price": selling_price,
             "dealer_price": round(dealer_price, 2),
             "dealer_discount_percent": product_discount,
-            "gst_rate": master_sku.get("gst_rate", 18),
+            "gst_rate": gst_rate,
             "images": ds.get("images") or ([ds.get("image_url")] if ds.get("image_url") else []),
             "is_active": True
         })
@@ -39515,9 +39523,14 @@ async def get_dealer_products(user: dict = Depends(require_roles(["dealer", "adm
             continue
         
         selling_price = sku.get("selling_price", 0)
-        product_discount = sku.get("dealer_discount_percent", 15)
+        product_discount = sku.get("dealer_discount_percent")
+        if product_discount is None:
+            product_discount = 15
+        gst_rate = sku.get("gst_rate")
+        if gst_rate is None:
+            gst_rate = 18
         dealer_price = selling_price * (1 - product_discount / 100)
-        
+
         enriched_products.append({
             "id": sku["id"],
             "master_sku_id": sku["id"],
@@ -39528,7 +39541,7 @@ async def get_dealer_products(user: dict = Depends(require_roles(["dealer", "adm
             "selling_price": selling_price,
             "dealer_price": round(dealer_price, 2),
             "dealer_discount_percent": product_discount,
-            "gst_rate": sku.get("gst_rate", 18),
+            "gst_rate": gst_rate,
             "images": [],
             "is_active": True
         })
@@ -39582,12 +39595,18 @@ async def get_dealer_products_with_catalogue(user: dict = Depends(require_roles(
         selling_price = master_sku.get("selling_price", 0)
         if not selling_price:
             continue  # Skip products without selling price
-        
-        # Use PRODUCT-SPECIFIC discount (default 15% if not set)
-        product_discount = master_sku.get("dealer_discount_percent", 15)
+
+        # dict.get(key, default) only falls back when the key is missing — not when
+        # the value is explicitly None. Legacy master_skus have null discount/gst.
+        product_discount = master_sku.get("dealer_discount_percent")
+        if product_discount is None:
+            product_discount = 15
+        gst_rate_val = master_sku.get("gst_rate")
+        if gst_rate_val is None:
+            gst_rate_val = 18
         dealer_price = selling_price * (1 - product_discount / 100)
         seen_sku_ids.add(master_sku_id)
-        
+
         product = {
             "id": ds.get("id"),
             "datasheet_id": ds.get("id"),
@@ -39598,7 +39617,7 @@ async def get_dealer_products_with_catalogue(user: dict = Depends(require_roles(
             "category": ds.get("category") or master_sku.get("category"),
             "hsn_code": master_sku.get("hsn_code"),
             "product_type": master_sku.get("product_type"),
-            "gst_rate": master_sku.get("gst_rate", 18),
+            "gst_rate": gst_rate_val,
             # Pricing
             "selling_price": selling_price,  # Customer price
             "mrp": master_sku.get("mrp") or selling_price,
@@ -39638,9 +39657,14 @@ async def get_dealer_products_with_catalogue(user: dict = Depends(require_roles(
             continue  # Already added from datasheet
         
         selling_price = sku.get("selling_price", 0)
-        product_discount = sku.get("dealer_discount_percent", 15)  # Default 15%
+        product_discount = sku.get("dealer_discount_percent")
+        if product_discount is None:
+            product_discount = 15
+        gst_rate_val = sku.get("gst_rate")
+        if gst_rate_val is None:
+            gst_rate_val = 18
         dealer_price = selling_price * (1 - product_discount / 100) if selling_price else 0
-        
+
         product = {
             "id": sku["id"],
             "master_sku_id": sku["id"],
@@ -39650,7 +39674,7 @@ async def get_dealer_products_with_catalogue(user: dict = Depends(require_roles(
             "category": sku.get("category"),
             "hsn_code": sku.get("hsn_code"),
             "product_type": sku.get("product_type"),
-            "gst_rate": sku.get("gst_rate", 18),
+            "gst_rate": gst_rate_val,
             "selling_price": selling_price,
             "mrp": sku.get("mrp") or selling_price,
             "dealer_discount_percent": product_discount,
@@ -43290,11 +43314,18 @@ async def admin_get_dealer_products(
             continue
         
         selling_price = master_sku.get("selling_price", 0)
-        product_discount = master_sku.get("dealer_discount_percent", 15)
+        # dict.get(key, default) only falls back when the key is missing — not when
+        # the value is explicitly None. Same fix as /dealer/products etc.
+        product_discount = master_sku.get("dealer_discount_percent")
+        if product_discount is None:
+            product_discount = 15
+        gst_rate_val = master_sku.get("gst_rate")
+        if gst_rate_val is None:
+            gst_rate_val = 18
         dealer_price = selling_price * (1 - product_discount / 100) if selling_price else 0
-        
+
         seen_sku_ids.add(master_sku_id)
-        
+
         result.append({
             "id": ds.get("id"),
             "datasheet_id": ds.get("id"),
@@ -43306,7 +43337,7 @@ async def admin_get_dealer_products(
             "selling_price": selling_price,
             "dealer_price": round(dealer_price, 2),
             "dealer_discount_percent": product_discount,
-            "gst_rate": master_sku.get("gst_rate", 18),
+            "gst_rate": gst_rate_val,
             "warranty_months": ds.get("warranty") or 12,
             "images": ds.get("images") or ([ds.get("image_url")] if ds.get("image_url") else []),
             "is_active": True,
@@ -43324,9 +43355,14 @@ async def admin_get_dealer_products(
             continue
         
         selling_price = sku.get("selling_price", 0)
-        product_discount = sku.get("dealer_discount_percent", 15)
+        product_discount = sku.get("dealer_discount_percent")
+        if product_discount is None:
+            product_discount = 15
+        gst_rate_val = sku.get("gst_rate")
+        if gst_rate_val is None:
+            gst_rate_val = 18
         dealer_price = selling_price * (1 - product_discount / 100) if selling_price else 0
-        
+
         result.append({
             "id": sku["id"],
             "master_sku_id": sku["id"],
@@ -43337,7 +43373,7 @@ async def admin_get_dealer_products(
             "selling_price": selling_price,
             "dealer_price": round(dealer_price, 2),
             "dealer_discount_percent": product_discount,
-            "gst_rate": sku.get("gst_rate", 18),
+            "gst_rate": gst_rate_val,
             "warranty_months": 12,
             "images": [],
             "is_active": True,
