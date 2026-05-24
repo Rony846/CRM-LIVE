@@ -181,6 +181,8 @@ const adminNavGroups = [
     icon: Bot,
     items: [
       { label: 'Finance Agent', icon: IndianRupee, path: '/agents/finance' },
+      { label: 'Watch Live', icon: Monitor, path: '/agents/finance/watch' },
+      { label: 'Data Inbox', icon: Inbox, path: '/agents/finance/inbox' },
     ]
   },
   {
@@ -271,6 +273,7 @@ const accountantNavGroups = [
     icon: Bot,
     items: [
       { label: 'Finance Agent', icon: IndianRupee, path: '/agents/finance' },
+      { label: 'Data Inbox', icon: Inbox, path: '/agents/finance/inbox' },
     ]
   },
   {

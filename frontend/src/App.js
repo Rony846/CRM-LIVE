@@ -47,6 +47,8 @@ import EcommerceReconciliation from './pages/finance/EcommerceReconciliation';
 import ImportCosting from './pages/finance/ImportCosting';
 import BankReconciliation from './pages/finance/BankReconciliation';
 import FinanceAgent from './pages/agents/FinanceAgent';
+import FinanceAgentWatch from './pages/agents/FinanceAgentWatch';
+import FinanceAgentInbox from './pages/agents/FinanceAgentInbox';
 import TechnicianDashboard from './pages/technician/TechnicianDashboard';
 import GateDashboard from './pages/gate/GateDashboard';
 import SupervisorDashboard from './pages/supervisor/SupervisorDashboard';
@@ -594,6 +596,16 @@ function App() {
           <Route path="/agents/finance" element={
             <ProtectedRoute allowedRoles={['admin', 'accountant']}>
               <FinanceAgent />
+            </ProtectedRoute>
+          } />
+          <Route path="/agents/finance/watch" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <FinanceAgentWatch />
+            </ProtectedRoute>
+          } />
+          <Route path="/agents/finance/inbox" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <FinanceAgentInbox />
             </ProtectedRoute>
           } />
           <Route path="/admin/skus" element={

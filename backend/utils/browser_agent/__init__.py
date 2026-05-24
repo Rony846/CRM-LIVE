@@ -1306,12 +1306,27 @@ class AmazonBrowserAgent:
             since_date = (_dt.utcnow() - _td(days=90)).strftime("%Y-%m-%d")
         end_date = _dt.utcnow().strftime("%Y-%m-%d")
 
-        # Reimbursements report is under Inventory Planning / Reimbursements.
-        # Amazon has shuffled this URL across redesigns; try a couple.
+        # Reimbursements live in TWO places on Seller Central, both of which
+        # we'll probe in order of preference:
+        #   1. Payments dashboard (top nav Payments → Payments) — has a
+        #      "Reimbursements" tab with the raw transaction-level data.
+        #      This is the canonical source.
+        #   2. Reports Central (Reports → Fulfilment → Payments → Reimbursements)
+        #      — the report-builder view, exports CSV. Backup path.
+        # Amazon has shuffled direct URLs across redesigns; deep-links often
+        # redirect to a landing page, so the dispatcher below falls back to
+        # text-based click-through after navigation.
         candidate_urls = [
+            # Payments dashboard — preferred path
+            "https://sellercentral.amazon.in/payments/dashboard/index.html",
+            "https://sellercentral.amazon.in/payments/dashboard",
+            "https://sellercentral.amazon.in/gp/payments-account/view-transactions.html",
+            # Reports Central — fallback (with date-range as URL params)
             f"https://sellercentral.amazon.in/reportcentral/REIMBURSEMENTS/0?startDate={since_date}&endDate={end_date}",
             "https://sellercentral.amazon.in/reportcentral/REIMBURSEMENTS/0",
             "https://sellercentral.amazon.in/inventoryplanning/reimbursements",
+            "https://sellercentral.amazon.in/reportcentral",
+            "https://sellercentral.amazon.in/reports",
         ]
         loaded = False
         last_err = None
@@ -1330,6 +1345,104 @@ class AmazonBrowserAgent:
                     "error": f"All reimbursement URLs failed; last error: {last_err or 'navigation'}"}
 
         await self._capture_screenshot()
+
+        # Click-through to the Reimbursements view. Two cases:
+        #   - Payments dashboard: Reimbursements is a TAB on the page —
+        #     usually a button or anchor with role="tab".
+        #   - Reports menu: Reimbursements is a link in the side-nav.
+        # Same JS handles both — we just match by visible text and prefer
+        # tabs/buttons over deep links when on the Payments page.
+        try:
+            clicked = await self.page.evaluate(
+                r"""
+                () => {
+                  const onPayments = location.href.includes('/payments/');
+                  // Tabs first on Payments page; anchors first elsewhere.
+                  const tabSelectors = '[role="tab"], button, .a-tab-heading a, .a-tab a';
+                  const linkSelectors = 'a, [role="link"], button, [role="button"]';
+                  const order = onPayments
+                    ? [tabSelectors, linkSelectors]
+                    : [linkSelectors, tabSelectors];
+                  const re = /^\s*reimbursements?\s*$/i;
+                  for (const sel of order) {
+                    const els = Array.from(document.querySelectorAll(sel));
+                    let target = els.find(a => re.test(a.innerText || a.textContent || ''));
+                    if (!target) {
+                      target = els.find(a => {
+                        const t = (a.innerText || a.textContent || '');
+                        return /reimburs/i.test(t) && t.length < 40;
+                      });
+                    }
+                    if (target) {
+                      target.scrollIntoView({ block: 'center' });
+                      target.click();
+                      return true;
+                    }
+                  }
+                  return false;
+                }
+                """
+            )
+            if clicked:
+                await self._notify_status("📑 Clicked Reimbursements link in Reports menu…")
+                # Let the report page render. Amazon's React stack typically needs
+                # 5-8s to mount the data grid and populate filter controls.
+                await asyncio.sleep(7)
+                await self._capture_screenshot()
+        except Exception as e:
+            logger.debug(f"[reimbursements] menu click skipped: {e}")
+
+        # Try to set the date range via the report's filter UI (URL params are
+        # ignored after the menu navigation). Best-effort — many reports default
+        # to 30 days; this widens to our requested window. We type into any input
+        # whose nearby label/placeholder/name mentions start/end/from/to/date.
+        try:
+            await self.page.evaluate(
+                f"""
+                () => {{
+                  const since = "{since_date}";
+                  const end   = "{end_date}";
+                  const inputs = Array.from(document.querySelectorAll('input'));
+                  const labelOf = (el) => {{
+                    const id = el.id;
+                    const lbl = id ? document.querySelector(`label[for="${{id}}"]`) : null;
+                    return ((lbl && lbl.innerText) || el.placeholder || el.name || el.getAttribute('aria-label') || '').toLowerCase();
+                  }};
+                  const fire = (el, val) => {{
+                    el.focus();
+                    el.value = val;
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    el.blur();
+                  }};
+                  for (const inp of inputs) {{
+                    const lab = labelOf(inp);
+                    if (/start|from|since/.test(lab) && /date/.test(lab + inp.type)) fire(inp, since);
+                    else if (/end|to|until/.test(lab) && /date/.test(lab + inp.type)) fire(inp, end);
+                    else if (inp.type === 'date' && /start|from|since/.test(lab)) fire(inp, since);
+                    else if (inp.type === 'date' && /end|to|until/.test(lab))     fire(inp, end);
+                  }}
+                }}
+                """
+            )
+            # Click any "Generate" / "Request" / "Show" / "Apply" / "Search" button.
+            generated = await self.page.evaluate(
+                r"""
+                () => {
+                  const buttons = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]'));
+                  const re = /^\s*(request|generate|show|apply|search|update|run)( report)?\s*$/i;
+                  const target = buttons.find(b => re.test(b.innerText || b.value || ''));
+                  if (target) { target.scrollIntoView(); target.click(); return true; }
+                  return false;
+                }
+                """
+            )
+            if generated:
+                await self._notify_status("📑 Submitted date range; waiting for report to render…")
+                await asyncio.sleep(8)
+                await self._capture_screenshot()
+        except Exception as e:
+            logger.debug(f"[reimbursements] date-range / generate skipped: {e}")
 
         # Extract rows via page.evaluate. We try the canonical table first;
         # if that fails we fall back to scraping the page text and let the
@@ -1431,11 +1544,631 @@ class AmazonBrowserAgent:
         await self._notify_status(
             f"📑 Reimbursements: {len(rows)} rows (status={status})"
         )
+
+        # Deterministic path failed → hand off to the Claude brain.
+        # The brain sees a screenshot of where we ended up and decides
+        # what to click next. Far slower (~30-90s, costs API tokens) but
+        # robust to Amazon's UI churn — we keep the cheap path for the
+        # 95% case, and pay for the smart path only when needed.
+        if status == "page_changed":
+            brain_result = await self._brain_scrape_reimbursements(since_date, end_date)
+            if brain_result is not None:
+                return brain_result
+
         return {
             "status": status,
             "rows": rows,
             "raw_text_sample": scraped.get("raw_text_sample") or "",
             "error": None if status == "ok" else "Reimbursement table not found — selectors may need updating",
+        }
+
+    async def _search_order_by_id(self, order_id: str) -> bool:
+        """Navigate to an order's detail page by typing the order ID into the
+        Seller Central top search bar (the path a human uses for non-FBA
+        orders). Returns True if we landed on something that looks like an
+        order page."""
+        try:
+            # Go to a stable page that has the global search bar in the header.
+            await self.page.goto(
+                "https://sellercentral.amazon.in/home",
+                wait_until="domcontentloaded", timeout=30000,
+            )
+            await asyncio.sleep(2)
+            # Find the search input. Seller Central's top bar has used a few
+            # selectors over the years — try common ones in order.
+            filled = await self.page.evaluate(
+                r"""
+                (orderId) => {
+                  const candidates = Array.from(document.querySelectorAll(
+                    'input[type="search"], input[type="text"], input[role="combobox"], ' +
+                    'input[placeholder*="search" i], input[aria-label*="search" i], ' +
+                    'input[id*="search" i], input[name*="search" i]'
+                  ));
+                  // Prefer the one in the page header (top 200px).
+                  candidates.sort((a, b) => {
+                    const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+                    const ta = ra.top < 200 ? 0 : 1, tb = rb.top < 200 ? 0 : 1;
+                    return ta - tb;
+                  });
+                  const inp = candidates[0];
+                  if (!inp) return false;
+                  inp.focus();
+                  // React-friendly value setter
+                  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                  setter.call(inp, orderId);
+                  inp.dispatchEvent(new Event('input', { bubbles: true }));
+                  inp.dispatchEvent(new Event('change', { bubbles: true }));
+                  return true;
+                }
+                """,
+                order_id,
+            )
+            if not filled:
+                logger.warning(f"[order-search] no search input found for {order_id}")
+                return False
+            await self.page.keyboard.press("Enter")
+            await asyncio.sleep(4)
+            url = (self.page.url or "").lower()
+            return "order" in url or "search" in url
+        except Exception as e:
+            logger.warning(f"[order-search] failed for {order_id}: {e}")
+            return False
+
+    async def scrape_order_transactions(self, order_id: str) -> Dict[str, Any]:
+        """On-demand financial scrape of one Amazon order.
+
+        Used by the accountant 'Verify on Amazon' button to settle a
+        dispute about what Amazon did with a specific order — charges,
+        platform fees, refunds, reimbursements. Complements the bulk
+        Reimbursements report (which covers everything including
+        orphans without an order ID); this fills in the per-order
+        detail you need to argue a claim or close a recon gap.
+
+        Returns:
+            {
+              "status": "ok" | "not_logged_in" | "page_changed" | "error",
+              "order_id": str,
+              "url": str,                      # where we ended up
+              "transactions": [                # one per financial event
+                {"date": str, "type": str, "amount": float,
+                 "description": str, "currency": str},
+                ...
+              ],
+              "totals": {                      # roll-ups if visible on page
+                "product_sales": float,
+                "promotions": float,
+                "fba_fees": float,
+                "selling_fees": float,
+                "refunds": float,
+                "net": float,
+              },
+              "raw_text_sample": str,
+              "error": str | None,
+            }
+        """
+        if not self.page:
+            return {"status": "not_logged_in", "order_id": order_id, "url": "",
+                    "transactions": [], "totals": {}, "raw_text_sample": "",
+                    "error": "Browser not started"}
+        if self.state not in (AgentState.LOGGED_IN, AgentState.PROCESSING):
+            logged_in = await self.check_login_status()
+            if not logged_in:
+                return {"status": "not_logged_in", "order_id": order_id, "url": "",
+                        "transactions": [], "totals": {}, "raw_text_sample": "",
+                        "error": "Not logged in to Seller Central"}
+
+        await self._notify_status(f"💸 Scraping transactions for order {order_id}…")
+
+        # Try the regular order detail page first (works for non-FBA orders) then
+        # fall back to typing the order ID into Seller Central's top search bar
+        # — which is the path a human takes for non-FBA orders. The old
+        # /payments/event/transactions/details deep-link is FBA-only and has
+        # been removed.
+        candidate_urls = [
+            f"https://sellercentral.amazon.in/orders-v3/order/{order_id}",
+            f"https://sellercentral.amazon.in/orders-v3?search-query={order_id}",
+        ]
+        loaded = False
+        last_err = None
+        for url in candidate_urls:
+            try:
+                await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(3)
+                loaded = True
+                break
+            except Exception as e:
+                last_err = str(e)
+                continue
+
+        # If neither URL loaded, try the search-bar route — go to the home page
+        # and type the order ID into the global search input.
+        if loaded and "order" not in (self.page.url or "").lower():
+            loaded = await self._search_order_by_id(order_id)
+
+        if not loaded:
+            return {"status": "error", "order_id": order_id, "url": self.page.url or "",
+                    "transactions": [], "totals": {}, "raw_text_sample": "",
+                    "error": f"Navigation failed: {last_err}"}
+
+        # If we landed on the order page, find and click the 'View transactions'
+        # link. Some redesigns label it 'Transactions', 'Financial summary', or
+        # 'Order financials'. We try a few synonyms.
+        try:
+            clicked = await self.page.evaluate(
+                r"""
+                () => {
+                  const re = /^\s*(view\s+transactions?|transactions?|order\s+financial.?|financial\s+summary|payments?)\s*$/i;
+                  const els = Array.from(document.querySelectorAll('a, button, [role="link"], [role="button"], [role="tab"]'));
+                  const target = els.find(a => {
+                    const t = (a.innerText || a.textContent || '').trim();
+                    return t && re.test(t);
+                  });
+                  if (target) {
+                    target.scrollIntoView({ block: 'center' });
+                    target.click();
+                    return true;
+                  }
+                  return false;
+                }
+                """
+            )
+            if clicked:
+                await asyncio.sleep(4)
+        except Exception as e:
+            logger.debug(f"[order-txn] view-transactions click skipped: {e}")
+
+        await self._capture_screenshot()
+
+        # Seller-fulfilled order detail page extractor. The page layout is:
+        #   - Optional alert banner with order status (Cancelled, etc.)
+        #   - "Order Summary" card with Purchase date, Fulfillment, etc.
+        #   - "Order contents" table: Status | Image | Product name | More Information | Unit price | Proceeds
+        # 'Proceeds' is the post-fee net per item — what the seller actually
+        # gets paid. Empty for cancelled orders.
+        scraped = await self.page.evaluate(
+            r"""
+            (orderId) => {
+              const out = {
+                order_status: '',
+                purchase_date: '',
+                fulfillment: '',
+                items: [],
+                totals: {},
+                raw_text_sample: '',
+                url: location.href,
+                page_recognized: false,
+              };
+              const body = document.body || {};
+              const text = body.innerText || '';
+              out.raw_text_sample = text.slice(0, 2500);
+
+              // Confirm we're on an order page. Three heuristics: URL pattern,
+              // page text mentions 'Order details', or page text contains
+              // exactly the order id we asked for.
+              out.page_recognized = (
+                /orders-v3\/order\//i.test(location.href) ||
+                /Order details/i.test(text) ||
+                text.includes(orderId)
+              );
+
+              // Read a key/value pair where label and value sit in adjacent
+              // table cells (Amazon's preferred layout for the summary card).
+              const readLabelValue = (labelRe) => {
+                const cells = Array.from(document.querySelectorAll('td, th, .a-text-bold, dt, dd'));
+                for (let i = 0; i < cells.length; i++) {
+                  const t = (cells[i].innerText || '').trim();
+                  if (labelRe.test(t)) {
+                    // Try the next sibling cell, or the next cell in the row,
+                    // or the next-but-one (Amazon sometimes interleaves spacer cells).
+                    const candidates = [
+                      cells[i].nextElementSibling,
+                      cells[i + 1],
+                      cells[i + 2],
+                    ].filter(Boolean);
+                    for (const c of candidates) {
+                      const v = (c.innerText || '').trim();
+                      if (v && !labelRe.test(v)) return v;
+                    }
+                  }
+                }
+                return '';
+              };
+
+              out.purchase_date = readLabelValue(/^purchase date/i);
+              out.fulfillment   = readLabelValue(/^fulfillment/i);
+
+              // Order status — try the alert banner first ("Order Cancelled",
+              // "Shipped on …"), else fall back to text near the order id.
+              const alertEl = document.querySelector(
+                '.a-alert-content h4, .a-alert-content .a-alert-heading, ' +
+                '[class*="alert"] h4, [class*="status"]'
+              );
+              if (alertEl) {
+                const at = (alertEl.innerText || '').trim();
+                if (at && at.length < 80) out.order_status = at;
+              }
+              if (!out.order_status) {
+                for (const kw of ['Cancelled', 'Shipped', 'Delivered', 'Unshipped',
+                                  'Pending', 'Refunded', 'Returned']) {
+                  if (new RegExp('\\b' + kw + '\\b', 'i').test(text.slice(0, 600))) {
+                    out.order_status = kw;
+                    break;
+                  }
+                }
+              }
+
+              // Take only the FIRST money-like substring from the cell, so we
+              // don't concatenate "₹15,432.20" with a second number on the next
+              // line (which would yield 15432.202777 instead of 15432.20).
+              const toNum = (s) => {
+                if (!s) return null;
+                const m = String(s).match(/-?[\d,]+(?:\.\d+)?/);
+                if (!m) return null;
+                const n = parseFloat(m[0].replace(/,/g, ''));
+                return Number.isFinite(n) ? n : null;
+              };
+
+              // Find the Order contents table by looking for headers that
+              // include both 'Product name' (or 'Product') AND 'Unit price'.
+              // That uniquely identifies the items table. Critical: skip
+              // hidden header cells (e.g. 'Gift Options' with class
+              // 'hidden-table-cell') — they don't have a matching data cell
+              // so leaving them in shifts all subsequent column indices by 1.
+              const visibleCells = (row) => Array.from(row.querySelectorAll('th, td'))
+                .filter(c => !c.classList.contains('hidden-table-cell') &&
+                             !c.classList.contains('hidden') &&
+                             c.getAttribute('style')?.includes('display: none') !== true);
+              const allTables = Array.from(document.querySelectorAll('table'));
+              for (const tbl of allTables) {
+                const rows = Array.from(tbl.querySelectorAll('tr'));
+                if (rows.length < 2) continue;
+                let headerRow = null, headerCells = [];
+                for (const r of rows) {
+                  const cs = visibleCells(r).map(c => (c.innerText || '').trim().toLowerCase());
+                  if (cs.some(c => c.includes('product')) &&
+                      cs.some(c => c.includes('price') || c.includes('proceeds'))) {
+                    headerRow = r;
+                    headerCells = cs;
+                    break;
+                  }
+                }
+                if (!headerRow) continue;
+
+                const idx = (frag) => headerCells.findIndex(h => h.includes(frag));
+                const cStatus   = idx('status');
+                const cProduct  = idx('product');
+                const cMoreInfo = idx('more information') !== -1 ? idx('more information') : idx('information');
+                const cUnit     = idx('unit price') !== -1 ? idx('unit price') : idx('price');
+                const cProceeds = idx('proceeds');
+                const cQty      = idx('quantity') !== -1 ? idx('quantity') : idx('qty');
+
+                let started = false;
+                for (const r of rows) {
+                  if (!started) { if (r === headerRow) started = true; continue; }
+                  // Use the same visibility filter as for the header so indices
+                  // line up — even though data rows rarely have hidden cells,
+                  // it keeps the contract consistent.
+                  const cells = visibleCells(r);
+                  if (!cells.length) continue;
+                  const get = (k) => (k >= 0 && k < cells.length) ? (cells[k].innerText || '').trim() : '';
+                  const moreInfo = get(cMoreInfo);
+                  // More Information cell holds Condition / Order Item ID multi-lines.
+                  const asinMatch = moreInfo.match(/ASIN[:\s]*([A-Z0-9]{10})/i) ||
+                                    get(cProduct).match(/ASIN[:\s]*([A-Z0-9]{10})/i);
+                  const skuMatch  = moreInfo.match(/SKU[:\s]*([^\n\r]+)/i) ||
+                                    get(cProduct).match(/SKU[:\s]*([^\n\r]+)/i);
+                  const itemIdMatch = moreInfo.match(/Order Item ID[:\s]*([0-9]+)/i);
+                  const conditionMatch = moreInfo.match(/Condition[:\s]*([^\n\r]+)/i);
+                  // Quantity: only accept a 1-4 digit number directly after
+                  // 'Quantity', and only if it's on its own line. Without the
+                  // boundary the regex was matching digits inside Order Item ID.
+                  const qtyMatch = moreInfo.match(/(?:^|\n)\s*Quantity[:\s]*([0-9]{1,4})\b/i);
+
+                  // Product name is usually the first line of the product cell,
+                  // with SKU/ASIN appearing below — strip those.
+                  const productCell = get(cProduct);
+                  const productName = productCell
+                    .split(/\n/)
+                    .map(s => s.trim())
+                    .find(s => s && !/^(ASIN|SKU|Condition)/i.test(s)) || productCell.slice(0, 200);
+
+                  const unit_price = toNum(get(cUnit));
+                  const proceeds = toNum(get(cProceeds));
+                  const quantity = qtyMatch ? parseInt(qtyMatch[1], 10) : (toNum(get(cQty)) || 1);
+
+                  out.items.push({
+                    status: get(cStatus),
+                    product_name: productName,
+                    asin: asinMatch ? asinMatch[1] : '',
+                    sku: skuMatch ? skuMatch[1].trim() : '',
+                    order_item_id: itemIdMatch ? itemIdMatch[1] : '',
+                    condition: conditionMatch ? conditionMatch[1].trim() : '',
+                    quantity: quantity,
+                    unit_price: unit_price,
+                    proceeds: proceeds,
+                  });
+                }
+                if (out.items.length) break;
+              }
+
+              // Roll up totals from items.
+              let itemTotal = 0, proceedsTotal = 0, anyProceeds = false;
+              for (const it of out.items) {
+                if (it.unit_price !== null) itemTotal += (it.unit_price * (it.quantity || 1));
+                if (it.proceeds !== null)   { proceedsTotal += it.proceeds; anyProceeds = true; }
+              }
+              out.totals = {
+                item_total: out.items.length ? itemTotal : null,
+                proceeds_total: anyProceeds ? proceedsTotal : null,
+                item_count: out.items.length,
+              };
+
+              return out;
+            }
+            """,
+            order_id,
+        )
+
+        items = scraped.get("items") or []
+        totals = scraped.get("totals") or {}
+        order_status_text = scraped.get("order_status") or ""
+        raw_text = scraped.get("raw_text_sample") or ""
+
+        # "ok" if we got at least one item OR we positively identified the
+        # order as cancelled (zero items expected for a cancellation can still
+        # be a successful scrape — we know the financial outcome is zero).
+        is_cancelled = bool(re.search(r"cancel", order_status_text, re.I))
+        # "not_found" if Amazon explicitly says it can't locate the order
+        # (older than 2 years, wrong account, or never existed). Different
+        # from "page_changed" — selectors aren't broken, the order just
+        # isn't accessible to us. Record so we never retry.
+        is_not_found = bool(
+            re.search(r"could not find this order|MYO0002|Error Code MYO", raw_text, re.I)
+        )
+        if is_not_found:
+            status = "not_found"
+        elif items or is_cancelled:
+            status = "ok"
+        else:
+            status = "page_changed"
+
+        await self._notify_status(
+            f"💸 Order {order_id}: {len(items)} items, status='{order_status_text}' "
+            f"({status})"
+        )
+
+        result = {
+            "status": status,
+            "order_id": order_id,
+            "url": scraped.get("url", self.page.url),
+            "order_status": order_status_text,
+            "purchase_date": scraped.get("purchase_date", ""),
+            "fulfillment": scraped.get("fulfillment", ""),
+            "items": items,
+            "totals": totals,
+            # Kept for backcompat with the old FBA-shaped callers.
+            "transactions": [],
+            "raw_text_sample": scraped.get("raw_text_sample", ""),
+            "error": None if status == "ok" else "Order contents table not found on page",
+        }
+
+        # On a miss, dump the page HTML + screenshot for selector debugging.
+        # Successes don't dump — saves disk and lets us iterate on whatever
+        # the next failed page looks like.
+        if status != "ok":
+            try:
+                import os as _os
+                dump_dir = _os.path.join(
+                    _os.path.dirname(_os.path.dirname(_os.path.dirname(__file__))),
+                    "uploads", "order_scrape_html",
+                )
+                _os.makedirs(dump_dir, exist_ok=True)
+                safe_id = "".join(c for c in order_id if c.isalnum() or c in "-_")
+                html = await self.page.content()
+                with open(_os.path.join(dump_dir, f"{safe_id}.html"), "w", encoding="utf-8") as f:
+                    f.write(html[:500_000])
+                # Screenshot is already captured to memory by _capture_screenshot();
+                # also write a copy to disk for inspection.
+                png = await self.page.screenshot(full_page=False, type="png")
+                with open(_os.path.join(dump_dir, f"{safe_id}.png"), "wb") as f:
+                    f.write(png)
+                logger.info(f"[order-txn] dumped HTML+png for inspection: {dump_dir}/{safe_id}.*")
+            except Exception as e:
+                logger.warning(f"[order-txn] inspection dump failed: {e}")
+
+        return result
+
+    async def _brain_scrape_order_transactions(self, order_id: str) -> Optional[Dict[str, Any]]:
+        """Claude-brain fallback for a single-order transaction scrape."""
+        try:
+            from .claude_brain import ClaudeBrowserBrain
+            brain = ClaudeBrowserBrain(self.page, notify_status=self._notify_status)
+        except Exception as e:
+            logger.warning(f"[order-txn] brain unavailable: {e}")
+            return None
+
+        goal = (
+            f"Reach the financial transactions detail page for Amazon order "
+            f"{order_id} and return every transaction row (charges, fees, "
+            f"refunds, reimbursements) with date, type, and amount."
+        )
+        hint = (
+            f"You should currently be on or near the order detail page for "
+            f"{order_id}. Look for a 'View transactions', 'Transactions', "
+            f"'Financial summary', or 'Order financials' link/tab — click it. "
+            f"The transaction table has columns like Date / Type / Description / "
+            f"Amount. When visible, call extract_table_rows with "
+            f"header_keywords=['date', 'type', 'amount']."
+        )
+
+        try:
+            res = await brain.run(goal=goal, hint=hint)
+        except Exception as e:
+            logger.exception("[order-txn] brain.run crashed")
+            return {"status": "error", "order_id": order_id, "url": self.page.url,
+                    "transactions": [], "totals": {}, "raw_text_sample": "",
+                    "error": f"Claude brain crashed: {str(e)[:200]}", "brain_used": True}
+
+        def _norm(r: Dict[str, Any]) -> Dict[str, Any]:
+            lc = {(k or "").lower().strip(): v for k, v in r.items()}
+            def _pick(*ks):
+                for k in ks:
+                    if lc.get(k):
+                        return lc[k]
+                return ""
+            amt_raw = str(_pick("amount", "total", "amount inr")).replace(",", "")
+            try:
+                amount = float("".join(ch for ch in amt_raw if ch.isdigit() or ch in ".-") or 0)
+            except ValueError:
+                amount = 0.0
+            return {
+                "date":        _pick("date", "transaction date"),
+                "type":        _pick("type", "transaction type"),
+                "description": _pick("description", "details"),
+                "amount":      amount,
+                "currency":    _pick("currency") or "INR",
+                "_raw":        r,
+            }
+
+        rows = [_norm(r) for r in (res.get("rows") or [])]
+        status = res.get("status", "error")
+        if status == "ok" and not rows:
+            status = "page_changed"
+
+        return {
+            "status": status,
+            "order_id": order_id,
+            "url": self.page.url,
+            "transactions": rows,
+            "totals": {},
+            "raw_text_sample": (res.get("notes") or "")[:2000],
+            "error": None if status == "ok" else (res.get("notes") or "Claude brain could not reach order transactions"),
+            "brain_used": True,
+            "brain_turns": res.get("turns"),
+            "brain_actions": res.get("actions"),
+            "brain_tokens": res.get("tokens"),
+        }
+
+    async def _brain_scrape_reimbursements(
+        self, since_date: str, end_date: str
+    ) -> Optional[Dict[str, Any]]:
+        """Fallback: when the hardcoded selectors miss, hand the live
+        page over to Claude and let it navigate. Returns the same dict
+        shape as the deterministic path (status/rows/raw_text_sample/
+        error), or None if the brain itself failed to load (so the
+        caller still returns its original page_changed result)."""
+        try:
+            from .claude_brain import ClaudeBrowserBrain
+        except Exception as e:
+            logger.warning(f"[reimbursements] Claude brain unavailable: {e}")
+            return None
+
+        try:
+            brain = ClaudeBrowserBrain(self.page, notify_status=self._notify_status)
+        except Exception as e:
+            logger.warning(f"[reimbursements] brain init failed: {e}")
+            return None
+
+        goal = (
+            f"Reach the FBA Reimbursements view in Seller Central, set the "
+            f"date range to {since_date} → {end_date}, and return all rows."
+        )
+        hint = (
+            "PRIMARY PATH — Payments dashboard:\n"
+            "1. Top nav has a 'Payments' menu. Hover/click it, then click the "
+            "   'Payments' sub-item (yes, Payments → Payments). This loads the "
+            "   payments dashboard.\n"
+            "2. The dashboard has TABS across the top: Statement View, All "
+            "   Statements, Transaction View, Reimbursements, etc. Click the "
+            "   'Reimbursements' tab.\n"
+            "3. Set the date range using the dropdown (often a 'Last 30 days' "
+            "   chip — click it, pick Custom / Date range, set start and end).\n\n"
+            "FALLBACK PATH — Reports menu:\n"
+            "If the Payments dashboard doesn't show a Reimbursements tab, try "
+            "the top nav 'Reports' menu → 'Fulfilment by Amazon' → in the "
+            "side-nav under Payments find 'Reimbursements'. This is the "
+            "report-builder view — you may need to click 'Request .csv "
+            "download' or 'Request report' to generate it.\n\n"
+            "Expected columns: Approval Date, Reimbursement ID, Case ID, "
+            "Amazon Order ID, Reason, SKU, FNSKU, ASIN, Quantity, Amount per "
+            "Unit, Amount Total, Currency. When the table is visible, call "
+            "extract_table_rows with header_keywords=['reimbursement', "
+            "'amount', 'sku']."
+        )
+
+        try:
+            await self._notify_status("🧠 Deterministic path failed — engaging Claude brain")
+            result = await brain.run(goal=goal, hint=hint)
+        except Exception as e:
+            logger.exception("[reimbursements] brain.run crashed")
+            return {
+                "status": "error",
+                "rows": [],
+                "raw_text_sample": "",
+                "error": f"Claude brain crashed: {str(e)[:200]}",
+            }
+
+        # Normalize the rows the brain returned. Amazon's column names are
+        # localized + capitalized; the deterministic path uses lowercase keys.
+        # Map the most common ones; pass everything else through.
+        def _key(s: str) -> str:
+            return (s or "").strip().lower()
+        def _norm_one(row: Dict[str, Any]) -> Dict[str, Any]:
+            lc = {_key(k): v for k, v in row.items()}
+            def _pick(*candidates):
+                for c in candidates:
+                    if c in lc and lc[c]:
+                        return lc[c]
+                return ""
+            amt_raw = str(_pick("amount", "amount total", "amount per unit", "reimbursement amount")).replace(",", "")
+            try:
+                amount = float("".join(ch for ch in amt_raw if ch.isdigit() or ch in ".-") or 0)
+            except ValueError:
+                amount = 0.0
+            qty_raw = str(_pick("quantity", "qty")).strip()
+            try:
+                quantity = int("".join(ch for ch in qty_raw if ch.isdigit()) or 0)
+            except ValueError:
+                quantity = 0
+            return {
+                "reimbursement_id": _pick("reimbursement id", "reimbursementid"),
+                "approval_date":    _pick("approval date", "date"),
+                "case_id":          _pick("case id", "caseid") or None,
+                "amazon_order_id":  _pick("amazon order id", "order id") or None,
+                "reason":           _pick("reason"),
+                "sku":              _pick("sku") or None,
+                "fnsku":            _pick("fnsku") or None,
+                "asin":             _pick("asin") or None,
+                "quantity":         quantity,
+                "amount":           amount,
+                "currency":         _pick("currency") or "INR",
+                "_raw":             row,
+            }
+
+        rows = [_norm_one(r) for r in (result.get("rows") or [])]
+        rows = [r for r in rows if r["reimbursement_id"]]
+
+        status = result.get("status", "error")
+        if status == "ok" and not rows:
+            # Brain said ok but didn't return parseable rows — treat as
+            # page_changed so we don't pretend the scrape succeeded.
+            status = "page_changed"
+
+        tokens = result.get("tokens", {})
+        await self._notify_status(
+            f"🧠 Brain done: status={status}, rows={len(rows)}, "
+            f"turns={result.get('turns', 0)}, tokens={tokens.get('input', 0)}↑/{tokens.get('output', 0)}↓"
+        )
+
+        return {
+            "status": status,
+            "rows": rows,
+            "raw_text_sample": result.get("notes", "")[:2000],
+            "error": None if status == "ok" else (result.get("notes") or "Claude brain could not reach the report"),
+            "brain_used": True,
+            "brain_turns": result.get("turns"),
+            "brain_actions": result.get("actions"),
+            "brain_tokens": tokens,
         }
 
     def determine_shipping_type(self, weight_kg: float, order_value: float) -> ShippingType:
@@ -2587,20 +3320,73 @@ class AmazonBrowserAgent:
             })
     
     async def _save_cookies(self):
-        """Save session cookies"""
-        if self.context:
+        """Persist session cookies to MongoDB so they survive pm2 restarts +
+        host /tmp wipes. Mirror to disk as a fallback for emergencies.
+        Amazon's cookies last ~14 days; persisting them is the difference
+        between an agent that runs autonomously for two weeks vs one that
+        needs a fresh login on every container bounce."""
+        if not self.context:
+            return
+        try:
+            cookies = await self.context.cookies()
+            now = datetime.now(timezone.utc).isoformat()
+            await self.db.browser_sessions.update_one(
+                {"host": "amazon"},
+                {"$set": {
+                    "host": "amazon",
+                    "cookies": cookies,
+                    "cookie_count": len(cookies),
+                    "saved_at": now,
+                }},
+                upsert=True,
+            )
+            # Best-effort disk mirror — never block the DB write on this.
             try:
-                cookies = await self.context.cookies()
                 self.cookies_path.write_text(json.dumps(cookies))
-            except Exception as e:
-                logger.error(f"Cookie save error: {e}")
-    
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"Cookie save error: {e}")
+
     async def _load_cookies(self) -> bool:
-        """Load saved cookies"""
+        """Restore cookies, preferring MongoDB. Falls back to /tmp so the
+        first run after this migration picks up an existing session.
+        Returns True if any cookies were applied to the browser context."""
+        if not self.context:
+            return False
+        try:
+            doc = await self.db.browser_sessions.find_one(
+                {"host": "amazon"}, {"_id": 0, "cookies": 1, "saved_at": 1}
+            )
+            if doc and doc.get("cookies"):
+                await self.context.add_cookies(doc["cookies"])
+                logger.info(
+                    f"[browser-agent] loaded {len(doc['cookies'])} cookies from DB "
+                    f"(saved {doc.get('saved_at', 'unknown')})"
+                )
+                return True
+        except Exception as e:
+            logger.warning(f"DB cookie load failed, trying disk: {e}")
         if self.cookies_path.exists():
             try:
                 cookies = json.loads(self.cookies_path.read_text())
                 await self.context.add_cookies(cookies)
+                logger.info(f"[browser-agent] loaded {len(cookies)} cookies from disk fallback")
+                # Best-effort migrate to DB so next run finds them there.
+                try:
+                    await self.db.browser_sessions.update_one(
+                        {"host": "amazon"},
+                        {"$set": {
+                            "host": "amazon",
+                            "cookies": cookies,
+                            "cookie_count": len(cookies),
+                            "saved_at": datetime.now(timezone.utc).isoformat(),
+                            "source": "migrated_from_disk",
+                        }},
+                        upsert=True,
+                    )
+                except Exception:
+                    pass
                 return True
             except Exception as e:
                 logger.error(f"Cookie load error: {e}")

@@ -75,6 +75,12 @@ export default function EcommerceReconciliation() {
   const [uploadFile, setUploadFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   
+  // Per-order Amazon verification (live Seller Central scrape)
+  const [verifyOpen, setVerifyOpen] = useState(false);
+  const [verifyOrderId, setVerifyOrderId] = useState(null);
+  const [verifyLoading, setVerifyLoading] = useState(false);
+  const [verifyResult, setVerifyResult] = useState(null);
+
   // MTR Upload states
   const [mtrUploadDialogOpen, setMtrUploadDialogOpen] = useState(false);
   const [mtrType, setMtrType] = useState('b2c');
@@ -426,6 +432,41 @@ export default function EcommerceReconciliation() {
       await fetchStatements();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to finalize statement');
+    }
+  };
+
+  // Trigger an on-demand Seller Central scrape for one order. Opens the
+  // dialog immediately with a loading state so the user knows we heard the
+  // click — the scrape itself takes 5-60s (longer if the Claude brain
+  // fallback engages). Cached server-side for 6h.
+  const openVerifyDialog = async (orderId, { force = false } = {}) => {
+    if (!orderId) return;
+    setVerifyOrderId(orderId);
+    setVerifyResult(null);
+    setVerifyLoading(true);
+    setVerifyOpen(true);
+    try {
+      const qs = force ? '?force=true' : '';
+      const res = await axios.post(
+        `${API}/finance/amazon/order/${encodeURIComponent(orderId)}/scrape-transactions${qs}`,
+        {},
+        { headers, timeout: 180000 }
+      );
+      setVerifyResult(res.data);
+      if (res.data?.status === 'ok') {
+        const n = (res.data.transactions || []).length;
+        toast.success(`Pulled ${n} transaction${n === 1 ? '' : 's'} for ${orderId}${res.data.from_cache ? ' (cached)' : ''}`);
+      } else if (res.data?.status === 'not_logged_in') {
+        toast.warning('Browser is not logged in to Seller Central — open /admin/browser-agent');
+      } else {
+        toast.error(res.data?.error || `Scrape returned ${res.data?.status}`);
+      }
+    } catch (e) {
+      const msg = e.response?.data?.detail || e.message || 'Verify failed';
+      toast.error(msg);
+      setVerifyResult({ status: 'error', error: msg, transactions: [], totals: {} });
+    } finally {
+      setVerifyLoading(false);
     }
   };
 
@@ -1010,15 +1051,27 @@ export default function EcommerceReconciliation() {
                               </TableCell>
                               <TableCell>
                                 {trans.crm_match_status === 'unmatched' && trans.marketplace_order_id && (
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => openLinkDialog(trans)}
-                                    data-testid={`link-btn-${trans.id}`}
-                                  >
-                                    <Link2 className="w-4 h-4 mr-1" />
-                                    Link
-                                  </Button>
+                                  <div className="flex items-center gap-1.5">
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => openLinkDialog(trans)}
+                                      data-testid={`link-btn-${trans.id}`}
+                                    >
+                                      <Link2 className="w-4 h-4 mr-1" />
+                                      Link
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      onClick={() => openVerifyDialog(trans.marketplace_order_id)}
+                                      title="Live scrape this order's financials from Seller Central"
+                                      data-testid={`verify-btn-${trans.id}`}
+                                    >
+                                      <Eye className="w-4 h-4 mr-1" />
+                                      Verify
+                                    </Button>
+                                  </div>
                                 )}
                               </TableCell>
                             </TableRow>
@@ -2151,6 +2204,138 @@ export default function EcommerceReconciliation() {
                 )}
                 Download Excel
               </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Per-order Amazon verification dialog */}
+        <Dialog open={verifyOpen} onOpenChange={setVerifyOpen}>
+          <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Eye className="w-5 h-5 text-primary" />
+                Verify on Amazon · {verifyOrderId}
+              </DialogTitle>
+              <DialogDescription>
+                Live scrape from Seller Central — what Amazon actually shows for this order.
+                {verifyResult?.from_cache && (
+                  <span className="ml-2 text-xs font-mono opacity-70">(cached, &lt;6h old)</span>
+                )}
+                {verifyResult?.brain_used && (
+                  <span className="ml-2 text-xs font-mono opacity-70">(Claude brain · {verifyResult.brain_turns}t)</span>
+                )}
+              </DialogDescription>
+            </DialogHeader>
+
+            {verifyLoading && (
+              <div className="py-12 flex flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+                <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                <div>Driving the browser to {verifyOrderId} — this can take up to a minute.</div>
+                <div className="text-xs opacity-70">If selectors miss, the Claude brain takes over (slower).</div>
+              </div>
+            )}
+
+            {!verifyLoading && verifyResult && (
+              <div className="space-y-4">
+                {/* Status banner */}
+                <div className={`rounded border px-3 py-2 text-sm flex items-start gap-2 ${
+                  verifyResult.status === 'ok' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' :
+                  verifyResult.status === 'not_logged_in' ? 'bg-orange-400/10 border-orange-400/30 text-orange-400' :
+                  'bg-rose-500/10 border-rose-500/30 text-rose-400'
+                }`}>
+                  {verifyResult.status === 'ok'
+                    ? <CheckCircle2 className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                    : <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />}
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium uppercase tracking-wider font-mono text-[11px]">{verifyResult.status}</div>
+                    {verifyResult.error && (
+                      <div className="text-xs mt-0.5 opacity-90">{verifyResult.error}</div>
+                    )}
+                    {verifyResult.url && (
+                      <a href={verifyResult.url} target="_blank" rel="noopener noreferrer"
+                         className="text-xs mt-0.5 inline-flex items-center gap-1 underline opacity-80 hover:opacity-100 break-all">
+                        <ExternalLink className="w-3 h-3" /> Open the page Amazon served
+                      </a>
+                    )}
+                  </div>
+                </div>
+
+                {/* Roll-up totals */}
+                {verifyResult.totals && Object.keys(verifyResult.totals).length > 0 && (
+                  <div>
+                    <div className="text-xs font-mono uppercase tracking-wider text-muted-foreground mb-2">Roll-up totals (from page)</div>
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
+                      {Object.entries(verifyResult.totals).map(([k, v]) => (
+                        <div key={k} className="border border-border rounded px-3 py-2 bg-muted/30">
+                          <div className="text-[10px] uppercase font-mono text-muted-foreground tracking-wider">{k.replace(/_/g, ' ')}</div>
+                          <div className={`font-mono tabular-nums text-sm font-medium ${v >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {formatCurrency(v)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Transaction table */}
+                {verifyResult.transactions && verifyResult.transactions.length > 0 ? (
+                  <div>
+                    <div className="text-xs font-mono uppercase tracking-wider text-muted-foreground mb-2">
+                      Transactions ({verifyResult.transactions.length})
+                    </div>
+                    <div className="border border-border rounded overflow-hidden">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="text-[10px] uppercase font-mono">Date</TableHead>
+                            <TableHead className="text-[10px] uppercase font-mono">Type</TableHead>
+                            <TableHead className="text-[10px] uppercase font-mono">Description</TableHead>
+                            <TableHead className="text-[10px] uppercase font-mono text-right">Amount</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {verifyResult.transactions.map((t, i) => (
+                            <TableRow key={i}>
+                              <TableCell className="text-xs font-mono">{t.date || '-'}</TableCell>
+                              <TableCell className="text-xs">{t.type || '-'}</TableCell>
+                              <TableCell className="text-xs text-muted-foreground truncate max-w-[280px]">{t.description || '-'}</TableCell>
+                              <TableCell className={`text-xs font-mono tabular-nums text-right ${(t.amount || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {formatCurrency(t.amount || 0)}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                ) : verifyResult.status === 'ok' && (
+                  <div className="text-sm text-muted-foreground py-4 text-center">
+                    Page loaded but no transaction rows extracted.
+                  </div>
+                )}
+
+                {/* Diagnostic: brain action trail */}
+                {verifyResult.brain_actions?.length > 0 && (
+                  <details className="text-xs">
+                    <summary className="cursor-pointer text-muted-foreground font-mono uppercase tracking-wider">
+                      Claude brain action trail ({verifyResult.brain_actions.length} steps)
+                    </summary>
+                    <pre className="mt-2 p-3 bg-muted/40 rounded text-[10px] overflow-x-auto whitespace-pre-wrap font-mono text-muted-foreground">
+                      {verifyResult.brain_actions.join('\n')}
+                    </pre>
+                  </details>
+                )}
+              </div>
+            )}
+
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setVerifyOpen(false)}>Close</Button>
+              {verifyOrderId && !verifyLoading && (
+                <Button onClick={() => openVerifyDialog(verifyOrderId, { force: true })}>
+                  <RefreshCw className="w-4 h-4 mr-1.5" />
+                  Re-scrape
+                </Button>
+              )}
             </DialogFooter>
           </DialogContent>
         </Dialog>

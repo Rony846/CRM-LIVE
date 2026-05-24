@@ -525,12 +525,27 @@ async def create_indexes():
             misfire_grace_time=7200,  # accept up-to-2h late after VPS reboot
         )
 
+        # Continuous scrape pulse — every 30 min, picks the next-due task
+        # from finance_scraper_state and runs it through the browser agent.
+        # Lets the Finance Agent "always be working" between daily passes.
+        pulse_min = int(os.environ.get("FIN_SCRAPER_PULSE_MINUTES", "30"))
+        scheduler.add_job(
+            scheduled_finance_scraper_pulse,
+            IntervalTrigger(minutes=pulse_min),
+            id="finance_scraper_pulse",
+            name=f"Finance Scraper Pulse (every {pulse_min}m, picks next due task)",
+            replace_existing=True,
+            misfire_grace_time=900,
+            max_instances=1,  # never overlap pulses
+        )
+
         scheduler.start()
         logger.info(
             f"Scheduled jobs started: SLA breach (30min), Payment verification (1hr), "
             f"Warranty claim SLA (1hr), Amazon tracking push (1hr), "
             f"Amazon nightly sync ({cron_hour:02d}:{cron_min:02d} UTC), "
-            f"Finance agent ({agent_hour:02d}:{agent_min:02d} UTC)"
+            f"Finance agent ({agent_hour:02d}:{agent_min:02d} UTC), "
+            f"Finance scraper pulse ({pulse_min}min)"
         )
 
     except Exception as e:
@@ -3940,6 +3955,369 @@ async def scheduled_amazon_finance_agent():
         run["error"] = str(e)[:500]
         run["completed_at"] = datetime.now(timezone.utc).isoformat()
         await db.scheduled_job_runs.update_one({"id": run["id"]}, {"$set": run})
+
+
+# ===================================================================
+# Finance Agent — continuous scrape pulse
+# ===================================================================
+# Runs every 30 minutes. Picks the next-due scrape task from
+# `finance_scraper_state` and executes it through the existing browser
+# agent. This makes the Finance Agent feel "always on" — between the
+# daily full reconciliation pass and the pulse, the books are fresh
+# without anyone clicking anything.
+#
+# Adding a new scrape: append to FINANCE_SCRAPE_TASKS with a cadence
+# and a handler coroutine `(system_user, broadcast) -> dict`. State
+# rows are auto-seeded on the next pulse.
+#
+# Cookies live in MongoDB (browser_sessions), so the session survives
+# pm2 restarts; the pulse keeps it warm for the ~14 days Amazon honors
+# a session. When it expires, the pulse posts ONE high-priority
+# notification telling the user to re-login at /admin/browser-agent.
+
+async def _pulse_handler_fba_reimbursements(system_user: dict, broadcast) -> dict:
+    """One pulse of the FBA reimbursement scrape. Idempotent on its own."""
+    firm = await _pick_browser_agent_firm()
+    if not firm:
+        return {"status": "skipped", "reason": "no_amazon_firm",
+                "summary": "No firm with active Amazon credentials"}
+    await broadcast({"task": "fba_reimbursements", "phase": "starting",
+                     "firm": firm.get("name"), "ts": datetime.now(timezone.utc).isoformat()})
+    result = await _scrape_and_book_reimbursements(
+        firm["id"], firm.get("name", ""), system_user
+    )
+    result["firm_id"]   = firm["id"]
+    result["firm_name"] = firm.get("name")
+    result["summary"] = (
+        f"{result.get('new_rows', 0)} new / {result.get('booked', 0)} booked / "
+        f"₹{result.get('total_amount', 0):,.0f}"
+        if result.get("status") == "ok" else
+        f"{result.get('status')} — {result.get('error') or 'see logs'}"
+    )
+    await broadcast({"task": "fba_reimbursements", "phase": "completed",
+                     "status": result.get("status"),
+                     "summary": result["summary"],
+                     "ts": datetime.now(timezone.utc).isoformat()})
+    return result
+
+
+async def _pulse_handler_amazon_order_lookup(system_user: dict, broadcast) -> dict:
+    """Walk every Amazon order in the CRM that has no `amazon_order_scrapes`
+    row and scrape its full financial breakdown from Seller Central.
+
+    One pulse processes up to AMAZON_ORDER_LOOKUP_BATCH orders and stops
+    early on wall-clock budget or session-expired. Remaining orders are
+    picked up by the next pulse — so a backlog of N orders drains over
+    ceil(N / batch) pulses.
+
+    Each scrape result is upserted into amazon_order_scrapes keyed on
+    order_id, including failures — that way an order Amazon doesn't
+    recognize isn't retried forever. To re-scrape, hit the per-order
+    endpoint with force=true."""
+    batch_size = int(os.environ.get("AMAZON_ORDER_LOOKUP_BATCH", "25"))
+    wall_budget_s = int(os.environ.get("AMAZON_ORDER_LOOKUP_WALL_S", "900"))  # 15 min
+
+    agent = await get_browser_agent()
+    if not agent or not agent.page:
+        return {"status": "skipped", "reason": "agent_not_started",
+                "summary": "Browser agent not started — sign in at /admin/browser-agent"}
+
+    # Orders we already tried (success OR failure) — skip them. The user can
+    # re-trigger any single one with force=true on the per-order endpoint.
+    already_scraped = set(
+        await db.amazon_order_scrapes.distinct("order_id")
+    )
+
+    # Pick the next chunk — newest orders first so freshly-imported orders
+    # get their detail filled in before historical ones.
+    pipeline = [
+        {"$match": {"amazon_order_id": {"$nin": list(already_scraped) or [None]}}},
+        {"$sort": {"purchase_date": -1}},
+        {"$limit": batch_size},
+        {"$project": {"_id": 0, "amazon_order_id": 1, "purchase_date": 1}},
+    ]
+    candidates = await db.amazon_orders.aggregate(pipeline).to_list(batch_size)
+    logger.info(
+        f"[order-lookup] already_scraped={len(already_scraped)} sample={list(already_scraped)[:3]} "
+        f"picked={[c.get('amazon_order_id') for c in candidates]}"
+    )
+
+    if not candidates:
+        # Total remaining was zero — report idle.
+        total_orders = await db.amazon_orders.count_documents({})
+        return {
+            "status": "ok",
+            "summary": f"No orders pending — {total_orders} orders / {len(already_scraped)} scraped",
+            "scraped": 0, "errors": 0, "session_expired": False,
+            "remaining": 0,
+        }
+
+    await broadcast({
+        "task": "amazon_order_lookup", "phase": "starting",
+        "batch": len(candidates), "already": len(already_scraped),
+        "ts": datetime.now(timezone.utc).isoformat(),
+    })
+
+    scraped_ok = 0
+    scraped_err = 0
+    scraped_not_found = 0
+    session_expired = False
+    start_ts = datetime.now(timezone.utc)
+
+    for idx, order in enumerate(candidates):
+        order_id = order.get("amazon_order_id")
+        if not order_id:
+            continue
+
+        # Wall-clock guard so a slow pulse doesn't overrun the cadence.
+        elapsed = (datetime.now(timezone.utc) - start_ts).total_seconds()
+        if elapsed > wall_budget_s:
+            logger.info(f"[order-lookup] wall budget exhausted at {idx}/{len(candidates)}")
+            break
+
+        try:
+            result = await agent.scrape_order_transactions(order_id)
+        except Exception as e:
+            logger.exception(f"[order-lookup] order={order_id} crashed")
+            result = {
+                "status": "error", "order_id": order_id, "url": "",
+                "transactions": [], "totals": {}, "raw_text_sample": "",
+                "error": f"Crash: {str(e)[:200]}",
+            }
+
+        status = result.get("status") or "error"
+        doc = {
+            "order_id": order_id,
+            "scraped_at": datetime.now(timezone.utc).isoformat(),
+            "scraped_by": "system-finance-scraper",
+            **result,
+        }
+        await db.amazon_order_scrapes.update_one(
+            {"order_id": order_id},
+            {"$set": doc},
+            upsert=True,
+        )
+
+        if status == "ok":
+            scraped_ok += 1
+        elif status == "not_found":
+            scraped_not_found += 1
+        else:
+            scraped_err += 1
+
+        # If the session died mid-batch, bail — every remaining call will fail
+        # the same way and we want the operator to re-login.
+        if status == "not_logged_in":
+            session_expired = True
+            logger.warning(f"[order-lookup] session expired at order {order_id}, aborting batch")
+            break
+
+        # Per-iteration progress so the Watch page shows movement.
+        await broadcast({
+            "task": "amazon_order_lookup", "phase": "progress",
+            "order_id": order_id, "status": status,
+            "done": idx + 1, "of": len(candidates),
+            "ts": datetime.now(timezone.utc).isoformat(),
+        })
+
+        # Polite pacing — Amazon throttles fast hits on the order page.
+        await asyncio.sleep(2)
+
+    # Remaining backlog after this pulse (for the Watch page).
+    after_scraped = await db.amazon_order_scrapes.count_documents({})
+    total_orders = await db.amazon_orders.count_documents({})
+    remaining = max(0, total_orders - after_scraped)
+
+    summary = (
+        f"{scraped_ok} ok / {scraped_not_found} not_found / {scraped_err} err / "
+        f"{remaining} still pending"
+        if not session_expired else
+        f"session expired after {scraped_ok + scraped_not_found + scraped_err} orders — "
+        f"re-login at /admin/browser-agent"
+    )
+
+    overall_status = (
+        "session_expired" if session_expired else
+        ("ok" if scraped_err == 0 else "partial")
+    )
+
+    await broadcast({
+        "task": "amazon_order_lookup", "phase": "completed",
+        "status": overall_status, "summary": summary,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    })
+
+    return {
+        "status": overall_status,
+        "summary": summary,
+        "scraped": scraped_ok,
+        "not_found": scraped_not_found,
+        "errors": scraped_err,
+        "session_expired": session_expired,
+        "remaining": remaining,
+        "total_orders": total_orders,
+        "already_scraped": after_scraped,
+    }
+
+
+FINANCE_SCRAPE_TASKS = {
+    "fba_reimbursements": {
+        "label": "FBA reimbursements",
+        "description": "Walk the Seller Central Reimbursements report and book new rows.",
+        "cadence_minutes": int(os.environ.get("FIN_SCRAPE_FBA_REIMB_MINUTES", "720")),  # 12h
+        "handler": _pulse_handler_fba_reimbursements,
+    },
+    "amazon_order_lookup": {
+        "label": "Amazon order lookup",
+        "description": "Open each Amazon order in Seller Central and pull its financial breakdown into amazon_order_scrapes.",
+        "cadence_minutes": int(os.environ.get("FIN_SCRAPE_ORDER_LOOKUP_MINUTES", "30")),
+        "handler": _pulse_handler_amazon_order_lookup,
+    },
+    # Future tasks (selectors + handlers pending):
+    # "settlements":          {"label": "Settlement statements", "cadence_minutes": 360, ...},
+    # "a_to_z_claims":        {"label": "A-Z claims dashboard",  "cadence_minutes": 360, ...},
+    # "returns":              {"label": "Returns dashboard",     "cadence_minutes": 240, ...},
+    # "inventory_adjustments":{"label": "Inventory adjustments", "cadence_minutes": 1440, ...},
+    # "long_term_storage":    {"label": "Long-term storage fees",  "cadence_minutes": 10080, ...},
+}
+
+
+async def _seed_scraper_state():
+    """Ensure each task in FINANCE_SCRAPE_TASKS has a state row. Idempotent —
+    only inserts missing rows; never resets a row that's already running."""
+    now = datetime.now(timezone.utc).isoformat()
+    for kind, meta in FINANCE_SCRAPE_TASKS.items():
+        existing = await db.finance_scraper_state.find_one({"task_kind": kind}, {"_id": 0, "task_kind": 1})
+        if existing:
+            continue
+        await db.finance_scraper_state.insert_one({
+            "id": str(uuid.uuid4()),
+            "task_kind": kind,
+            "label": meta["label"],
+            "cadence_minutes": meta["cadence_minutes"],
+            "enabled": True,
+            "running": False,
+            "next_due_at": now,  # due immediately on first pulse
+            "last_run_at": None,
+            "last_status": None,
+            "last_result": None,
+            "last_error": None,
+            "created_at": now,
+        })
+
+
+async def _broadcast_scrape_progress(payload: dict):
+    """Push a small JSON blob to the existing browser-agent WebSocket so the
+    Watch Live page can show what the agent is doing right now. The
+    browser-agent's own screen-pop already pushes screenshots; this is the
+    higher-level task narration on top."""
+    try:
+        await broadcast_status({"source": "finance_scraper", **payload})
+    except Exception as e:
+        logger.debug(f"[scrape-pulse] broadcast failed: {e}")
+
+
+async def scheduled_finance_scraper_pulse():
+    """One tick of the continuous scrape loop. Picks the most-overdue task
+    from finance_scraper_state and runs it. Concurrency-safe via the atomic
+    `running` flag in find_and_modify."""
+    try:
+        await _seed_scraper_state()
+    except Exception as e:
+        logger.error(f"[scrape-pulse] seed failed: {e}")
+        return
+
+    now = datetime.now(timezone.utc)
+    # Atomic claim: only one pulse can grab this task at a time.
+    task_state = await db.finance_scraper_state.find_one_and_update(
+        {
+            "enabled": True,
+            "running": {"$ne": True},
+            "next_due_at": {"$lte": now.isoformat()},
+        },
+        {"$set": {
+            "running": True,
+            "started_at": now.isoformat(),
+        }},
+        sort=[("next_due_at", 1)],
+        return_document=True,
+    )
+    if not task_state:
+        return  # nothing due — quiet pulse
+
+    kind = task_state["task_kind"]
+    meta = FINANCE_SCRAPE_TASKS.get(kind)
+    cadence = (meta or {}).get("cadence_minutes", task_state.get("cadence_minutes", 720))
+    next_due = (now + timedelta(minutes=cadence)).isoformat()
+
+    if not meta:
+        # Disable rows whose task definition got removed so we don't busy-loop.
+        await db.finance_scraper_state.update_one(
+            {"task_kind": kind},
+            {"$set": {"running": False, "enabled": False,
+                      "last_error": "task kind no longer defined",
+                      "next_due_at": next_due}},
+        )
+        logger.warning(f"[scrape-pulse] unknown task kind {kind}, disabling")
+        return
+
+    system_user = {
+        "id": "system-finance-scraper",
+        "first_name": "Finance",
+        "last_name": "Scraper",
+        "email": "system@musclegrid.in",
+    }
+
+    logger.info(f"[scrape-pulse] running task={kind}")
+    try:
+        result = await meta["handler"](system_user, _broadcast_scrape_progress)
+        status = result.get("status") or "ok"
+        await db.finance_scraper_state.update_one(
+            {"task_kind": kind},
+            {"$set": {
+                "running": False,
+                "last_run_at": now.isoformat(),
+                "last_status": status,
+                "last_result": result,
+                "last_error": result.get("error"),
+                "next_due_at": next_due,
+            }},
+        )
+        # Surface a session-expired event ONCE — don't spam the
+        # accountant on every pulse for the same problem.
+        if status == "session_expired":
+            recent = await db.notifications.find_one(
+                {"data.type": "finance_scraper_session_expired",
+                 "created_at": {"$gte": (now - timedelta(hours=6)).isoformat()}},
+                {"_id": 0, "id": 1},
+            )
+            if not recent:
+                try:
+                    await create_notification(
+                        title="Finance scraper: Seller Central session expired",
+                        message=("The autonomous scrape pulse can't run — browser session has expired. "
+                                 "Open /admin/browser-agent, sign in once, and the agent will resume "
+                                 "scraping every 30 minutes for the next ~14 days."),
+                        notification_type="warning",
+                        target_roles=["accountant", "admin"],
+                        priority="high",
+                        data={"type": "finance_scraper_session_expired", "task": kind},
+                    )
+                except Exception as e:
+                    logger.warning(f"[scrape-pulse] session-expired notif failed: {e}")
+        logger.info(f"[scrape-pulse] done task={kind} status={status}")
+    except Exception as e:
+        logger.error(f"[scrape-pulse] task={kind} crashed: {e}", exc_info=True)
+        await db.finance_scraper_state.update_one(
+            {"task_kind": kind},
+            {"$set": {
+                "running": False,
+                "last_run_at": now.isoformat(),
+                "last_status": "error",
+                "last_error": str(e)[:500],
+                "next_due_at": next_due,
+            }},
+        )
 
 
 async def scheduled_payment_verification_reminder():
@@ -33402,6 +33780,237 @@ async def list_finance_agent_runs(
         for r in rows:
             r["per_firm"] = {k: v for k, v in (r.get("per_firm") or {}).items() if k == scope_firm}
     return rows
+
+
+@api_router.get("/finance/scraper-state")
+async def get_finance_scraper_state(
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """State of every continuous-scrape task: next-due time, last status,
+    last result. Powers the Watch Live page.
+
+    Also returns the browser-agent state so the page can show whether the
+    session is alive (and therefore whether the next pulse will actually do
+    anything)."""
+    await _seed_scraper_state()
+    tasks = await db.finance_scraper_state.find({}, {"_id": 0}).sort("task_kind", 1).to_list(50)
+    # Browser state snapshot
+    browser_state = {"state": "unknown", "page_url": None}
+    try:
+        agent = await get_browser_agent()
+        browser_state["state"] = getattr(agent, "state", None)
+        if hasattr(agent.state, "value"):
+            browser_state["state"] = agent.state.value
+        browser_state["page_url"] = agent.page.url if (agent and agent.page) else None
+        browser_state["started"] = bool(agent.page)
+    except Exception as e:
+        browser_state["error"] = str(e)[:200]
+    return {"tasks": tasks, "browser": browser_state}
+
+
+@api_router.post("/finance/amazon/order/{order_id}/scrape-transactions")
+async def scrape_amazon_order_transactions(
+    order_id: str,
+    force: bool = False,
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """On-demand: scrape one Amazon order's full financial breakdown from
+    Seller Central. Powers the 'Verify on Amazon' button next to each
+    unmatched payout row on the e-commerce recon page.
+
+    Falls back to the Claude brain if the deterministic selectors miss.
+    Result is cached for 6 hours so repeated clicks on the same order
+    don't burn API tokens — pass `force=true` to bypass."""
+    # Light input sanity — Amazon order IDs are 3-7-7 hex blocks like
+    # "171-2345678-1234567". Don't lock to that pattern strictly (sandbox
+    # IDs can vary) but reject obvious garbage / path-traversal attempts.
+    if not order_id or len(order_id) > 50 or any(c in order_id for c in "/\\?#"):
+        raise HTTPException(status_code=400, detail="Invalid order_id")
+
+    # Cache check — return recent result unless caller forces a re-scrape.
+    if not force:
+        six_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
+        cached = await db.amazon_order_scrapes.find_one(
+            {"order_id": order_id, "scraped_at": {"$gte": six_hours_ago}},
+            {"_id": 0},
+        )
+        if cached:
+            cached["from_cache"] = True
+            return cached
+
+    agent = await get_browser_agent()
+    if not agent or not agent.page:
+        raise HTTPException(
+            status_code=503,
+            detail="Browser agent not started. Open /admin/browser-agent and start it first.",
+        )
+
+    try:
+        result = await agent.scrape_order_transactions(order_id)
+    except Exception as e:
+        logger.exception(f"[order-txn-scrape] order={order_id} crashed")
+        raise HTTPException(status_code=500, detail=f"Scrape crashed: {str(e)[:200]}")
+
+    doc = {
+        "order_id": order_id,
+        "scraped_at": datetime.now(timezone.utc).isoformat(),
+        "scraped_by": user.get("email") or user.get("id"),
+        **result,
+    }
+    # Upsert into cache (keep latest result per order_id)
+    await db.amazon_order_scrapes.update_one(
+        {"order_id": order_id},
+        {"$set": doc},
+        upsert=True,
+    )
+    doc["from_cache"] = False
+    return doc
+
+
+@api_router.post("/finance/scraper-state/{task_kind}/run-now")
+async def force_run_scraper_task(
+    task_kind: str,
+    user: dict = Depends(require_roles(["admin"])),
+):
+    """Force a specific scrape task to run *immediately* — not on the next
+    30-min pulse tick. Sets next_due_at to NOW and kicks a one-shot pulse
+    on the event loop so the user gets progress within seconds.
+
+    Concurrency-safe: the pulse's find_one_and_update atomically claims a
+    task, so the kicked pulse and any in-flight scheduled pulse can't
+    both grab the same row."""
+    if task_kind not in FINANCE_SCRAPE_TASKS:
+        raise HTTPException(status_code=404, detail=f"Unknown task kind: {task_kind}")
+    await _seed_scraper_state()
+    now = datetime.now(timezone.utc).isoformat()
+    r = await db.finance_scraper_state.update_one(
+        {"task_kind": task_kind, "running": {"$ne": True}},
+        {"$set": {"next_due_at": now, "enabled": True}},
+    )
+    if r.matched_count == 0:
+        return {"queued": False, "reason": "task is already running or not seeded"}
+    # Kick an immediate pulse so the user doesn't wait up to 30 min for
+    # the next apscheduler tick. The pulse picks whatever is most-overdue
+    # — since we just set this task's next_due_at to NOW, it wins.
+    asyncio.create_task(scheduled_finance_scraper_pulse())
+    return {"queued": True, "task_kind": task_kind, "queued_at": now, "kicked": True}
+
+
+# ===================================================================
+# Data Inbox — items the agent needs from the human
+# ===================================================================
+# When the scraper finds a gap it can't fill (e.g. a bank statement
+# Amazon doesn't have), it creates a finance_data_gaps row. The Inbox
+# page lists open rows and lets the user upload the missing file.
+
+@api_router.get("/finance/data-gaps")
+async def list_finance_data_gaps(
+    status: Optional[str] = None,  # open | resolved | all
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """List data gaps the Finance Agent has opened. Default: only `open`."""
+    q: Dict[str, Any] = {}
+    scope_firm = get_user_firm_scope(user)
+    if scope_firm:
+        q["firm_id"] = scope_firm
+    if not status or status == "open":
+        q["status"] = "open"
+    elif status == "resolved":
+        q["status"] = "resolved"
+    rows = await db.finance_data_gaps.find(q, {"_id": 0}).sort("created_at", -1).limit(200).to_list(200)
+    counts = {
+        "open":     await db.finance_data_gaps.count_documents({**q, "status": "open"}),
+        "resolved": await db.finance_data_gaps.count_documents({**({"firm_id": scope_firm} if scope_firm else {}), "status": "resolved"}),
+    }
+    return {"items": rows, "counts": counts}
+
+
+@api_router.post("/finance/data-gaps")
+async def create_finance_data_gap(
+    payload: dict = Body(...),
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Manually open a data gap. Normally the agent does this; this endpoint
+    is for testing + for accountants who want to flag a missing file."""
+    kind = payload.get("kind")
+    if kind not in ("bank_statement", "credit_card_statement", "supplier_invoice", "other"):
+        raise HTTPException(status_code=400, detail="Invalid kind")
+    now = datetime.now(timezone.utc).isoformat()
+    firm_id = payload.get("firm_id") or get_user_firm_scope(user)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "kind": kind,
+        "firm_id": firm_id,
+        "period": payload.get("period"),  # e.g. "2026-05"
+        "description": payload.get("description") or f"{kind} needed",
+        "requested_by": "manual",
+        "requested_by_user": user.get("email"),
+        "status": "open",
+        "created_at": now,
+        "satisfied_by_upload_id": None,
+        "resolved_at": None,
+    }
+    await db.finance_data_gaps.insert_one(doc)
+    return doc
+
+
+@api_router.post("/finance/data-gaps/{gap_id}/upload")
+async def upload_finance_data_gap(
+    gap_id: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """User-uploads an Excel/CSV/PDF satisfying a data gap. Stores via the
+    existing storage helper and marks the gap resolved. Actual parsing of
+    the file (e.g. bank statement → journal entries) is a phase-2 task —
+    we just persist the upload here so it isn't lost."""
+    gap = await db.finance_data_gaps.find_one({"id": gap_id}, {"_id": 0})
+    if not gap:
+        raise HTTPException(status_code=404, detail="Data gap not found")
+    if gap.get("status") == "resolved":
+        raise HTTPException(status_code=400, detail="Gap already resolved")
+    scope = get_user_firm_scope(user)
+    if scope and gap.get("firm_id") and gap["firm_id"] != scope:
+        raise HTTPException(status_code=403, detail="Out of firm scope")
+
+    from utils.storage import upload_file as storage_upload
+    content = await file.read()
+    filename = file.filename or "upload"
+    path = f"finance_data_gaps/{gap_id}/{filename}"
+    storage_url = None
+    try:
+        from io import BytesIO
+        fobj = BytesIO(content)
+        fobj.name = filename
+        storage_url = await asyncio.to_thread(
+            storage_upload, fobj, path, file.content_type or "application/octet-stream"
+        )
+    except Exception as e:
+        logger.error(f"[data-gap] storage upload failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+
+    upload_id = str(uuid.uuid4())
+    await db.finance_data_uploads.insert_one({
+        "id": upload_id,
+        "gap_id": gap_id,
+        "filename": filename,
+        "size_bytes": len(content),
+        "content_type": file.content_type,
+        "storage_path": path,
+        "storage_url": storage_url,
+        "uploaded_by": user.get("email"),
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        "parse_status": "pending",  # parser is phase-2 — surfaces in UI
+    })
+    await db.finance_data_gaps.update_one(
+        {"id": gap_id},
+        {"$set": {
+            "status": "resolved",
+            "satisfied_by_upload_id": upload_id,
+            "resolved_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+    return {"ok": True, "upload_id": upload_id, "gap_id": gap_id}
 
 
 @api_router.post("/amazon/fees/post-from-payouts/{firm_id}")
