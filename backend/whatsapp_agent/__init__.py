@@ -357,20 +357,30 @@ class CRMToolRegistry:
                     "invoice_date": {"type": "string", "description": "ISO date YYYY-MM-DD"},
                     "items": {
                         "type": "array",
+                        "description": (
+                            "Line items from the invoice. Every line MUST include item_name and "
+                            "quantity and rate — without item_name the line lands as 'Unknown' in "
+                            "the Purchase Register. Include hsn_code and gst_rate when visible on "
+                            "the invoice so the GST split is exact instead of defaulted."
+                        ),
                         "items": {
                             "type": "object",
                             "properties": {
-                                "product_id": {"type": "string"},
-                                "quantity": {"type": "number"},
-                                "rate": {"type": "number"},
+                                "item_name": {"type": "string", "description": "Product/material name as printed on the invoice (REQUIRED)."},
+                                "hsn_code":  {"type": "string", "description": "HSN code from the invoice line (4–8 digits)."},
+                                "quantity":  {"type": "number"},
+                                "rate":      {"type": "number", "description": "Unit price (pre-GST)."},
+                                "gst_rate":  {"type": "number", "enum": [0, 5, 12, 18, 28], "description": "GST % from the invoice line."},
+                                "product_id": {"type": "string", "description": "Optional: master_skus / raw_materials UUID if already known."},
                             },
+                            "required": ["item_name", "quantity", "rate"],
                         },
                     },
                     "total_amount": {"type": "number"},
                     "gst_amount": {"type": "number"},
                     "notes": {"type": "string"},
                 },
-                "required": ["supplier_id", "total_amount"],
+                "required": ["supplier_id", "total_amount", "items"],
             },
             "get_recent_purchases": {
                 "type": "object",
@@ -805,8 +815,21 @@ class CRMToolRegistry:
         is_inter_state = bool(firm_state and supplier_state and firm_state.strip().lower() != supplier_state.strip().lower())
 
         processed_items = []
+        unresolved_names = []
         for it in item_list:
-            it_name = (it.get("name") or it.get("product_name") or it.get("description") or "").strip()
+            # Accept the canonical `item_name` (what the tool schema now asks
+            # the LLM to send) AND every other name-ish field we've seen the
+            # model emit. Falling back to "Unknown" silently is what caused
+            # the Aggarwal Transformers / Gera Foam purchases to land
+            # nameless — never default; flag the line instead.
+            it_name = (
+                it.get("item_name")
+                or it.get("name")
+                or it.get("product_name")
+                or it.get("description")
+                or it.get("title")
+                or ""
+            ).strip()
             qty = float(it.get("quantity") or it.get("qty") or 1)
             rate = float(it.get("rate") or it.get("price") or it.get("unit_price") or it.get("purchase_price") or 0)
 
@@ -837,12 +860,23 @@ class CRMToolRegistry:
             line_sgst = 0 if is_inter_state else round(line_gst / 2, 2)
             line_total = round(taxable_value + line_gst, 2)
 
+            resolved_name = (item_doc or {}).get("name") or it_name
+            if not resolved_name:
+                # Truly nothing — keep going so the GST math still produces
+                # numbers, but record the line for the response warning so
+                # the LLM tells the user instead of saving 'Unknown'.
+                resolved_name = "Unknown"
+                unresolved_names.append(f"line {len(processed_items) + 1}")
+            # Prefer the HSN passed in by the LLM (read off the invoice line);
+            # fall back to the master SKU's HSN. Same for sku_code.
+            hsn = (it.get("hsn_code") or "").strip() or (item_doc or {}).get("hsn_code", "")
+            sku = (it.get("sku_code") or it.get("sku") or "").strip() or (item_doc or {}).get("sku_code") or (item_doc or {}).get("sku", "")
             processed_items.append({
                 "item_type": item_type,
                 "item_id": (item_doc or {}).get("id") or (str(item_doc["_id"]) if item_doc else None),
-                "item_name": (item_doc or {}).get("name") or it_name or "Unknown",
-                "sku_code": (item_doc or {}).get("sku_code") or (item_doc or {}).get("sku", ""),
-                "hsn_code": (item_doc or {}).get("hsn_code", ""),
+                "item_name": resolved_name,
+                "sku_code": sku,
+                "hsn_code": hsn,
                 "quantity": qty,
                 "rate": rate,
                 "gst_rate": gst_rate,
@@ -905,6 +939,9 @@ class CRMToolRegistry:
             "compliance_issues": [
                 issue for issue in [
                     resolution_warning,
+                    (f"{len(unresolved_names)} line(s) had no item_name — saved as 'Unknown' "
+                     f"({', '.join(unresolved_names)}). Re-read the invoice and re-send those lines.")
+                    if unresolved_names else None,
                     "Created by WhatsApp agent — needs accountant review.",
                     "Verify supplier GSTIN, item HSN codes, and totals before finalizing.",
                 ] if issue
@@ -922,6 +959,12 @@ class CRMToolRegistry:
                 # Surface the warning at the top level so the LLM relays it to the user
                 # instead of celebrating a wrongly-firmed purchase.
                 purchase["_firm_warning"] = resolution_warning
+            if unresolved_names:
+                purchase["_items_warning"] = (
+                    f"{len(unresolved_names)} line(s) saved as 'Unknown' — "
+                    f"the input items had no item_name field. Tell the user which "
+                    f"lines need re-reading and offer to update them."
+                )
             return purchase
         except Exception as e:
             return {"error": f"Failed to create purchase: {str(e)}"}
