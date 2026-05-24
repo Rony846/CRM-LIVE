@@ -2,8 +2,6 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -13,12 +11,39 @@ import {
   Calendar, IndianRupee, ExternalLink, File, FolderOpen
 } from 'lucide-react';
 
+const BADGE_BASE = 'px-2 py-0.5 text-[10px] font-mono font-semibold rounded uppercase tracking-wide ring-1';
+
 const DOC_TYPE_CONFIG = {
-  certificate: { icon: FileCheck, color: 'text-amber-400', bgColor: 'bg-amber-600', label: 'Certificate' },
-  invoice: { icon: FileText, color: 'text-green-400', bgColor: 'bg-green-600', label: 'Invoice' },
-  proforma: { icon: File, color: 'text-blue-400', bgColor: 'bg-blue-600', label: 'Proforma' },
-  payment: { icon: CreditCard, color: 'text-purple-400', bgColor: 'bg-purple-600', label: 'Payment' },
-  deposit: { icon: Shield, color: 'text-cyan-400', bgColor: 'bg-cyan-600', label: 'Deposit' }
+  certificate: {
+    icon: FileCheck,
+    tone: 'bg-amber-400/15 text-amber-400 ring-amber-400/25',
+    iconTone: 'bg-amber-400/15 text-amber-400',
+    label: 'Certificate'
+  },
+  invoice: {
+    icon: FileText,
+    tone: 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25',
+    iconTone: 'bg-emerald-500/15 text-emerald-500',
+    label: 'Invoice'
+  },
+  proforma: {
+    icon: File,
+    tone: 'bg-sky-400/15 text-sky-400 ring-sky-400/25',
+    iconTone: 'bg-sky-400/15 text-sky-400',
+    label: 'Proforma'
+  },
+  payment: {
+    icon: CreditCard,
+    tone: 'bg-violet-400/15 text-violet-400 ring-violet-400/25',
+    iconTone: 'bg-violet-400/15 text-violet-400',
+    label: 'Payment'
+  },
+  deposit: {
+    icon: Shield,
+    tone: 'bg-sky-400/15 text-sky-400 ring-sky-400/25',
+    iconTone: 'bg-sky-400/15 text-sky-400',
+    label: 'Deposit'
+  }
 };
 
 export default function DealerDocuments() {
@@ -57,7 +82,7 @@ export default function DealerDocuments() {
           headers: { Authorization: `Bearer ${token}` },
           responseType: 'blob'
         });
-        
+
         const url = window.URL.createObjectURL(new Blob([response.data]));
         const link = document.createElement('a');
         link.href = url;
@@ -66,7 +91,7 @@ export default function DealerDocuments() {
         link.click();
         link.remove();
         window.URL.revokeObjectURL(url);
-        
+
         toast.success('Certificate downloaded');
       } else if (doc.download_url) {
         // For direct file URLs
@@ -79,7 +104,7 @@ export default function DealerDocuments() {
             headers: { Authorization: `Bearer ${token}` },
             responseType: 'blob'
           });
-          
+
           const url = window.URL.createObjectURL(new Blob([response.data]));
           const link = document.createElement('a');
           link.href = url;
@@ -88,7 +113,7 @@ export default function DealerDocuments() {
           link.click();
           link.remove();
           window.URL.revokeObjectURL(url);
-          
+
           toast.success('Document downloaded');
         }
       }
@@ -128,7 +153,7 @@ export default function DealerDocuments() {
     return (
       <DashboardLayout title="Download Center">
         <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-cyan-500" />
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
         </div>
       </DashboardLayout>
     );
@@ -137,149 +162,153 @@ export default function DealerDocuments() {
   return (
     <DashboardLayout title="Download Center">
       <div className="space-y-6">
-        {/* Header */}
+        {/* Page header */}
         <div>
-          <h1 className="text-2xl font-bold text-white">Download Center</h1>
-          <p className="text-slate-400">Access all your documents, invoices, and certificates</p>
+          <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground mb-1">
+            Account · Files
+          </p>
+          <h1 className="text-[26px] font-bold leading-tight tracking-tight text-foreground">Download Center</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Access all your documents, invoices, and certificates</p>
         </div>
 
         {/* Quick Stats */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           {Object.entries(DOC_TYPE_CONFIG).map(([type, config]) => {
             const Icon = config.icon;
             const count = countByType[type] || 0;
             return (
-              <Card 
-                key={type} 
-                className={`bg-slate-800 border-slate-700 cursor-pointer hover:border-slate-600 transition-colors ${activeTab === type ? 'ring-2 ring-cyan-500' : ''}`}
+              <button
+                key={type}
                 onClick={() => setActiveTab(type)}
+                className={`mg-card rounded-lg border bg-card p-4 text-left transition-all hover:border-primary/40 ${
+                  activeTab === type ? 'border-primary/60 ring-1 ring-primary/30' : 'border-border'
+                }`}
               >
-                <CardContent className="p-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-slate-400 text-sm">{config.label}</p>
-                      <p className="text-2xl font-bold text-white">{count}</p>
-                    </div>
-                    <Icon className={`w-6 h-6 ${config.color}`} />
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground truncate">
+                      {config.label}
+                    </p>
+                    <p className="mt-1 font-mono text-xl font-bold tabular-nums text-foreground">{count}</p>
                   </div>
-                </CardContent>
-              </Card>
+                  <div className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded ${config.iconTone}`}>
+                    <Icon className="w-4 h-4" />
+                  </div>
+                </div>
+              </button>
             );
           })}
         </div>
 
-        {/* Filters */}
-        <Card className="bg-slate-800 border-slate-700">
-          <CardContent className="p-4">
-            <div className="flex flex-col md:flex-row gap-4">
-              <div className="relative flex-1">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                <Input
-                  placeholder="Search documents..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="pl-9 bg-slate-900 border-slate-700"
-                />
-              </div>
-              <Tabs value={activeTab} onValueChange={setActiveTab}>
-                <TabsList className="bg-slate-900">
-                  <TabsTrigger value="all" className="data-[state=active]:bg-cyan-600">All</TabsTrigger>
-                  <TabsTrigger value="invoice" className="data-[state=active]:bg-cyan-600">Invoices</TabsTrigger>
-                  <TabsTrigger value="proforma" className="data-[state=active]:bg-cyan-600">PI</TabsTrigger>
-                  <TabsTrigger value="payment" className="data-[state=active]:bg-cyan-600">Payments</TabsTrigger>
-                </TabsList>
-              </Tabs>
+        {/* Filter bar */}
+        <div className="mg-card rounded-lg border border-border bg-card p-4">
+          <div className="flex flex-col md:flex-row gap-3">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                placeholder="Search documents..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-9"
+              />
             </div>
-          </CardContent>
-        </Card>
+            <Tabs value={activeTab} onValueChange={setActiveTab}>
+              <TabsList>
+                <TabsTrigger value="all">All</TabsTrigger>
+                <TabsTrigger value="invoice">Invoices</TabsTrigger>
+                <TabsTrigger value="proforma">PI</TabsTrigger>
+                <TabsTrigger value="payment">Payments</TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
+        </div>
 
-        {/* Documents List */}
+        {/* Documents list */}
         {filteredDocuments.length === 0 ? (
-          <Card className="bg-slate-800 border-slate-700">
-            <CardContent className="p-12 text-center">
-              <FolderOpen className="w-16 h-16 text-slate-600 mx-auto mb-4" />
-              <h3 className="text-xl font-semibold text-white mb-2">No Documents Found</h3>
-              <p className="text-slate-400">
-                {searchTerm || activeTab !== 'all'
-                  ? 'No documents match your search criteria'
-                  : 'Your documents will appear here once you have orders and transactions'}
-              </p>
-            </CardContent>
-          </Card>
+          <div className="mg-card rounded-lg border border-border bg-card p-12 text-center">
+            <FolderOpen className="w-14 h-14 text-muted-foreground/25 mx-auto mb-4" />
+            <h3 className="text-base font-semibold text-foreground mb-1">No Documents Found</h3>
+            <p className="text-sm text-muted-foreground">
+              {searchTerm || activeTab !== 'all'
+                ? 'No documents match your search criteria'
+                : 'Your documents will appear here once you have orders and transactions'}
+            </p>
+          </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {filteredDocuments.map((doc) => {
               const typeConfig = DOC_TYPE_CONFIG[doc.type] || DOC_TYPE_CONFIG.invoice;
               const Icon = typeConfig.icon;
               const isDownloading = downloading === doc.id;
-              
+
               return (
-                <Card key={doc.id} className="bg-slate-800 border-slate-700 hover:border-slate-600 transition-colors">
-                  <CardContent className="p-4">
-                    <div className="flex items-start gap-4">
-                      <div className={`w-12 h-12 ${typeConfig.bgColor} rounded-lg flex items-center justify-center flex-shrink-0`}>
-                        <Icon className="w-6 h-6 text-white" />
+                <div
+                  key={doc.id}
+                  className="mg-card rounded-lg border border-border bg-card p-4 hover:border-primary/30 transition-colors"
+                >
+                  <div className="flex items-start gap-4">
+                    <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded ${typeConfig.iconTone}`}>
+                      <Icon className="w-5 h-5" />
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <h3 className="text-sm font-semibold text-foreground truncate">{doc.name}</h3>
+                          <p className="text-[12px] text-muted-foreground truncate mt-0.5">{doc.description}</p>
+                        </div>
+                        <span className={`${BADGE_BASE} ${typeConfig.tone} flex-shrink-0`}>
+                          {typeConfig.label}
+                        </span>
                       </div>
-                      
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex-1 min-w-0">
-                            <h3 className="text-white font-medium truncate">{doc.name}</h3>
-                            <p className="text-slate-400 text-sm truncate">{doc.description}</p>
-                          </div>
-                          <Badge className={typeConfig.bgColor}>
-                            {typeConfig.label}
-                          </Badge>
-                        </div>
-                        
-                        <div className="flex items-center justify-between mt-3">
-                          {doc.created_at && (
-                            <span className="text-slate-500 text-sm flex items-center gap-1">
-                              <Calendar className="w-3 h-3" />
-                              {formatDate(doc.created_at)}
-                            </span>
+
+                      <div className="flex items-center justify-between mt-3">
+                        {doc.created_at ? (
+                          <span className="font-mono text-[11px] tabular-nums text-muted-foreground flex items-center gap-1">
+                            <Calendar className="w-3 h-3" />
+                            {formatDate(doc.created_at)}
+                          </span>
+                        ) : (
+                          <span />
+                        )}
+
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => handleDownload(doc)}
+                          disabled={isDownloading || !doc.available}
+                        >
+                          {isDownloading ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <>
+                              <Download className="w-3.5 h-3.5 mr-1.5" />
+                              Download
+                            </>
                           )}
-                          
-                          <Button
-                            size="sm"
-                            onClick={() => handleDownload(doc)}
-                            disabled={isDownloading || !doc.available}
-                            className="bg-cyan-600 hover:bg-cyan-700"
-                          >
-                            {isDownloading ? (
-                              <Loader2 className="w-4 h-4 animate-spin" />
-                            ) : (
-                              <>
-                                <Download className="w-4 h-4 mr-1" />
-                                Download
-                              </>
-                            )}
-                          </Button>
-                        </div>
+                        </Button>
                       </div>
                     </div>
-                  </CardContent>
-                </Card>
+                  </div>
+                </div>
               );
             })}
           </div>
         )}
 
-        {/* Help Card */}
-        <Card className="bg-blue-900/20 border-blue-600">
-          <CardContent className="p-4">
-            <div className="flex items-start gap-3">
-              <FileText className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />
-              <div>
-                <p className="text-blue-300 font-medium">Need Help?</p>
-                <p className="text-blue-200 text-sm mt-1">
-                  Documents are automatically generated when orders are processed. If you need a specific document 
-                  or notice any errors, please raise a support ticket and our team will assist you.
-                </p>
-              </div>
+        {/* Help note */}
+        <div className="mg-card rounded-lg border border-primary/20 bg-primary/5 p-4">
+          <div className="flex items-start gap-3">
+            <FileText className="w-5 h-5 text-primary flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-semibold text-foreground">Need Help?</p>
+              <p className="text-sm text-muted-foreground mt-1">
+                Documents are automatically generated when orders are processed. If you need a specific document
+                or notice any errors, please raise a support ticket and our team will assist you.
+              </p>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       </div>
     </DashboardLayout>
   );

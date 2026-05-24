@@ -6,13 +6,14 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import { useNavigate } from 'react-router-dom';
 import {
   Shield, Upload, Loader2, CheckCircle, Clock, AlertTriangle,
   IndianRupee, Calendar, FileText, Eye
 } from 'lucide-react';
+
+const BADGE_BASE = 'px-2 py-0.5 text-[10px] font-mono font-semibold rounded uppercase tracking-wide ring-1';
 
 export default function DealerDeposit() {
   const { token } = useAuth();
@@ -49,12 +50,12 @@ export default function DealerDeposit() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
+
     if (!form.proof_file) {
       toast.error('Please upload deposit proof');
       return;
     }
-    
+
     setSubmitting(true);
     try {
       const formData = new FormData();
@@ -62,14 +63,14 @@ export default function DealerDeposit() {
       formData.append('payment_reference', form.payment_reference);
       formData.append('payment_date', form.payment_date);
       formData.append('proof_file', form.proof_file);
-      
+
       await axios.post(`${API}/dealer/deposit/upload-proof`, formData, {
-        headers: { 
+        headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'multipart/form-data'
         }
       });
-      
+
       toast.success('Deposit proof uploaded successfully');
       navigate('/dealer');
     } catch (error) {
@@ -79,29 +80,30 @@ export default function DealerDeposit() {
     }
   };
 
-  const getStatusColor = (status) => {
+  const getStatusIcon = (status) => {
     switch (status) {
-      case 'approved': return 'bg-green-600';
-      case 'pending': return 'bg-yellow-600';
-      case 'rejected': return 'bg-red-600';
-      default: return 'bg-slate-600';
+      case 'approved': return <CheckCircle className="w-5 h-5 text-emerald-400" />;
+      case 'pending':  return <Clock className="w-5 h-5 text-amber-400" />;
+      case 'rejected': return <AlertTriangle className="w-5 h-5 text-rose-400" />;
+      default:         return <Shield className="w-5 h-5 text-muted-foreground" />;
     }
   };
 
-  const getStatusIcon = (status) => {
-    switch (status) {
-      case 'approved': return <CheckCircle className="w-5 h-5" />;
-      case 'pending': return <Clock className="w-5 h-5" />;
-      case 'rejected': return <AlertTriangle className="w-5 h-5" />;
-      default: return <Shield className="w-5 h-5" />;
-    }
+  const getStatusBadge = (status) => {
+    const tones = {
+      approved: 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25',
+      pending:  'bg-amber-400/15 text-amber-400 ring-amber-400/25',
+      rejected: 'bg-rose-500/15 text-rose-400 ring-rose-500/25',
+    };
+    const tone = tones[status] || 'bg-muted text-muted-foreground ring-border';
+    return <span className={`${BADGE_BASE} ${tone}`}>{(status || 'not paid').replace(/_/g, ' ')}</span>;
   };
 
   if (loading) {
     return (
       <DashboardLayout title="Security Deposit">
         <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-cyan-500" />
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
         </div>
       </DashboardLayout>
     );
@@ -113,118 +115,137 @@ export default function DealerDeposit() {
   return (
     <DashboardLayout title="Security Deposit">
       <div className="max-w-2xl mx-auto space-y-6">
+        {/* Page header */}
+        <div>
+          <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground mb-1">
+            Account · Onboarding
+          </p>
+          <h1 className="text-[26px] font-bold leading-tight tracking-tight text-foreground">Security Deposit</h1>
+        </div>
+
         {/* Status Card */}
-        <Card className="bg-slate-800 border-slate-700">
-          <CardHeader>
-            <CardTitle className="text-white flex items-center gap-2">
-              <Shield className="w-5 h-5 text-cyan-400" />
-              Security Deposit Status
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-between p-4 bg-slate-900 rounded-lg">
+        <div className="mg-card rounded-lg border border-border bg-card">
+          <div className="flex items-center gap-2 px-5 pt-5 pb-3 border-b border-border">
+            <Shield className="w-4 h-4 text-sky-400" />
+            <h2 className="text-sm font-semibold text-foreground">Security Deposit Status</h2>
+          </div>
+          <div className="p-5 space-y-4">
+            {/* Status row */}
+            <div className="flex items-center justify-between p-4 rounded-md bg-muted/40">
               <div className="flex items-center gap-3">
                 {getStatusIcon(depositStatus)}
                 <div>
-                  <p className="text-white font-medium capitalize">{depositStatus.replace('_', ' ')}</p>
-                  <p className="text-slate-400 text-sm">
-                    {depositStatus === 'approved' && `Approved on ${new Date(dealer.security_deposit_approved_at).toLocaleDateString()}`}
+                  <p className="text-sm font-medium text-foreground capitalize">
+                    {depositStatus.replace(/_/g, ' ')}
+                  </p>
+                  <p className="text-[12px] text-muted-foreground mt-0.5">
+                    {depositStatus === 'approved' &&
+                      `Approved on ${new Date(dealer.security_deposit_approved_at).toLocaleDateString()}`}
                     {depositStatus === 'pending' && 'Under review by admin'}
                     {depositStatus === 'rejected' && dealer.security_deposit_remarks}
                     {depositStatus === 'not_paid' && 'Please upload deposit proof to activate your account'}
                   </p>
                 </div>
               </div>
-              <Badge className={getStatusColor(depositStatus)}>
-                {depositStatus.replace('_', ' ')}
-              </Badge>
+              {getStatusBadge(depositStatus)}
             </div>
 
+            {/* Amount & date grid */}
             <div className="grid grid-cols-2 gap-4">
-              <div className="p-4 bg-slate-900 rounded-lg">
-                <p className="text-slate-400 text-sm">Required Amount</p>
-                <p className="text-2xl font-bold text-white flex items-center gap-1">
-                  <IndianRupee className="w-5 h-5" />
+              <div className="p-4 rounded-md bg-muted/40">
+                <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">
+                  Required Amount
+                </p>
+                <p className="mt-1.5 font-mono text-xl font-bold tabular-nums text-foreground flex items-center gap-1">
+                  <IndianRupee className="w-4 h-4" />
                   {(dealer?.security_deposit_amount || 100000).toLocaleString('en-IN')}
                 </p>
               </div>
               {dealer?.security_deposit_uploaded_at && (
-                <div className="p-4 bg-slate-900 rounded-lg">
-                  <p className="text-slate-400 text-sm">Uploaded On</p>
-                  <p className="text-lg font-medium text-white flex items-center gap-1">
-                    <Calendar className="w-4 h-4" />
+                <div className="p-4 rounded-md bg-muted/40">
+                  <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">
+                    Uploaded On
+                  </p>
+                  <p className="mt-1.5 text-sm font-medium text-foreground flex items-center gap-1.5">
+                    <Calendar className="w-3.5 h-3.5 text-muted-foreground" />
                     {new Date(dealer.security_deposit_uploaded_at).toLocaleDateString()}
                   </p>
                 </div>
               )}
             </div>
 
+            {/* Proof file link */}
             {dealer?.security_deposit_proof_path && (
-              <div className="flex items-center justify-between p-3 bg-slate-900 rounded-lg">
-                <div className="flex items-center gap-2 text-slate-300">
+              <div className="flex items-center justify-between p-3 rounded-md bg-muted/40">
+                <div className="flex items-center gap-2 text-muted-foreground">
                   <FileText className="w-4 h-4" />
-                  <span>Deposit Proof Uploaded</span>
+                  <span className="text-sm">Deposit Proof Uploaded</span>
                 </div>
-                <a 
+                <a
                   href={`${API.replace('/api', '')}${dealer.security_deposit_proof_path}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center gap-1 text-cyan-400 hover:text-cyan-300"
+                  className="flex items-center gap-1 text-primary hover:text-primary/80 text-sm font-medium"
                 >
                   <Eye className="w-4 h-4" />
                   View
                 </a>
               </div>
             )}
-          </CardContent>
-        </Card>
+          </div>
+        </div>
 
         {/* Upload Form */}
         {canUpload && (
-          <Card className="bg-slate-800 border-slate-700">
-            <CardHeader>
-              <CardTitle className="text-white">Upload Deposit Proof</CardTitle>
-              <CardDescription className="text-slate-400">
+          <div className="mg-card rounded-lg border border-border bg-card">
+            <div className="px-5 pt-5 pb-3 border-b border-border">
+              <h2 className="text-sm font-semibold text-foreground">Upload Deposit Proof</h2>
+              <p className="text-[12px] text-muted-foreground mt-0.5">
                 Upload your payment proof (bank receipt, transaction screenshot, etc.)
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
+              </p>
+            </div>
+            <div className="p-5">
               <form onSubmit={handleSubmit} className="space-y-4">
-                <div>
-                  <Label className="text-slate-300">Amount Paid *</Label>
+                <div className="space-y-1.5">
+                  <Label className="font-mono text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
+                    Amount Paid *
+                  </Label>
                   <Input
                     type="number"
                     value={form.amount}
                     onChange={(e) => setForm({ ...form, amount: e.target.value })}
                     placeholder="Enter amount"
                     required
-                    className="bg-slate-900 border-slate-700 text-white"
                   />
                 </div>
 
-                <div>
-                  <Label className="text-slate-300">Payment Reference / UTR</Label>
+                <div className="space-y-1.5">
+                  <Label className="font-mono text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
+                    Payment Reference / UTR
+                  </Label>
                   <Input
                     value={form.payment_reference}
                     onChange={(e) => setForm({ ...form, payment_reference: e.target.value })}
                     placeholder="Transaction reference number"
-                    className="bg-slate-900 border-slate-700 text-white"
                   />
                 </div>
 
-                <div>
-                  <Label className="text-slate-300">Payment Date</Label>
+                <div className="space-y-1.5">
+                  <Label className="font-mono text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
+                    Payment Date
+                  </Label>
                   <Input
                     type="date"
                     value={form.payment_date}
                     onChange={(e) => setForm({ ...form, payment_date: e.target.value })}
-                    className="bg-slate-900 border-slate-700 text-white"
                   />
                 </div>
 
-                <div>
-                  <Label className="text-slate-300">Upload Proof *</Label>
-                  <div className="border-2 border-dashed border-slate-600 rounded-lg p-6 text-center hover:border-cyan-500 transition-colors">
+                <div className="space-y-1.5">
+                  <Label className="font-mono text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
+                    Upload Proof *
+                  </Label>
+                  <div className="border-2 border-dashed border-border rounded-md p-6 text-center hover:border-primary/50 transition-colors">
                     <input
                       type="file"
                       accept=".pdf,.jpg,.jpeg,.png,.heic,.webp"
@@ -234,49 +255,57 @@ export default function DealerDeposit() {
                     />
                     <label htmlFor="proof-upload" className="cursor-pointer">
                       {form.proof_file ? (
-                        <div className="flex items-center justify-center gap-2 text-green-400">
+                        <div className="flex items-center justify-center gap-2 text-emerald-400">
                           <CheckCircle className="w-6 h-6" />
-                          <span>{form.proof_file.name}</span>
+                          <span className="text-sm font-medium">{form.proof_file.name}</span>
                         </div>
                       ) : (
                         <>
-                          <Upload className="w-8 h-8 mx-auto mb-2 text-slate-400" />
-                          <p className="text-slate-300">Click to upload</p>
-                          <p className="text-slate-500 text-sm mt-1">PDF, JPG, PNG (max 10MB)</p>
+                          <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
+                          <p className="text-sm text-foreground">Click to upload</p>
+                          <p className="text-[12px] text-muted-foreground mt-1">PDF, JPG, PNG (max 10MB)</p>
                         </>
                       )}
                     </label>
                   </div>
                 </div>
 
-                <Button type="submit" disabled={submitting} className="w-full bg-cyan-600 hover:bg-cyan-700">
+                <Button type="submit" disabled={submitting} className="w-full">
                   {submitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                   Submit Deposit Proof
                 </Button>
               </form>
-            </CardContent>
-          </Card>
+            </div>
+          </div>
         )}
 
-        {/* Instructions */}
-        <Card className="bg-slate-800 border-slate-700">
-          <CardHeader>
-            <CardTitle className="text-white">Payment Instructions</CardTitle>
-          </CardHeader>
-          <CardContent className="text-slate-300 space-y-3">
-            <p>Please transfer the security deposit amount to:</p>
-            <div className="p-4 bg-slate-900 rounded-lg space-y-2">
-              <p><strong>Company Name:</strong> MuscleGrid Industries Pvt Ltd</p>
-              <p><strong>Account No:</strong> 84684684600</p>
-              <p><strong>IFSC:</strong> IDFB0021525</p>
-              <p><strong>Bank:</strong> IDFC First Bank</p>
+        {/* Payment Instructions */}
+        <div className="mg-card rounded-lg border border-border bg-card">
+          <div className="px-5 pt-5 pb-3 border-b border-border">
+            <h2 className="text-sm font-semibold text-foreground">Payment Instructions</h2>
+          </div>
+          <div className="p-5 space-y-3">
+            <p className="text-sm text-muted-foreground">Please transfer the security deposit amount to:</p>
+            <div className="p-4 rounded-md bg-muted/40 space-y-2 font-mono text-[13px]">
+              <p className="text-foreground">
+                <span className="text-muted-foreground">Company Name: </span>MuscleGrid Industries Pvt Ltd
+              </p>
+              <p className="text-foreground">
+                <span className="text-muted-foreground">Account No: </span>84684684600
+              </p>
+              <p className="text-foreground">
+                <span className="text-muted-foreground">IFSC: </span>IDFB0021525
+              </p>
+              <p className="text-foreground">
+                <span className="text-muted-foreground">Bank: </span>IDFC First Bank
+              </p>
             </div>
-            <p className="text-slate-400 text-sm">
+            <p className="text-[12px] text-muted-foreground">
               Note: Your dealer account will be activated once the deposit is verified by our team.
               Security deposit amount: ₹1,00,000 (One Lakh Rupees)
             </p>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       </div>
     </DashboardLayout>
   );

@@ -137,8 +137,18 @@ import DealerCatalogue from './pages/dealer/DealerCatalogue';
 import DealerAnnouncements from './pages/dealer/DealerAnnouncements';
 import DealerTargets from './pages/dealer/DealerTargets';
 import DealerWarrantyRegistration from './pages/dealer/DealerWarrantyRegistration';
+import DealerTerms from './pages/dealer/DealerTerms';
+import DealerCustomers from './pages/dealer/DealerCustomers';
+import DealerWarrantyClaims from './pages/dealer/DealerWarrantyClaims';
+import DealerSpareParts from './pages/dealer/DealerSpareParts';
+import DealerSpareOrders from './pages/dealer/DealerSpareOrders';
 import DealerReorderSuggestions from './pages/dealer/DealerReorderSuggestions';
 import AdminDealerApplications from './pages/admin/AdminDealerApplications';
+import AdminDealerTerms from './pages/admin/AdminDealerTerms';
+import AdminWarrantyClaims from './pages/admin/AdminWarrantyClaims';
+import AdminSpareParts from './pages/admin/AdminSpareParts';
+import AdminSpareOrders from './pages/admin/AdminSpareOrders';
+import AdminWhatsAppAgent from './pages/admin/AdminWhatsAppAgent';
 
 // Leads Pages
 import LeadsPage from './pages/leads/LeadsPage';
@@ -288,13 +298,18 @@ const RoleRedirect = () => {
 };
 
 function App() {
-  // Initialize theme from localStorage - supports 5 Pro themes
+  // Initialize theme from localStorage — Obsidian Elite is the default.
   useEffect(() => {
-    const savedTheme = localStorage.getItem('mg-theme') || 'pro-dark';
+    // One-time migration: roll everyone onto Obsidian Elite as the new default.
+    if (!localStorage.getItem('mg-theme-v2')) {
+      localStorage.setItem('mg-theme', 'obsidian');
+      localStorage.setItem('mg-theme-v2', '1');
+    }
+    const savedTheme = localStorage.getItem('mg-theme') || 'obsidian';
     document.documentElement.setAttribute('data-theme', savedTheme);
-    
+
     // Handle dark/light mode class
-    const darkThemes = ['pro-dark'];
+    const darkThemes = ['obsidian', 'pro-dark', 'mono-dark'];
     if (darkThemes.includes(savedTheme)) {
       document.documentElement.classList.add('dark');
     } else {
@@ -938,7 +953,32 @@ function App() {
               <DealerReorderSuggestions />
             </ProtectedRoute>
           } />
-          
+          <Route path="/dealer/terms" element={
+            <ProtectedRoute allowedRoles={['dealer', 'admin']}>
+              <DealerTerms />
+            </ProtectedRoute>
+          } />
+          <Route path="/dealer/customers" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerCustomers />
+            </ProtectedRoute>
+          } />
+          <Route path="/dealer/warranty-claims" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerWarrantyClaims />
+            </ProtectedRoute>
+          } />
+          <Route path="/dealer/spare-parts" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerSpareParts />
+            </ProtectedRoute>
+          } />
+          <Route path="/dealer/spare-orders" element={
+            <ProtectedRoute allowedRoles={['dealer']}>
+              <DealerSpareOrders />
+            </ProtectedRoute>
+          } />
+
           {/* Public Dealer Verification */}
           <Route path="/verify-dealer/:token" element={<VerifyDealer />} />
           
@@ -946,6 +986,31 @@ function App() {
           <Route path="/admin/dealer-applications" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <AdminDealerApplications />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/dealer-terms" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminDealerTerms />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/warranty-claims" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminWarrantyClaims />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/spare-parts" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminSpareParts />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/spare-orders" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminSpareOrders />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/whatsapp-agent" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminWhatsAppAgent />
             </ProtectedRoute>
           } />
           

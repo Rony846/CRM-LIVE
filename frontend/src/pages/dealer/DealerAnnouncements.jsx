@@ -7,17 +7,27 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import {
-  Megaphone, Loader2, Calendar, AlertTriangle, Info, Gift, 
+  Megaphone, Loader2, Calendar, AlertTriangle, Info, Gift,
   Truck, TrendingUp, Clock, ChevronRight, Bell, CheckCircle
 } from 'lucide-react';
 
 const ANNOUNCEMENT_TYPES = {
-  general: { label: 'General', icon: Megaphone, color: 'bg-blue-600' },
-  promotion: { label: 'Promotion', icon: Gift, color: 'bg-purple-600' },
-  urgent: { label: 'Urgent', icon: AlertTriangle, color: 'bg-red-600' },
-  policy: { label: 'Policy Update', icon: Info, color: 'bg-amber-600' },
-  product: { label: 'New Product', icon: TrendingUp, color: 'bg-green-600' },
-  logistics: { label: 'Logistics', icon: Truck, color: 'bg-cyan-600' }
+  general:   { label: 'General',        icon: Megaphone,     tone: 'bg-primary/15 text-primary ring-primary/25' },
+  promotion: { label: 'Promotion',      icon: Gift,          tone: 'bg-violet-400/15 text-violet-400 ring-violet-400/25' },
+  urgent:    { label: 'Urgent',         icon: AlertTriangle, tone: 'bg-rose-500/15 text-rose-400 ring-rose-500/25' },
+  policy:    { label: 'Policy Update',  icon: Info,          tone: 'bg-amber-400/15 text-amber-400 ring-amber-400/25' },
+  product:   { label: 'New Product',    icon: TrendingUp,    tone: 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25' },
+  logistics: { label: 'Logistics',      icon: Truck,         tone: 'bg-sky-400/15 text-sky-400 ring-sky-400/25' }
+};
+
+// Icon tile bg/text without ring (for the card icon square)
+const TYPE_TILE = {
+  general:   'bg-primary/15 text-primary',
+  promotion: 'bg-violet-400/15 text-violet-400',
+  urgent:    'bg-rose-500/15 text-rose-400',
+  policy:    'bg-amber-400/15 text-amber-400',
+  product:   'bg-emerald-500/15 text-emerald-400',
+  logistics: 'bg-sky-400/15 text-sky-400',
 };
 
 export default function DealerAnnouncements() {
@@ -51,7 +61,7 @@ export default function DealerAnnouncements() {
       await axios.post(`${API}/dealer/announcements/${announcementId}/read`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      setAnnouncements(prev => 
+      setAnnouncements(prev =>
         prev.map(a => a.id === announcementId ? { ...a, is_read: true } : a)
       );
     } catch (error) {
@@ -64,7 +74,7 @@ export default function DealerAnnouncements() {
     const date = new Date(dateStr);
     const now = new Date();
     const diffDays = Math.floor((now - date) / (1000 * 60 * 60 * 24));
-    
+
     if (diffDays === 0) return 'Today';
     if (diffDays === 1) return 'Yesterday';
     if (diffDays < 7) return `${diffDays} days ago`;
@@ -72,8 +82,8 @@ export default function DealerAnnouncements() {
   };
 
   const types = ['all', ...Object.keys(ANNOUNCEMENT_TYPES)];
-  
-  const filteredAnnouncements = announcements.filter(a => 
+
+  const filteredAnnouncements = announcements.filter(a =>
     selectedType === 'all' || a.type === selectedType
   );
 
@@ -83,7 +93,7 @@ export default function DealerAnnouncements() {
     return (
       <DashboardLayout title="Announcements">
         <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-cyan-500" />
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
         </div>
       </DashboardLayout>
     );
@@ -92,20 +102,24 @@ export default function DealerAnnouncements() {
   return (
     <DashboardLayout title="Announcements">
       <div className="space-y-6">
+
         {/* Header */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-              <Megaphone className="w-6 h-6 text-cyan-400" />
+            <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground mb-1">
+              Dealer Portal
+            </p>
+            <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
+              <Megaphone className="w-6 h-6 text-primary" />
               Announcements
             </h1>
-            <p className="text-slate-400">Stay updated with the latest news and updates</p>
+            <p className="text-muted-foreground text-sm mt-1">Stay updated with the latest news and updates</p>
           </div>
           {unreadCount > 0 && (
-            <Badge className="bg-red-600 text-white px-3 py-1">
-              <Bell className="w-4 h-4 mr-1" />
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide bg-rose-500/15 text-rose-400 ring-1 ring-rose-500/25">
+              <Bell className="w-3.5 h-3.5" />
               {unreadCount} unread
-            </Badge>
+            </span>
           )}
         </div>
 
@@ -114,114 +128,119 @@ export default function DealerAnnouncements() {
           {types.map(type => {
             const typeConfig = type !== 'all' ? ANNOUNCEMENT_TYPES[type] : null;
             const TypeIcon = typeConfig?.icon || Megaphone;
+            const isActive = selectedType === type;
             return (
-              <Button
+              <button
                 key={type}
-                variant={selectedType === type ? 'default' : 'outline'}
-                size="sm"
                 onClick={() => setSelectedType(type)}
-                className={selectedType === type 
-                  ? 'bg-cyan-600 hover:bg-cyan-700' 
-                  : 'border-slate-600 text-slate-300 hover:bg-slate-700'}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-mono font-semibold uppercase tracking-wide border transition-colors ${
+                  isActive
+                    ? 'bg-primary/15 text-primary border-primary/40'
+                    : 'bg-muted text-muted-foreground border-border hover:border-primary/30 hover:text-foreground'
+                }`}
               >
-                <TypeIcon className="w-4 h-4 mr-1" />
+                <TypeIcon className="w-3.5 h-3.5" />
                 {type === 'all' ? 'All' : typeConfig?.label}
-              </Button>
+              </button>
             );
           })}
         </div>
 
         {/* Announcements List */}
         {filteredAnnouncements.length === 0 ? (
-          <Card className="bg-slate-800 border-slate-700">
-            <CardContent className="p-12 text-center">
-              <Megaphone className="w-16 h-16 text-slate-600 mx-auto mb-4" />
-              <h3 className="text-xl text-white mb-2">No Announcements</h3>
-              <p className="text-slate-400">
-                {selectedType === 'all' 
-                  ? 'There are no announcements at this time.' 
-                  : `No ${ANNOUNCEMENT_TYPES[selectedType]?.label} announcements.`}
-              </p>
-            </CardContent>
-          </Card>
+          <div className="mg-card rounded-lg border border-border bg-card p-12 text-center">
+            <Megaphone className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
+            <h3 className="text-lg font-semibold text-foreground mb-2">No Announcements</h3>
+            <p className="text-muted-foreground text-sm">
+              {selectedType === 'all'
+                ? 'There are no announcements at this time.'
+                : `No ${ANNOUNCEMENT_TYPES[selectedType]?.label} announcements.`}
+            </p>
+          </div>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-3">
             {filteredAnnouncements.map((announcement) => {
               const typeConfig = ANNOUNCEMENT_TYPES[announcement.type] || ANNOUNCEMENT_TYPES.general;
               const TypeIcon = typeConfig.icon;
-              
+              const tileTone = TYPE_TILE[announcement.type] || TYPE_TILE.general;
+
               return (
-                <Card 
-                  key={announcement.id} 
-                  className={`bg-slate-800 border-slate-700 transition-all ${
-                    !announcement.is_read ? 'border-l-4 border-l-cyan-500' : ''
-                  }`}
+                <div
+                  key={announcement.id}
                   data-testid={`announcement-${announcement.id}`}
+                  className={`mg-card rounded-lg border bg-card transition-all ${
+                    !announcement.is_read
+                      ? 'border-l-2 border-l-primary border-border'
+                      : 'border-border'
+                  }`}
                 >
-                  <CardContent className="p-4">
+                  <div className="p-4">
                     <div className="flex items-start gap-4">
-                      <div className={`w-10 h-10 rounded-lg ${typeConfig.color} flex items-center justify-center flex-shrink-0`}>
-                        <TypeIcon className="w-5 h-5 text-white" />
+                      <div className={`w-10 h-10 rounded flex items-center justify-center flex-shrink-0 ${tileTone}`}>
+                        <TypeIcon className="w-5 h-5" />
                       </div>
-                      
+
                       <div className="flex-1 min-w-0">
                         <div className="flex items-start justify-between gap-4">
                           <div>
-                            <h3 className="text-white font-semibold text-lg">
-                              {announcement.title}
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <h3 className="text-foreground font-semibold">
+                                {announcement.title}
+                              </h3>
                               {!announcement.is_read && (
-                                <Badge className="bg-cyan-600 ml-2 text-xs">New</Badge>
+                                <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold uppercase tracking-wide bg-primary/15 text-primary ring-1 ring-primary/25">
+                                  New
+                                </span>
                               )}
-                            </h3>
-                            <div className="flex items-center gap-2 mt-1">
-                              <Badge variant="outline" className={`border-slate-600 text-xs ${typeConfig.color.replace('bg-', 'text-').replace('-600', '-400')}`}>
+                            </div>
+                            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 ${typeConfig.tone}`}>
                                 {typeConfig.label}
-                              </Badge>
-                              <span className="text-slate-500 text-sm flex items-center gap-1">
+                              </span>
+                              <span className="text-muted-foreground text-xs flex items-center gap-1">
                                 <Calendar className="w-3 h-3" />
                                 {formatDate(announcement.created_at)}
                               </span>
                             </div>
                           </div>
-                          
+
                           {!announcement.is_read && (
-                            <Button 
-                              variant="ghost" 
-                              size="sm" 
-                              className="text-slate-400 hover:text-cyan-400"
+                            <button
+                              className="text-muted-foreground hover:text-emerald-400 transition-colors p-1 rounded"
                               onClick={() => markAsRead(announcement.id)}
+                              title="Mark as read"
                             >
                               <CheckCircle className="w-4 h-4" />
-                            </Button>
+                            </button>
                           )}
                         </div>
-                        
-                        <p className="text-slate-300 mt-3 whitespace-pre-wrap">
+
+                        <p className="text-muted-foreground text-sm mt-3 whitespace-pre-wrap leading-relaxed">
                           {announcement.content}
                         </p>
-                        
+
                         {announcement.action_url && (
-                          <a 
-                            href={announcement.action_url} 
-                            target="_blank" 
+                          <a
+                            href={announcement.action_url}
+                            target="_blank"
                             rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-cyan-400 hover:text-cyan-300 mt-3 text-sm"
+                            className="inline-flex items-center gap-1 text-primary hover:text-primary/80 mt-3 text-sm font-medium transition-colors"
                           >
                             {announcement.action_text || 'Learn More'}
                             <ChevronRight className="w-4 h-4" />
                           </a>
                         )}
-                        
+
                         {announcement.expires_at && (
-                          <p className="text-amber-400 text-xs mt-2 flex items-center gap-1">
+                          <p className="text-amber-400 text-xs mt-2 flex items-center gap-1 font-mono">
                             <Clock className="w-3 h-3" />
                             Expires: {new Date(announcement.expires_at).toLocaleDateString()}
                           </p>
                         )}
                       </div>
                     </div>
-                  </CardContent>
-                </Card>
+                  </div>
+                </div>
               );
             })}
           </div>

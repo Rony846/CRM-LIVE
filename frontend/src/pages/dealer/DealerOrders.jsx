@@ -22,6 +22,28 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 
+// Obsidian status chips
+const ORDER_STATUS_TONES = {
+  pending:   'bg-amber-400/15 text-amber-400 ring-amber-400/25',
+  confirmed: 'bg-sky-400/15 text-sky-400 ring-sky-400/25',
+  dispatched:'bg-primary/15 text-primary ring-primary/25',
+  delivered: 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25',
+  cancelled: 'bg-rose-500/15 text-rose-400 ring-rose-500/25',
+};
+const PAYMENT_STATUS_TONES = {
+  pending:  'bg-amber-400/15 text-amber-400 ring-amber-400/25',
+  received: 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25',
+  rejected: 'bg-rose-500/15 text-rose-400 ring-rose-500/25',
+};
+
+const StatusChip = ({ status, toneMap }) => (
+  <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 whitespace-nowrap ${(toneMap || ORDER_STATUS_TONES)[status] || 'bg-muted text-muted-foreground ring-border'}`}>
+    {status}
+  </span>
+);
+
+const labelCls = 'font-mono text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-foreground mb-1.5 block';
+
 export default function DealerOrders() {
   const { token } = useAuth();
   const { orderId } = useParams();
@@ -53,7 +75,7 @@ export default function DealerOrders() {
         headers: { Authorization: `Bearer ${token}` }
       });
       setOrders(response.data || []);
-      
+
       if (orderId) {
         const order = response.data.find(o => o.id === orderId);
         if (order) setSelectedOrder(order);
@@ -70,21 +92,21 @@ export default function DealerOrders() {
       toast.error('Please fill all required fields');
       return;
     }
-    
+
     setSubmitting(true);
     try {
       const formData = new FormData();
       formData.append('amount', paymentForm.amount);
       formData.append('payment_reference', paymentForm.reference);
       formData.append('proof_file', paymentForm.file);
-      
+
       await axios.post(`${API}/dealer/orders/${selectedOrder.id}/upload-payment`, formData, {
-        headers: { 
+        headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'multipart/form-data'
         }
       });
-      
+
       toast.success('Payment proof uploaded');
       setShowPaymentDialog(false);
       setPaymentForm({ amount: '', reference: '', file: null });
@@ -104,198 +126,185 @@ export default function DealerOrders() {
     }).format(amount || 0);
   };
 
-  const getStatusBadge = (status) => {
-    const colors = {
-      pending: 'bg-yellow-600',
-      confirmed: 'bg-cyan-600',
-      dispatched: 'bg-blue-600',
-      delivered: 'bg-green-600',
-      cancelled: 'bg-red-600'
-    };
-    return <Badge className={colors[status] || 'bg-slate-600'}>{status}</Badge>;
-  };
-
-  const getPaymentBadge = (status) => {
-    const colors = {
-      pending: 'bg-yellow-600',
-      received: 'bg-green-600',
-      rejected: 'bg-red-600'
-    };
-    return <Badge className={colors[status] || 'bg-slate-600'}>{status}</Badge>;
-  };
-
-  const filteredOrders = activeTab === 'all' 
-    ? orders 
+  const filteredOrders = activeTab === 'all'
+    ? orders
     : orders.filter(o => o.status === activeTab);
 
   if (loading) {
     return (
       <DashboardLayout title="My Orders">
         <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-cyan-500" />
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
         </div>
       </DashboardLayout>
     );
   }
 
-  // Order Detail View
+  // ── Order Detail View ────────────────────────────────────────────────────────
   if (selectedOrder) {
     return (
       <DashboardLayout title={`Order ${selectedOrder.order_number}`}>
-        <div className="space-y-6">
-          <Button variant="ghost" onClick={() => { setSelectedOrder(null); navigate('/dealer/orders'); }} className="text-slate-400">
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Back to Orders
-          </Button>
+        <div className="space-y-5">
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Back nav */}
+          <button
+            onClick={() => { setSelectedOrder(null); navigate('/dealer/orders'); }}
+            className="inline-flex items-center gap-1.5 font-mono text-[11px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" /> Back to Orders
+          </button>
+
+          {/* Header */}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground mb-1">Order Detail</p>
+              <h2 className="text-[22px] font-bold tracking-tight text-foreground">{selectedOrder.order_number}</h2>
+            </div>
+            <div className="flex items-center gap-2">
+              <StatusChip status={selectedOrder.status} toneMap={ORDER_STATUS_TONES} />
+              <StatusChip status={selectedOrder.payment_status} toneMap={PAYMENT_STATUS_TONES} />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
             {/* Order Info */}
             <div className="lg:col-span-2 space-y-4">
-              <Card className="bg-slate-800 border-slate-700">
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-white">{selectedOrder.order_number}</CardTitle>
-                    <div className="flex gap-2">
-                      {getStatusBadge(selectedOrder.status)}
-                      {getPaymentBadge(selectedOrder.payment_status)}
-                    </div>
+              <div className="mg-card rounded-lg border border-border bg-card">
+                {/* Meta */}
+                <div className="grid grid-cols-2 gap-px border-b border-border">
+                  <div className="p-4">
+                    <p className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Order Date</p>
+                    <p className="mt-1 text-sm font-medium text-foreground">
+                      {new Date(selectedOrder.created_at).toLocaleDateString('en-IN')}
+                    </p>
                   </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-2 gap-4 mb-6">
-                    <div>
-                      <p className="text-slate-400 text-sm">Order Date</p>
-                      <p className="text-white">{new Date(selectedOrder.created_at).toLocaleDateString()}</p>
-                    </div>
-                    <div>
-                      <p className="text-slate-400 text-sm">Total Amount</p>
-                      <p className="text-white font-bold text-lg">{formatCurrency(selectedOrder.total_amount)}</p>
-                    </div>
-                    {selectedOrder.dispatch_date && (
-                      <div>
-                        <p className="text-slate-400 text-sm">Dispatch Date</p>
-                        <p className="text-white">{selectedOrder.dispatch_date}</p>
-                      </div>
-                    )}
-                    {selectedOrder.dispatch_awb && (
-                      <div>
-                        <p className="text-slate-400 text-sm">Tracking Number</p>
-                        <p className="text-cyan-400">{selectedOrder.dispatch_awb}</p>
-                      </div>
-                    )}
+                  <div className="p-4">
+                    <p className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Total Amount</p>
+                    <p className="mt-1 font-mono text-lg font-bold tabular-nums text-foreground">
+                      {formatCurrency(selectedOrder.total_amount)}
+                    </p>
                   </div>
+                  {selectedOrder.dispatch_date && (
+                    <div className="p-4">
+                      <p className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Dispatch Date</p>
+                      <p className="mt-1 text-sm font-medium text-foreground">{selectedOrder.dispatch_date}</p>
+                    </div>
+                  )}
+                  {selectedOrder.dispatch_awb && (
+                    <div className="p-4">
+                      <p className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Tracking Number</p>
+                      <p className="mt-1 font-mono text-sm font-bold text-primary">{selectedOrder.dispatch_awb}</p>
+                    </div>
+                  )}
+                </div>
 
-                  <h4 className="text-white font-medium mb-3">Order Items</h4>
+                {/* Items */}
+                <div className="p-4">
+                  <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground mb-3">Order Items</p>
                   <div className="space-y-2">
                     {selectedOrder.items?.map((item, idx) => (
-                      <div key={idx} className="flex justify-between items-center p-3 bg-slate-900 rounded-lg">
+                      <div key={idx} className="mg-card flex items-center justify-between rounded-lg border border-border bg-muted/40 px-4 py-3">
                         <div>
-                          <p className="text-white">{item.product_name}</p>
-                          <p className="text-slate-400 text-sm">{item.sku} × {item.quantity}</p>
+                          <p className="text-sm font-semibold text-foreground">{item.product_name}</p>
+                          <p className="font-mono text-[11px] text-muted-foreground">{item.sku} × {item.quantity}</p>
                         </div>
-                        <p className="text-white font-medium">{formatCurrency(item.line_total)}</p>
+                        <p className="font-mono text-sm font-bold tabular-nums text-foreground">{formatCurrency(item.line_total)}</p>
                       </div>
                     ))}
                   </div>
-                </CardContent>
-              </Card>
+                </div>
+              </div>
             </div>
 
-            {/* Payment Section */}
+            {/* Sidebar */}
             <div className="space-y-4">
-              <Card className="bg-slate-800 border-slate-700">
-                <CardHeader>
-                  <CardTitle className="text-white">Payment Status</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="p-4 bg-slate-900 rounded-lg text-center">
-                    <p className="text-slate-400 text-sm">Amount Due</p>
-                    <p className="text-2xl font-bold text-white flex items-center justify-center gap-1">
-                      <IndianRupee className="w-5 h-5" />
-                      {selectedOrder.total_amount?.toLocaleString()}
-                    </p>
-                  </div>
+              {/* Payment Status */}
+              <div className="mg-card rounded-lg border border-border bg-card p-4">
+                <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground mb-3">Payment Status</p>
 
-                  {selectedOrder.payment_status === 'pending' && (
-                    <>
-                      {selectedOrder.payment_proof_path ? (
-                        <div className="p-3 bg-yellow-900/30 border border-yellow-600 rounded-lg">
-                          <div className="flex items-center gap-2 text-yellow-400 mb-2">
-                            <Clock className="w-4 h-4" />
-                            <span className="font-medium">Payment Under Review</span>
-                          </div>
-                          <p className="text-yellow-200 text-sm">
-                            Your payment proof is being verified.
-                          </p>
+                <div className="rounded-lg border border-border bg-muted/30 p-4 text-center mb-4">
+                  <p className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Amount Due</p>
+                  <p className="mt-1 font-mono text-2xl font-bold tabular-nums text-foreground flex items-center justify-center gap-1">
+                    <IndianRupee className="h-5 w-5" />
+                    {selectedOrder.total_amount?.toLocaleString('en-IN')}
+                  </p>
+                </div>
+
+                {selectedOrder.payment_status === 'pending' && (
+                  <>
+                    {selectedOrder.payment_proof_path ? (
+                      <div className="rounded-lg border border-amber-400/25 bg-amber-400/10 p-3">
+                        <div className="flex items-center gap-2 text-amber-400 mb-1">
+                          <Clock className="h-4 w-4" />
+                          <span className="text-sm font-semibold">Payment Under Review</span>
                         </div>
-                      ) : (
-                        <Button
-                          onClick={() => {
-                            setPaymentForm({ ...paymentForm, amount: selectedOrder.total_amount.toString() });
-                            setShowPaymentDialog(true);
-                          }}
-                          className="w-full bg-cyan-600 hover:bg-cyan-700"
-                        >
-                          <Upload className="w-4 h-4 mr-2" />
-                          Upload Payment Proof
-                        </Button>
-                      )}
-                    </>
-                  )}
-
-                  {selectedOrder.payment_status === 'received' && (
-                    <div className="p-3 bg-green-900/30 border border-green-600 rounded-lg">
-                      <div className="flex items-center gap-2 text-green-400">
-                        <CheckCircle className="w-4 h-4" />
-                        <span className="font-medium">Payment Confirmed</span>
+                        <p className="text-[12px] text-amber-400/80">Your payment proof is being verified.</p>
                       </div>
-                    </div>
-                  )}
+                    ) : (
+                      <button
+                        onClick={() => {
+                          setPaymentForm({ ...paymentForm, amount: selectedOrder.total_amount.toString() });
+                          setShowPaymentDialog(true);
+                        }}
+                        className="w-full inline-flex items-center justify-center gap-2 rounded bg-primary text-primary-foreground px-4 py-2 text-sm font-semibold hover:opacity-90 transition-opacity"
+                      >
+                        <Upload className="h-4 w-4" />
+                        Upload Payment Proof
+                      </button>
+                    )}
+                  </>
+                )}
 
-                  {selectedOrder.payment_proof_path && (
-                    <a 
-                      href={`${API.replace('/api', '')}${selectedOrder.payment_proof_path}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-2 text-cyan-400 hover:text-cyan-300"
-                    >
-                      <FileText className="w-4 h-4" />
-                      View Payment Proof
-                    </a>
-                  )}
-                </CardContent>
-              </Card>
+                {selectedOrder.payment_status === 'received' && (
+                  <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-3">
+                    <div className="flex items-center gap-2 text-emerald-400">
+                      <CheckCircle className="h-4 w-4" />
+                      <span className="text-sm font-semibold">Payment Confirmed</span>
+                    </div>
+                  </div>
+                )}
+
+                {selectedOrder.payment_proof_path && (
+                  <a
+                    href={`${API.replace('/api', '')}${selectedOrder.payment_proof_path}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-3 flex items-center gap-2 font-mono text-[11px] font-semibold text-primary hover:text-primary/80 transition-colors"
+                  >
+                    <FileText className="h-4 w-4" />
+                    View Payment Proof
+                  </a>
+                )}
+              </div>
 
               {/* Dispatch Info */}
               {selectedOrder.status === 'dispatched' && (
-                <Card className="bg-slate-800 border-slate-700">
-                  <CardHeader>
-                    <CardTitle className="text-white flex items-center gap-2">
-                      <Truck className="w-5 h-5 text-cyan-400" />
-                      Dispatch Info
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-2">
+                <div className="mg-card rounded-lg border border-border bg-card p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Truck className="h-4 w-4 text-primary" />
+                    <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Dispatch Info</p>
+                  </div>
+                  <div className="space-y-3">
                     {selectedOrder.dispatch_courier && (
                       <div>
-                        <p className="text-slate-400 text-sm">Courier</p>
-                        <p className="text-white">{selectedOrder.dispatch_courier}</p>
+                        <p className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Courier</p>
+                        <p className="mt-0.5 text-sm font-medium text-foreground">{selectedOrder.dispatch_courier}</p>
                       </div>
                     )}
                     {selectedOrder.dispatch_awb && (
                       <div>
-                        <p className="text-slate-400 text-sm">AWB / Tracking</p>
-                        <p className="text-cyan-400 font-mono">{selectedOrder.dispatch_awb}</p>
+                        <p className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">AWB / Tracking</p>
+                        <p className="mt-0.5 font-mono text-sm font-bold tabular-nums text-primary">{selectedOrder.dispatch_awb}</p>
                       </div>
                     )}
                     {selectedOrder.dispatch_date && (
                       <div>
-                        <p className="text-slate-400 text-sm">Dispatched On</p>
-                        <p className="text-white">{selectedOrder.dispatch_date}</p>
+                        <p className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Dispatched On</p>
+                        <p className="mt-0.5 text-sm font-medium text-foreground">{selectedOrder.dispatch_date}</p>
                       </div>
                     )}
-                  </CardContent>
-                </Card>
+                  </div>
+                </div>
               )}
             </div>
           </div>
@@ -303,49 +312,54 @@ export default function DealerOrders() {
 
         {/* Payment Upload Dialog */}
         <Dialog open={showPaymentDialog} onOpenChange={setShowPaymentDialog}>
-          <DialogContent className="bg-slate-900 border-slate-700">
+          <DialogContent className="bg-popover border border-border rounded-lg">
             <DialogHeader>
-              <DialogTitle className="text-white">Upload Payment Proof</DialogTitle>
-              <DialogDescription className="text-slate-400">
+              <DialogTitle className="text-foreground">Upload Payment Proof</DialogTitle>
+              <DialogDescription className="text-muted-foreground">
                 Upload your payment receipt or transaction screenshot
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4">
               <div>
-                <label className="text-slate-300 text-sm">Amount Paid *</label>
+                <label className={labelCls}>Amount Paid *</label>
                 <Input
                   type="number"
                   value={paymentForm.amount}
                   onChange={(e) => setPaymentForm({ ...paymentForm, amount: e.target.value })}
-                  className="bg-slate-800 border-slate-700 text-white"
                 />
               </div>
               <div>
-                <label className="text-slate-300 text-sm">Reference / UTR</label>
+                <label className={labelCls}>Reference / UTR</label>
                 <Input
                   value={paymentForm.reference}
                   onChange={(e) => setPaymentForm({ ...paymentForm, reference: e.target.value })}
-                  className="bg-slate-800 border-slate-700 text-white"
                 />
               </div>
               <div>
-                <label className="text-slate-300 text-sm">Upload Proof *</label>
+                <label className={labelCls}>Upload Proof *</label>
                 <input
                   type="file"
                   accept=".pdf,.jpg,.jpeg,.png"
                   onChange={(e) => setPaymentForm({ ...paymentForm, file: e.target.files[0] })}
-                  className="w-full text-slate-300 mt-1"
+                  className="w-full text-sm text-muted-foreground mt-1 file:mr-3 file:rounded file:border-0 file:bg-secondary file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-foreground"
                 />
               </div>
             </div>
             <DialogFooter>
-              <Button variant="ghost" onClick={() => setShowPaymentDialog(false)} className="text-slate-400">
+              <button
+                onClick={() => setShowPaymentDialog(false)}
+                className="px-4 py-2 rounded bg-secondary text-secondary-foreground text-sm font-medium hover:bg-secondary/80 transition-colors"
+              >
                 Cancel
-              </Button>
-              <Button onClick={handleUploadPayment} disabled={submitting} className="bg-cyan-600 hover:bg-cyan-700">
-                {submitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              </button>
+              <button
+                onClick={handleUploadPayment}
+                disabled={submitting}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-50"
+              >
+                {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
                 Upload
-              </Button>
+              </button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -353,64 +367,114 @@ export default function DealerOrders() {
     );
   }
 
-  // Orders List View
+  // ── Orders List View ─────────────────────────────────────────────────────────
   return (
     <DashboardLayout title="My Orders">
-      <div className="space-y-6">
-        <div className="flex justify-between items-center">
-          <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="bg-slate-800">
-              <TabsTrigger value="all" className="data-[state=active]:bg-cyan-600">All</TabsTrigger>
-              <TabsTrigger value="pending" className="data-[state=active]:bg-cyan-600">Pending</TabsTrigger>
-              <TabsTrigger value="confirmed" className="data-[state=active]:bg-cyan-600">Confirmed</TabsTrigger>
-              <TabsTrigger value="dispatched" className="data-[state=active]:bg-cyan-600">Dispatched</TabsTrigger>
-              <TabsTrigger value="delivered" className="data-[state=active]:bg-cyan-600">Delivered</TabsTrigger>
-            </TabsList>
-          </Tabs>
+      <div className="space-y-5">
+
+        {/* Page header */}
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <div className="mb-1.5 flex items-center gap-2">
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+              </span>
+              <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                Orders · Live
+              </span>
+            </div>
+            <h2 className="text-[26px] font-bold leading-tight tracking-tight text-foreground">My Orders</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              <span className="font-mono font-semibold text-primary tabular-nums">{orders.length}</span> total orders
+            </p>
+          </div>
           <Link to="/dealer/orders/new">
-            <Button className="bg-cyan-600 hover:bg-cyan-700">
+            <button className="inline-flex items-center gap-2 rounded bg-primary text-primary-foreground px-4 py-2 text-sm font-semibold hover:opacity-90 transition-opacity">
               New Order
-            </Button>
+            </button>
           </Link>
         </div>
 
-        <Card className="bg-slate-800 border-slate-700">
-          <CardContent className="p-0">
-            {filteredOrders.length === 0 ? (
-              <div className="text-center py-12 text-slate-400">
-                <Package className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                <p>No orders found</p>
+        {/* Tab filter bar */}
+        <div className="flex">
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+            <TabsList className="bg-card border border-border">
+              {['all', 'pending', 'confirmed', 'dispatched', 'delivered'].map((tab) => (
+                <TabsTrigger
+                  key={tab}
+                  value={tab}
+                  className="font-mono text-[11px] uppercase tracking-wide data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
+                >
+                  {tab}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+        </div>
+
+        {/* Orders table */}
+        <div className="mg-card rounded-lg border border-border bg-card overflow-hidden">
+          {filteredOrders.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+                <Package className="h-6 w-6 text-muted-foreground/50" />
               </div>
-            ) : (
-              <div className="divide-y divide-slate-700">
-                {filteredOrders.map((order) => (
-                  <div 
-                    key={order.id}
-                    onClick={() => { setSelectedOrder(order); navigate(`/dealer/orders/${order.id}`); }}
-                    className="p-4 hover:bg-slate-700/50 cursor-pointer transition-colors"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="flex items-center gap-3 mb-1">
-                          <p className="text-white font-medium">{order.order_number}</p>
-                          {getStatusBadge(order.status)}
-                          {getPaymentBadge(order.payment_status)}
-                        </div>
-                        <p className="text-slate-400 text-sm">
-                          {order.items?.length || 0} items • {new Date(order.created_at).toLocaleDateString()}
-                        </p>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-white font-bold">{formatCurrency(order.total_amount)}</p>
-                        <Eye className="w-4 h-4 text-slate-400 ml-auto mt-1" />
-                      </div>
-                    </div>
+              <p className="text-sm font-semibold text-foreground">No orders found</p>
+              <p className="mt-1 text-[12px] text-muted-foreground">
+                {activeTab === 'all' ? 'Place your first order to get started.' : `No ${activeTab} orders.`}
+              </p>
+            </div>
+          ) : (
+            <div className="divide-y divide-border">
+              {/* Table header */}
+              <div className="hidden md:grid grid-cols-12 px-5 py-3 bg-muted/30">
+                <div className="col-span-4">
+                  <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Order</span>
+                </div>
+                <div className="col-span-2">
+                  <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Status</span>
+                </div>
+                <div className="col-span-2">
+                  <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Payment</span>
+                </div>
+                <div className="col-span-2">
+                  <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Items</span>
+                </div>
+                <div className="col-span-2 text-right">
+                  <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Amount</span>
+                </div>
+              </div>
+              {filteredOrders.map((order) => (
+                <div
+                  key={order.id}
+                  onClick={() => { setSelectedOrder(order); navigate(`/dealer/orders/${order.id}`); }}
+                  className="group grid grid-cols-1 md:grid-cols-12 items-center px-5 py-4 hover:bg-accent/40 cursor-pointer transition-colors gap-2 md:gap-0"
+                >
+                  <div className="md:col-span-4">
+                    <p className="font-mono text-sm font-semibold text-foreground">{order.order_number}</p>
+                    <p className="font-mono text-[11px] text-muted-foreground mt-0.5">
+                      {new Date(order.created_at).toLocaleDateString('en-IN')}
+                    </p>
                   </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+                  <div className="md:col-span-2">
+                    <StatusChip status={order.status} toneMap={ORDER_STATUS_TONES} />
+                  </div>
+                  <div className="md:col-span-2">
+                    <StatusChip status={order.payment_status} toneMap={PAYMENT_STATUS_TONES} />
+                  </div>
+                  <div className="md:col-span-2">
+                    <span className="font-mono text-[12px] text-muted-foreground">{order.items?.length || 0} item{order.items?.length !== 1 ? 's' : ''}</span>
+                  </div>
+                  <div className="md:col-span-2 flex items-center justify-between md:justify-end gap-2">
+                    <p className="font-mono text-sm font-bold tabular-nums text-foreground">{formatCurrency(order.total_amount)}</p>
+                    <Eye className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition-colors" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </DashboardLayout>
   );

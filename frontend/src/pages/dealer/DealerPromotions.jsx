@@ -22,6 +22,45 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 
+// Status chip tones
+const STATUS_TONES = {
+  pending:   { cls: 'bg-amber-400/15 text-amber-400 ring-amber-400/25',   icon: Clock },
+  approved:  { cls: 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25', icon: CheckCircle },
+  rejected:  { cls: 'bg-rose-500/15 text-rose-400 ring-rose-500/25',      icon: X },
+  completed: { cls: 'bg-primary/15 text-primary ring-primary/25',         icon: CheckCircle },
+};
+
+// Quick-action card tiles
+const TYPE_TILES = [
+  {
+    key: 'promotional_material',
+    label: 'Promotional Material',
+    sub: 'Banners, posters, standees',
+    icon: Megaphone,
+    tile: 'bg-violet-400/15 text-violet-400',
+  },
+  {
+    key: 'scheme_request',
+    label: 'Special Schemes',
+    sub: 'Discounts & offers',
+    icon: Gift,
+    tile: 'bg-emerald-500/15 text-emerald-400',
+  },
+  {
+    key: 'pricing_query',
+    label: 'Pricing Query',
+    sub: 'Bulk pricing, margins',
+    icon: TrendingUp,
+    tile: 'bg-amber-400/15 text-amber-400',
+  },
+];
+
+const TYPE_ICON_TONE = {
+  promotional_material: 'bg-violet-400/15 text-violet-400',
+  scheme_request:       'bg-emerald-500/15 text-emerald-400',
+  pricing_query:        'bg-amber-400/15 text-amber-400',
+};
+
 export default function DealerPromotions() {
   const { token } = useAuth();
   const [loading, setLoading] = useState(true);
@@ -58,7 +97,7 @@ export default function DealerPromotions() {
       toast.error('Please fill all required fields');
       return;
     }
-    
+
     setSubmitting(true);
     try {
       await axios.post(`${API}/dealer/promo-requests`, form, {
@@ -75,20 +114,14 @@ export default function DealerPromotions() {
     }
   };
 
-  const getStatusBadge = (status) => {
-    const styles = {
-      pending: { bg: 'bg-yellow-600', icon: Clock },
-      approved: { bg: 'bg-green-600', icon: CheckCircle },
-      rejected: { bg: 'bg-red-600', icon: X },
-      completed: { bg: 'bg-blue-600', icon: CheckCircle }
-    };
-    const style = styles[status] || styles.pending;
-    const Icon = style.icon;
+  const getStatusChip = (status) => {
+    const cfg = STATUS_TONES[status] || STATUS_TONES.pending;
+    const Icon = cfg.icon;
     return (
-      <Badge className={style.bg}>
-        <Icon className="w-3 h-3 mr-1" />
+      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 ${cfg.cls}`}>
+        <Icon className="w-3 h-3" />
         {status}
-      </Badge>
+      </span>
     );
   };
 
@@ -99,7 +132,12 @@ export default function DealerPromotions() {
       pricing_query: TrendingUp
     };
     const Icon = icons[type] || Megaphone;
-    return <Icon className="w-5 h-5 text-cyan-400" />;
+    const tone = TYPE_ICON_TONE[type] || TYPE_ICON_TONE.promotional_material;
+    return (
+      <div className={`w-8 h-8 rounded flex items-center justify-center flex-shrink-0 ${tone}`}>
+        <Icon className="w-4 h-4" />
+      </div>
+    );
   };
 
   const getTypeLabel = (type) => {
@@ -115,7 +153,7 @@ export default function DealerPromotions() {
     return (
       <DashboardLayout title="Promotions & Schemes">
         <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-cyan-500" />
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
         </div>
       </DashboardLayout>
     );
@@ -124,13 +162,20 @@ export default function DealerPromotions() {
   return (
     <DashboardLayout title="Promotions & Schemes">
       <div className="space-y-6">
+
         {/* Header */}
-        <div className="flex justify-between items-center">
+        <div className="flex justify-between items-start">
           <div>
-            <h2 className="text-xl font-semibold text-white">Promotions & Schemes</h2>
-            <p className="text-slate-400 text-sm">Request promotional materials and special schemes</p>
+            <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground mb-1">
+              Dealer Portal
+            </p>
+            <h2 className="text-2xl font-bold text-foreground">Promotions & Schemes</h2>
+            <p className="text-muted-foreground text-sm mt-1">Request promotional materials and special schemes</p>
           </div>
-          <Button onClick={() => setShowCreateDialog(true)} className="bg-cyan-600 hover:bg-cyan-700">
+          <Button
+            onClick={() => setShowCreateDialog(true)}
+            className="bg-primary text-primary-foreground hover:bg-primary/90"
+          >
             <Plus className="w-4 h-4 mr-2" />
             New Request
           </Button>
@@ -138,110 +183,92 @@ export default function DealerPromotions() {
 
         {/* Quick Actions */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Card className="bg-slate-800 border-slate-700 cursor-pointer hover:border-cyan-500 transition-colors"
-                onClick={() => { setForm({ ...form, request_type: 'promotional_material' }); setShowCreateDialog(true); }}>
-            <CardContent className="p-4 flex items-center gap-4">
-              <div className="w-12 h-12 bg-purple-600 rounded-lg flex items-center justify-center">
-                <Megaphone className="w-6 h-6 text-white" />
+          {TYPE_TILES.map(({ key, label, sub, icon: Icon, tile }) => (
+            <button
+              key={key}
+              onClick={() => { setForm({ ...form, request_type: key }); setShowCreateDialog(true); }}
+              className="mg-card rounded-lg border border-border bg-card p-4 flex items-center gap-4 text-left transition-colors hover:border-primary/40 cursor-pointer"
+            >
+              <div className={`w-11 h-11 rounded flex items-center justify-center flex-shrink-0 ${tile}`}>
+                <Icon className="w-5 h-5" />
               </div>
-              <div>
-                <p className="text-white font-medium">Promotional Material</p>
-                <p className="text-slate-400 text-sm">Banners, posters, standees</p>
+              <div className="min-w-0">
+                <p className="text-foreground font-semibold text-sm">{label}</p>
+                <p className="text-muted-foreground text-xs mt-0.5">{sub}</p>
               </div>
-            </CardContent>
-          </Card>
-
-          <Card className="bg-slate-800 border-slate-700 cursor-pointer hover:border-cyan-500 transition-colors"
-                onClick={() => { setForm({ ...form, request_type: 'scheme_request' }); setShowCreateDialog(true); }}>
-            <CardContent className="p-4 flex items-center gap-4">
-              <div className="w-12 h-12 bg-green-600 rounded-lg flex items-center justify-center">
-                <Gift className="w-6 h-6 text-white" />
-              </div>
-              <div>
-                <p className="text-white font-medium">Special Schemes</p>
-                <p className="text-slate-400 text-sm">Discounts & offers</p>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="bg-slate-800 border-slate-700 cursor-pointer hover:border-cyan-500 transition-colors"
-                onClick={() => { setForm({ ...form, request_type: 'pricing_query' }); setShowCreateDialog(true); }}>
-            <CardContent className="p-4 flex items-center gap-4">
-              <div className="w-12 h-12 bg-orange-600 rounded-lg flex items-center justify-center">
-                <TrendingUp className="w-6 h-6 text-white" />
-              </div>
-              <div>
-                <p className="text-white font-medium">Pricing Query</p>
-                <p className="text-slate-400 text-sm">Bulk pricing, margins</p>
-              </div>
-            </CardContent>
-          </Card>
+            </button>
+          ))}
         </div>
 
         {/* Requests List */}
-        <Card className="bg-slate-800 border-slate-700">
-          <CardHeader>
-            <CardTitle className="text-white">Your Requests</CardTitle>
-          </CardHeader>
-          <CardContent className="p-0">
-            {requests.length === 0 ? (
-              <div className="text-center py-12 text-slate-400">
-                <Gift className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                <p>No requests yet</p>
-                <p className="text-sm mt-2">Request promotional materials or schemes</p>
-              </div>
-            ) : (
-              <div className="divide-y divide-slate-700">
-                {requests.map((request) => (
-                  <div key={request.id} className="p-4 hover:bg-slate-700/50 transition-colors">
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-start gap-3">
-                        {getTypeIcon(request.request_type)}
-                        <div>
-                          <div className="flex items-center gap-3 mb-1">
-                            <h4 className="text-white font-medium">{request.subject}</h4>
-                            {getStatusBadge(request.status)}
-                          </div>
-                          <p className="text-slate-400 text-sm">{getTypeLabel(request.request_type)}</p>
-                          <p className="text-slate-300 text-sm mt-2">{request.details}</p>
+        <div className="mg-card rounded-lg border border-border bg-card overflow-hidden">
+          <div className="px-4 py-3 border-b border-border">
+            <h3 className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">
+              Your Requests
+            </h3>
+          </div>
+          {requests.length === 0 ? (
+            <div className="text-center py-12">
+              <Gift className="w-10 h-10 mx-auto mb-3 text-muted-foreground/30" />
+              <p className="text-foreground font-medium">No requests yet</p>
+              <p className="text-muted-foreground text-sm mt-1">Request promotional materials or schemes</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-border">
+              {requests.map((request) => (
+                <div key={request.id} className="p-4 hover:bg-muted/30 transition-colors">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-start gap-3 min-w-0">
+                      {getTypeIcon(request.request_type)}
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap mb-1">
+                          <h4 className="text-foreground font-medium text-sm">{request.subject}</h4>
+                          {getStatusChip(request.status)}
                         </div>
-                      </div>
-                      <div className="text-right text-sm">
-                        <p className="text-slate-400">{new Date(request.created_at).toLocaleDateString()}</p>
+                        <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                          {getTypeLabel(request.request_type)}
+                        </p>
+                        <p className="text-muted-foreground text-sm mt-2 leading-relaxed">{request.details}</p>
                       </div>
                     </div>
-                    {request.admin_response && (
-                      <div className="mt-3 ml-8 p-3 bg-slate-900 rounded-lg">
-                        <p className="text-slate-300 text-sm">
-                          <span className="text-cyan-400 font-medium">Response:</span> {request.admin_response}
-                        </p>
-                      </div>
-                    )}
+                    <div className="text-right flex-shrink-0">
+                      <p className="font-mono text-[11px] text-muted-foreground">
+                        {new Date(request.created_at).toLocaleDateString()}
+                      </p>
+                    </div>
                   </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+                  {request.admin_response && (
+                    <div className="mt-3 ml-11 p-3 bg-muted rounded border border-border">
+                      <p className="text-sm text-foreground">
+                        <span className="text-primary font-semibold">Response: </span>
+                        {request.admin_response}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Create Request Dialog */}
       <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
-        <DialogContent className="bg-slate-900 border-slate-700">
+        <DialogContent className="bg-popover border border-border">
           <DialogHeader>
-            <DialogTitle className="text-white">New Promo Request</DialogTitle>
-            <DialogDescription className="text-slate-400">
+            <DialogTitle className="text-foreground">New Promo Request</DialogTitle>
+            <DialogDescription className="text-muted-foreground">
               Submit a request for promotional materials or schemes
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div>
-              <Label className="text-slate-300">Request Type</Label>
+              <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Request Type</Label>
               <Select value={form.request_type} onValueChange={(v) => setForm({ ...form, request_type: v })}>
-                <SelectTrigger className="bg-slate-800 border-slate-700 text-white">
+                <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent className="bg-slate-800 border-slate-700">
+                <SelectContent>
                   <SelectItem value="promotional_material">Promotional Material</SelectItem>
                   <SelectItem value="scheme_request">Scheme Request</SelectItem>
                   <SelectItem value="pricing_query">Pricing Query</SelectItem>
@@ -250,31 +277,29 @@ export default function DealerPromotions() {
             </div>
 
             <div>
-              <Label className="text-slate-300">Subject *</Label>
+              <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Subject *</Label>
               <Input
                 value={form.subject}
                 onChange={(e) => setForm({ ...form, subject: e.target.value })}
                 placeholder="e.g., Need standees for store"
-                className="bg-slate-800 border-slate-700 text-white"
               />
             </div>
 
             <div>
-              <Label className="text-slate-300">Details *</Label>
+              <Label className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Details *</Label>
               <Textarea
                 value={form.details}
                 onChange={(e) => setForm({ ...form, details: e.target.value })}
                 placeholder="Describe what you need..."
                 rows={4}
-                className="bg-slate-800 border-slate-700 text-white"
               />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setShowCreateDialog(false)} className="text-slate-400">
+            <Button variant="secondary" onClick={() => setShowCreateDialog(false)}>
               Cancel
             </Button>
-            <Button onClick={handleCreate} disabled={submitting} className="bg-cyan-600 hover:bg-cyan-700">
+            <Button onClick={handleCreate} disabled={submitting} className="bg-primary text-primary-foreground hover:bg-primary/90">
               {submitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
               Submit Request
             </Button>

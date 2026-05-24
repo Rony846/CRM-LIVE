@@ -2,13 +2,34 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import { User, Phone, Mail, MapPin, Building2, FileText, Shield, Loader2, Save, Eye, EyeOff } from 'lucide-react';
+
+const BADGE_BASE = 'px-2 py-0.5 text-[10px] font-mono font-semibold rounded uppercase tracking-wide ring-1';
+
+const StatusBadge = ({ status, fallback = 'unknown' }) => {
+  const tones = {
+    approved:       'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25',
+    pending:        'bg-amber-400/15 text-amber-400 ring-amber-400/25',
+    pending_review: 'bg-amber-400/15 text-amber-400 ring-amber-400/25',
+    rejected:       'bg-rose-500/15 text-rose-400 ring-rose-500/25',
+  };
+  const tone = tones[status] || 'bg-muted text-muted-foreground ring-border';
+  return <span className={`${BADGE_BASE} ${tone}`}>{(status || fallback).replace(/_/g, ' ')}</span>;
+};
+
+const FieldRow = ({ icon: Icon, label, value }) => (
+  <div>
+    <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground mb-1">{label}</p>
+    <p className="text-sm text-foreground flex items-center gap-2">
+      {Icon && <Icon className="w-4 h-4 text-muted-foreground flex-shrink-0" />}
+      {value}
+    </p>
+  </div>
+);
 
 export default function DealerProfile() {
   const { token, user } = useAuth();
@@ -47,7 +68,7 @@ export default function DealerProfile() {
       toast.error('Password must be at least 6 characters');
       return;
     }
-    
+
     setSaving(true);
     try {
       await axios.post(`${API}/auth/change-password`, {
@@ -70,7 +91,7 @@ export default function DealerProfile() {
     return (
       <DashboardLayout title="My Profile">
         <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-cyan-500" />
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
         </div>
       </DashboardLayout>
     );
@@ -81,178 +102,178 @@ export default function DealerProfile() {
   return (
     <DashboardLayout title="My Profile">
       <div className="space-y-6 max-w-4xl">
-        {/* Profile Card */}
-        <Card className="bg-slate-800 border-slate-700">
-          <CardHeader>
-            <CardTitle className="text-white flex items-center gap-2">
-              <User className="w-5 h-5 text-cyan-400" />
-              Dealer Profile
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            {/* Firm Info */}
+        {/* Page header */}
+        <div>
+          <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground mb-1">
+            Account · Settings
+          </p>
+          <h1 className="text-[26px] font-bold leading-tight tracking-tight text-foreground">My Profile</h1>
+        </div>
+
+        {/* Profile details */}
+        <div className="mg-card rounded-lg border border-border bg-card">
+          <div className="flex items-center gap-2 px-5 pt-5 pb-3 border-b border-border">
+            <div className="flex h-7 w-7 items-center justify-center rounded bg-primary/15 text-primary">
+              <User className="w-4 h-4" />
+            </div>
+            <h2 className="text-sm font-semibold text-foreground">Dealer Profile</h2>
+          </div>
+
+          <div className="p-5">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="space-y-4">
-                <div>
-                  <Label className="text-slate-400 text-sm">Firm Name</Label>
-                  <p className="text-white text-lg font-medium">{dealer?.firm_name}</p>
-                </div>
-                <div>
-                  <Label className="text-slate-400 text-sm">Contact Person</Label>
-                  <p className="text-white">{dealer?.contact_person}</p>
-                </div>
-                <div>
-                  <Label className="text-slate-400 text-sm">Phone</Label>
-                  <p className="text-white flex items-center gap-2">
-                    <Phone className="w-4 h-4 text-slate-400" />
-                    {dealer?.phone}
-                  </p>
-                </div>
-                <div>
-                  <Label className="text-slate-400 text-sm">Email</Label>
-                  <p className="text-white flex items-center gap-2">
-                    <Mail className="w-4 h-4 text-slate-400" />
-                    {user?.email}
-                  </p>
-                </div>
+              {/* Column 1 */}
+              <div className="space-y-5">
+                <FieldRow label="Firm Name" value={<span className="text-base font-semibold">{dealer?.firm_name}</span>} />
+                <FieldRow label="Contact Person" value={dealer?.contact_person} />
+                <FieldRow icon={Phone} label="Phone" value={dealer?.phone} />
+                <FieldRow icon={Mail} label="Email" value={user?.email} />
               </div>
-              
-              <div className="space-y-4">
+
+              {/* Column 2 */}
+              <div className="space-y-5">
+                <FieldRow label="GST Number" value={dealer?.gst_number || 'Not provided'} />
                 <div>
-                  <Label className="text-slate-400 text-sm">GST Number</Label>
-                  <p className="text-white">{dealer?.gst_number || 'Not provided'}</p>
-                </div>
-                <div>
-                  <Label className="text-slate-400 text-sm">Address</Label>
-                  <p className="text-white flex items-start gap-2">
-                    <MapPin className="w-4 h-4 text-slate-400 mt-1" />
+                  <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground mb-1">
+                    Address
+                  </p>
+                  <p className="text-sm text-foreground flex items-start gap-2">
+                    <MapPin className="w-4 h-4 text-muted-foreground flex-shrink-0 mt-0.5" />
                     <span>
                       {dealer?.address?.line1 || dealer?.address_line1}<br />
-                      {dealer?.address?.city || dealer?.city}, {dealer?.address?.state || dealer?.state} - {dealer?.address?.pincode || dealer?.pincode}
+                      {dealer?.address?.city || dealer?.city},{' '}
+                      {dealer?.address?.state || dealer?.state} &mdash; {dealer?.address?.pincode || dealer?.pincode}
                     </span>
                   </p>
                 </div>
                 <div>
-                  <Label className="text-slate-400 text-sm">Account Status</Label>
-                  <div className="flex items-center gap-2 mt-1">
-                    <Badge className={dealer?.status === 'approved' ? 'bg-green-600' : 'bg-yellow-600'}>
-                      {dealer?.status}
-                    </Badge>
-                    <Badge className={depositStatus === 'approved' ? 'bg-green-600' : 'bg-yellow-600'}>
-                      <Shield className="w-3 h-3 mr-1" />
-                      Deposit: {depositStatus}
-                    </Badge>
+                  <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground mb-2">
+                    Account Status
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <StatusBadge status={dealer?.status} />
+                    <span className={`${BADGE_BASE} ${
+                      depositStatus === 'approved'
+                        ? 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25'
+                        : 'bg-amber-400/15 text-amber-400 ring-amber-400/25'
+                    } flex items-center gap-1`}>
+                      <Shield className="w-2.5 h-2.5" />
+                      Deposit: {depositStatus?.replace(/_/g, ' ') || 'pending'}
+                    </span>
                   </div>
                 </div>
               </div>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
 
-        {/* Security Deposit Info */}
-        <Card className="bg-slate-800 border-slate-700">
-          <CardHeader>
-            <CardTitle className="text-white flex items-center gap-2">
-              <Shield className="w-5 h-5 text-cyan-400" />
-              Security Deposit
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
+        {/* Security Deposit */}
+        <div className="mg-card rounded-lg border border-border bg-card">
+          <div className="flex items-center gap-2 px-5 pt-5 pb-3 border-b border-border">
+            <div className="flex h-7 w-7 items-center justify-center rounded bg-sky-400/15 text-sky-400">
+              <Shield className="w-4 h-4" />
+            </div>
+            <h2 className="text-sm font-semibold text-foreground">Security Deposit</h2>
+          </div>
+          <div className="p-5">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="p-4 bg-slate-900 rounded-lg">
-                <p className="text-slate-400 text-sm">Amount</p>
-                <p className="text-white text-xl font-bold">
+              <div className="p-4 rounded-md bg-muted/40">
+                <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Amount</p>
+                <p className="mt-1.5 font-mono text-xl font-bold tabular-nums text-foreground">
                   ₹{(dealer?.security_deposit?.amount || dealer?.security_deposit_amount || 100000).toLocaleString()}
                 </p>
               </div>
-              <div className="p-4 bg-slate-900 rounded-lg">
-                <p className="text-slate-400 text-sm">Status</p>
-                <Badge className={depositStatus === 'approved' ? 'bg-green-600' : depositStatus === 'pending_review' ? 'bg-yellow-600' : 'bg-red-600'}>
+              <div className="p-4 rounded-md bg-muted/40">
+                <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground mb-2">Status</p>
+                <StatusBadge status={depositStatus} fallback="pending" />
+                <p className="mt-1 text-[11px] text-muted-foreground">
                   {depositStatus === 'approved' ? 'Paid & Verified' : depositStatus === 'pending_review' ? 'Under Review' : 'Pending'}
-                </Badge>
+                </p>
               </div>
-              <div className="p-4 bg-slate-900 rounded-lg">
-                <p className="text-slate-400 text-sm">Portal Access</p>
-                <p className="text-white">
+              <div className="p-4 rounded-md bg-muted/40">
+                <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Portal Access</p>
+                <p className="mt-1.5 text-sm font-medium">
                   {depositStatus === 'approved' ? (
-                    <span className="text-green-400">✓ Full Access</span>
+                    <span className="text-emerald-400">Full Access</span>
                   ) : (
-                    <span className="text-yellow-400">Limited (Deposit Required)</span>
+                    <span className="text-amber-400">Limited (Deposit Required)</span>
                   )}
                 </p>
               </div>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
 
         {/* Change Password */}
-        <Card className="bg-slate-800 border-slate-700">
-          <CardHeader>
-            <CardTitle className="text-white flex items-center justify-between">
-              <span className="flex items-center gap-2">
-                <FileText className="w-5 h-5 text-cyan-400" />
-                Security
-              </span>
-              <Button 
-                variant="outline" 
-                size="sm"
-                onClick={() => setShowPasswordChange(!showPasswordChange)}
-                className="border-slate-600 text-slate-300"
-              >
-                {showPasswordChange ? 'Cancel' : 'Change Password'}
-              </Button>
-            </CardTitle>
-          </CardHeader>
+        <div className="mg-card rounded-lg border border-border bg-card">
+          <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-border">
+            <div className="flex items-center gap-2">
+              <div className="flex h-7 w-7 items-center justify-center rounded bg-violet-400/15 text-violet-400">
+                <FileText className="w-4 h-4" />
+              </div>
+              <h2 className="text-sm font-semibold text-foreground">Security</h2>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowPasswordChange(!showPasswordChange)}
+            >
+              {showPasswordChange ? 'Cancel' : 'Change Password'}
+            </Button>
+          </div>
+
           {showPasswordChange && (
-            <CardContent className="space-y-4">
-              <div>
-                <Label className="text-slate-300">Current Password</Label>
+            <div className="p-5 space-y-4">
+              <div className="space-y-1.5">
+                <Label className="font-mono text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
+                  Current Password
+                </Label>
                 <div className="relative">
                   <Input
                     type={showPassword ? 'text' : 'password'}
                     value={passwordForm.current}
                     onChange={(e) => setPasswordForm({ ...passwordForm, current: e.target.value })}
-                    className="bg-slate-900 border-slate-700 text-white pr-10"
+                    className="pr-10"
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
                   >
                     {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                 </div>
               </div>
-              <div>
-                <Label className="text-slate-300">New Password</Label>
+
+              <div className="space-y-1.5">
+                <Label className="font-mono text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
+                  New Password
+                </Label>
                 <Input
                   type={showPassword ? 'text' : 'password'}
                   value={passwordForm.new}
                   onChange={(e) => setPasswordForm({ ...passwordForm, new: e.target.value })}
-                  className="bg-slate-900 border-slate-700 text-white"
                 />
               </div>
-              <div>
-                <Label className="text-slate-300">Confirm New Password</Label>
+
+              <div className="space-y-1.5">
+                <Label className="font-mono text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
+                  Confirm New Password
+                </Label>
                 <Input
                   type={showPassword ? 'text' : 'password'}
                   value={passwordForm.confirm}
                   onChange={(e) => setPasswordForm({ ...passwordForm, confirm: e.target.value })}
-                  className="bg-slate-900 border-slate-700 text-white"
                 />
               </div>
-              <Button 
-                onClick={handlePasswordChange} 
-                disabled={saving}
-                className="bg-cyan-600 hover:bg-cyan-700"
-              >
+
+              <Button onClick={handlePasswordChange} disabled={saving}>
                 {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                 <Save className="w-4 h-4 mr-2" />
                 Update Password
               </Button>
-            </CardContent>
+            </div>
           )}
-        </Card>
+        </div>
       </div>
     </DashboardLayout>
   );

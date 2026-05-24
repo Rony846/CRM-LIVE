@@ -47,8 +47,8 @@ export default function DealerPlaceOrder() {
   const addToCart = (product) => {
     const existing = cart.find(item => item.product_id === product.id);
     if (existing) {
-      setCart(cart.map(item => 
-        item.product_id === product.id 
+      setCart(cart.map(item =>
+        item.product_id === product.id
           ? { ...item, quantity: item.quantity + 1 }
           : item
       ));
@@ -92,7 +92,7 @@ export default function DealerPlaceOrder() {
       toast.error('Cart is empty');
       return;
     }
-    
+
     setSubmitting(true);
     try {
       const response = await axios.post(`${API}/dealer/orders`, {
@@ -101,7 +101,7 @@ export default function DealerPlaceOrder() {
       }, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      
+
       toast.success(`Order ${response.data.order_number} created successfully`);
       navigate(`/dealer/orders/${response.data.id}`);
     } catch (error) {
@@ -123,7 +123,7 @@ export default function DealerPlaceOrder() {
     return (
       <DashboardLayout title="Place Order">
         <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-cyan-500" />
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
         </div>
       </DashboardLayout>
     );
@@ -132,133 +132,209 @@ export default function DealerPlaceOrder() {
   if (!canOrder) {
     return (
       <DashboardLayout title="Place Order">
-        <Card className="bg-yellow-900/30 border-yellow-600 max-w-lg mx-auto">
-          <CardContent className="p-6 text-center">
-            <AlertTriangle className="w-12 h-12 text-yellow-400 mx-auto mb-4" />
-            <h3 className="text-xl font-semibold text-yellow-400 mb-2">Cannot Place Orders</h3>
-            <p className="text-yellow-200 mb-4">
-              Your dealer account must be approved before you can place orders.
-              Please contact admin if you believe this is an error.
-            </p>
-            <Link to="/dealer/deposit">
-              <Button className="bg-yellow-600 hover:bg-yellow-700">
-                Check Account Status
-              </Button>
-            </Link>
-          </CardContent>
-        </Card>
+        <div className="mg-card mx-auto max-w-lg rounded-lg border border-amber-400/25 bg-amber-400/10 p-8 text-center">
+          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-amber-400/15">
+            <AlertTriangle className="h-7 w-7 text-amber-400" />
+          </div>
+          <h3 className="text-lg font-bold text-amber-400 mb-2">Cannot Place Orders</h3>
+          <p className="text-[13px] text-amber-400/80 mb-5">
+            Your dealer account must be approved before you can place orders.
+            Please contact admin if you believe this is an error.
+          </p>
+          <Link to="/dealer/deposit">
+            <button className="inline-flex items-center gap-2 rounded bg-amber-400/20 border border-amber-400/30 px-4 py-2 text-sm font-semibold text-amber-400 hover:bg-amber-400/30 transition-colors">
+              Check Account Status
+            </button>
+          </Link>
+        </div>
       </DashboardLayout>
     );
   }
 
   return (
     <DashboardLayout title="Place Order">
+      {/* Page header */}
+      <div className="mb-5">
+        <div className="mb-1.5 flex items-center gap-2">
+          <span className="relative flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+          </span>
+          <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+            Order desk · Live
+          </span>
+        </div>
+        <h2 className="text-[26px] font-bold leading-tight tracking-tight text-foreground">Place Order</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          <span className="font-mono font-semibold text-primary tabular-nums">{products.length}</span> products available
+        </p>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Products */}
-        <div className="lg:col-span-2 space-y-4">
-          <Card className="bg-slate-800 border-slate-700">
-            <CardHeader>
-              <CardTitle className="text-white flex items-center gap-2">
-                <Package className="w-5 h-5 text-cyan-400" />
-                Product Catalog
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
+        {/* Product Catalog */}
+        <div className="lg:col-span-2">
+          <div className="mg-card rounded-lg border border-border bg-card">
+            <div className="flex items-center gap-2 border-b border-border px-5 py-4">
+              <Package className="h-4 w-4 text-primary" />
+              <h3 className="text-[15px] font-semibold text-foreground">Product Catalog</h3>
+            </div>
+            <div className="p-4">
               {products.length === 0 ? (
-                <p className="text-slate-400 text-center py-8">No products available</p>
+                <div className="flex flex-col items-center justify-center py-12 text-center">
+                  <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+                    <Package className="h-6 w-6 text-muted-foreground/50" />
+                  </div>
+                  <p className="text-sm font-semibold text-foreground">No products available</p>
+                  <p className="mt-1 text-[12px] text-muted-foreground">Check back later or contact your account manager.</p>
+                </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {products.map((product) => (
-                    <div key={product.id} className="p-4 bg-slate-900 rounded-lg border border-slate-700">
-                      <div className="flex justify-between items-start mb-2">
-                        <div>
-                          <h4 className="text-white font-medium">{product.name}</h4>
-                          <p className="text-slate-400 text-sm">{product.sku}</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {products.map((product) => {
+                    const inCart = cart.find(i => i.product_id === product.id);
+                    return (
+                      <div
+                        key={product.id}
+                        className={`mg-card rounded-lg border bg-muted/30 p-4 transition-all ${
+                          inCart ? 'border-primary/40' : 'border-border hover:border-border/80'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2 mb-3">
+                          <div className="min-w-0">
+                            <h4 className="text-sm font-semibold text-foreground truncate">{product.name}</h4>
+                            <p className="font-mono text-[11px] text-muted-foreground">{product.sku}</p>
+                          </div>
+                          <span className="flex-shrink-0 inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 bg-muted text-muted-foreground ring-border">
+                            {product.category}
+                          </span>
                         </div>
-                        <Badge variant="outline" className="border-slate-600 text-slate-300">
-                          {product.category}
-                        </Badge>
-                      </div>
-                      <div className="flex items-center justify-between mt-3">
-                        <div>
-                          <p className="text-slate-400 text-xs line-through">MRP: {formatCurrency(product.mrp)}</p>
-                          <p className="text-cyan-400 font-bold text-lg">{formatCurrency(product.dealer_price)}</p>
-                          <p className="text-slate-500 text-xs">+{product.gst_rate}% GST</p>
+
+                        <div className="flex items-end justify-between">
+                          <div>
+                            <p className="font-mono text-[10px] text-muted-foreground line-through">
+                              MRP {formatCurrency(product.mrp)}
+                            </p>
+                            <p className="font-mono text-lg font-bold tabular-nums text-primary">
+                              {formatCurrency(product.dealer_price)}
+                            </p>
+                            <p className="font-mono text-[10px] text-muted-foreground/70">
+                              +{product.gst_rate}% GST
+                            </p>
+                          </div>
+
+                          {inCart ? (
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => updateQuantity(product.id, -1)}
+                                className="flex h-7 w-7 items-center justify-center rounded bg-secondary text-foreground hover:bg-accent transition-colors"
+                              >
+                                <Minus className="h-3 w-3" />
+                              </button>
+                              <span className="font-mono text-sm font-bold tabular-nums text-foreground w-6 text-center">
+                                {inCart.quantity}
+                              </span>
+                              <button
+                                onClick={() => updateQuantity(product.id, 1)}
+                                className="flex h-7 w-7 items-center justify-center rounded bg-secondary text-foreground hover:bg-accent transition-colors"
+                              >
+                                <Plus className="h-3 w-3" />
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => addToCart(product)}
+                              className="inline-flex items-center gap-1.5 rounded bg-primary/15 border border-primary/25 px-3 py-1.5 text-xs font-semibold text-primary hover:bg-primary/25 transition-colors"
+                            >
+                              <Plus className="h-3 w-3" />
+                              Add
+                            </button>
+                          )}
                         </div>
-                        <Button
-                          onClick={() => addToCart(product)}
-                          className="bg-cyan-600 hover:bg-cyan-700"
-                          size="sm"
-                        >
-                          <Plus className="w-4 h-4 mr-1" />
-                          Add
-                        </Button>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
-            </CardContent>
-          </Card>
+            </div>
+          </div>
         </div>
 
         {/* Cart */}
-        <div className="space-y-4">
-          <Card className="bg-slate-800 border-slate-700 sticky top-20">
-            <CardHeader>
-              <CardTitle className="text-white flex items-center gap-2">
-                <ShoppingCart className="w-5 h-5 text-cyan-400" />
-                Your Cart ({cart.length})
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
+        <div>
+          <div className="mg-card sticky top-20 rounded-lg border border-border bg-card">
+            <div className="flex items-center justify-between border-b border-border px-5 py-4">
+              <div className="flex items-center gap-2">
+                <ShoppingCart className="h-4 w-4 text-primary" />
+                <h3 className="text-[15px] font-semibold text-foreground">Your Cart</h3>
+              </div>
+              {cart.length > 0 && (
+                <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary font-mono text-[10px] font-bold text-primary-foreground px-1">
+                  {cart.length}
+                </span>
+              )}
+            </div>
+
+            <div className="p-4">
               {cart.length === 0 ? (
-                <p className="text-slate-400 text-center py-4">Cart is empty</p>
+                <div className="py-8 text-center">
+                  <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-muted">
+                    <ShoppingCart className="h-5 w-5 text-muted-foreground/50" />
+                  </div>
+                  <p className="text-sm text-muted-foreground">Cart is empty</p>
+                  <p className="mt-1 text-[11px] text-muted-foreground/60">Add products from the catalog</p>
+                </div>
               ) : (
                 <>
-                  {cart.map((item) => (
-                    <div key={item.product_id} className="p-3 bg-slate-900 rounded-lg">
-                      <div className="flex justify-between items-start mb-2">
-                        <div>
-                          <p className="text-white font-medium text-sm">{item.product_name}</p>
-                          <p className="text-slate-400 text-xs">{item.sku}</p>
-                        </div>
-                        <button
-                          onClick={() => removeFromCart(item.product_id)}
-                          className="text-red-400 hover:text-red-300"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
+                  <div className="space-y-2 mb-4">
+                    {cart.map((item) => (
+                      <div key={item.product_id} className="rounded-lg border border-border bg-muted/30 p-3">
+                        <div className="flex items-start justify-between gap-2 mb-2">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-foreground truncate">{item.product_name}</p>
+                            <p className="font-mono text-[11px] text-muted-foreground">{item.sku}</p>
+                          </div>
                           <button
-                            onClick={() => updateQuantity(item.product_id, -1)}
-                            className="w-6 h-6 bg-slate-700 rounded flex items-center justify-center text-white hover:bg-slate-600"
+                            onClick={() => removeFromCart(item.product_id)}
+                            className="flex-shrink-0 p-1 rounded text-rose-400/60 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
                           >
-                            <Minus className="w-3 h-3" />
-                          </button>
-                          <span className="text-white w-8 text-center">{item.quantity}</span>
-                          <button
-                            onClick={() => updateQuantity(item.product_id, 1)}
-                            className="w-6 h-6 bg-slate-700 rounded flex items-center justify-center text-white hover:bg-slate-600"
-                          >
-                            <Plus className="w-3 h-3" />
+                            <Trash2 className="h-3.5 w-3.5" />
                           </button>
                         </div>
-                        <p className="text-cyan-400 font-medium">
-                          {formatCurrency(item.unit_price * item.quantity * (1 + item.gst_rate / 100))}
-                        </p>
-                      </div>
-                    </div>
-                  ))}
 
-                  <div className="border-t border-slate-700 pt-4">
-                    <div className="flex justify-between items-center mb-4">
-                      <span className="text-slate-400">Total (incl. GST)</span>
-                      <span className="text-2xl font-bold text-white flex items-center">
-                        <IndianRupee className="w-5 h-5" />
-                        {calculateTotal().toLocaleString()}
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => updateQuantity(item.product_id, -1)}
+                              className="flex h-6 w-6 items-center justify-center rounded bg-secondary text-foreground hover:bg-accent transition-colors"
+                            >
+                              <Minus className="h-3 w-3" />
+                            </button>
+                            <span className="font-mono text-sm font-bold tabular-nums text-foreground w-7 text-center">
+                              {item.quantity}
+                            </span>
+                            <button
+                              onClick={() => updateQuantity(item.product_id, 1)}
+                              className="flex h-6 w-6 items-center justify-center rounded bg-secondary text-foreground hover:bg-accent transition-colors"
+                            >
+                              <Plus className="h-3 w-3" />
+                            </button>
+                          </div>
+                          <p className="font-mono text-sm font-bold tabular-nums text-primary">
+                            {formatCurrency(item.unit_price * item.quantity * (1 + item.gst_rate / 100))}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Order total + submit */}
+                  <div className="border-t border-border pt-4 space-y-4">
+                    <div className="flex items-center justify-between rounded-lg border border-border bg-muted/30 px-4 py-3">
+                      <span className="font-mono text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        Total (incl. GST)
+                      </span>
+                      <span className="font-mono text-xl font-bold tabular-nums text-foreground flex items-center gap-0.5">
+                        <IndianRupee className="h-4 w-4" />
+                        {calculateTotal().toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                       </span>
                     </div>
 
@@ -266,26 +342,25 @@ export default function DealerPlaceOrder() {
                       value={notes}
                       onChange={(e) => setNotes(e.target.value)}
                       placeholder="Order notes (optional)"
-                      className="bg-slate-900 border-slate-700 text-white mb-4"
                     />
 
-                    <Button
+                    <button
                       onClick={handleSubmitOrder}
                       disabled={submitting || cart.length === 0}
-                      className="w-full bg-green-600 hover:bg-green-700"
+                      className="w-full inline-flex items-center justify-center gap-2 rounded bg-primary text-primary-foreground px-4 py-2.5 text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-50"
                     >
                       {submitting ? (
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        <Loader2 className="h-4 w-4 animate-spin" />
                       ) : (
-                        <ArrowRight className="w-4 h-4 mr-2" />
+                        <ArrowRight className="h-4 w-4" />
                       )}
                       Place Order
-                    </Button>
+                    </button>
                   </div>
                 </>
               )}
-            </CardContent>
-          </Card>
+            </div>
+          </div>
         </div>
       </div>
     </DashboardLayout>

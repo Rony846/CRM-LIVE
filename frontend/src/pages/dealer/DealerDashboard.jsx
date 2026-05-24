@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
 import { Link } from 'react-router-dom';
+import CustomerQuickLookup from '@/components/dealer/CustomerQuickLookup';
 import {
   ShoppingCart, Package, Wallet, Ticket, TrendingUp, AlertTriangle,
   CheckCircle, Clock, ArrowRight, Loader2, Building2, Phone, Mail,
@@ -17,28 +18,81 @@ import {
 
 // Tier configuration
 const TIER_CONFIG = {
-  silver: { 
-    label: 'Silver', 
-    color: 'from-slate-400 to-slate-500', 
-    textColor: 'text-slate-300',
-    bgColor: 'bg-gradient-to-r from-slate-600 to-slate-700',
-    icon: Star 
+  silver: {
+    label: 'Silver',
+    color: 'from-slate-400 to-slate-500',
+    textColor: 'text-muted-foreground',
+    iconTone: 'bg-muted text-muted-foreground',
+    icon: Star
   },
-  gold: { 
-    label: 'Gold', 
-    color: 'from-yellow-400 to-amber-500', 
-    textColor: 'text-yellow-400',
-    bgColor: 'bg-gradient-to-r from-yellow-600 to-amber-600',
-    icon: Award 
+  gold: {
+    label: 'Gold',
+    color: 'from-amber-400 to-amber-500',
+    textColor: 'text-amber-400',
+    iconTone: 'bg-amber-400/15 text-amber-400',
+    icon: Award
   },
-  platinum: { 
-    label: 'Platinum', 
-    color: 'from-purple-400 to-indigo-400', 
-    textColor: 'text-purple-300',
-    bgColor: 'bg-gradient-to-r from-purple-600 to-indigo-600',
-    icon: Crown 
+  platinum: {
+    label: 'Platinum',
+    color: 'from-violet-400 to-indigo-400',
+    textColor: 'text-violet-400',
+    iconTone: 'bg-violet-400/15 text-violet-400',
+    icon: Crown
   }
 };
+
+const STAT_TONES = {
+  sky:     'bg-sky-400/15 text-sky-400',
+  amber:   'bg-amber-400/15 text-amber-400',
+  blue:    'bg-primary/15 text-primary',
+  emerald: 'bg-emerald-500/15 text-emerald-500',
+};
+
+// Obsidian status chip
+const STATUS_TONES = {
+  pending:   'bg-amber-400/15 text-amber-400 ring-amber-400/25',
+  confirmed: 'bg-sky-400/15 text-sky-400 ring-sky-400/25',
+  dispatched:'bg-primary/15 text-primary ring-primary/25',
+  delivered: 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25',
+  cancelled: 'bg-rose-500/15 text-rose-400 ring-rose-500/25',
+};
+
+const StatusChip = ({ status }) => (
+  <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 whitespace-nowrap ${STATUS_TONES[status] || 'bg-muted text-muted-foreground ring-border'}`}>
+    {status}
+  </span>
+);
+
+// Glass KPI stat tile
+const StatTile = ({ icon: Icon, label, value, tone = 'blue' }) => (
+  <div className="mg-card rounded-lg border border-border bg-card p-4">
+    <div className="flex items-center justify-between">
+      <div className="min-w-0">
+        <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">{label}</p>
+        <p className="mt-1.5 font-mono text-2xl font-bold tabular-nums text-foreground">{value}</p>
+      </div>
+      <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded ${STAT_TONES[tone]}`}>
+        <Icon className="h-5 w-5" />
+      </div>
+    </div>
+  </div>
+);
+
+// Quick action nav card
+const NavCard = ({ to, iconBg, icon: Icon, title, subtitle, disabled }) => (
+  <Link to={to} className={disabled ? 'pointer-events-none' : ''}>
+    <div className={`mg-card group flex items-center gap-4 rounded-lg border border-border bg-card p-4 transition-all hover:border-primary/40 ${disabled ? 'opacity-50' : 'cursor-pointer'}`}>
+      <div className={`flex h-11 w-11 flex-shrink-0 items-center justify-center rounded ${iconBg}`}>
+        <Icon className="h-5 w-5" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-semibold text-foreground">{title}</p>
+        <p className="text-[12px] text-muted-foreground">{subtitle}</p>
+      </div>
+      <ArrowRight className="h-4 w-4 flex-shrink-0 text-muted-foreground/40 transition-transform group-hover:translate-x-0.5 group-hover:text-foreground" />
+    </div>
+  </Link>
+);
 
 export default function DealerDashboard() {
   const { token } = useAuth();
@@ -82,7 +136,7 @@ export default function DealerDashboard() {
     return (
       <DashboardLayout title="Dealer Dashboard">
         <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-cyan-500" />
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
         </div>
       </DashboardLayout>
     );
@@ -93,7 +147,7 @@ export default function DealerDashboard() {
   const canOrder = data?.can_place_orders;
   const depositStatus = dealer.security_deposit_status || dealer.security_deposit?.status;
   const depositPending = depositStatus !== 'approved';
-  
+
   const tier = tierData?.current_tier || 'silver';
   const tierConfig = TIER_CONFIG[tier];
   const TierIcon = tierConfig?.icon || Star;
@@ -101,437 +155,224 @@ export default function DealerDashboard() {
   return (
     <DashboardLayout title="Dealer Dashboard">
       <div className="space-y-6">
+
+        {/* Page header with live dot */}
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <div className="mb-1.5 flex items-center gap-2">
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+              </span>
+              <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                Dealer Portal · Live
+              </span>
+            </div>
+            <h2 className="text-[28px] font-bold leading-tight tracking-tight text-foreground">
+              {dealer.firm_name || 'Dealer Dashboard'}
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {dealer.city || dealer.address?.city}{dealer.state || dealer.address?.state ? `, ${dealer.state || dealer.address?.state}` : ''}{dealer.phone ? ` · ${dealer.phone}` : ''}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className={`inline-flex items-center px-2.5 py-1 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 ${
+              dealer.status === 'approved'
+                ? 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25'
+                : 'bg-amber-400/15 text-amber-400 ring-amber-400/25'
+            }`}>
+              {dealer.status === 'approved' ? <><CheckCircle className="w-3 h-3 mr-1" />Active</> : <><Clock className="w-3 h-3 mr-1" />{dealer.status}</>}
+            </span>
+            <span className={`inline-flex items-center px-2.5 py-1 rounded text-[10px] font-mono font-semibold uppercase tracking-wide ring-1 ${
+              depositStatus === 'approved'
+                ? 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25'
+                : 'bg-amber-400/15 text-amber-400 ring-amber-400/25'
+            }`}>
+              <Shield className="w-3 h-3 mr-1" />Deposit: {depositStatus}
+            </span>
+          </div>
+        </div>
+
+        {/* Customer Quick Lookup — "who's calling me?" */}
+        <CustomerQuickLookup />
+
         {/* Deposit Warning Banner */}
         {depositPending && (
-          <Card className="bg-yellow-900/30 border-yellow-600">
-            <CardContent className="p-4">
-              <div className="flex items-start gap-4">
-                <AlertTriangle className="w-6 h-6 text-yellow-400 flex-shrink-0 mt-1" />
-                <div className="flex-1">
-                  <h3 className="text-yellow-400 font-semibold">Security Deposit Required</h3>
-                  <p className="text-yellow-200 text-sm mt-1">
-                    {depositStatus === 'not_paid' && 
-                      `Please upload your security deposit proof of ₹${(dealer.security_deposit_amount || dealer.security_deposit?.amount || 100000)?.toLocaleString()} to activate your dealer account and start placing orders.`}
-                    {(depositStatus === 'pending' || depositStatus === 'pending_review') && 
-                      'Your security deposit proof is under review. We will notify you once approved.'}
-                    {depositStatus === 'rejected' && 
-                      `Your deposit proof was rejected: ${dealer.security_deposit_remarks || dealer.security_deposit?.remarks}. Please upload again.`}
-                  </p>
-                  {(depositStatus === 'not_paid' || depositStatus === 'rejected') && (
-                    <Link to="/dealer/deposit">
-                      <Button className="mt-3 bg-yellow-600 hover:bg-yellow-700">
-                        <Upload className="w-4 h-4 mr-2" />
-                        Upload Deposit Proof
-                      </Button>
-                    </Link>
-                  )}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Welcome Card with Tier Badge */}
-        <Card className={`border-0 ${tierConfig?.bgColor || 'bg-gradient-to-r from-cyan-900 to-blue-900'}`}>
-          <CardContent className="p-6">
-            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div className="mg-card rounded-lg border border-amber-400/25 bg-amber-400/10 p-4">
+            <div className="flex items-start gap-4">
+              <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
               <div className="flex-1">
-                <div className="flex items-center gap-3 mb-2">
-                  <h2 className="text-2xl font-bold text-white">{dealer.firm_name}</h2>
-                  <Badge className={`${tierConfig?.bgColor} border border-white/20 text-white font-bold`}>
-                    <TierIcon className="w-3 h-3 mr-1" />
-                    {tierConfig?.label} Partner
-                  </Badge>
-                </div>
-                <div className="flex flex-wrap items-center gap-4 text-slate-200">
-                  <span className="flex items-center gap-1">
-                    <Building2 className="w-4 h-4" /> {dealer.city || dealer.address?.city}, {dealer.state || dealer.address?.state}
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <Phone className="w-4 h-4" /> {dealer.phone}
-                  </span>
-                </div>
-              </div>
-              <div className="flex items-center gap-3">
-                <Badge className={dealer.status === 'approved' ? 'bg-green-600' : 'bg-yellow-600'}>
-                  {dealer.status === 'approved' ? (
-                    <><CheckCircle className="w-3 h-3 mr-1" /> Active</>
-                  ) : (
-                    <><Clock className="w-3 h-3 mr-1" /> {dealer.status}</>
-                  )}
-                </Badge>
-                <Badge className={depositStatus === 'approved' ? 'bg-green-600' : 'bg-yellow-600'}>
-                  <Shield className="w-3 h-3 mr-1" /> 
-                  Deposit: {depositStatus}
-                </Badge>
+                <h3 className="text-sm font-semibold text-amber-400">Security Deposit Required</h3>
+                <p className="text-[13px] text-amber-400/80 mt-1">
+                  {depositStatus === 'not_paid' &&
+                    `Please upload your security deposit proof of ₹${(dealer.security_deposit_amount || dealer.security_deposit?.amount || 100000)?.toLocaleString()} to activate your dealer account and start placing orders.`}
+                  {(depositStatus === 'pending' || depositStatus === 'pending_review') &&
+                    'Your security deposit proof is under review. We will notify you once approved.'}
+                  {depositStatus === 'rejected' &&
+                    `Your deposit proof was rejected: ${dealer.security_deposit_remarks || dealer.security_deposit?.remarks}. Please upload again.`}
+                </p>
+                {(depositStatus === 'not_paid' || depositStatus === 'rejected') && (
+                  <Link to="/dealer/deposit">
+                    <button className="mt-3 inline-flex items-center gap-2 rounded bg-amber-400/20 border border-amber-400/30 px-3 py-1.5 text-xs font-semibold text-amber-400 hover:bg-amber-400/30 transition-colors">
+                      <Upload className="w-3.5 h-3.5" />
+                      Upload Deposit Proof
+                    </button>
+                  </Link>
+                )}
               </div>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        )}
 
         {/* Tier Progress Card */}
         {tierData && (
-          <Card className="bg-slate-800 border-slate-700">
-            <CardContent className="p-4">
-              <div className="flex flex-col md:flex-row md:items-center gap-4">
-                <div className="flex items-center gap-3">
-                  <div className={`w-12 h-12 rounded-full bg-gradient-to-r ${tierConfig?.color} flex items-center justify-center`}>
-                    <TierIcon className="w-6 h-6 text-white" />
-                  </div>
-                  <div>
-                    <p className="text-sm text-slate-400">Current Tier</p>
-                    <p className={`text-lg font-bold ${tierConfig?.textColor}`}>{tierConfig?.label} Partner</p>
-                  </div>
+          <div className="mg-card rounded-lg border border-border bg-card p-5">
+            <div className="flex flex-col md:flex-row md:items-center gap-5">
+              <div className="flex items-center gap-3">
+                <div className={`flex h-12 w-12 items-center justify-center rounded ${tierConfig?.iconTone || 'bg-muted text-muted-foreground'}`}>
+                  <TierIcon className="h-6 w-6" />
                 </div>
-                
-                <div className="flex-1 px-4">
-                  {tierData.next_tier ? (
-                    <>
-                      <div className="flex justify-between text-sm mb-1">
-                        <span className="text-slate-400">Progress to {TIER_CONFIG[tierData.next_tier]?.label}</span>
-                        <span className="text-white">{tierData.progress_to_next}%</span>
-                      </div>
-                      <Progress value={tierData.progress_to_next} className="h-2" />
-                      <p className="text-xs text-slate-500 mt-1">
-                        {formatCurrency(tierData.remaining_to_next)} more to reach {TIER_CONFIG[tierData.next_tier]?.label}
-                      </p>
-                    </>
-                  ) : (
-                    <div className="text-center py-2">
-                      <p className="text-purple-300 font-medium">You've reached the highest tier!</p>
-                      <p className="text-slate-400 text-sm">Thank you for your partnership</p>
-                    </div>
-                  )}
-                </div>
-                
-                <div className="text-right">
-                  <p className="text-sm text-slate-400">Lifetime Purchases</p>
-                  <p className="text-xl font-bold text-white">{formatCurrency(tierData.total_purchase_value)}</p>
+                <div>
+                  <p className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Current Tier</p>
+                  <p className={`text-lg font-bold ${tierConfig?.textColor || 'text-foreground'}`}>{tierConfig?.label} Partner</p>
                 </div>
               </div>
-            </CardContent>
-          </Card>
+
+              <div className="flex-1 px-2">
+                {tierData.next_tier ? (
+                  <>
+                    <div className="flex justify-between text-[12px] mb-1.5">
+                      <span className="text-muted-foreground font-mono uppercase tracking-wide text-[10px]">Progress to {TIER_CONFIG[tierData.next_tier]?.label}</span>
+                      <span className="font-mono font-bold text-foreground tabular-nums">{tierData.progress_to_next}%</span>
+                    </div>
+                    <Progress value={tierData.progress_to_next} className="h-1.5" />
+                    <p className="font-mono text-[10px] text-muted-foreground mt-1.5">
+                      {formatCurrency(tierData.remaining_to_next)} more to reach {TIER_CONFIG[tierData.next_tier]?.label}
+                    </p>
+                  </>
+                ) : (
+                  <div className="py-2">
+                    <p className="text-sm font-semibold text-violet-400">You've reached the highest tier!</p>
+                    <p className="text-[12px] text-muted-foreground">Thank you for your partnership</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="text-right">
+                <p className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Lifetime Purchases</p>
+                <p className="mt-1 font-mono text-xl font-bold tabular-nums text-foreground">{formatCurrency(tierData.total_purchase_value)}</p>
+              </div>
+            </div>
+          </div>
         )}
 
-        {/* Stats Grid */}
+        {/* KPI Stats Grid */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <Card className="bg-slate-800 border-slate-700">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-slate-400 text-sm">Total Orders</p>
-                  <p className="text-2xl font-bold text-white">{stats.total_orders || 0}</p>
-                </div>
-                <ShoppingCart className="w-8 h-8 text-cyan-400" />
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="bg-slate-800 border-slate-700">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-slate-400 text-sm">Pending Orders</p>
-                  <p className="text-2xl font-bold text-yellow-400">{stats.pending_orders || 0}</p>
-                </div>
-                <Clock className="w-8 h-8 text-yellow-400" />
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="bg-slate-800 border-slate-700">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-slate-400 text-sm">Open Tickets</p>
-                  <p className="text-2xl font-bold text-white">{stats.open_tickets || 0}</p>
-                </div>
-                <Ticket className="w-8 h-8 text-blue-400" />
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="bg-slate-800 border-slate-700">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-slate-400 text-sm">Outstanding</p>
-                  <p className="text-2xl font-bold text-white">{formatCurrency(stats.outstanding_balance)}</p>
-                </div>
-                <Wallet className="w-8 h-8 text-green-400" />
-              </div>
-            </CardContent>
-          </Card>
+          <StatTile icon={ShoppingCart} label="Total Orders" value={stats.total_orders || 0} tone="sky" />
+          <StatTile icon={Clock} label="Pending Orders" value={stats.pending_orders || 0} tone="amber" />
+          <StatTile icon={Ticket} label="Open Tickets" value={stats.open_tickets || 0} tone="blue" />
+          <StatTile icon={Wallet} label="Outstanding" value={formatCurrency(stats.outstanding_balance)} tone="emerald" />
         </div>
 
         {/* Monthly Performance Summary */}
         {performanceData && (
-          <Card className="bg-slate-800 border-slate-700">
-            <CardHeader className="pb-2">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-white flex items-center gap-2">
-                  <BarChart3 className="w-5 h-5 text-cyan-400" />
-                  This Month's Performance
-                </CardTitle>
-                <Link to="/dealer/performance">
-                  <Button variant="ghost" size="sm" className="text-cyan-400 hover:text-cyan-300">
-                    View Details <ArrowRight className="w-4 h-4 ml-1" />
-                  </Button>
-                </Link>
+          <div className="mg-card rounded-lg border border-border bg-card">
+            <div className="flex items-center justify-between border-b border-border px-5 py-4">
+              <div className="flex items-center gap-2">
+                <BarChart3 className="h-4 w-4 text-primary" />
+                <h3 className="text-[15px] font-semibold text-foreground">This Month's Performance</h3>
               </div>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="p-3 bg-slate-900 rounded-lg text-center">
-                  <p className="text-2xl font-bold text-white">{performanceData.total_orders}</p>
-                  <p className="text-slate-400 text-sm">Orders</p>
+              <Link to="/dealer/performance">
+                <button className="inline-flex items-center gap-1 font-mono text-[11px] font-semibold uppercase tracking-wide text-primary hover:text-primary/80 transition-colors">
+                  View Details <ArrowRight className="h-3.5 w-3.5" />
+                </button>
+              </Link>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 divide-x divide-border">
+              {[
+                { label: 'Orders', value: performanceData.total_orders, color: 'text-foreground' },
+                { label: 'Total Value', value: formatCurrency(performanceData.total_value), color: 'text-emerald-400' },
+                { label: 'Delivered', value: performanceData.orders_by_status?.delivered || 0, color: 'text-sky-400' },
+                { label: 'Avg. Order', value: formatCurrency(performanceData.avg_order_value), color: 'text-primary' },
+              ].map(({ label, value, color }) => (
+                <div key={label} className="p-4 text-center">
+                  <p className={`font-mono text-xl font-bold tabular-nums ${color}`}>{value}</p>
+                  <p className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mt-1">{label}</p>
                 </div>
-                <div className="p-3 bg-slate-900 rounded-lg text-center">
-                  <p className="text-2xl font-bold text-green-400">{formatCurrency(performanceData.total_value)}</p>
-                  <p className="text-slate-400 text-sm">Total Value</p>
-                </div>
-                <div className="p-3 bg-slate-900 rounded-lg text-center">
-                  <p className="text-2xl font-bold text-cyan-400">{performanceData.orders_by_status?.delivered || 0}</p>
-                  <p className="text-slate-400 text-sm">Delivered</p>
-                </div>
-                <div className="p-3 bg-slate-900 rounded-lg text-center">
-                  <p className="text-2xl font-bold text-blue-400">{formatCurrency(performanceData.avg_order_value)}</p>
-                  <p className="text-slate-400 text-sm">Avg. Order Value</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+              ))}
+            </div>
+          </div>
         )}
 
-        {/* Quick Actions */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <Link to="/dealer/orders/new">
-            <Card className={`border-slate-700 transition-all hover:border-cyan-500 ${!canOrder ? 'opacity-50' : 'bg-slate-800 cursor-pointer'}`}>
-              <CardContent className="p-4 flex items-center gap-4">
-                <div className="w-12 h-12 bg-cyan-600 rounded-lg flex items-center justify-center">
-                  <ShoppingCart className="w-6 h-6 text-white" />
-                </div>
-                <div>
-                  <p className="text-white font-medium">Place Order</p>
-                  <p className="text-slate-400 text-sm">{canOrder ? 'Browse products' : 'Deposit required'}</p>
-                </div>
-                <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
-              </CardContent>
-            </Card>
-          </Link>
-
-          <Link to="/dealer/dispatches">
-            <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
-              <CardContent className="p-4 flex items-center gap-4">
-                <div className="w-12 h-12 bg-blue-600 rounded-lg flex items-center justify-center">
-                  <Truck className="w-6 h-6 text-white" />
-                </div>
-                <div>
-                  <p className="text-white font-medium">Track Dispatches</p>
-                  <p className="text-slate-400 text-sm">AWB & delivery status</p>
-                </div>
-                <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
-              </CardContent>
-            </Card>
-          </Link>
-
-          <Link to="/dealer/ledger">
-            <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
-              <CardContent className="p-4 flex items-center gap-4">
-                <div className="w-12 h-12 bg-green-600 rounded-lg flex items-center justify-center">
-                  <IndianRupee className="w-6 h-6 text-white" />
-                </div>
-                <div>
-                  <p className="text-white font-medium">Ledger</p>
-                  <p className="text-slate-400 text-sm">Payments & balance</p>
-                </div>
-                <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
-              </CardContent>
-            </Card>
-          </Link>
-
-          <Link to="/dealer/documents">
-            <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
-              <CardContent className="p-4 flex items-center gap-4">
-                <div className="w-12 h-12 bg-purple-600 rounded-lg flex items-center justify-center">
-                  <Download className="w-6 h-6 text-white" />
-                </div>
-                <div>
-                  <p className="text-white font-medium">Downloads</p>
-                  <p className="text-slate-400 text-sm">Invoices & documents</p>
-                </div>
-                <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
-              </CardContent>
-            </Card>
-          </Link>
+        {/* Quick Actions — Row 1 */}
+        <div>
+          <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground mb-3">Quick Actions</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+            <NavCard to="/dealer/orders/new" iconBg="bg-primary/15 text-primary" icon={ShoppingCart}
+              title="Place Order" subtitle={canOrder ? 'Browse products' : 'Deposit required'} disabled={!canOrder} />
+            <NavCard to="/dealer/dispatches" iconBg="bg-sky-400/15 text-sky-400" icon={Truck}
+              title="Track Dispatches" subtitle="AWB & delivery status" />
+            <NavCard to="/dealer/ledger" iconBg="bg-emerald-500/15 text-emerald-400" icon={IndianRupee}
+              title="Ledger" subtitle="Payments & balance" />
+            <NavCard to="/dealer/documents" iconBg="bg-violet-400/15 text-violet-400" icon={Download}
+              title="Downloads" subtitle="Invoices & documents" />
+          </div>
         </div>
 
-        {/* Second Row Quick Actions */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <Link to="/dealer/catalogue">
-            <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
-              <CardContent className="p-4 flex items-center gap-4">
-                <div className="w-12 h-12 bg-indigo-600 rounded-lg flex items-center justify-center">
-                  <Package className="w-6 h-6 text-white" />
-                </div>
-                <div>
-                  <p className="text-white font-medium">Product Catalogue</p>
-                  <p className="text-slate-400 text-sm">Browse & check stock</p>
-                </div>
-                <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
-              </CardContent>
-            </Card>
-          </Link>
-
-          <Link to="/dealer/targets">
-            <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
-              <CardContent className="p-4 flex items-center gap-4">
-                <div className="w-12 h-12 bg-amber-600 rounded-lg flex items-center justify-center">
-                  <TrendingUp className="w-6 h-6 text-white" />
-                </div>
-                <div>
-                  <p className="text-white font-medium">Sales Targets</p>
-                  <p className="text-slate-400 text-sm">Track & earn incentives</p>
-                </div>
-                <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
-              </CardContent>
-            </Card>
-          </Link>
-
-          <Link to="/dealer/warranty">
-            <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
-              <CardContent className="p-4 flex items-center gap-4">
-                <div className="w-12 h-12 bg-rose-600 rounded-lg flex items-center justify-center">
-                  <Shield className="w-6 h-6 text-white" />
-                </div>
-                <div>
-                  <p className="text-white font-medium">Warranty</p>
-                  <p className="text-slate-400 text-sm">Register warranties</p>
-                </div>
-                <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
-              </CardContent>
-            </Card>
-          </Link>
-
-          <Link to="/dealer/announcements">
-            <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
-              <CardContent className="p-4 flex items-center gap-4">
-                <div className="w-12 h-12 bg-teal-600 rounded-lg flex items-center justify-center">
-                  <FileText className="w-6 h-6 text-white" />
-                </div>
-                <div>
-                  <p className="text-white font-medium">Announcements</p>
-                  <p className="text-slate-400 text-sm">Latest updates</p>
-                </div>
-                <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
-              </CardContent>
-            </Card>
-          </Link>
+        {/* Quick Actions — Row 2 */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+          <NavCard to="/dealer/catalogue" iconBg="bg-primary/15 text-primary" icon={Package}
+            title="Product Catalogue" subtitle="Browse & check stock" />
+          <NavCard to="/dealer/targets" iconBg="bg-amber-400/15 text-amber-400" icon={TrendingUp}
+            title="Sales Targets" subtitle="Track & earn incentives" />
+          <NavCard to="/dealer/warranty" iconBg="bg-rose-500/15 text-rose-400" icon={Shield}
+            title="Warranty" subtitle="Register warranties" />
+          <NavCard to="/dealer/announcements" iconBg="bg-teal-400/15 text-teal-400" icon={FileText}
+            title="Announcements" subtitle="Latest updates" />
         </div>
 
-        {/* Third Row Quick Actions */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <Link to="/dealer/orders">
-            <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
-              <CardContent className="p-4 flex items-center gap-4">
-                <div className="w-12 h-12 bg-violet-600 rounded-lg flex items-center justify-center">
-                  <Package className="w-6 h-6 text-white" />
-                </div>
-                <div>
-                  <p className="text-white font-medium">My Orders</p>
-                  <p className="text-slate-400 text-sm">View order history</p>
-                </div>
-                <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
-              </CardContent>
-            </Card>
-          </Link>
-
-          <Link to="/dealer/reorder-suggestions">
-            <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
-              <CardContent className="p-4 flex items-center gap-4">
-                <div className="w-12 h-12 bg-pink-600 rounded-lg flex items-center justify-center">
-                  <BarChart3 className="w-6 h-6 text-white" />
-                </div>
-                <div>
-                  <p className="text-white font-medium">Reorder Suggestions</p>
-                  <p className="text-slate-400 text-sm">Smart recommendations</p>
-                </div>
-                <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
-              </CardContent>
-            </Card>
-          </Link>
-
-          <Link to="/dealer/tickets">
-            <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
-              <CardContent className="p-4 flex items-center gap-4">
-                <div className="w-12 h-12 bg-orange-600 rounded-lg flex items-center justify-center">
-                  <Ticket className="w-6 h-6 text-white" />
-                </div>
-                <div>
-                  <p className="text-white font-medium">Support</p>
-                  <p className="text-slate-400 text-sm">Get help</p>
-                </div>
-                <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
-              </CardContent>
-            </Card>
-          </Link>
-
-          <Link to="/dealer/certificate">
-            <Card className="bg-slate-800 border-slate-700 cursor-pointer transition-all hover:border-cyan-500">
-              <CardContent className="p-4 flex items-center gap-4">
-                <div className="w-12 h-12 bg-lime-600 rounded-lg flex items-center justify-center">
-                  <FileCheck className="w-6 h-6 text-white" />
-                </div>
-                <div>
-                  <p className="text-white font-medium">Certificate</p>
-                  <p className="text-slate-400 text-sm">Dealer authorization</p>
-                </div>
-                <ArrowRight className="w-5 h-5 text-slate-400 ml-auto" />
-              </CardContent>
-            </Card>
-          </Link>
+        {/* Quick Actions — Row 3 */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+          <NavCard to="/dealer/orders" iconBg="bg-violet-400/15 text-violet-400" icon={Package}
+            title="My Orders" subtitle="View order history" />
+          <NavCard to="/dealer/reorder-suggestions" iconBg="bg-pink-400/15 text-pink-400" icon={BarChart3}
+            title="Reorder Suggestions" subtitle="Smart recommendations" />
+          <NavCard to="/dealer/tickets" iconBg="bg-orange-400/15 text-orange-400" icon={Ticket}
+            title="Support" subtitle="Get help" />
+          <NavCard to="/dealer/certificate" iconBg="bg-emerald-500/15 text-emerald-400" icon={FileCheck}
+            title="Certificate" subtitle="Dealer authorization" />
         </div>
 
         {/* Recent Orders */}
         {data?.recent_orders?.length > 0 && (
-          <Card className="bg-slate-800 border-slate-700">
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-white">Recent Orders</CardTitle>
-                <Link to="/dealer/orders">
-                  <Button variant="ghost" size="sm" className="text-cyan-400 hover:text-cyan-300">
-                    View All <ArrowRight className="w-4 h-4 ml-1" />
-                  </Button>
-                </Link>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3">
-                {data.recent_orders.map((order) => (
-                  <Link key={order.id} to={`/dealer/orders/${order.id}`}>
-                    <div className="flex items-center justify-between p-3 bg-slate-900 rounded-lg hover:bg-slate-700 transition-colors">
-                      <div>
-                        <p className="text-white font-medium">{order.order_number}</p>
-                        <p className="text-slate-400 text-sm">{new Date(order.created_at).toLocaleDateString()}</p>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-white font-medium">{formatCurrency(order.total_amount)}</p>
-                        <Badge className={
-                          order.status === 'delivered' ? 'bg-green-600' :
-                          order.status === 'dispatched' ? 'bg-blue-600' :
-                          order.status === 'confirmed' ? 'bg-cyan-600' :
-                          order.status === 'cancelled' ? 'bg-red-600' :
-                          'bg-yellow-600'
-                        }>
-                          {order.status}
-                        </Badge>
-                      </div>
+          <div className="mg-card rounded-lg border border-border bg-card">
+            <div className="flex items-center justify-between border-b border-border px-5 py-4">
+              <h3 className="text-[15px] font-semibold text-foreground">Recent Orders</h3>
+              <Link to="/dealer/orders">
+                <button className="inline-flex items-center gap-1 font-mono text-[11px] font-semibold uppercase tracking-wide text-primary hover:text-primary/80 transition-colors">
+                  View All <ArrowRight className="h-3.5 w-3.5" />
+                </button>
+              </Link>
+            </div>
+            <div className="divide-y divide-border">
+              {data.recent_orders.map((order) => (
+                <Link key={order.id} to={`/dealer/orders/${order.id}`}>
+                  <div className="flex items-center justify-between px-5 py-3.5 hover:bg-accent/40 transition-colors">
+                    <div>
+                      <p className="font-mono text-sm font-semibold text-foreground">{order.order_number}</p>
+                      <p className="font-mono text-[11px] text-muted-foreground mt-0.5">
+                        {new Date(order.created_at).toLocaleDateString('en-IN')}
+                      </p>
                     </div>
-                  </Link>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+                    <div className="flex items-center gap-3">
+                      <p className="font-mono text-sm font-bold tabular-nums text-foreground">{formatCurrency(order.total_amount)}</p>
+                      <StatusChip status={order.status} />
+                    </div>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          </div>
         )}
       </div>
     </DashboardLayout>
