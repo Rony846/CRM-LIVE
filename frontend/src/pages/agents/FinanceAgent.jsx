@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { API, useAuth } from '@/App';
@@ -7,7 +8,7 @@ import {
   Bot, Loader2, PlayCircle, Clock, CheckCircle2, AlertTriangle, AlertCircle,
   IndianRupee, Receipt, Scale, History, Building2, Sparkles,
   ShieldCheck, BookOpen, FileWarning, Activity, TrendingUp, XCircle,
-  ChevronDown, ChevronRight, Info,
+  ChevronDown, ChevronRight, Info, Globe, MonitorPlay,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -166,6 +167,59 @@ const collectFindings = (perFirm) => {
   return findings;
 };
 
+// Browser-agent / Seller Central scrape status. Surfaced on the run card
+// because a session-expired state needs admin action (re-login) before the
+// next scheduled run will pull reimbursements.
+const BrowserSessionPanel = ({ scrape }) => {
+  if (!scrape) return null;
+  const status = scrape.status;
+  const tone = status === 'ok'
+    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+    : status === 'session_expired'
+      ? 'bg-orange-400/10 border-orange-400/30 text-orange-400'
+      : status === 'page_changed'
+        ? 'bg-rose-500/10 border-rose-500/30 text-rose-400'
+        : 'bg-muted text-muted-foreground border-border';
+  const Icon = status === 'ok' ? CheckCircle2
+    : status === 'session_expired' ? AlertTriangle
+    : status === 'page_changed' ? XCircle
+    : Info;
+  return (
+    <div className={`rounded border ${tone} px-4 py-3 flex items-start gap-3`}>
+      <Icon className="w-4 h-4 flex-shrink-0 mt-0.5" />
+      <div className="flex-1 min-w-0 text-sm">
+        <div className="font-semibold">
+          Browser agent · Seller Central scrape
+          {scrape.firm_name && <span className="font-normal opacity-80 ml-1.5">({scrape.firm_name})</span>}
+        </div>
+        <div className="text-xs mt-0.5 opacity-90">
+          {status === 'ok' && (
+            <>Pulled {scrape.scraped} reimbursement rows; {scrape.new_rows} new, {scrape.booked} booked.</>
+          )}
+          {status === 'session_expired' && (
+            <>Browser is not logged in. Open the screen-pop console, sign into Seller Central once,
+            and the next agent run will pick up reimbursements.</>
+          )}
+          {status === 'page_changed' && (
+            <>Reimbursement report page didn't return a recognized table. Amazon may have shipped a layout
+            change; scraper selectors need an update. {scrape.error}</>
+          )}
+          {status === 'error' && (<>Scrape failed: {scrape.error || 'unknown error'}</>)}
+        </div>
+        {(status === 'session_expired' || status === 'page_changed') && (
+          <Link
+            to="/admin/browser-agent"
+            className="inline-flex items-center gap-1 text-xs mt-2 underline opacity-90 hover:opacity-100"
+          >
+            <MonitorPlay className="w-3 h-3" /> Open browser-agent console
+          </Link>
+        )}
+      </div>
+    </div>
+  );
+};
+
+
 const RunCard = ({ run, defaultOpen = false }) => {
   const [open, setOpen] = useState(defaultOpen);
   const totals = run.totals || {};
@@ -200,6 +254,21 @@ const RunCard = ({ run, defaultOpen = false }) => {
           {totals.a_to_z_booked > 0 && (
             <Badge className="bg-emerald-500/15 text-emerald-400 text-[10px]">{totals.a_to_z_booked} A-Z</Badge>
           )}
+          {totals.reimbursements_booked > 0 && (
+            <Badge className="bg-emerald-500/15 text-emerald-400 text-[10px]">
+              {formatINR(totals.reimbursements_total_amount)} FBA reimb
+            </Badge>
+          )}
+          {run.reimbursement_scrape?.status === 'session_expired' && (
+            <Badge className="bg-orange-400/15 text-orange-400 text-[10px]">
+              <AlertTriangle className="w-3 h-3 mr-1" /> browser session expired
+            </Badge>
+          )}
+          {run.reimbursement_scrape?.status === 'page_changed' && (
+            <Badge className="bg-rose-500/15 text-rose-400 text-[10px]">
+              <XCircle className="w-3 h-3 mr-1" /> reimb page changed
+            </Badge>
+          )}
           {counts.high > 0 && <SevPill severity="high">{counts.high} critical</SevPill>}
           {counts.warn > 0 && <SevPill severity="warn">{counts.warn} review</SevPill>}
           {!counts.high && !counts.warn && findings.length === 0 && totals.errors === 0 && (
@@ -211,7 +280,10 @@ const RunCard = ({ run, defaultOpen = false }) => {
         </div>
       </button>
       {open && (
-        <div className="px-5 pb-4 space-y-1 bg-muted/10">
+        <div className="px-5 pb-4 space-y-2 bg-muted/10">
+          {run.reimbursement_scrape && run.reimbursement_scrape.status !== 'skipped' && (
+            <div className="pt-2"><BrowserSessionPanel scrape={run.reimbursement_scrape} /></div>
+          )}
           {findings.length === 0 ? (
             <div className="text-sm text-muted-foreground py-4 text-center">
               No findings — books are in balance, drift within tolerance, no anomalies.
@@ -282,6 +354,9 @@ export default function FinanceAgent() {
       if (t.fees_total_amount > 0) bits.push(`${formatINR(t.fees_total_amount)} fees`);
       if (t.refunds_posted > 0)    bits.push(`${t.refunds_posted} refunds`);
       if (t.a_to_z_booked > 0)     bits.push(`${t.a_to_z_booked} A-Z`);
+      if (t.reimbursements_booked > 0) bits.push(`${formatINR(t.reimbursements_total_amount)} FBA reimb`);
+      if (t.reimbursement_status === 'session_expired') bits.push('browser expired');
+      if (t.reimbursement_status === 'page_changed')    bits.push('reimb page changed');
       const findings = (t.unmatched_transactions || 0) + (t.stuck_reimbursements || 0)
         + (t.settlement_drifts || 0) + (t.trial_balance_failures || 0)
         + (t.duplicates_found || 0) + (t.anomalies || 0);
@@ -337,6 +412,7 @@ export default function FinanceAgent() {
                   <li className="flex items-start gap-2"><Receipt className="w-4 h-4 text-primary mt-0.5" /><span><span className="text-foreground font-medium">Books settlement fees</span> as journal entries (Dr Expense / Cr Marketplace Clearing).</span></li>
                   <li className="flex items-start gap-2"><IndianRupee className="w-4 h-4 text-emerald-400 mt-0.5" /><span><span className="text-foreground font-medium">Books refunds</span> as credit notes from every Refund-type settlement row.</span></li>
                   <li className="flex items-start gap-2"><ShieldCheck className="w-4 h-4 text-violet-400 mt-0.5" /><span><span className="text-foreground font-medium">Books A-Z claim outcomes</span> — granted claims get a credit note; pending and denied are counted.</span></li>
+                  <li className="flex items-start gap-2"><Globe className="w-4 h-4 text-sky-400 mt-0.5" /><span><span className="text-foreground font-medium">Pulls FBA reimbursements</span> from Seller Central via the browser agent (SP-API doesn't ship these for IN sellers) and books each as Dr Receivable / Cr Reimbursement Income.</span></li>
                 </ul>
               </div>
               <div>
@@ -353,9 +429,9 @@ export default function FinanceAgent() {
                 </ul>
               </div>
               <div className="md:col-span-2 text-xs text-muted-foreground border-t border-border pt-3 mt-1">
-                <span className="text-foreground font-medium">Coming next (needs SP-API ingestion):</span> FBA reimbursements,
-                long-term storage fees, lost/damaged inventory adjustments. Until then those gaps are surfaced as stuck
-                reimbursements where applicable.
+                <span className="text-foreground font-medium">Coming next:</span> long-term storage fees and
+                lost/damaged inventory adjustments — both need additional browser-agent scrapers. Per-firm
+                Seller Central support is also pending; today the browser pulls from one logged-in account.
               </div>
             </CardContent>
           </Card>
@@ -412,13 +488,20 @@ export default function FinanceAgent() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="p-5 space-y-5">
+                {/* Browser-agent status row — only shown when the scrape was
+                    attempted (skipped means no Amazon firm configured). */}
+                {lastRun.reimbursement_scrape && lastRun.reimbursement_scrape.status !== 'skipped' && (
+                  <BrowserSessionPanel scrape={lastRun.reimbursement_scrape} />
+                )}
+
                 {/* Actions taken */}
                 <div>
                   <div className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground mb-2">Actions booked</div>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                     <StatTile icon={Receipt} label="Fees" value={formatINR(lastTotals.fees_total_amount)} sub={`${lastTotals.fees_journal_entries || 0} JEs`} tone="blue" />
                     <StatTile icon={IndianRupee} label="Refunds" value={lastTotals.refunds_posted || 0} sub={`${lastTotals.refunds_skipped || 0} skipped`} tone="green" />
                     <StatTile icon={ShieldCheck} label="A-Z booked" value={lastTotals.a_to_z_booked || 0} sub={`${lastTotals.a_to_z_pending || 0} pending`} tone="green" />
+                    <StatTile icon={Globe} label="FBA reimb" value={formatINR(lastTotals.reimbursements_total_amount)} sub={`${lastTotals.reimbursements_booked || 0} booked / ${lastTotals.reimbursements_new || 0} new`} tone="green" />
                     <StatTile icon={Building2} label="Firms" value={lastRun.firms_run || 0} tone="blue" />
                   </div>
                 </div>

@@ -1246,6 +1246,198 @@ class AmazonBrowserAgent:
             )
         return result
 
+    async def scrape_fba_reimbursements(self, since_date: Optional[str] = None) -> Dict[str, Any]:
+        """Scrape the FBA Reimbursements report from Seller Central.
+
+        Amazon doesn't ship reimbursement data via SP-API in any usable form
+        for Indian sellers — the only authoritative source is the report
+        page. This walks it and returns structured rows.
+
+        Args:
+            since_date: optional YYYY-MM-DD lower bound; rows older than this
+                are dropped after parsing. Default: 90 days back.
+
+        Returns:
+            {
+              "status": "ok" | "not_logged_in" | "page_changed" | "error",
+              "rows": [
+                 {
+                   "reimbursement_id": str,
+                   "approval_date": str (YYYY-MM-DD),
+                   "case_id": str | None,
+                   "amazon_order_id": str | None,
+                   "reason": str,
+                   "sku": str | None,
+                   "fnsku": str | None,
+                   "asin": str | None,
+                   "quantity": int,
+                   "amount": float,
+                   "currency": str,
+                 }, ...
+              ],
+              "raw_text_sample": str,   # first 2000 chars of page text — helps
+                                        # the user / future maintainer adjust
+                                        # selectors when Amazon changes the
+                                        # report layout
+              "error": str | None,
+            }
+
+        The selectors are a best-effort guess against Seller Central as of
+        2026-05; Amazon changes report HTML without notice. On failure the
+        function returns a structured `status` so the caller can degrade
+        gracefully rather than throw.
+        """
+        if not self.page:
+            return {"status": "not_logged_in", "rows": [], "raw_text_sample": "",
+                    "error": "Browser not started"}
+        if self.state not in (AgentState.LOGGED_IN, AgentState.PROCESSING):
+            # Try a live login check before bailing — state can drift if no
+            # one's hit the agent in a while but the cookies are still valid.
+            logged_in = await self.check_login_status()
+            if not logged_in:
+                return {"status": "not_logged_in", "rows": [], "raw_text_sample": "",
+                        "error": "Not logged in to Seller Central"}
+
+        await self._notify_status("📑 Scraping FBA Reimbursements report…")
+
+        # Date range — default last 90 days
+        from datetime import datetime as _dt, timedelta as _td
+        if not since_date:
+            since_date = (_dt.utcnow() - _td(days=90)).strftime("%Y-%m-%d")
+        end_date = _dt.utcnow().strftime("%Y-%m-%d")
+
+        # Reimbursements report is under Inventory Planning / Reimbursements.
+        # Amazon has shuffled this URL across redesigns; try a couple.
+        candidate_urls = [
+            f"https://sellercentral.amazon.in/reportcentral/REIMBURSEMENTS/0?startDate={since_date}&endDate={end_date}",
+            "https://sellercentral.amazon.in/reportcentral/REIMBURSEMENTS/0",
+            "https://sellercentral.amazon.in/inventoryplanning/reimbursements",
+        ]
+        loaded = False
+        last_err = None
+        for url in candidate_urls:
+            try:
+                await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(4)  # let React render the table
+                if "404" not in (self.page.url or "") and "not-found" not in (self.page.url or ""):
+                    loaded = True
+                    break
+            except Exception as e:
+                last_err = str(e)
+                continue
+        if not loaded:
+            return {"status": "page_changed", "rows": [], "raw_text_sample": "",
+                    "error": f"All reimbursement URLs failed; last error: {last_err or 'navigation'}"}
+
+        await self._capture_screenshot()
+
+        # Extract rows via page.evaluate. We try the canonical table first;
+        # if that fails we fall back to scraping the page text and let the
+        # accountant correct the parser. Returning raw_text_sample either way
+        # is intentional — it makes selector drift debuggable without SSH.
+        scraped = await self.page.evaluate(
+            r"""
+            () => {
+              const out = { rows: [], raw_text_sample: '', table_found: false };
+              const body = document.body || {};
+              out.raw_text_sample = (body.innerText || '').slice(0, 2000);
+
+              // Canonical: a single <table> or [role="grid"] with rows.
+              const tables = Array.from(document.querySelectorAll(
+                'table, [role="grid"], .kat-table, .a-table'
+              ));
+              const headerKeywords = ['reimbursement', 'amount', 'sku', 'reason', 'approval'];
+
+              const parseTable = (tbl) => {
+                const rows = Array.from(tbl.querySelectorAll('tr, [role="row"]'));
+                if (rows.length < 2) return [];
+                // Identify header
+                const headerCells = Array.from(rows[0].querySelectorAll('th, [role="columnheader"], td'))
+                  .map(c => (c.innerText || '').trim().toLowerCase());
+                const hits = headerKeywords.filter(k => headerCells.some(h => h.includes(k)));
+                if (hits.length < 2) return [];  // not the right table
+
+                const colIndex = (name) => headerCells.findIndex(h => h.includes(name));
+                const colReim = colIndex('reimbursement');
+                const colDate = colIndex('approval') !== -1 ? colIndex('approval') : colIndex('date');
+                const colCase = colIndex('case');
+                const colOrd  = colIndex('order');
+                const colReas = colIndex('reason');
+                const colSku  = colIndex('sku');
+                const colFns  = colIndex('fnsku');
+                const colAsin = colIndex('asin');
+                const colQty  = colIndex('quantity');
+                const colAmt  = colIndex('amount');
+                const colCur  = colIndex('currency');
+
+                const result = [];
+                for (let i = 1; i < rows.length; i++) {
+                  const cells = Array.from(rows[i].querySelectorAll('td, [role="cell"]'))
+                    .map(c => (c.innerText || '').trim());
+                  if (cells.length === 0) continue;
+                  const get = (idx) => (idx >= 0 && idx < cells.length) ? cells[idx] : '';
+                  const amtRaw = get(colAmt).replace(/[^\d.\-]/g, '');
+                  const qtyRaw = get(colQty).replace(/[^\d]/g, '');
+                  const row = {
+                    reimbursement_id: get(colReim),
+                    approval_date: get(colDate),
+                    case_id: get(colCase) || null,
+                    amazon_order_id: get(colOrd) || null,
+                    reason: get(colReas),
+                    sku: get(colSku) || null,
+                    fnsku: get(colFns) || null,
+                    asin: get(colAsin) || null,
+                    quantity: qtyRaw ? parseInt(qtyRaw, 10) : 0,
+                    amount: amtRaw ? parseFloat(amtRaw) : 0,
+                    currency: get(colCur) || 'INR',
+                  };
+                  if (row.reimbursement_id) result.push(row);
+                }
+                return result;
+              };
+
+              for (const tbl of tables) {
+                const rows = parseTable(tbl);
+                if (rows.length > 0) {
+                  out.rows = rows;
+                  out.table_found = true;
+                  break;
+                }
+              }
+              return out;
+            }
+            """
+        )
+
+        rows = scraped.get("rows") or []
+        # Filter to since_date and normalize date format (Amazon dates can be
+        # 'Apr 28, 2026' / '28/04/2026' / '2026-04-28' depending on locale).
+        def _norm_date(s: str) -> str:
+            if not s:
+                return ""
+            s = s.strip()
+            for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%b %d, %Y", "%d %b %Y"):
+                try:
+                    return _dt.strptime(s, fmt).strftime("%Y-%m-%d")
+                except ValueError:
+                    continue
+            return s  # leave as-is; downstream will treat as opaque string
+
+        for r in rows:
+            r["approval_date"] = _norm_date(r.get("approval_date", ""))
+        rows = [r for r in rows if (r.get("approval_date") or "") >= since_date]
+
+        status = "ok" if scraped.get("table_found") else "page_changed"
+        await self._notify_status(
+            f"📑 Reimbursements: {len(rows)} rows (status={status})"
+        )
+        return {
+            "status": status,
+            "rows": rows,
+            "raw_text_sample": scraped.get("raw_text_sample") or "",
+            "error": None if status == "ok" else "Reimbursement table not found — selectors may need updating",
+        }
+
     def determine_shipping_type(self, weight_kg: float, order_value: float) -> ShippingType:
         """Determine B2B or B2C based on rules"""
         if order_value > 30000 or weight_kg > 20:

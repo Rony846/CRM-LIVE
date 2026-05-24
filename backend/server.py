@@ -3358,6 +3358,151 @@ async def _receivables_aging_snapshot(firm_id: str) -> dict:
     }
 
 
+_REIMB_RECEIVABLE_ACCOUNT = "Amazon Reimbursements Receivable"
+_REIMB_INCOME_ACCOUNT = "FBA Reimbursement Income"
+
+
+async def _scrape_and_book_reimbursements(firm_id: str, firm_name: str, system_user: dict) -> dict:
+    """Pull the FBA Reimbursements report from Seller Central via the browser
+    agent, persist new rows to `amazon_fba_reimbursements`, and book each new
+    row as a journal entry (Dr Receivable / Cr Reimbursement Income).
+
+    Amazon owes us money for every reimbursement on this page — booking it
+    creates the receivable, and the next bank deposit clears it.
+
+    Operates on whichever firm is currently logged into Seller Central in
+    the browser agent (single account constraint until we add per-firm).
+    Idempotent: existing reimbursement_ids are skipped.
+
+    Returns:
+      {
+        "status": "ok" | "session_expired" | "page_changed" | "skipped" | "error",
+        "scraped": int,        # rows scraped from the page
+        "new_rows": int,       # rows we hadn't seen before
+        "booked": int,         # journal entries written
+        "total_amount": float, # sum of new reimbursement amounts (INR)
+        "raw_text_sample": str (only if status != ok, for debugging),
+        "error": str | None,
+      }
+    """
+    try:
+        agent = await get_browser_agent()
+    except Exception as e:
+        return {"status": "error", "scraped": 0, "new_rows": 0, "booked": 0,
+                "total_amount": 0.0, "error": f"browser agent init failed: {e}"}
+
+    # If the browser isn't running, don't auto-start it from inside the
+    # scheduled job — that would pop a headless Chromium without a human
+    # ready to log in. Just degrade gracefully.
+    if not agent.page:
+        return {"status": "session_expired", "scraped": 0, "new_rows": 0, "booked": 0,
+                "total_amount": 0.0,
+                "error": "Browser agent not started — log in at /admin/browser-agent"}
+
+    try:
+        result = await agent.scrape_fba_reimbursements()
+    except Exception as e:
+        logger.error(f"[finance-agent] reimbursement scrape crashed: {e}", exc_info=True)
+        return {"status": "error", "scraped": 0, "new_rows": 0, "booked": 0,
+                "total_amount": 0.0, "error": str(e)[:200]}
+
+    if result.get("status") != "ok":
+        return {
+            "status": result.get("status") or "error",
+            "scraped": 0, "new_rows": 0, "booked": 0, "total_amount": 0.0,
+            "raw_text_sample": (result.get("raw_text_sample") or "")[:600],
+            "error": result.get("error") or "scrape returned no rows",
+        }
+
+    rows = result.get("rows") or []
+    scraped = len(rows)
+    new_count = 0
+    booked = 0
+    total_amount = 0.0
+    now = datetime.now(timezone.utc).isoformat()
+
+    for row in rows:
+        rid = row.get("reimbursement_id")
+        if not rid:
+            continue
+        # Upsert: skip if we already have this reimbursement_id for this firm
+        existing = await db.amazon_fba_reimbursements.find_one(
+            {"firm_id": firm_id, "reimbursement_id": rid}, {"_id": 0, "id": 1}
+        )
+        if existing:
+            continue
+        doc = {
+            "id": str(uuid.uuid4()),
+            "firm_id": firm_id,
+            "reimbursement_id": rid,
+            "approval_date": row.get("approval_date"),
+            "case_id": row.get("case_id"),
+            "amazon_order_id": row.get("amazon_order_id"),
+            "reason": row.get("reason"),
+            "sku": row.get("sku"),
+            "fnsku": row.get("fnsku"),
+            "asin": row.get("asin"),
+            "quantity": int(row.get("quantity") or 0),
+            "amount": float(row.get("amount") or 0),
+            "currency": row.get("currency") or "INR",
+            "source": "browser_agent",
+            "scraped_at": now,
+            "scraped_by": system_user.get("email"),
+            "journal_entry_id": None,
+        }
+        amount = doc["amount"]
+        if amount <= 0:
+            # Don't book zero/negative reimbursements — flag the row but skip
+            # creating an entry to keep the GL clean.
+            await db.amazon_fba_reimbursements.insert_one(doc)
+            new_count += 1
+            continue
+        # Book Dr Reimbursements Receivable / Cr Reimbursement Income
+        je_id = str(uuid.uuid4())
+        je = {
+            "id": je_id,
+            "firm_id": firm_id,
+            "firm_name": firm_name,
+            "reference_type": "fba_reimbursement",
+            "reference_id": doc["id"],
+            "reference_number": rid,
+            "marketplace": "amazon",
+            "marketplace_order_id": doc.get("amazon_order_id"),
+            "amount": round(amount, 2),
+            "lines": [
+                {"account": _REIMB_RECEIVABLE_ACCOUNT, "debit": round(amount, 2), "credit": 0},
+                {"account": _REIMB_INCOME_ACCOUNT,     "debit": 0, "credit": round(amount, 2)},
+            ],
+            "narration": (
+                f"FBA reimbursement {rid} — {doc.get('reason') or 'no reason given'}"
+                + (f" on order {doc['amazon_order_id']}" if doc.get("amazon_order_id") else "")
+            ),
+            "created_by": system_user["id"],
+            "created_by_name": f"{system_user.get('first_name','')} {system_user.get('last_name','')}".strip() or system_user.get("email"),
+            "created_at": now,
+            "accounting_date": doc.get("approval_date") or now[:10],
+            "accounting_date_source": "reimbursement_approval_date",
+        }
+        try:
+            await db.journal_entries.insert_one(je)
+            doc["journal_entry_id"] = je_id
+            booked += 1
+            total_amount += amount
+        except Exception as e:
+            logger.warning(f"[finance-agent] failed to book reimbursement {rid}: {e}")
+        await db.amazon_fba_reimbursements.insert_one(doc)
+        new_count += 1
+
+    return {
+        "status": "ok",
+        "scraped": scraped,
+        "new_rows": new_count,
+        "booked": booked,
+        "total_amount": round(total_amount, 2),
+        "error": None,
+    }
+
+
 def _agent_priority(per_firm_stats: List[dict]) -> str:
     """Roll a notification priority off the worst severity seen across firms."""
     for s in per_firm_stats:
@@ -3543,9 +3688,10 @@ async def _run_finance_agent_for_firm(firm: dict, system_user: dict) -> dict:
     return stats
 
 
-def _agent_aggregate_totals(per_firm: List[dict]) -> dict:
+def _agent_aggregate_totals(per_firm: List[dict], reimb_scrape: Optional[dict] = None) -> dict:
     """Compute org-wide totals + finding counts from per-firm stats. Used by
     both the scheduled and manual runs so the UI sees a consistent shape."""
+    reimb = reimb_scrape or {}
     return {
         # Actions
         "fees_posted_rows":     sum(s.get("fees_posted_rows", 0)     for s in per_firm),
@@ -3555,6 +3701,12 @@ def _agent_aggregate_totals(per_firm: List[dict]) -> dict:
         "refunds_skipped":      sum(s.get("refunds_skipped", 0)      for s in per_firm),
         "a_to_z_booked":  sum((s.get("a_to_z") or {}).get("granted_booked", 0) for s in per_firm),
         "a_to_z_pending": sum((s.get("a_to_z") or {}).get("pending", 0)        for s in per_firm),
+        # Run-level: FBA reimbursements scraped via browser agent
+        "reimbursements_scraped":      reimb.get("scraped", 0),
+        "reimbursements_new":          reimb.get("new_rows", 0),
+        "reimbursements_booked":       reimb.get("booked", 0),
+        "reimbursements_total_amount": reimb.get("total_amount", 0.0),
+        "reimbursement_status":        reimb.get("status", "skipped"),
         # Findings — counts only, full payload is per_firm[*]
         "unmatched_transactions": sum(s.get("unmatched_transactions", 0) for s in per_firm),
         "stuck_reimbursements":   sum(len(s.get("stuck_reimbursements") or []) for s in per_firm),
@@ -3574,6 +3726,22 @@ def _agent_aggregate_totals(per_firm: List[dict]) -> dict:
             sum((s.get("aging") or {}).get("buckets", {}).get("90+", 0) for s in per_firm), 2),
         "errors": sum(len(s.get("errors") or []) for s in per_firm),
     }
+
+
+async def _pick_browser_agent_firm() -> Optional[dict]:
+    """Decide which firm the browser-agent scrape attributes its results to.
+    Single-account browser today — pick env var override or first Amazon firm."""
+    override = os.environ.get("BROWSER_AGENT_FIRM_ID")
+    if override:
+        f = await db.firms.find_one({"id": override}, {"_id": 0, "id": 1, "name": 1})
+        if f:
+            return f
+    creds = await db.marketplace_credentials.find_one(
+        {"platform": "amazon", "is_active": True}, {"_id": 0, "firm_id": 1}
+    )
+    if not creds:
+        return None
+    return await db.firms.find_one({"id": creds["firm_id"]}, {"_id": 0, "id": 1, "name": 1})
 
 
 async def scheduled_amazon_finance_agent():
@@ -3646,13 +3814,38 @@ async def scheduled_amazon_finance_agent():
             await db.scheduled_job_runs.update_one({"id": run["id"]}, {"$set": run})
             return
 
-        totals = _agent_aggregate_totals(all_firm_stats)
+        # Browser-agent scrape: pull FBA reimbursements that SP-API won't ship.
+        # Runs ONCE per agent invocation (single Seller Central account); the
+        # result is attributed to BROWSER_AGENT_FIRM_ID env or the first
+        # Amazon firm. If the browser isn't logged in, we degrade gracefully
+        # and surface a notification rather than block the whole run.
+        reimb_scrape = None
+        reimb_firm = await _pick_browser_agent_firm()
+        if reimb_firm:
+            reimb_scrape = await _scrape_and_book_reimbursements(
+                reimb_firm["id"], reimb_firm.get("name", ""), system_user
+            )
+            reimb_scrape["firm_id"]   = reimb_firm["id"]
+            reimb_scrape["firm_name"] = reimb_firm.get("name")
+            run["reimbursement_scrape"] = reimb_scrape
+            logger.info(
+                f"[finance-agent] reimbursement scrape: status={reimb_scrape.get('status')} "
+                f"scraped={reimb_scrape.get('scraped')} new={reimb_scrape.get('new_rows')} "
+                f"booked={reimb_scrape.get('booked')} amt=₹{reimb_scrape.get('total_amount')}"
+            )
+
+        totals = _agent_aggregate_totals(all_firm_stats, reimb_scrape)
         priority = _agent_priority(all_firm_stats)
+        # Browser session expired or page-changed bumps priority — accountant
+        # has to take an action (re-login) for the next run to be clean.
+        if reimb_scrape and reimb_scrape.get("status") in ("session_expired", "page_changed"):
+            priority = "high"
 
         logger.info(
             f"[finance-agent] daily run done: firms={len(all_firm_stats)} "
             f"fees=₹{totals['fees_total_amount']} refunds={totals['refunds_posted']} "
-            f"a_to_z={totals['a_to_z_booked']} unmatched={totals['unmatched_transactions']} "
+            f"a_to_z={totals['a_to_z_booked']} reimb_booked={totals['reimbursements_booked']} "
+            f"unmatched={totals['unmatched_transactions']} "
             f"stuck={totals['stuck_reimbursements']} drifts={totals['settlement_drifts']} "
             f"tb_fail={totals['trial_balance_failures']} duplicates={totals['duplicates_found']} "
             f"anomalies={totals['anomalies']} errors={totals['errors']} priority={priority}"
@@ -3671,7 +3864,13 @@ async def scheduled_amazon_finance_agent():
         if totals["fees_total_amount"] > 0: title_bits.append(f"₹{totals['fees_total_amount']:,.0f} fees")
         if totals["refunds_posted"] > 0:    title_bits.append(f"{totals['refunds_posted']} refunds")
         if totals["a_to_z_booked"] > 0:     title_bits.append(f"{totals['a_to_z_booked']} A-Z")
+        if totals["reimbursements_booked"] > 0:
+            title_bits.append(f"₹{totals['reimbursements_total_amount']:,.0f} reimb")
         finding_bits = []
+        if totals["reimbursement_status"] == "session_expired":
+            finding_bits.append("⛔ browser session expired")
+        elif totals["reimbursement_status"] == "page_changed":
+            finding_bits.append("⛔ reimb page changed")
         if totals["trial_balance_failures"] > 0: finding_bits.append(f"⛔ {totals['trial_balance_failures']} TB break")
         if totals["unmatched_transactions"] > 0: finding_bits.append(f"⚠ {totals['unmatched_transactions']} unmatched")
         if totals["stuck_reimbursements"] > 0:   finding_bits.append(f"⚠ {totals['stuck_reimbursements']} stuck reimb")
@@ -3684,6 +3883,24 @@ async def scheduled_amazon_finance_agent():
         title = "Finance agent: " + (
             ", ".join(title_bits + finding_bits) if (title_bits or finding_bits) else "all clean")
 
+        reimb_line = ""
+        rs = reimb_scrape or {}
+        if rs.get("status") == "ok":
+            reimb_line = (
+                f"FBA reimbursements: {rs.get('new_rows', 0)} new "
+                f"({rs.get('booked', 0)} booked, ₹{rs.get('total_amount', 0):,.0f}). "
+            )
+        elif rs.get("status") == "session_expired":
+            reimb_line = (
+                "FBA reimbursements: browser session expired — please re-login at "
+                "/admin/browser-agent so the next run can scrape. "
+            )
+        elif rs.get("status") == "page_changed":
+            reimb_line = (
+                "FBA reimbursements: Amazon's report page layout changed — "
+                "scraper selectors need updating. "
+            )
+
         try:
             await create_notification(
                 title=title,
@@ -3692,6 +3909,7 @@ async def scheduled_amazon_finance_agent():
                     f"Actions: ₹{totals['fees_total_amount']:,.0f} fees in {totals['fees_journal_entries']} "
                     f"journal entries, {totals['refunds_posted']} refunds, "
                     f"{totals['a_to_z_booked']} A-Z claims booked ({totals['a_to_z_pending']} pending). "
+                    + reimb_line +
                     f"Findings: {totals['unmatched_transactions']} unmatched, "
                     f"{totals['stuck_reimbursements']} stuck reimbursements, "
                     f"{totals['settlement_drifts']} settlement drifts, "
@@ -3711,6 +3929,7 @@ async def scheduled_amazon_finance_agent():
                     "run_id": run["id"],
                     "per_firm": all_firm_stats,
                     "totals": totals,
+                    "reimbursement_scrape": reimb_scrape,
                 },
             )
         except Exception as e:
@@ -33122,8 +33341,32 @@ async def trigger_finance_agent(
             per_firm.append(err)
             run["per_firm"][firm.get("id")] = err
 
-    totals = _agent_aggregate_totals(per_firm)
+    # Run-level browser-agent scrape — pulls FBA reimbursements Amazon doesn't
+    # ship via SP-API. Only runs if a target firm is configured (no firms with
+    # Amazon creds = nothing to scrape; admin can override with env var).
+    reimb_scrape = None
+    reimb_firm = await _pick_browser_agent_firm()
+    if reimb_firm:
+        # Accountants may have triggered a scope-limited run; only scrape if
+        # the chosen firm is one they're allowed to see.
+        scope = get_user_firm_scope(user)
+        if scope and reimb_firm["id"] != scope:
+            reimb_scrape = {"status": "skipped", "scraped": 0, "new_rows": 0, "booked": 0,
+                            "total_amount": 0.0, "firm_id": reimb_firm["id"],
+                            "firm_name": reimb_firm.get("name"),
+                            "error": "browser agent firm out of accountant scope"}
+        else:
+            reimb_scrape = await _scrape_and_book_reimbursements(
+                reimb_firm["id"], reimb_firm.get("name", ""), system_user
+            )
+            reimb_scrape["firm_id"]   = reimb_firm["id"]
+            reimb_scrape["firm_name"] = reimb_firm.get("name")
+        run["reimbursement_scrape"] = reimb_scrape
+
+    totals = _agent_aggregate_totals(per_firm, reimb_scrape)
     priority = _agent_priority(per_firm)
+    if reimb_scrape and reimb_scrape.get("status") in ("session_expired", "page_changed"):
+        priority = "high"
 
     run["status"] = "completed"
     run["completed_at"] = datetime.now(timezone.utc).isoformat()
@@ -33137,6 +33380,7 @@ async def trigger_finance_agent(
         "per_firm": per_firm,
         "totals": totals,
         "priority": priority,
+        "reimbursement_scrape": reimb_scrape,
     }
 
 
