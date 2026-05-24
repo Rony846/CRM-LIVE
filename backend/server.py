@@ -8493,10 +8493,18 @@ async def create_sales_invoice_from_dispatch(dispatch_doc: dict, db):
     hsn_code = master_sku.get("hsn_code", "")
     
     # Check if dispatch has pre-calculated taxable_value (marketplace orders)
-    dispatch_invoice_value = dispatch_doc.get("invoice_value") or 0
-    dispatch_taxable_value = dispatch_doc.get("taxable_value") or 0
-    dispatch_gst_amount = dispatch_doc.get("gst_amount") or 0
-    dispatch_selling_price = dispatch_doc.get("selling_price") or 0
+    # Coerce SP-API dict-shaped money fields ({Amount, CurrencyCode}) to
+    # plain floats so downstream comparisons / arithmetic don't TypeError.
+    def _m(v):
+        if isinstance(v, dict):
+            try: return float(v.get("Amount") or 0)
+            except (TypeError, ValueError): return 0.0
+        try: return float(v or 0)
+        except (TypeError, ValueError): return 0.0
+    dispatch_invoice_value = _m(dispatch_doc.get("invoice_value"))
+    dispatch_taxable_value = _m(dispatch_doc.get("taxable_value"))
+    dispatch_gst_amount = _m(dispatch_doc.get("gst_amount"))
+    dispatch_selling_price = _m(dispatch_doc.get("selling_price"))
     is_gst_inclusive = dispatch_doc.get("price_is_gst_inclusive", False) or dispatch_doc.get("is_marketplace_order", False)
     
     if dispatch_taxable_value > 0:
@@ -21676,8 +21684,21 @@ async def get_finance_dashboard(
             "dispatched_at": {"$gte": month_start.isoformat()}
         }, {"_id": 0}).to_list(1000)
         
-        dispatch_sales = sum(d.get("invoice_value", 0) or 0 for d in dispatches)
-        dispatch_taxable = sum(d.get("taxable_value", 0) or 0 for d in dispatches)
+        # Some legacy/Amazon dispatches stored invoice_value as a raw SP-API
+        # dict ({"Amount": 1234.0, "CurrencyCode": "INR"}) rather than a
+        # plain float. Coerce both shapes so summation doesn't TypeError.
+        def _money(v):
+            if isinstance(v, dict):
+                try:
+                    return float(v.get("Amount") or 0)
+                except (TypeError, ValueError):
+                    return 0.0
+            try:
+                return float(v or 0)
+            except (TypeError, ValueError):
+                return 0.0
+        dispatch_sales = sum(_money(d.get("invoice_value")) for d in dispatches)
+        dispatch_taxable = sum(_money(d.get("taxable_value")) for d in dispatches)
         
         # Method 2: From sales_invoices collection (primary source)
         month_str = datetime.now(timezone.utc).strftime("%Y-%m")
