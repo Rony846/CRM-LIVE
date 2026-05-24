@@ -814,6 +814,69 @@ def quotation_email(quotation: Dict, public_url: str = None) -> tuple:
     return subject, get_base_template(content, subject)
 
 
+def quotation_approved_email(quotation: Dict) -> tuple:
+    """Email sent to the customer after they approve their proforma invoice.
+
+    Triggered from /pi/approve/{token}. Confirms approval, restates the amount,
+    walks them through what happens next, and keeps the brand tone.
+    """
+    qn = quotation.get('quotation_number', '')
+    customer = quotation.get('customer_name') or quotation.get('party_name') or 'Customer'
+    grand_total = quotation.get('grand_total') or quotation.get('total_amount') or 0
+    subject = f"Quotation {qn} Confirmed — Thank you!"
+
+    content = f"""
+    <div style="text-align: center; padding: 8px 0 24px 0;">
+        <div style="display: inline-block; background: #ecfdf5; color: #047857; padding: 10px 22px; border-radius: 999px; font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;">
+            ✓ Confirmed
+        </div>
+    </div>
+
+    <h2 style="color: #1e293b; margin: 0 0 16px 0; text-align: center; font-size: 24px;">
+        Thank you for confirming!
+    </h2>
+
+    <p style="color: #475569; line-height: 1.65; font-size: 15px;">
+        Dear <strong>{customer}</strong>,
+    </p>
+
+    <p style="color: #475569; line-height: 1.65; font-size: 15px;">
+        We're delighted to confirm that your proforma invoice <strong>{qn}</strong> has been approved.
+        Our team has been notified and we're getting started on processing your order right away.
+    </p>
+
+    <div style="background: #f8fafc; border-left: 4px solid #f97316; padding: 16px 20px; margin: 24px 0; border-radius: 4px;">
+        <div style="font-size: 11px; color: #64748b; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;">
+            Order total
+        </div>
+        <div style="font-size: 26px; font-weight: 700; color: #1e293b; font-family: 'Courier New', monospace; margin-top: 4px;">
+            ₹{grand_total:,.2f}
+        </div>
+        <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
+            PI {qn} · Confirmed today
+        </div>
+    </div>
+
+    <h3 style="color: #1e293b; margin: 28px 0 12px 0; font-size: 16px;">What happens next</h3>
+    <ol style="color: #475569; line-height: 1.7; padding-left: 22px; font-size: 14px;">
+        <li><strong>Order processing</strong> — our team begins preparing your items for dispatch.</li>
+        <li><strong>Payment confirmation</strong> — if not already settled, we'll share invoice and payment instructions.</li>
+        <li><strong>Dispatch notification</strong> — you'll receive an update with tracking details the moment your order ships.</li>
+    </ol>
+
+    <p style="color: #475569; line-height: 1.65; font-size: 15px; margin-top: 28px;">
+        If you have any questions or need to add to your order, reply to this email or call us at
+        <strong>+91-9999036254</strong>. We're here to help.
+    </p>
+
+    <p style="color: #475569; line-height: 1.65; font-size: 15px; margin-top: 20px;">
+        Thank you for choosing MuscleGrid.
+    </p>
+    """
+
+    return subject, get_base_template(content, subject)
+
+
 # ==================== WARRANTY EMAIL TEMPLATES ====================
 
 def warranty_registration_email(warranty: Dict) -> tuple:
@@ -1193,6 +1256,243 @@ def dealer_application_approved_email(dealer: Dict) -> tuple:
     </div>
     """
     
+    return subject, get_base_template(content, subject)
+
+
+def warranty_claim_filed_email(claim: Dict) -> tuple:
+    """Acknowledgement email to end customer when their dealer files a warranty claim."""
+    customer_name = claim.get("customer_name") or "Customer"
+    claim_number  = claim.get("claim_number") or "—"
+    product_name  = claim.get("product_name") or "your product"
+    dealer_name   = claim.get("dealer_name") or "your authorised MuscleGrid dealer"
+
+    subject = f"Warranty Claim Received — {claim_number}"
+    content = f"""
+    <h2 style="color: #1e293b; margin: 0 0 16px 0;">Warranty Claim Received</h2>
+
+    <p style="color: #475569; line-height: 1.6;">Dear <strong>{customer_name}</strong>,</p>
+
+    <p style="color: #475569; line-height: 1.6;">
+        We have received a warranty claim for your <strong>{product_name}</strong>,
+        filed on your behalf by {dealer_name}.
+    </p>
+
+    <div style="background: linear-gradient(135deg, #f97316 0%, #ea580c 100%); color: white; padding: 18px 20px; margin: 20px 0; border-radius: 8px; text-align: center;">
+        <p style="margin: 0 0 6px 0; font-size: 13px; opacity: 0.92; letter-spacing: 1px;">CLAIM REFERENCE</p>
+        <p style="margin: 0; font-size: 22px; font-weight: 700; font-family: monospace;">{claim_number}</p>
+    </div>
+
+    <div style="background-color: #f8fafc; padding: 16px; margin: 20px 0; border-radius: 8px; border-left: 4px solid #f97316;">
+        <h3 style="margin: 0 0 12px 0; color: #2d3133; font-size: 15px;">Claim Details</h3>
+        <table style="width: 100%; color: #334155; font-size: 14px;">
+            <tr><td style="padding: 4px 0; color: #64748b; width: 38%;">Product</td><td style="padding: 4px 0;"><strong>{product_name}</strong></td></tr>
+            <tr><td style="padding: 4px 0; color: #64748b;">Serial Number</td><td style="padding: 4px 0; font-family: monospace;">{claim.get('serial_number','—')}</td></tr>
+            <tr><td style="padding: 4px 0; color: #64748b;">Issue</td><td style="padding: 4px 0;">{(claim.get('issue_description','') or '')[:140]}</td></tr>
+            <tr><td style="padding: 4px 0; color: #64748b;">Dealer</td><td style="padding: 4px 0;">{dealer_name}</td></tr>
+        </table>
+    </div>
+
+    <p style="color: #475569; line-height: 1.6;">
+        Our team will review the claim and respond within <strong>7 working days</strong>.
+        You will receive another email once the claim is approved with replacement or repair details.
+    </p>
+
+    <p style="color: #64748b; font-size: 13px; line-height: 1.55; margin-top: 18px;">
+        Please keep the defective unit safely until further instructions are provided.
+        For any urgent queries, contact {dealer_name} or write to
+        <a href="mailto:service@musclegrid.in" style="color: #f97316;">service@musclegrid.in</a>.
+    </p>
+    """
+    return subject, get_base_template(content, subject)
+
+
+def warranty_claim_approved_email(claim: Dict) -> tuple:
+    """Customer email when warranty claim is approved."""
+    customer_name = claim.get("customer_name") or "Customer"
+    claim_number  = claim.get("claim_number") or "—"
+    resolution    = claim.get("resolution_type") or "replacement"
+    product_name  = claim.get("product_name") or "your product"
+    pretty_resolution = {"replacement": "Replacement Unit",
+                         "repair": "On-site Repair",
+                         "credit_note": "Credit Note"}.get(resolution, resolution.title())
+
+    subject = f"✅ Warranty Claim {claim_number} Approved"
+    content = f"""
+    <h2 style="color: #1e293b; margin: 0 0 16px 0;">Good news — your claim is approved!</h2>
+
+    <p style="color: #475569; line-height: 1.6;">Dear <strong>{customer_name}</strong>,</p>
+
+    <p style="color: #475569; line-height: 1.6;">
+        Your warranty claim <strong style="font-family:monospace;">{claim_number}</strong> for your
+        <strong>{product_name}</strong> has been <strong style="color:#059669;">APPROVED</strong>.
+    </p>
+
+    <div style="background: linear-gradient(135deg, #059669 0%, #047857 100%); color: white; padding: 18px 20px; margin: 20px 0; border-radius: 8px; text-align: center;">
+        <p style="margin: 0 0 6px 0; font-size: 13px; opacity: 0.92; letter-spacing: 1px;">RESOLUTION</p>
+        <p style="margin: 0; font-size: 22px; font-weight: 700;">{pretty_resolution}</p>
+    </div>
+
+    <p style="color: #475569; line-height: 1.6;">
+        Your dealer will receive the {resolution} and coordinate handover with you. You will receive a
+        separate notification once the replacement is dispatched.
+    </p>
+
+    <p style="color: #64748b; font-size: 13px; margin-top: 18px;">
+        For any queries, write to <a href="mailto:service@musclegrid.in" style="color: #f97316;">service@musclegrid.in</a>.
+    </p>
+    """
+    return subject, get_base_template(content, subject)
+
+
+def warranty_claim_rejected_email(claim: Dict) -> tuple:
+    """Customer email when warranty claim is rejected, with reason."""
+    customer_name    = claim.get("customer_name") or "Customer"
+    claim_number     = claim.get("claim_number") or "—"
+    rejection_reason = claim.get("rejection_reason") or "Claim conditions not met"
+    product_name     = claim.get("product_name") or "your product"
+
+    subject = f"Warranty Claim {claim_number} — Update"
+    content = f"""
+    <h2 style="color: #1e293b; margin: 0 0 16px 0;">Update on your warranty claim</h2>
+
+    <p style="color: #475569; line-height: 1.6;">Dear <strong>{customer_name}</strong>,</p>
+
+    <p style="color: #475569; line-height: 1.6;">
+        After review, your warranty claim <strong style="font-family:monospace;">{claim_number}</strong>
+        for <strong>{product_name}</strong> could not be approved.
+    </p>
+
+    <div style="background-color: #fef2f2; padding: 16px; margin: 20px 0; border-radius: 8px; border-left: 4px solid #dc2626;">
+        <h3 style="margin: 0 0 8px 0; color: #991b1b; font-size: 14px;">Reason</h3>
+        <p style="color: #7f1d1d; line-height: 1.5; margin: 0; font-size: 14px;">{rejection_reason}</p>
+    </div>
+
+    <p style="color: #475569; line-height: 1.6;">
+        If you believe this decision should be reviewed, please reply to this email or contact
+        <a href="mailto:service@musclegrid.in" style="color: #f97316;">service@musclegrid.in</a>
+        with any additional information.
+    </p>
+
+    <p style="color: #475569; line-height: 1.6;">
+        We may still be able to offer paid repair or a goodwill upgrade — please speak with your dealer.
+    </p>
+    """
+    return subject, get_base_template(content, subject)
+
+
+def warranty_claim_dispatched_email(claim: Dict) -> tuple:
+    """Customer email when the replacement unit has been dispatched."""
+    customer_name = claim.get("customer_name") or "Customer"
+    claim_number  = claim.get("claim_number") or "—"
+    product_name  = claim.get("product_name") or "your product"
+    tracking      = claim.get("replacement_tracking_id")
+    replacement_serial = claim.get("replacement_serial")
+
+    subject = f"🚚 Replacement Dispatched — Claim {claim_number}"
+    content = f"""
+    <h2 style="color: #1e293b; margin: 0 0 16px 0;">Replacement is on the way</h2>
+
+    <p style="color: #475569; line-height: 1.6;">Dear <strong>{customer_name}</strong>,</p>
+
+    <p style="color: #475569; line-height: 1.6;">
+        We've dispatched the replacement unit for your <strong>{product_name}</strong> under warranty
+        claim <strong style="font-family:monospace;">{claim_number}</strong>.
+    </p>
+
+    <div style="background-color: #f8fafc; padding: 16px; margin: 20px 0; border-radius: 8px; border-left: 4px solid #0ea5e9;">
+        <table style="width: 100%; color: #334155; font-size: 14px;">
+            {f'<tr><td style="padding: 4px 0; color: #64748b; width: 38%;">Tracking ID</td><td style="padding: 4px 0; font-family: monospace;"><strong>{tracking}</strong></td></tr>' if tracking else ''}
+            {f'<tr><td style="padding: 4px 0; color: #64748b;">Replacement S/N</td><td style="padding: 4px 0; font-family: monospace;">{replacement_serial}</td></tr>' if replacement_serial else ''}
+            <tr><td style="padding: 4px 0; color: #64748b;">Dealer</td><td style="padding: 4px 0;">{claim.get('dealer_name','your dealer')}</td></tr>
+        </table>
+    </div>
+
+    <p style="color: #475569; line-height: 1.6;">
+        Your dealer will coordinate installation and pickup of the old unit. Please keep the original
+        product safely until the dealer's technician arrives.
+    </p>
+
+    <p style="color: #64748b; font-size: 13px; margin-top: 18px;">
+        For any queries, contact your dealer or write to
+        <a href="mailto:service@musclegrid.in" style="color: #f97316;">service@musclegrid.in</a>.
+    </p>
+    """
+    return subject, get_base_template(content, subject)
+
+
+def dealer_terms_accepted_email(ctx: Dict) -> tuple:
+    """Confirmation email when a dealer accepts the T&C — includes audit metadata and download link.
+
+    ctx keys: first_name, last_name, business_name, gstin, tnc_accepted_at,
+    tnc_accepted_ip, tnc_accepted_version, frontend_url.
+    """
+    name = ctx.get("business_name") or f"{ctx.get('first_name','')} {ctx.get('last_name','')}".strip() or "Authorised Dealer"
+    accepted_at = ctx.get("tnc_accepted_at", "")
+    accepted_ip = ctx.get("tnc_accepted_ip") or "—"
+    version = ctx.get("tnc_accepted_version", "1.0")
+    portal = (ctx.get("frontend_url") or "https://newcrm.musclegrid.in").rstrip("/")
+    download_link = f"{portal}/dealer/terms"
+
+    subject = f"MuscleGrid Dealer Agreement — Acceptance Confirmed (v{version})"
+
+    content = f"""
+    <h2 style="color: #1e293b; margin: 0 0 16px 0;">Dealer Agreement — Acceptance Confirmed</h2>
+
+    <p style="color: #475569; line-height: 1.6;">
+        Dear <strong>{name}</strong>,
+    </p>
+
+    <p style="color: #475569; line-height: 1.6;">
+        Thank you for accepting the <strong>MuscleGrid Authorised Dealer Terms &amp; Conditions</strong>.
+        This email serves as your record of acceptance for legal and audit purposes.
+    </p>
+
+    <div style="background: linear-gradient(135deg, #f97316 0%, #ea580c 100%); color: white; padding: 18px 20px; margin: 20px 0; border-radius: 8px;">
+        <p style="margin: 0 0 6px 0; font-size: 13px; opacity: 0.92; letter-spacing: 1px;">VERSION ACCEPTED</p>
+        <p style="margin: 0; font-size: 24px; font-weight: 700;">v{version}</p>
+    </div>
+
+    <div style="background-color: #f8fafc; padding: 16px 18px; margin: 20px 0; border-radius: 8px; border-left: 4px solid #f97316;">
+        <h3 style="margin: 0 0 12px 0; color: #2d3133; font-size: 15px;">Acceptance Audit Trail</h3>
+        <table style="width: 100%; color: #334155; font-size: 14px;">
+            <tr><td style="padding: 4px 0; color: #64748b; width: 38%;">Dealer</td><td style="padding: 4px 0;"><strong>{name}</strong></td></tr>
+            <tr><td style="padding: 4px 0; color: #64748b;">GSTIN</td><td style="padding: 4px 0;">{ctx.get('gstin') or '—'}</td></tr>
+            <tr><td style="padding: 4px 0; color: #64748b;">Accepted At (UTC)</td><td style="padding: 4px 0; font-family: monospace;">{accepted_at}</td></tr>
+            <tr><td style="padding: 4px 0; color: #64748b;">IP Address</td><td style="padding: 4px 0; font-family: monospace;">{accepted_ip}</td></tr>
+        </table>
+    </div>
+
+    <p style="color: #475569; line-height: 1.6;">
+        Your acceptance has been recorded in the MuscleGrid CRM. Under the Information Technology Act, 2000,
+        this electronic acceptance has the same legal force as a physical signature on the agreement.
+    </p>
+
+    <p style="color: #475569; line-height: 1.6;">
+        A signed PDF copy of the agreement — bearing the dealer code, GSTIN, acceptance timestamp and IP
+        address — is available for download from your dealer portal at any time.
+    </p>
+
+    <div style="text-align: center; margin: 26px 0;">
+        <a href="{download_link}" style="display: inline-block; background: linear-gradient(135deg, #f97316 0%, #ea580c 100%); color: white; text-decoration: none; padding: 14px 28px; border-radius: 8px; font-weight: 600; font-size: 14px;">
+            View / Download Signed Agreement →
+        </a>
+    </div>
+
+    <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
+
+    <p style="color: #64748b; font-size: 12.5px; line-height: 1.55;">
+        <strong>Important:</strong> If you did not accept these terms, or if this acceptance was performed
+        without your authorisation, please contact MuscleGrid immediately at
+        <a href="mailto:service@musclegrid.in" style="color: #f97316;">service@musclegrid.in</a> so we can
+        review the audit log and take appropriate action.
+    </p>
+
+    <p style="color: #64748b; font-size: 12.5px;">
+        For ongoing support, billing, warranty claims and spare-parts orders, please continue to use the
+        dealer portal. The terms accepted today govern that ongoing relationship.
+    </p>
+    """
+
     return subject, get_base_template(content, subject)
 
 
