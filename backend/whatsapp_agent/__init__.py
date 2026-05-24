@@ -143,9 +143,26 @@ class CRMToolRegistry:
             },
             
             # Purchase Management
+            "list_firms": {
+                "description": (
+                    "List our active firms (our own legal entities — MGIPL, SPV Industries, etc.). "
+                    "Call this whenever you're booking a purchase or sale and need to know which firm "
+                    "owns the transaction. Match by GSTIN whenever possible."
+                ),
+                "parameters": {},
+                "function": self._list_firms
+            },
             "create_purchase": {
-                "description": "Create a purchase entry/bill",
+                "description": (
+                    "Create a purchase entry/bill. The firm (which of OUR legal entities is buying) "
+                    "is mandatory. On a B2B invoice, the buyer GSTIN identifies it — read it from the "
+                    "bill-to / buyer block and pass it as firm_gstin. If you can't find it, ask the "
+                    "user. NEVER guess: a wrong firm corrupts GSTR-3B."
+                ),
                 "parameters": {
+                    "firm_gstin": "Buyer GSTIN read off the invoice (preferred — matches firm by GSTIN exactly).",
+                    "firm_id":    "Firm UUID if you already know it (overrides firm_gstin / firm_name).",
+                    "firm_name":  "Firm name if GSTIN isn't visible. Fuzzy-matched, case-insensitive.",
                     "supplier_id": "Supplier party ID",
                     "invoice_number": "Supplier invoice number",
                     "invoice_date": "Invoice date (YYYY-MM-DD)",
@@ -325,9 +342,16 @@ class CRMToolRegistry:
                 },
                 "required": ["name", "sku", "hsn_code", "gst_rate"],
             },
+            "list_firms": {"type": "object", "properties": {}},
             "create_purchase": {
                 "type": "object",
                 "properties": {
+                    "firm_gstin": {
+                        "type": "string",
+                        "description": "Buyer GSTIN exactly as printed on the invoice's bill-to / buyer block. Preferred way to pick the firm — GSTINs are unique."
+                    },
+                    "firm_id":   {"type": "string", "description": "Firm UUID (if you already know it)."},
+                    "firm_name": {"type": "string", "description": "Firm name (fallback only — fuzzy-matched)."},
                     "supplier_id": {"type": "string"},
                     "invoice_number": {"type": "string"},
                     "invoice_date": {"type": "string", "description": "ISO date YYYY-MM-DD"},
@@ -629,7 +653,9 @@ class CRMToolRegistry:
     async def _create_purchase(self, supplier_id: str = "", invoice_number: str = "",
                               invoice_date: str = "", items: List[Dict] = None,
                               total_amount: float = 0, gst_amount: float = 0,
-                              notes: str = "", firm_id: str = "", **kwargs) -> Dict:
+                              notes: str = "", firm_id: str = "",
+                              firm_gstin: str = "", firm_name: str = "",
+                              **kwargs) -> Dict:
         """Create a purchase entry that is fully populated to GSTR-compliance level.
 
         Produces the SAME shape that Accountant-module UI creates: id (UUID),
@@ -650,7 +676,14 @@ class CRMToolRegistry:
         item_list = items or kwargs.get("line_items", []) or kwargs.get("products", [])
         amount = float(total_amount or kwargs.get("amount", 0) or kwargs.get("grand_total", 0))
         gst_amt = float(gst_amount or kwargs.get("tax_amount", 0) or kwargs.get("gst", 0))
-        f_id = firm_id or kwargs.get("firm", "") or os.environ.get("WHATSAPP_AGENT_DEFAULT_FIRM_ID", "")
+
+        # Firm hints — prefer GSTIN (exact + unique on a B2B invoice), then UUID,
+        # then name (fuzzy). Track whether the LLM passed ANY hint so we can
+        # distinguish "no info" (env default OK) from "told us wrong" (must error).
+        f_id    = (firm_id    or kwargs.get("firm", "")).strip()
+        f_gstin = (firm_gstin or kwargs.get("buyer_gstin", "") or kwargs.get("our_gstin", "")).strip().upper()
+        f_name  = (firm_name  or kwargs.get("buyer_name", "")).strip()
+        firm_hint_given = bool(f_id or f_gstin or f_name)
 
         # ---------- 2. Supplier resolution (find or create) ----------
         supplier_doc = None
@@ -697,20 +730,70 @@ class CRMToolRegistry:
         )
 
         # ---------- 3. Firm lookup + denorms ----------
+        # Resolution order: GSTIN (exact) > UUID > name (case-insensitive, exact
+        # then partial). If any hint was given but nothing matched, refuse —
+        # the previous silent fallback caused us to book SPV Industries invoices
+        # against MGIPL because no firm hint was ever passed. The env default is
+        # only consulted when the LLM passed NOTHING at all.
         firm_doc = None
-        if f_id:
+        resolution_warning = None
+
+        if f_gstin:
+            firm_doc = await self.db.firms.find_one(
+                {"gstin": {"$regex": f"^{re.escape(f_gstin)}$", "$options": "i"}, "is_active": True},
+                {"_id": 0},
+            )
+            if not firm_doc:
+                return {"error": (
+                    f"No active firm matches GSTIN {f_gstin}. "
+                    f"Call list_firms to see available firms, or ask the user to confirm."
+                )}
+        if not firm_doc and f_id:
             firm_doc = await self.db.firms.find_one({"id": f_id, "is_active": True}, {"_id": 0})
+            if not firm_doc:
+                return {"error": f"No active firm with id={f_id}. Call list_firms."}
+        if not firm_doc and f_name:
+            firm_doc = await self.db.firms.find_one(
+                {"name": {"$regex": f"^{re.escape(f_name)}$", "$options": "i"}, "is_active": True},
+                {"_id": 0},
+            )
+            if not firm_doc:
+                firm_doc = await self.db.firms.find_one(
+                    {"name": {"$regex": re.escape(f_name), "$options": "i"}, "is_active": True},
+                    {"_id": 0},
+                )
+            if not firm_doc:
+                return {"error": (
+                    f"No active firm name matches '{f_name}'. "
+                    f"Call list_firms to see available firms."
+                )}
+
         if not firm_doc:
-            # Fallback: any active firm (alphabetical first)
-            firm_doc = await self.db.firms.find_one({"is_active": True}, {"_id": 0}, sort=[("name", 1)])
-        firm_denorms = {}
-        if firm_doc:
-            firm_denorms = {
-                "firm_id": firm_doc.get("id"),
-                "firm_name": firm_doc.get("name"),
-                "firm_gstin": firm_doc.get("gstin"),
-            }
-        firm_state = (firm_doc or {}).get("state", "")
+            if firm_hint_given:
+                # Defensive — earlier branches would have already returned.
+                return {"error": "Could not resolve firm. Call list_firms and ask the user."}
+            # No hint at all → fall back to the env default, but flag it loudly
+            # so the LLM tells the user and the accountant sees it.
+            default_id = os.environ.get("WHATSAPP_AGENT_DEFAULT_FIRM_ID", "")
+            if default_id:
+                firm_doc = await self.db.firms.find_one({"id": default_id, "is_active": True}, {"_id": 0})
+                if firm_doc:
+                    resolution_warning = (
+                        f"No firm specified — used default '{firm_doc.get('name')}'. "
+                        f"This may be wrong. Verify before finalizing."
+                    )
+            if not firm_doc:
+                return {"error": (
+                    "No firm specified and no usable default. "
+                    "Call list_firms and ask the user which of our firms is the buyer."
+                )}
+
+        firm_denorms = {
+            "firm_id":    firm_doc.get("id"),
+            "firm_name":  firm_doc.get("name"),
+            "firm_gstin": firm_doc.get("gstin"),
+        }
+        firm_state = firm_doc.get("state", "")
 
         # ---------- 4. Item enrichment ----------
         # Emit items in the canonical shape the accountant UI reads/edits:
@@ -820,8 +903,11 @@ class CRMToolRegistry:
             "pending_review": True,
             "compliance_score": 0,
             "compliance_issues": [
-                "Created by WhatsApp agent — needs accountant review.",
-                "Verify supplier GSTIN, item HSN codes, and totals before finalizing.",
+                issue for issue in [
+                    resolution_warning,
+                    "Created by WhatsApp agent — needs accountant review.",
+                    "Verify supplier GSTIN, item HSN codes, and totals before finalizing.",
+                ] if issue
             ],
             "created_by": "whatsapp_agent",
             "created_by_name": "WhatsApp Agent",
@@ -832,9 +918,22 @@ class CRMToolRegistry:
         try:
             result = await self.db.purchases.insert_one(purchase)
             purchase["_id"] = str(result.inserted_id)
+            if resolution_warning:
+                # Surface the warning at the top level so the LLM relays it to the user
+                # instead of celebrating a wrongly-firmed purchase.
+                purchase["_firm_warning"] = resolution_warning
             return purchase
         except Exception as e:
             return {"error": f"Failed to create purchase: {str(e)}"}
+
+    async def _list_firms(self, **kwargs) -> Dict:
+        """Return our active firms so the LLM can match buyer GSTIN/name to firm_id."""
+        cursor = self.db.firms.find(
+            {"is_active": True},
+            {"_id": 0, "id": 1, "name": 1, "gstin": 1, "state": 1, "short_name": 1},
+        ).sort("name", 1)
+        firms = await cursor.to_list(50)
+        return {"firms": firms, "count": len(firms)}
     
     async def _get_recent_purchases(self, limit: int = 10) -> List[Dict]:
         """Get recent purchases"""
@@ -1101,11 +1200,17 @@ For INVOICES/BILLS:
   "document_type": "invoice",
   "supplier_name": "", "supplier_address": "", "supplier_gst": "", "supplier_phone": "",
   "invoice_number": "", "invoice_date": "", "due_date": "",
-  "customer_name": "", "customer_address": "",
-  "items": [{"name": "", "description": "", "quantity": 0, "unit": "", "rate": 0, "amount": 0, "gst_rate": 0}],
+  "buyer_name": "", "buyer_address": "", "buyer_gstin": "", "buyer_state": "",
+  "items": [{"name": "", "description": "", "quantity": 0, "unit": "", "hsn_code": "", "rate": 0, "amount": 0, "gst_rate": 0}],
   "subtotal": 0, "gst_amount": 0, "cgst": 0, "sgst": 0, "igst": 0, "total_amount": 0,
   "payment_terms": "", "bank_details": ""
 }
+
+CRITICAL for B2B GST invoices: the buyer's GSTIN is usually in the "Bill To" / "Buyer"
+block (sometimes labelled "Consignee GSTIN" or "Receiver GSTIN"). It is a 15-character
+alphanumeric like "07AATCM1213F1ZM". Extract it verbatim — uppercase, no spaces. This
+is how downstream code identifies which of OUR firms is buying. Do NOT confuse it with
+the supplier's GSTIN.
 
 For USER MANUALS / TECHNICAL DOCS:
 {
@@ -1696,6 +1801,16 @@ You have access to {len(self.tools.tools)} CRM tools that you can call directly 
 
 ## Document handling
 When the user sends an image or PDF, it's already in your context. Look at it directly, summarize what you found, and propose next actions. Use `extract_invoice_data` only if the user wants structured JSON output.
+
+## Booking a purchase from an invoice
+We run MULTIPLE legal firms (MGIPL, SPV Industries, Electronics Bay, EBAY UP, MuscleGrid Industries Gurgaon, …). On a B2B GST invoice, the BUYER block tells you which of OUR firms the bill belongs to.
+
+Mandatory checklist before calling `create_purchase`:
+1. Read the buyer GSTIN from the invoice's "Bill To" / "Buyer" / "Consignee" block (15 chars, e.g. `09BPRPR2164D1ZK`). Pass it as `firm_gstin`.
+2. If the buyer GSTIN isn't visible, call `list_firms` and ask the user which firm to use — do NOT guess and do NOT let the system pick a default.
+3. Confirm firm + supplier + total back to the user in one short message before committing.
+
+Picking the wrong firm corrupts GSTR-3B and is much harder to undo than asking one extra question.
 
 ## Current internal context
 - Current task: {context.current_task or 'None'}
