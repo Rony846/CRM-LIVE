@@ -8284,12 +8284,20 @@ async def dispatcher_cancel_dispatch(
 async def dispatcher_finalize_dispatch(
     dispatch_id: str,
     notes: Optional[str] = Form(None),
+    override_gate_scan: bool = False,
+    override_reason: Optional[str] = Form(None),
     user: dict = Depends(require_roles(["dispatcher", "admin"]))
 ):
     """
     Dispatcher finalizes a dispatch - this deducts stock, creates sales records, and marks as dispatched.
     This is the FINAL step before physical dispatch.
     Stock deduction happens ONLY here - not in /dispatches/{id}/status endpoint.
+
+    Gate scan: by default, finalize requires an outward gate_log entry matching
+    this dispatch (proof of physical handover to courier). Set env
+    REQUIRE_GATE_SCAN_FOR_DISPATCH=false to disable globally. Admins can pass
+    override_gate_scan=true with a non-empty override_reason to bypass on a
+    single dispatch — the bypass is stamped on the dispatch doc + audit log.
     """
     # Atomic guard: only one concurrent request can proceed past this point
     dispatch = await db.dispatches.find_one_and_update(
@@ -8303,19 +8311,71 @@ async def dispatcher_finalize_dispatch(
         if not existing:
             raise HTTPException(status_code=404, detail="Dispatch not found")
         return {
-            "message": "Already finalized (stock already deducted)", 
-            "dispatch_id": dispatch_id, 
+            "message": "Already finalized (stock already deducted)",
+            "dispatch_id": dispatch_id,
             "dispatch_number": existing.get("dispatch_number")
         }
-    
+
     # Remove _id from dispatch if present
     if "_id" in dispatch:
         del dispatch["_id"]
-    
+
     if dispatch.get("status") not in ["ready_for_dispatch", "ready_to_dispatch"]:
         if dispatch.get("status") == "dispatched":
             return {"message": "Already dispatched", "dispatch_id": dispatch_id, "dispatch_number": dispatch.get("dispatch_number")}
         raise HTTPException(status_code=400, detail=f"Cannot finalize dispatch with status '{dispatch.get('status')}'")
+
+    # ========== GATE-SCAN PROOF ==========
+    # Require an outward gate_log entry for this dispatch as proof of physical
+    # handover to courier. Without this, the warehouse can mark a package
+    # shipped while it's still sitting on the floor — invoice raised, COGS
+    # booked, customer waiting forever for a package that never left.
+    gate_scan_required = (os.environ.get("REQUIRE_GATE_SCAN_FOR_DISPATCH", "true").lower() == "true")
+    gate_scan_bypassed = False
+    gate_scan_bypass_reason = None
+    gate_log_matched = None
+
+    if gate_scan_required:
+        # Look for an outward scan against this dispatch_id OR matching tracking.
+        # The tracking-fallback covers the case where the gate scan happened
+        # before the dispatch row existed (then gate_log has tracking_id but
+        # no dispatch_id link).
+        tracking = (dispatch.get("tracking_id") or dispatch.get("tracking_number") or "").strip()
+        match_clauses = [{"dispatch_id": dispatch_id}]
+        if tracking:
+            match_clauses.append({"tracking_id": tracking})
+        gate_log_matched = await db.gate_logs.find_one(
+            {"scan_type": "outward", "$or": match_clauses},
+            {"_id": 0, "id": 1, "scanned_at": 1, "scanned_by_name": 1, "tracking_id": 1},
+            sort=[("scanned_at", -1)],
+        )
+
+        if not gate_log_matched:
+            # Allow admin override with a reason. The bypass is recorded on
+            # the dispatch + audit log so finance / ops can audit later.
+            is_admin = (user.get("role") == "admin")
+            if override_gate_scan and is_admin and (override_reason or "").strip():
+                gate_scan_bypassed = True
+                gate_scan_bypass_reason = override_reason.strip()
+            else:
+                # Release the finalize lock so a retry after scanning works.
+                await db.dispatches.update_one(
+                    {"id": dispatch_id},
+                    {"$set": {"_finalize_lock": False}},
+                )
+                tail = (
+                    " Admins may bypass with override_gate_scan=true + a non-empty "
+                    "override_reason."
+                ) if is_admin else ""
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"No outward gate scan found for this dispatch"
+                        f"{f' (tracking {tracking})' if tracking else ''}. "
+                        f"Scan the package out at the gate before finalizing."
+                        f"{tail}"
+                    ),
+                )
     
     now = datetime.now(timezone.utc)
     items = dispatch.get("items", [])
@@ -8462,23 +8522,60 @@ async def dispatcher_finalize_dispatch(
     if cogs_journal_entries:
         await db.journal_entries.insert_many(cogs_journal_entries)
 
-    # Update dispatch status to 'dispatched' and mark stock as deducted
-    await db.dispatches.update_one(
-        {"id": dispatch_id},
-        {"$set": {
-            "status": "dispatched",
-            "scanned_out_at": now.isoformat(),
-            "dispatched_at": now.isoformat(),
-            "dispatched_by": user["id"],
-            "dispatched_by_name": f"{user['first_name']} {user['last_name']}",
-            "finalize_notes": notes,
-            "stock_deducted": True,  # Mark stock as deducted to prevent double deduction
-            "stock_deducted_at": now.isoformat(),
-            "ledger_entries": [e["id"] for e in ledger_entries] if ledger_entries else [],
-            "cogs_journal_entries": [e["id"] for e in cogs_journal_entries],
-            "updated_at": now.isoformat()
-        }}
-    )
+    # Update dispatch status to 'dispatched' and mark stock as deducted.
+    # Also stamp the gate-scan evidence (or bypass record) on the doc so
+    # finance / ops can audit what proof backed each shipment.
+    finalize_update = {
+        "status": "dispatched",
+        "scanned_out_at": now.isoformat(),
+        "dispatched_at": now.isoformat(),
+        "dispatched_by": user["id"],
+        "dispatched_by_name": f"{user['first_name']} {user['last_name']}",
+        "finalize_notes": notes,
+        "stock_deducted": True,  # Mark stock as deducted to prevent double deduction
+        "stock_deducted_at": now.isoformat(),
+        "ledger_entries": [e["id"] for e in ledger_entries] if ledger_entries else [],
+        "cogs_journal_entries": [e["id"] for e in cogs_journal_entries],
+        "updated_at": now.isoformat(),
+    }
+    if gate_log_matched:
+        finalize_update.update({
+            "gate_scan_verified": True,
+            "gate_scan_log_id": gate_log_matched.get("id"),
+            "gate_scan_at": gate_log_matched.get("scanned_at"),
+            "gate_scan_by_name": gate_log_matched.get("scanned_by_name"),
+        })
+    if gate_scan_bypassed:
+        finalize_update.update({
+            "gate_scan_verified": False,
+            "gate_scan_bypassed": True,
+            "gate_scan_bypass_reason": gate_scan_bypass_reason,
+            "gate_scan_bypass_by": user["id"],
+            "gate_scan_bypass_by_name": f"{user['first_name']} {user['last_name']}",
+            "gate_scan_bypass_at": now.isoformat(),
+        })
+        # Also record in audit_logs so the bypass is queryable independently of
+        # the dispatch row (which can be re-edited).
+        try:
+            await db.audit_logs.insert_one({
+                "id": str(uuid.uuid4()),
+                "action": "dispatch_finalize_gate_scan_bypassed",
+                "entity_type": "dispatch",
+                "entity_id": dispatch_id,
+                "entity_name": dispatch.get("dispatch_number"),
+                "performed_by": user["id"],
+                "performed_by_name": f"{user['first_name']} {user['last_name']}",
+                "details": {
+                    "reason": gate_scan_bypass_reason,
+                    "tracking_id": dispatch.get("tracking_id"),
+                    "order_id": dispatch.get("order_id"),
+                },
+                "timestamp": now.isoformat(),
+            })
+        except Exception as e:
+            logger.warning(f"audit_logs insert failed for gate_scan_bypass {dispatch_id}: {e}")
+
+    await db.dispatches.update_one({"id": dispatch_id}, {"$set": finalize_update})
     
     # Get updated dispatch for sales records
     updated_dispatch = await db.dispatches.find_one({"id": dispatch_id}, {"_id": 0})
