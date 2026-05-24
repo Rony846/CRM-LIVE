@@ -1025,6 +1025,227 @@ class AmazonBrowserAgent:
             status='unshipped'
         )
     
+    async def scrape_order_pii(self, order_id: str) -> Dict[str, Any]:
+        """
+        Scrape PII from a Seller Central order detail page, focusing on the buyer
+        information block and Seller/Buyer notes. Designed for the CRM 'Capture
+        Customer Details' flow, NOT for the Bigship shipping pipeline.
+
+        Returns:
+          {
+            "order_id": str,
+            "buyer_name": str,
+            "first_name": str,
+            "last_name": str,
+            "address": str,        # full street address (no city/state/pincode)
+            "city": str,
+            "state": str,
+            "pincode": str,
+            "phone": str,          # may be ''
+            "phone_found_in": "shipping" | "seller_notes" | "page" | "none",
+            "seller_notes": str,   # raw text of the seller/buyer notes block
+            "raw_ship_to": str,    # raw shipping block as scraped, for debugging
+          }
+        """
+        if not self.page:
+            raise Exception("Browser not started")
+        if self.state not in (AgentState.LOGGED_IN, AgentState.PROCESSING):
+            raise Exception("Not logged in to Seller Central")
+
+        await self._notify_status(f"📋 Scraping PII for {order_id}...")
+
+        await self.page.goto(
+            f"https://sellercentral.amazon.in/orders-v3/order/{order_id}",
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
+        await asyncio.sleep(2)
+
+        scraped = await self.page.evaluate(
+            """
+            () => {
+              const text = document.body.innerText || '';
+              const result = {
+                buyer_name: '',
+                raw_ship_to: '',
+                address: '',
+                city: '',
+                state: '',
+                pincode: '',
+                phone: '',
+                phone_found_in: 'none',
+                seller_notes: '',
+                cancelled_on_amazon: false,
+              };
+
+              // Cancelled orders show this canonical sentence on the order page; bail early so we don't
+              // try to extract a 'name' / 'address' from boilerplate text.
+              if (/shipping address is not displayed if an order is canceled/i.test(text)) {
+                result.cancelled_on_amazon = true;
+                return result;
+              }
+
+              // ---- Shipping Address block ----
+              // Seller Central renders the buyer address in a card; the heading is one of
+              // 'Shipping Address' / 'Ship to' / 'Buyer address'. We grab the block until
+              // the next section heading (rough heuristic by blank lines).
+              const shipHeadingRx = /(?:Shipping\\s*Address|Ship\\s*to|Buyer\\s*address)\\s*[:\\n]/i;
+              const shipMatch = text.match(shipHeadingRx);
+              let shipBlock = '';
+              if (shipMatch) {
+                const start = shipMatch.index + shipMatch[0].length;
+                // Take up to ~600 chars or until next obvious header
+                const tail = text.slice(start, start + 800);
+                const stopRx = /\\n\\s*(?:Order\\s*Details|Order\\s*contents|Seller\\s*notes|Buyer\\s*notes|Payment|Items?\\s*Ordered|Order\\s*total|Subtotal)/i;
+                const stop = tail.search(stopRx);
+                shipBlock = (stop > 0 ? tail.slice(0, stop) : tail).trim();
+              }
+              result.raw_ship_to = shipBlock;
+
+              // ---- Buyer / Seller notes block ----
+              // Phones are very often pasted by buyers into 'Buyer notes' / 'Seller notes'.
+              const notesHeadingRx = /(?:Buyer\\s*notes|Seller\\s*notes|Buyer\\s*comments?|Gift\\s*message)\\s*[:\\n]/i;
+              const notesMatch = text.match(notesHeadingRx);
+              let notesBlock = '';
+              if (notesMatch) {
+                const start = notesMatch.index + notesMatch[0].length;
+                const tail = text.slice(start, start + 600);
+                const stopRx = /\\n\\s*(?:Order\\s*Details|Order\\s*contents|Items?\\s*Ordered|Order\\s*total|Subtotal|Payment|Shipping\\s*Address|Ship\\s*to)/i;
+                const stop = tail.search(stopRx);
+                notesBlock = (stop > 0 ? tail.slice(0, stop) : tail).trim();
+              }
+              result.seller_notes = notesBlock;
+
+              // ---- Phone extraction with priority ----
+              const phoneRx = /(?:\\+?91[\\s-]?)?([6-9]\\d{9})\\b/;
+              const findPhone = (s) => {
+                if (!s) return null;
+                const m = s.match(phoneRx);
+                return m ? m[1] : null;
+              };
+              let phone = findPhone(shipBlock);
+              if (phone) {
+                result.phone = phone;
+                result.phone_found_in = 'shipping';
+              } else {
+                phone = findPhone(notesBlock);
+                if (phone) {
+                  result.phone = phone;
+                  result.phone_found_in = 'seller_notes';
+                } else {
+                  // Last resort: look in the whole page, but anchored near a phone keyword
+                  const anchoredRx = /(?:Phone|Mobile|Contact)[^0-9]{0,15}(?:\\+?91[\\s-]?)?([6-9]\\d{9})\\b/i;
+                  const am = text.match(anchoredRx);
+                  if (am) {
+                    result.phone = am[1];
+                    result.phone_found_in = 'page';
+                  }
+                }
+              }
+
+              // ---- Pincode + state + city from shipping block ----
+              if (shipBlock) {
+                const pinMatch = shipBlock.match(/\\b(\\d{6})\\b/);
+                if (pinMatch) result.pincode = pinMatch[1];
+
+                // Indian state list (uppercase comparison)
+                const STATES = [
+                  'Andhra Pradesh','Arunachal Pradesh','Assam','Bihar','Chhattisgarh',
+                  'Delhi','Goa','Gujarat','Haryana','Himachal Pradesh','Jammu & Kashmir',
+                  'Jammu and Kashmir','Jharkhand','Karnataka','Kerala','Madhya Pradesh',
+                  'Maharashtra','Manipur','Meghalaya','Mizoram','Nagaland','Odisha',
+                  'Punjab','Rajasthan','Sikkim','Tamil Nadu','Telangana','Tripura',
+                  'Uttar Pradesh','Uttarakhand','West Bengal','Chandigarh','Puducherry',
+                  'Andaman & Nicobar Islands','Dadra & Nagar Haveli and Daman & Diu',
+                  'Lakshadweep','Ladakh'
+                ];
+                const upper = shipBlock.toUpperCase();
+                for (const s of STATES) {
+                  if (upper.includes(s.toUpperCase())) {
+                    result.state = s === 'Jammu and Kashmir' ? 'Jammu & Kashmir' : s;
+                    break;
+                  }
+                }
+
+                // City = last comma-separated token on the pincode line.
+                // Layout is usually: "Name\\nLine1\\nLine2\\nCity, STATE PINCODE\\nIN"
+                // Use word-boundary 6-digit regex so we DON'T match the first 6 of a 10-digit phone.
+                // Iterate forward (pincode comes before phone) and stop at the first hit.
+                const lines = shipBlock.split('\\n').map(l => l.trim()).filter(Boolean);
+                const pinLineRx = /\\b\\d{6}\\b/;
+                for (const ln of lines) {
+                  if (pinLineRx.test(ln)) {
+                    let cityLine = ln.replace(pinLineRx, '').trim();
+                    if (result.state) {
+                      cityLine = cityLine.replace(new RegExp(result.state, 'i'), '').trim();
+                    }
+                    // Strip non-breaking spaces and trailing punctuation
+                    cityLine = cityLine.replace(/\\u00a0/g, ' ').replace(/[,\\-\\s]+$/, '').trim();
+                    const parts = cityLine.split(',').map(p => p.trim()).filter(Boolean);
+                    if (parts.length) result.city = parts[parts.length - 1];
+                    break;
+                  }
+                }
+
+                // Buyer name = first non-empty line that doesn't look like an address line
+                for (const ln of lines) {
+                  if (!ln) continue;
+                  if (/\\d/.test(ln)) continue;       // contains digits → likely address
+                  if (/^IN$/i.test(ln)) continue;     // country code
+                  // Looks like a name (letters + spaces, possibly mixed case)
+                  if (/^[A-Za-z][A-Za-z\\s.'-]{1,80}$/.test(ln)) {
+                    result.buyer_name = ln.trim();
+                    break;
+                  }
+                }
+
+                // Address = everything between the buyer_name line and the city/pincode line
+                const nameIdx = result.buyer_name ? lines.indexOf(result.buyer_name) : -1;
+                const pinIdx = lines.findIndex(l => /\\b\\d{6}\\b/.test(l));
+                if (nameIdx >= 0 && pinIdx > nameIdx) {
+                  result.address = lines.slice(nameIdx + 1, pinIdx).join(', ');
+                } else if (pinIdx > 0) {
+                  result.address = lines.slice(0, pinIdx).join(', ');
+                }
+              }
+
+              return result;
+            }
+            """
+        )
+
+        scraped = scraped or {}
+        buyer_name = (scraped.get("buyer_name") or "").strip()
+        parts = buyer_name.split() if buyer_name else []
+        first_name = parts[0] if parts else ""
+        last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+        result = {
+            "order_id": order_id,
+            "buyer_name": buyer_name,
+            "first_name": first_name,
+            "last_name": last_name,
+            "address": (scraped.get("address") or "").strip(),
+            "city": (scraped.get("city") or "").strip(),
+            "state": (scraped.get("state") or "").strip(),
+            "pincode": (scraped.get("pincode") or "").strip(),
+            "phone": (scraped.get("phone") or "").strip(),
+            "phone_found_in": scraped.get("phone_found_in") or "none",
+            "seller_notes": (scraped.get("seller_notes") or "").strip(),
+            "raw_ship_to": (scraped.get("raw_ship_to") or "").strip(),
+            "cancelled_on_amazon": bool(scraped.get("cancelled_on_amazon")),
+        }
+
+        if result["cancelled_on_amazon"]:
+            await self._notify_status(f"🚫 {order_id}: cancelled on Amazon — skipping PII")
+        else:
+            await self._notify_status(
+                f"📋 {order_id}: {buyer_name or '(no name)'} • "
+                f"{result['city'] or '?'}, {result['state'] or '?'} {result['pincode'] or ''} • "
+                f"phone={result['phone'] or 'MISSING'} ({result['phone_found_in']})"
+            )
+        return result
+
     def determine_shipping_type(self, weight_kg: float, order_value: float) -> ShippingType:
         """Determine B2B or B2C based on rules"""
         if order_value > 30000 or weight_kg > 20:
