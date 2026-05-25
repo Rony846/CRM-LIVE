@@ -61721,23 +61721,89 @@ async def delete_lead(
 from fastapi import WebSocket, WebSocketDisconnect
 import asyncio
 
-# Global browser agent instance (singleton for RAM efficiency)
-_browser_agent = None
+# Firm-scoped browser agents. At most one is "started" at a time to keep RAM
+# bounded; switching firms tears down the old browser and starts the next
+# (cookies persist in backend/browser_profiles/{firm_id}/ so the new browser
+# comes up already logged in — no relogin).
+_browser_agents: Dict[str, "AmazonBrowserAgent"] = {}
+_active_firm_id: Optional[str] = None
 _agent_lock = asyncio.Lock()
 _connected_clients: List[WebSocket] = []
 
-async def get_browser_agent():
-    """Get or create the browser agent singleton"""
-    global _browser_agent
+# Which firm runs which host's browser. MGIPL has no Amazon, but has Bigship;
+# the other four are Amazon seller accounts. Cross-firm flows (scrape Amazon
+# on firm X, then upload invoice via MGIPL Bigship) switch the active firm.
+FIRM_BROWSER_HOSTS = {
+    # firm_id: host
+    "8bf93db6-045f-4aed-988c-352103ed049d": "amazon",  # MuscleGrid Industries Gurgaon
+    "c715c1b7-aca3-4100-8b00-4f711a729829": "amazon",  # SPV Industries
+    "76b41510-bb17-42be-887f-abcbfd9f4180": "amazon",  # Electronics Bay
+    "a9b65de0-ef07-47d7-b778-2a9f63ef52ab": "amazon",  # EBAY UP
+    "16abb602-875d-4283-bed9-f8789e688a17": "bigship", # MGIPL (Bigship labels/invoices)
+}
+
+
+async def _build_firm_agent(firm_id: str) -> "AmazonBrowserAgent":
+    """Construct (don't start) an agent for the given firm."""
+    from utils.browser_agent import AmazonBrowserAgent
+    host = FIRM_BROWSER_HOSTS.get(firm_id)
+    if not host:
+        raise HTTPException(status_code=400, detail=f"Firm {firm_id} has no browser-agent host configured")
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0, "name": 1})
+    firm_name = (firm or {}).get("name", firm_id)
+    return AmazonBrowserAgent(
+        db=db,
+        screenshot_callback=broadcast_screenshot,
+        status_callback=broadcast_status,
+        firm_id=firm_id,
+        firm_name=firm_name,
+        host=host,
+    )
+
+
+async def get_browser_agent(firm_id: Optional[str] = None):
+    """Return the agent for `firm_id`, or the currently-active one if omitted.
+
+    Lazily constructs (but does NOT start) the agent. Use switch_browser_agent
+    to actually start a different firm's browser — that enforces the
+    "one alive at a time" RAM invariant.
+    """
+    global _active_firm_id
     async with _agent_lock:
-        if _browser_agent is None:
-            from utils.browser_agent import AmazonBrowserAgent
-            _browser_agent = AmazonBrowserAgent(
-                db=db,
-                screenshot_callback=broadcast_screenshot,
-                status_callback=broadcast_status
-            )
-        return _browser_agent
+        target = firm_id or _active_firm_id
+        if target is None:
+            # No firm picked yet — default to MuscleGrid Gurgaon for back-compat
+            # with the prior singleton (it was the logged-in Amazon account).
+            target = "8bf93db6-045f-4aed-988c-352103ed049d"
+            _active_firm_id = target
+        if target not in _browser_agents:
+            _browser_agents[target] = await _build_firm_agent(target)
+        return _browser_agents[target]
+
+
+async def switch_browser_agent(firm_id: str):
+    """Stop whichever agent is currently running (if any) and start the
+    requested firm's agent. Returns the started agent."""
+    global _active_firm_id
+    if firm_id not in FIRM_BROWSER_HOSTS:
+        raise HTTPException(status_code=400, detail=f"Unknown firm_id: {firm_id}")
+    async with _agent_lock:
+        # Stop any other running agent.
+        for fid, agent in list(_browser_agents.items()):
+            if fid == firm_id:
+                continue
+            try:
+                if agent.context is not None:
+                    await agent.stop()
+            except Exception as e:
+                logger.warning(f"Stopping agent for firm {fid} failed: {e}")
+        if firm_id not in _browser_agents:
+            _browser_agents[firm_id] = await _build_firm_agent(firm_id)
+        agent = _browser_agents[firm_id]
+        _active_firm_id = firm_id
+        if agent.context is None:
+            await agent.start()
+        return agent
 
 
 async def broadcast_screenshot(screenshot_b64: str):
@@ -61793,20 +61859,43 @@ async def browser_agent_websocket(websocket: WebSocket):
         return
     await websocket.accept()
     _connected_clients.append(websocket)
-    
+
     try:
-        agent = await get_browser_agent()
-        agent.screenshot_callback = broadcast_screenshot
-        agent.status_callback = broadcast_status
-        
+        # Active firm at connect time. Switching firms via REST will cause
+        # subsequent commands here to route to the new active agent.
+        async def _current():
+            ag = await get_browser_agent()
+            ag.screenshot_callback = broadcast_screenshot
+            ag.status_callback = broadcast_status
+            return ag
+
+        agent = await _current()
+
         while True:
             # Receive commands from admin
             data = await websocket.receive_json()
             command = data.get("command")
-            
-            if command == "start":
-                await agent.start()
-                
+            # Allow per-message firm override; otherwise resolve to active.
+            firm_id = data.get("firm_id")
+            if firm_id and firm_id != agent.firm_id:
+                agent = await switch_browser_agent(firm_id)
+                agent.screenshot_callback = broadcast_screenshot
+                agent.status_callback = broadcast_status
+            else:
+                agent = await _current()
+
+            if command == "switch":
+                # Explicit switch (no other action). Already handled above.
+                await websocket.send_json({
+                    "type": "switched",
+                    "firm_id": agent.firm_id,
+                    "firm_name": agent.firm_name,
+                    "host": agent.host,
+                })
+
+            elif command == "start":
+                await switch_browser_agent(agent.firm_id)
+
             elif command == "stop":
                 await agent.stop()
                 
@@ -61862,33 +61951,114 @@ async def browser_agent_websocket(websocket: WebSocket):
             _connected_clients.remove(websocket)
 
 
+@api_router.get("/browser-agent/firms")
+async def list_browser_agent_firms(user: dict = Depends(require_roles(["admin"]))):
+    """List the firms that have a browser-agent profile, with their host and
+    current run state. Used by the frontend tab row."""
+    firms_cursor = db.firms.find(
+        {"id": {"$in": list(FIRM_BROWSER_HOSTS.keys())}},
+        {"_id": 0, "id": 1, "name": 1},
+    )
+    firms = await firms_cursor.to_list(20)
+    by_id = {f["id"]: f for f in firms}
+    result = []
+    for firm_id, host in FIRM_BROWSER_HOSTS.items():
+        f = by_id.get(firm_id, {"id": firm_id, "name": firm_id})
+        running = firm_id in _browser_agents and _browser_agents[firm_id].context is not None
+        result.append({
+            "firm_id": firm_id,
+            "firm_name": f.get("name"),
+            "host": host,
+            "running": running,
+            "active": firm_id == _active_firm_id,
+        })
+    # Stable order: amazon firms first, then bigship.
+    result.sort(key=lambda r: (r["host"] != "amazon", r["firm_name"] or ""))
+    return {"firms": result, "active_firm_id": _active_firm_id}
+
+
 @api_router.get("/browser-agent/status")
-async def get_browser_agent_status(user: dict = Depends(require_roles(["admin"]))):
-    """Get current browser agent status"""
-    agent = await get_browser_agent()
+async def get_browser_agent_status(
+    firm_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin"])),
+):
+    """Get current browser agent status. Defaults to the active firm."""
+    agent = await get_browser_agent(firm_id)
     return {
+        "firm_id": agent.firm_id,
+        "firm_name": agent.firm_name,
+        "host": agent.host,
         "state": agent.state.value if agent else "not_initialized",
         "current_order": agent.current_order if agent else None,
-        "connected_clients": len(_connected_clients)
+        "connected_clients": len(_connected_clients),
+        "active_firm_id": _active_firm_id,
     }
 
 
+class BrowserAgentFirmRequest(BaseModel):
+    firm_id: Optional[str] = None
+
+
 @api_router.post("/browser-agent/start")
-async def start_browser_agent(user: dict = Depends(require_roles(["admin"]))):
-    """Start the browser agent"""
-    agent = await get_browser_agent()
-    await agent.start()
-    return {"success": True, "message": "Browser agent started"}
+async def start_browser_agent(
+    data: BrowserAgentFirmRequest = None,
+    user: dict = Depends(require_roles(["admin"])),
+):
+    """Start the browser agent for `firm_id` (defaults to the active firm).
+    Stops any other agent that's currently running."""
+    firm_id = (data.firm_id if data else None) or _active_firm_id
+    if not firm_id:
+        # First-ever start with no pick — fall through to active default
+        # selected inside get_browser_agent.
+        agent = await get_browser_agent()
+        firm_id = agent.firm_id
+    agent = await switch_browser_agent(firm_id)
+    return {
+        "success": True,
+        "message": f"Browser agent started for {agent.firm_name}",
+        "firm_id": agent.firm_id,
+        "host": agent.host,
+    }
+
+
+@api_router.post("/browser-agent/switch")
+async def switch_browser_agent_endpoint(
+    data: BrowserAgentFirmRequest,
+    user: dict = Depends(require_roles(["admin"])),
+):
+    """Switch active firm: stop the current browser and start the requested
+    firm's browser. Persisted profile means no re-login."""
+    if not data.firm_id:
+        raise HTTPException(status_code=400, detail="firm_id is required")
+    agent = await switch_browser_agent(data.firm_id)
+    return {
+        "success": True,
+        "firm_id": agent.firm_id,
+        "firm_name": agent.firm_name,
+        "host": agent.host,
+    }
 
 
 @api_router.post("/browser-agent/stop")
-async def stop_browser_agent(user: dict = Depends(require_roles(["admin"]))):
-    """Stop the browser agent"""
-    global _browser_agent
-    if _browser_agent:
-        await _browser_agent.stop()
-        _browser_agent = None
-    return {"success": True, "message": "Browser agent stopped"}
+async def stop_browser_agent(
+    data: BrowserAgentFirmRequest = None,
+    user: dict = Depends(require_roles(["admin"])),
+):
+    """Stop the browser agent for `firm_id` (or all of them if omitted)."""
+    firm_id = data.firm_id if data else None
+    stopped = []
+    for fid, agent in list(_browser_agents.items()):
+        if firm_id and fid != firm_id:
+            continue
+        try:
+            if agent.context is not None:
+                await agent.stop()
+                stopped.append(fid)
+        except Exception as e:
+            logger.warning(f"Stop for firm {fid} failed: {e}")
+        # Forget the instance so the next start rebuilds fresh.
+        _browser_agents.pop(fid, None)
+    return {"success": True, "stopped": stopped, "message": "Browser agent stopped"}
 
 
 @api_router.get("/browser-agent/screenshot")
@@ -61928,6 +62098,180 @@ async def browser_check_login(user: dict = Depends(require_roles(["admin"]))):
     agent = await get_browser_agent()
     logged_in = await agent.check_login_status()
     return {"logged_in": logged_in}
+
+
+@api_router.post("/browser-agent/debug-textareas")
+async def browser_debug_textareas(user: dict = Depends(require_roles(["admin"]))):
+    """Dev-only: dump every textarea on the current page with full context."""
+    agent = await get_browser_agent()
+    if not agent.page:
+        raise HTTPException(status_code=400, detail="Browser not started")
+    try:
+        out = await agent.page.evaluate(
+            """
+            () => {
+              return Array.from(document.querySelectorAll('textarea')).map((ta, i) => {
+                const r = ta.getBoundingClientRect();
+                // walk up 6 ancestors and report their text snippets
+                const ancestors = [];
+                let p = ta.parentElement;
+                for (let k=0; k<6 && p; k++) {
+                  ancestors.push((p.innerText || '').slice(0, 80).replace(/\\s+/g, ' '));
+                  p = p.parentElement;
+                }
+                // any sibling button?
+                let siblingButtons = [];
+                let walker = ta;
+                for (let k=0; k<5 && walker; k++) {
+                  walker = walker.parentElement;
+                  if (!walker) break;
+                  walker.querySelectorAll('button, [role="button"], .a-button').forEach(b => {
+                    const t = (b.innerText || b.textContent || '').trim();
+                    if (t && t.length < 40) siblingButtons.push(t);
+                  });
+                  if (siblingButtons.length) break;
+                }
+                return {
+                  idx: i,
+                  name: ta.name || null,
+                  id: ta.id || null,
+                  placeholder: ta.placeholder || null,
+                  value_preview: (ta.value || '').slice(0, 120),
+                  value_len: (ta.value || '').length,
+                  rect: {x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height)},
+                  ancestors,
+                  sibling_buttons: siblingButtons.slice(0, 10),
+                };
+              });
+            }
+            """
+        )
+        return {"textareas": out, "url": agent.page.url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class DebugProbeRequest(BaseModel):
+    needle: str
+
+
+@api_router.post("/browser-agent/debug-probe")
+async def browser_debug_probe(
+    data: DebugProbeRequest,
+    user: dict = Depends(require_roles(["admin"])),
+):
+    """Dev-only: dump every clickable element whose visible text contains
+    `needle`. Returns a list of {tag, text, rect, attrs, in_iframe} so we
+    can figure out which selector actually targets a button."""
+    agent = await get_browser_agent()
+    if not agent.page:
+        raise HTTPException(status_code=400, detail="Browser not started")
+    try:
+        # Top frame
+        main = await agent.page.evaluate(
+            """
+            (needle) => {
+              const n = needle.toLowerCase();
+              const out = [];
+              const sels = 'button, a, [role="button"], kat-button, span, div';
+              for (const el of document.querySelectorAll(sels)) {
+                const t = (el.innerText || el.textContent || '').trim();
+                if (!t || !t.toLowerCase().includes(n)) continue;
+                if (t.length > 120) continue;
+                const r = el.getBoundingClientRect();
+                out.push({
+                  tag: el.tagName.toLowerCase(),
+                  text: t,
+                  visible: r.width > 0 && r.height > 0,
+                  rect: {x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height)},
+                  id: el.id || null,
+                  cls: (el.className && el.className.toString && el.className.toString().slice(0,80)) || null,
+                  role: el.getAttribute('role') || null,
+                });
+                if (out.length >= 12) break;
+              }
+              return out;
+            }
+            """,
+            data.needle,
+        )
+        # Also check frames
+        frame_results = []
+        for f in agent.page.frames:
+            if f == agent.page.main_frame:
+                continue
+            try:
+                rs = await f.evaluate(
+                    """
+                    (needle) => {
+                      const n = needle.toLowerCase();
+                      const out = [];
+                      for (const el of document.querySelectorAll('button, a, [role="button"], kat-button, span, div')) {
+                        const t = (el.innerText || el.textContent || '').trim();
+                        if (!t || !t.toLowerCase().includes(n) || t.length > 120) continue;
+                        out.push({tag: el.tagName.toLowerCase(), text: t});
+                        if (out.length >= 5) break;
+                      }
+                      return out;
+                    }
+                    """,
+                    data.needle,
+                )
+                if rs:
+                    frame_results.append({"url": f.url, "matches": rs})
+            except Exception:
+                continue
+        return {"main_frame_matches": main, "iframe_matches": frame_results, "page_url": agent.page.url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ScrapePiiRequest(BaseModel):
+    order_id: str
+
+
+@api_router.post("/browser-agent/scrape-pii")
+async def browser_scrape_pii(
+    data: ScrapePiiRequest,
+    user: dict = Depends(require_roles(["admin"])),
+):
+    """Scrape buyer PII (name/address/phone) from a Seller Central order page.
+    Used as a building block before writing Seller Notes."""
+    agent = await get_browser_agent()
+    if agent.context is None:
+        raise HTTPException(status_code=400, detail="Browser not started")
+    try:
+        return await agent.scrape_order_pii(data.order_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class SetTrackingRequest(BaseModel):
+    order_id: str
+    tracking_id: str
+    courier: Optional[str] = "Delhivery"
+    seller_notes: Optional[str] = None
+
+
+@api_router.post("/browser-agent/set-tracking")
+async def browser_set_tracking(
+    data: SetTrackingRequest,
+    user: dict = Depends(require_roles(["admin"])),
+):
+    """Set/replace Amazon tracking ID on an order and write Seller Notes.
+    Handles both unshipped (Confirm shipment) and already-confirmed
+    (Edit shipment) orders.
+    """
+    agent = await get_browser_agent()
+    if agent.context is None:
+        raise HTTPException(status_code=400, detail="Browser not started")
+    res = await agent.set_amazon_tracking_and_notes(
+        order_id=data.order_id,
+        tracking_id=data.tracking_id,
+        courier=data.courier or "Delhivery",
+        seller_notes=data.seller_notes,
+    )
+    return res
 
 
 class ClickRequest(BaseModel):

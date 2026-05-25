@@ -8,13 +8,14 @@ import {
   Package, ExternalLink, ArrowLeft, Send, MessageSquare,
   Bot, User, HelpCircle, Brain
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
 export default function BrowserAgentPage() {
   const { token } = useAuth();
   const navigate = useNavigate();
+  const { firmId: firmIdFromUrl } = useParams();
   const [connected, setConnected] = useState(false);
   const [agentState, setAgentState] = useState('idle');
   const [screenshot, setScreenshot] = useState(null);
@@ -24,6 +25,10 @@ export default function BrowserAgentPage() {
   const [aiThinkingLog, setAiThinkingLog] = useState([]);  // Real-time AI thinking logs
   const [manualMode, setManualMode] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  // Firm tabs — one browser profile per firm; only one alive at a time.
+  const [firms, setFirms] = useState([]);
+  const [activeFirmId, setActiveFirmId] = useState(null);
   
   // Background job state
   const [activeJob, setActiveJob] = useState(null);
@@ -128,8 +133,9 @@ I'll handle the rest! What would you like to do?`,
       const res = await axios.get(`${API}/api/browser-agent/status`, { headers });
       setAgentState(res.data.state || 'idle');
       setCurrentOrder(res.data.current_order);
+      if (res.data.active_firm_id) setActiveFirmId(res.data.active_firm_id);
       setConnected(true);
-      
+
       // If agent is running, also fetch screenshot
       if (res.data.state && res.data.state !== 'idle' && res.data.state !== 'stopped') {
         try {
@@ -148,6 +154,52 @@ I'll handle the rest! What would you like to do?`,
       setConnected(true);
     }
   }, [token]);
+
+  // Load the firm tab list once on mount + refresh after switches.
+  const fetchFirms = useCallback(async () => {
+    try {
+      const res = await axios.get(`${API}/api/browser-agent/firms`, { headers });
+      setFirms(res.data.firms || []);
+      if (res.data.active_firm_id) setActiveFirmId(res.data.active_firm_id);
+    } catch (err) {
+      console.error('Error fetching firms:', err);
+    }
+  }, [token]);
+
+  // Switch active firm — backend stops the current browser and starts the
+  // requested firm's profile. Persisted cookies mean no re-login.
+  // If updateUrl is true, also reflect the switch in the URL so the sidebar
+  // sub-link stays in sync.
+  const switchFirm = async (firmId, { updateUrl = true } = {}) => {
+    if (!firmId || firmId === activeFirmId) return;
+    setLoading(true);
+    try {
+      await axios.post(`${API}/api/browser-agent/switch`, { firm_id: firmId }, { headers });
+      setActiveFirmId(firmId);
+      setScreenshot(null);
+      toast.success('Switched browser profile');
+      if (updateUrl && firmId !== firmIdFromUrl) {
+        navigate(`/admin/browser-agent/${firmId}`, { replace: true });
+      }
+      await fetchFirms();
+      await fetchStatus();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to switch firm');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchFirms(); }, [fetchFirms]);
+
+  // If we landed here with /:firmId in the URL (clicked a sidebar sub-entry),
+  // and that firm isn't already the active one, switch to it.
+  useEffect(() => {
+    if (!firmIdFromUrl || !firms.length) return;
+    if (firmIdFromUrl === activeFirmId) return;
+    const known = firms.find(f => f.firm_id === firmIdFromUrl);
+    if (known) switchFirm(firmIdFromUrl, { updateUrl: false });
+  }, [firmIdFromUrl, firms, activeFirmId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Start polling when component mounts
   useEffect(() => {
@@ -540,15 +592,19 @@ I'll handle the rest! What would you like to do?`,
             <ArrowLeft className="w-5 h-5" />
           </button>
           <div>
-            <h1 className="text-xl font-bold">Amazon Browser Agent</h1>
-            <p className="text-sm text-gray-400">Automated Order Processing</p>
+            <h1 className="text-xl font-bold">Browser Agent</h1>
+            <p className="text-sm text-gray-400">
+              {activeFirmId && firms.find(f => f.firm_id === activeFirmId)
+                ? `${firms.find(f => f.firm_id === activeFirmId).firm_name} · ${firms.find(f => f.firm_id === activeFirmId).host}`
+                : 'Pick a firm to begin'}
+            </p>
           </div>
         </div>
-        
+
         <div className="flex items-center gap-3">
           <span className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${
-            isLoggedIn ? 'bg-green-900/50 text-green-400 border border-green-700' : 
-            browserRunning ? 'bg-orange-900/50 text-orange-400 border border-orange-700' : 
+            isLoggedIn ? 'bg-green-900/50 text-green-400 border border-green-700' :
+            browserRunning ? 'bg-orange-900/50 text-orange-400 border border-orange-700' :
             'bg-gray-800 text-gray-400'
           }`}>
             {isLoggedIn ? <CheckCircle className="w-4 h-4" /> : browserRunning ? <AlertTriangle className="w-4 h-4" /> : <Monitor className="w-4 h-4" />}
@@ -556,6 +612,34 @@ I'll handle the rest! What would you like to do?`,
           </span>
         </div>
       </div>
+
+      {/* Firm tab row — one profile per firm, only one alive at a time. */}
+      {firms.length > 0 && (
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          {firms.map((f) => {
+            const isActive = f.firm_id === activeFirmId;
+            const isAmazon = f.host === 'amazon';
+            return (
+              <button
+                key={f.firm_id}
+                onClick={() => switchFirm(f.firm_id)}
+                disabled={loading || isActive}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                  isActive
+                    ? (isAmazon ? 'bg-orange-600 text-white' : 'bg-purple-600 text-white')
+                    : 'bg-gray-800 text-gray-300 hover:bg-gray-700 disabled:opacity-50'
+                }`}
+                data-testid={`firm-tab-${f.firm_id}`}
+                title={`${f.firm_name} (${f.host})`}
+              >
+                <span className={`w-2 h-2 rounded-full ${f.running ? 'bg-green-400' : 'bg-gray-500'}`} />
+                <span>{f.firm_name}</span>
+                <span className="text-xs opacity-70 uppercase">{f.host}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Browser View */}

@@ -1032,8 +1032,13 @@ function App() {
             </ProtectedRoute>
           } />
           
-          {/* Browser Agent - Amazon Order Processing */}
+          {/* Browser Agent - Amazon / Bigship per-firm browsers */}
           <Route path="/admin/browser-agent" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <BrowserAgentPage />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/browser-agent/:firmId" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <BrowserAgentPage />
             </ProtectedRoute>

@@ -664,35 +664,80 @@ class AmazonBrowserAgent:
     - Never gets stuck - always finds alternative approaches
     """
     
-    def __init__(self, db, screenshot_callback: Callable = None, status_callback: Callable = None):
+    # Default landing URL per host.
+    _HOST_LANDING_URL = {
+        "amazon": "https://sellercentral.amazon.in/",
+        "bigship": "https://app.bigship.in/",
+    }
+
+    def __init__(
+        self,
+        db,
+        screenshot_callback: Callable = None,
+        status_callback: Callable = None,
+        firm_id: str = None,
+        firm_name: str = None,
+        host: str = "amazon",
+    ):
+        """A firm-scoped browser agent.
+
+        Each firm gets its own persistent Chromium profile dir, so Amazon's
+        multi-account detection sees independent browsers (different
+        fingerprint, localStorage, IndexedDB). Only one agent should be
+        `started` at a time to keep RAM bounded.
+
+        host: "amazon" (seller central) or "bigship" (label/invoice ops).
+        """
+        if host not in self._HOST_LANDING_URL:
+            raise ValueError(f"Unsupported host: {host}")
+
         self.db = db
-        self.browser = None
+        self.firm_id = firm_id
+        self.firm_name = firm_name
+        self.host = host
+        self.browser = None  # unused in persistent-context mode, kept for back-compat reads
         self.context = None
         self.page = None
         self.state = AgentState.IDLE
         self.current_order = None
         self.screenshot_callback = screenshot_callback
         self.status_callback = status_callback
-        self.cookies_path = Path("/tmp/amazon_cookies.json")
-        self.bigship_cookies_path = Path("/tmp/bigship_cookies.json")
+        # Persistent profile dir — lives under the backend dir, NOT /tmp, so it
+        # survives host reboots. Created on first start().
+        backend_dir = Path(__file__).resolve().parents[2]
+        safe_id = firm_id or "default"
+        self.profile_dir = backend_dir / "browser_profiles" / safe_id
+        # DB cookie backups (recovery if the profile dir is ever wiped).
+        self.cookies_path = Path(f"/tmp/{host}_cookies_{safe_id}.json")
+        self.bigship_cookies_path = Path(f"/tmp/bigship_cookies_{safe_id}.json")
         self.last_screenshot = None
         self.finder = None
-        # Initialize intelligent processor
         self.ai_processor = IntelligentDataProcessor(self._notify_status)
-        self.max_retries = 3  # Maximum retries for API calls
-    
+        self.max_retries = 3
+
     async def start(self):
-        """Start the browser with optimized settings for low RAM"""
+        """Start the browser with optimized settings for low RAM.
+
+        Uses launch_persistent_context so cookies, localStorage and IndexedDB
+        persist per-firm without manual save/load. The DB cookie backup is
+        still written as a fallback for profile-dir loss.
+        """
         from playwright.async_api import async_playwright
-        
+
         self.state = AgentState.STARTING
-        await self._notify_status("Starting browser...")
-        
+        firm_label = self.firm_name or self.firm_id or "default"
+        await self._notify_status(f"Starting browser for {firm_label} ({self.host})...")
+
+        self.profile_dir.mkdir(parents=True, exist_ok=True)
+
         self.playwright = await async_playwright().start()
-        
-        # Optimized browser args for 200MB RAM limit
-        self.browser = await self.playwright.chromium.launch(
+
+        # Optimized browser args for 200MB RAM limit.
+        self.context = await self.playwright.chromium.launch_persistent_context(
+            user_data_dir=str(self.profile_dir),
             headless=True,
+            viewport={"width": 1366, "height": 768},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             args=[
                 '--disable-dev-shm-usage',
                 '--no-sandbox',
@@ -712,38 +757,43 @@ class AmazonBrowserAgent:
                 '--safebrowsing-disable-auto-update'
             ]
         )
-        
-        self.context = await self.browser.new_context(
-            viewport={"width": 1366, "height": 768},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-        
-        self.page = await self.context.new_page()
+
+        # launch_persistent_context returns a context that already has a page
+        # (about:blank). Reuse it if present, otherwise create one.
+        if self.context.pages:
+            self.page = self.context.pages[0]
+        else:
+            self.page = await self.context.new_page()
         self.finder = RobustElementFinder(self.page, self._notify_status)
-        
-        # Load saved cookies
+
+        # Restore DB cookie backup only if the persistent profile is empty
+        # (e.g. first run after this migration, or profile dir was wiped).
         await self._load_cookies()
-        
+
         self.state = AgentState.WAITING_LOGIN
-        await self._notify_status("Browser started. Please login to Amazon Seller Central.")
-        
-        # Navigate to Amazon
-        await self.page.goto("https://sellercentral.amazon.in/", wait_until="domcontentloaded")
+        await self._notify_status(f"Browser started for {firm_label}. Please login if not already.")
+
+        landing = self._HOST_LANDING_URL[self.host]
+        await self.page.goto(landing, wait_until="domcontentloaded")
         await asyncio.sleep(2)
         await self._capture_screenshot()
-    
+
     async def stop(self):
-        """Stop the browser and cleanup"""
+        """Stop the browser and cleanup. Save cookie backup before close."""
         self.state = AgentState.STOPPED
         await self._notify_status("Stopping browser...")
-        
+
+        try:
+            if self.context:
+                await self._save_cookies()
+        except Exception as e:
+            logger.warning(f"Cookie save on stop failed: {e}")
+
         if self.context:
             await self.context.close()
-        if self.browser:
-            await self.browser.close()
         if hasattr(self, 'playwright'):
             await self.playwright.stop()
-        
+
         self.browser = None
         self.context = None
         self.page = None
@@ -963,10 +1013,29 @@ class AmazonBrowserAgent:
                 const addrSection = pageText.match(/Ship\\s*to[\\s\\S]*?(?=Order\\s*contents|Seller\\s*notes|$)/i);
                 if (addrSection) result.address = addrSection[0];
                 
-                // Extract SKU
+                // Extract SKU + product title. On the order detail page the
+                // product row has a cell containing the title followed by
+                // ASIN/SKU lines. Find the cell that holds an ASIN match,
+                // then take the first non-meta line as the title.
                 const skuMatch = pageText.match(/SKU[:\\s]*([A-Z0-9]+)/i);
-                if (skuMatch) {
-                    result.items.push({ sku: skuMatch[1], title: 'Product', quantity: 1 });
+                let productTitle = '';
+                for (const td of document.querySelectorAll('td, div')) {
+                  const text = td.innerText || '';
+                  if (!/ASIN[:\\s]*[A-Z0-9]{10}/.test(text)) continue;
+                  if (text.length > 600) continue;
+                  const lines = text.split('\\n').map(s => s.trim()).filter(Boolean);
+                  const name = lines.find(l =>
+                    l.length > 6 &&
+                    !/^(ASIN|SKU|Condition|Order Item ID|Quantity|Item subtotal|Tax|Item total)[:\\s]/i.test(l)
+                  );
+                  if (name) { productTitle = name; break; }
+                }
+                if (skuMatch || productTitle) {
+                    result.items.push({
+                        sku: skuMatch ? skuMatch[1] : 'UNKNOWN',
+                        title: productTitle || 'Product',
+                        quantity: 1
+                    });
                 }
                 
                 // Extract total amount
@@ -2311,6 +2380,34 @@ class AmazonBrowserAgent:
         if order_value > 30000 or weight_kg > 20:
             return ShippingType.B2B
         return ShippingType.B2C
+
+    @staticmethod
+    def format_product_description(title: str, sku: str = "") -> str:
+        """Turn a long Amazon product title into a short Bigship-friendly
+        description. Examples:
+          "MuscleGrid 5kVA Voltage Stabilizer (70V-300V), Heavy Duty Stabilizer for 2 Ton AC, Refrigerator & Home Appliances, Output 230V"
+            → "MG 5kVA Voltage Stabilizer (70V-300V)"
+          "MuscleGrid 4kVA Voltage Stabilizer for 1.5 Ton AC | Wide Working Range 130V-280V | Heavy Duty..."
+            → "MG 4kVA Voltage Stabilizer for 1.5 Ton AC"
+
+        Falls back to "Amazon Order Product" only if nothing useful was scraped.
+        """
+        if not title or title.strip().lower() in ("product", "amazon order product", ""):
+            # Try one last fallback using SKU if available
+            return f"Amazon Order ({sku})" if sku else "Amazon Order Product"
+        t = title.strip()
+        # Brand shorthand
+        t = re.sub(r"\bMusc[l]eGrid\b", "MG", t, flags=re.IGNORECASE)
+        # Take the part before the first '|' or ',' — Amazon listings tend to
+        # cram every feature into the title; the first segment is the actual
+        # product, the rest are search-keyword stuffing.
+        for sep in ("|", ","):
+            if sep in t:
+                t = t.split(sep)[0].strip()
+                break
+        # Collapse whitespace and clip to a sane length for Bigship's input.
+        t = re.sub(r"\s+", " ", t)[:60].strip()
+        return t or (f"Amazon Order ({sku})" if sku else "Amazon Order Product")
     
     async def lookup_sku_dimensions(self, sku: str) -> Optional[SKUDimensions]:
         """Look up SKU dimensions from database"""
@@ -2390,10 +2487,14 @@ class AmazonBrowserAgent:
                     await self.ai_processor.think(f"⚠️ SKU {item.get('sku')} not in database. Using default weight: 2kg")
             
             total_weight = max(0.5, total_weight)
-            shipping_type = self.determine_shipping_type(total_weight, order.total_amount)
-            
-            await self.ai_processor.think(f"🚛 Determined shipping type: {shipping_type.value.upper()} (Weight: {total_weight}kg, Value: ₹{order.total_amount})")
-            await self._notify_status(f"🚛 Shipping: {shipping_type.value.upper()} via Delhivery (Weight: {total_weight}kg)")
+            # Self-ship orders are always shipped as B2C via Delhivery per
+            # the standing operations policy — don't let weight/value flip
+            # them to B2B (e.g. heavy stabilizers or higher-value batteries
+            # otherwise tripped the >20kg / >₹30K B2B rule).
+            shipping_type = ShippingType.B2C
+
+            await self.ai_processor.think(f"🚛 Shipping type: B2C (forced) via Delhivery — Weight {total_weight}kg, Value ₹{order.total_amount}")
+            await self._notify_status(f"🚛 Shipping: B2C via Delhivery (Weight: {total_weight}kg)")
             
             # Step 3: Create shipment via Bigship API (NOT browser)
             await self._notify_status("📡 Creating shipment via Bigship API...")
@@ -2631,7 +2732,10 @@ class AmazonBrowserAgent:
                         "product_details": [{
                             "product_category": "Others",
                             "product_sub_category": "General",
-                            "product_name": "Amazon Order Product",
+                            "product_name": self.format_product_description(
+                                (order.items[0].get("title") if order.items else "") or "",
+                                (order.items[0].get("sku") if order.items else "") or "",
+                            ),
                             "product_quantity": 1,
                             # B2C: use actual invoice amount, B2B: must be 0
                             "each_product_invoice_amount": 0 if shipment_category == "b2b" else int(fixed_data['total_amount']),
@@ -2978,7 +3082,11 @@ class AmazonBrowserAgent:
         c.drawString(50, 660, f"Address: {fixed_data['address'][:60]}")
         c.drawString(50, 640, f"City: {fixed_data['city']}, {fixed_data['state']}")
         c.drawString(50, 620, f"Pincode: {fixed_data['pincode']}")
-        c.drawString(50, 590, "Product: Amazon Order Product")
+        product_desc = self.format_product_description(
+            (order.items[0].get("title") if order.items else "") or "",
+            (order.items[0].get("sku") if order.items else "") or "",
+        )
+        c.drawString(50, 590, f"Product: {product_desc}")
         c.drawString(50, 570, f"Weight: {weight} kg")
         c.drawString(50, 540, f"Invoice Amount: Rs. {fixed_data['total_amount']}")
         c.drawString(50, 510, "Payment Type: Prepaid")
@@ -3355,6 +3463,371 @@ class AmazonBrowserAgent:
             logger.warning(f"Label download error: {e}")
             return None
     
+    async def set_amazon_tracking_and_notes(
+        self,
+        order_id: str,
+        tracking_id: str,
+        courier: str = "Delhivery",
+        seller_notes: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Set/replace the Amazon tracking on an order and write the seller-notes
+        textarea — works for both unshipped orders (uses "Confirm shipment")
+        and already-confirmed orders (uses "Edit shipment").
+
+        Returns a structured result: { success, action, current_tracking, error }.
+        - action: "confirmed_new" | "edited" | "already_correct" | "failed"
+        """
+        if not self.page:
+            return {"success": False, "error": "Browser not started"}
+
+        result = {"order_id": order_id, "success": False, "action": "failed",
+                  "current_tracking": None, "error": ""}
+
+        try:
+            await self.page.goto(
+                f"https://sellercentral.amazon.in/orders-v3/order/{order_id}",
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
+            await asyncio.sleep(6)  # SPA needs time
+
+            # Inspect current state: read tracking row + presence of confirm/edit buttons.
+            # Use plain text regex everywhere — Playwright pseudo-selectors
+            # like `button:has-text` are NOT valid in browser querySelector.
+            state = await self.page.evaluate("""
+                () => {
+                  const text = document.documentElement.innerText || '';
+                  const trackMatch = text.match(/Tracking ID\\s*([0-9A-Z]{8,})/);
+                  return {
+                    is_unshipped: /\\bUnshipped\\b/.test(text),
+                    current_tracking: trackMatch ? trackMatch[1] : null,
+                    has_edit_btn: /Edit shipment/i.test(text),
+                    has_confirm_btn: /Confirm shipment/i.test(text),
+                  };
+                }
+            """)
+            result["current_tracking"] = state.get("current_tracking")
+
+            target = tracking_id.strip()
+            current = (state.get("current_tracking") or "").strip()
+
+            need_tracking_update = current != target
+
+            if need_tracking_update:
+                # Decide which button to click: Edit (already confirmed) takes
+                # priority over Confirm (unshipped). Both lead to the same
+                # carrier+tracking form; Edit pre-fills.
+                if state.get("has_edit_btn"):
+                    clicked = await self._click_text_button(["Edit shipment"])
+                    action_hint = "edited"
+                elif state.get("has_confirm_btn"):
+                    clicked = await self._click_text_button(["Confirm shipment"])
+                    action_hint = "confirmed_new"
+                else:
+                    result["error"] = "Neither Edit shipment nor Confirm shipment button found"
+                    return result
+
+                if not clicked:
+                    result["error"] = f"{action_hint}: button click failed"
+                    return result
+
+                await asyncio.sleep(4)  # form load
+
+                # On the Edit shipment form Amazon pre-fills Carrier =
+                # Delhivery; we only need to overwrite the Tracking ID input.
+                # Use Playwright's native fill (real keyboard events) so the
+                # React controlled input actually picks up the new value —
+                # the JS value setter path is unreliable with React.
+                tracking_filled = await self._fill_tracking_input(target)
+                if not tracking_filled:
+                    result["error"] = f"{action_hint}: could not fill tracking input"
+                    return result
+
+                # Submit. "Re-confirm Shipment" is the edit-form button;
+                # "Confirm shipment" appears on the fresh-confirm form.
+                submitted = await self._click_text_button([
+                    "Re-confirm Shipment", "Re-confirm shipment",
+                    "Confirm shipment", "Save", "Submit", "Update",
+                ])
+                if not submitted:
+                    result["error"] = "Could not click submit button on tracking form"
+                    return result
+
+                await asyncio.sleep(5)
+                result["action"] = action_hint
+            else:
+                result["action"] = "already_correct"
+
+            # Now write Seller Notes (if provided). The textarea is in the
+            # right-column "Seller notes" card. We re-navigate to the order
+            # page to ensure we're back on it after the tracking submit
+            # redirect, then focus + clear + type.
+            if seller_notes is not None:
+                if order_id not in self.page.url:
+                    await self.page.goto(
+                        f"https://sellercentral.amazon.in/orders-v3/order/{order_id}",
+                        wait_until="domcontentloaded",
+                        timeout=30000,
+                    )
+                    await asyncio.sleep(5)
+
+                notes_written = await self._write_seller_notes(seller_notes)
+                result["seller_notes_written"] = notes_written
+
+            result["success"] = True
+            return result
+
+        except Exception as e:
+            logger.error(f"set_amazon_tracking_and_notes error for {order_id}: {e}")
+            result["error"] = str(e)
+            return result
+
+    async def _click_text_button(self, candidate_texts: List[str]) -> bool:
+        """Click the first button/link whose visible text matches any candidate.
+
+        Prefers Playwright's native locator (dispatches a real mouse event
+        sequence, which Amazon's custom `<kat-*>` components require) and
+        falls back to a JS click for buttons that fail the visibility check.
+        """
+        # Native Playwright locator path. Amazon Seller Central renders its
+        # buttons as <span class="a-button"> (not real <button>), so include
+        # that variant alongside the standard ones.
+        for txt in candidate_texts:
+            for selector in (
+                f'button:has-text("{txt}")',
+                f'a:has-text("{txt}")',
+                f'[role="button"]:has-text("{txt}")',
+                f'.a-button:has-text("{txt}")',
+                f'span.a-button-text:has-text("{txt}")',
+            ):
+                try:
+                    loc = self.page.locator(selector).first
+                    if await loc.count() == 0:
+                        continue
+                    try:
+                        await loc.scroll_into_view_if_needed(timeout=3000)
+                    except Exception:
+                        pass
+                    await loc.click(timeout=8000)
+                    return True
+                except Exception as e:
+                    logger.debug(f"native click '{txt}' via {selector!r} failed: {e}")
+                    continue
+        # Last-ditch JS fallback (covers buttons hidden behind overlays)
+        try:
+            clicked = await self.page.evaluate(
+                """
+                (texts) => {
+                  const lowers = texts.map(t => t.toLowerCase());
+                  const els = Array.from(document.querySelectorAll('button, a, [role="button"], kat-button'));
+                  for (const el of els) {
+                    const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+                    if (!t) continue;
+                    if (lowers.some(n => t.includes(n))) {
+                      el.scrollIntoView({block: 'center'});
+                      el.click();
+                      return true;
+                    }
+                  }
+                  return false;
+                }
+                """,
+                candidate_texts,
+            )
+            return bool(clicked)
+        except Exception as e:
+            logger.warning(f"_click_text_button JS fallback error: {e}")
+            return False
+
+    async def _fill_tracking_input(self, tracking_id: str) -> bool:
+        """Replace the value of the Edit-shipment Tracking ID input.
+
+        Amazon's Edit-shipment input has no name/id/placeholder — only a
+        visible "Tracking ID:" label nearby. We find it by:
+        1. Playwright's get_by_label (works if Amazon wires aria-labelledby)
+        2. Locating an input whose value matches a long-digit tracking pattern
+        3. Trying common name/id patterns as last resort
+
+        Uses Playwright's native locator.fill() so React's controlled-input
+        change handler fires.
+        """
+        # Strategy 1: Playwright label-association
+        try:
+            loc = self.page.get_by_label("Tracking ID", exact=False).first
+            if await loc.count() > 0:
+                await loc.click(timeout=4000)
+                await loc.fill(tracking_id, timeout=4000)
+                actual = await loc.input_value(timeout=2000)
+                if actual.strip() == tracking_id.strip():
+                    return True
+        except Exception as e:
+            logger.debug(f"get_by_label tracking failed: {e}")
+
+        # Strategy 2: pick whichever <input> currently holds a long-digit
+        # value (the existing tracking ID — fake or real). We use page.evaluate
+        # to locate the element then return a unique data attribute we set
+        # on it, and use that to find it from Playwright for a real .fill().
+        try:
+            target_handle_id = await self.page.evaluate(
+                """
+                () => {
+                  for (const inp of document.querySelectorAll('input')) {
+                    const v = (inp.value || '').trim();
+                    if (/^[0-9A-Z]{8,}$/.test(v) && v.length >= 8 && v.length <= 30) {
+                      const marker = 'mg-tracking-input-' + Math.random().toString(36).slice(2,8);
+                      inp.setAttribute('data-mg-marker', marker);
+                      return marker;
+                    }
+                  }
+                  return null;
+                }
+                """
+            )
+            if target_handle_id:
+                loc = self.page.locator(f'input[data-mg-marker="{target_handle_id}"]').first
+                await loc.click(timeout=4000)
+                await loc.fill(tracking_id, timeout=4000)
+                actual = await loc.input_value(timeout=2000)
+                if actual.strip() == tracking_id.strip():
+                    return True
+        except Exception as e:
+            logger.debug(f"marker-based tracking fill failed: {e}")
+
+        # Strategy 3: common attr patterns
+        for sel in (
+            'input[name*="tracking" i]', 'input[placeholder*="tracking" i]',
+            'input#trackingId', 'input#tracking',
+            'input[aria-label*="tracking" i]',
+        ):
+            try:
+                loc = self.page.locator(sel).first
+                if await loc.count() == 0:
+                    continue
+                await loc.click(timeout=4000)
+                await loc.fill(tracking_id, timeout=4000)
+                actual = await loc.input_value(timeout=2000)
+                if actual.strip() == tracking_id.strip():
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def _fill_carrier_and_tracking(self, courier: str, tracking_id: str):
+        """Fill the carrier + tracking fields on Amazon's confirm/edit shipment
+        form. Tries multiple selector patterns because the form layout varies."""
+        # First — there's often a "Carrier" dropdown that needs to land on
+        # "Other" before the free-text field becomes editable. Try that.
+        try:
+            await self.page.evaluate(
+                """
+                (courier) => {
+                  // Try setting any visible <select> that looks like a carrier picker
+                  for (const sel of document.querySelectorAll('select')) {
+                    const opts = Array.from(sel.options || []);
+                    const other = opts.find(o => /other/i.test(o.text));
+                    if (other) {
+                      sel.value = other.value;
+                      sel.dispatchEvent(new Event('change', {bubbles: true}));
+                      return;
+                    }
+                    // Or pick Delhivery directly if present
+                    const dh = opts.find(o => courier && new RegExp(courier, 'i').test(o.text));
+                    if (dh) {
+                      sel.value = dh.value;
+                      sel.dispatchEvent(new Event('change', {bubbles: true}));
+                      return;
+                    }
+                  }
+                }
+                """,
+                courier,
+            )
+            await asyncio.sleep(1)
+        except Exception:
+            pass
+
+        # Carrier name text input
+        await self._fill_input_by_attrs(
+            attrs=["carrier", "shipping_carrier", "shipMethod"],
+            value=courier,
+        )
+        # Tracking input
+        await self._fill_input_by_attrs(
+            attrs=["tracking", "trackingId", "trackingNumber"],
+            value=tracking_id,
+        )
+
+    async def _fill_input_by_attrs(self, attrs: List[str], value: str) -> bool:
+        """Find an <input> whose name/id/placeholder includes any of `attrs`
+        (case-insensitive). Clear it, then type `value`."""
+        try:
+            return await self.page.evaluate(
+                """
+                ({attrs, value}) => {
+                  const needles = attrs.map(a => a.toLowerCase());
+                  const inputs = Array.from(document.querySelectorAll('input, textarea'));
+                  for (const el of inputs) {
+                    if (el.disabled || el.readOnly) continue;
+                    const hay = ((el.name || '') + ' ' + (el.id || '') + ' ' + (el.placeholder || '')).toLowerCase();
+                    if (needles.some(n => hay.includes(n))) {
+                      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')
+                                  || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+                      setter && setter.set.call(el, value);
+                      el.dispatchEvent(new Event('input', {bubbles: true}));
+                      el.dispatchEvent(new Event('change', {bubbles: true}));
+                      return true;
+                    }
+                  }
+                  return false;
+                }
+                """,
+                {"attrs": attrs, "value": value},
+            )
+        except Exception as e:
+            logger.warning(f"_fill_input_by_attrs error: {e}")
+            return False
+
+    async def _write_seller_notes(self, notes: str) -> bool:
+        """Find the Seller Notes textarea (right-column card titled
+        'Seller notes'), clear it, write `notes`. Amazon auto-saves on blur,
+        so we trigger blur after typing."""
+        try:
+            return await self.page.evaluate(
+                """
+                (notes) => {
+                  // Find <textarea> whose surrounding card / label says "Seller notes".
+                  const tas = Array.from(document.querySelectorAll('textarea'));
+                  let target = null;
+                  for (const ta of tas) {
+                    let p = ta.parentElement;
+                    let found = false;
+                    for (let i=0; i<8 && p; i++) {
+                      const t = (p.innerText || '').toLowerCase();
+                      if (t.includes('seller notes') || t.includes('seller note')) { found = true; break; }
+                      p = p.parentElement;
+                    }
+                    if (found) { target = ta; break; }
+                  }
+                  if (!target) {
+                    // Fallback: any textarea with placeholder mentioning "records only"
+                    target = tas.find(ta => /records only/i.test(ta.placeholder || ''));
+                  }
+                  if (!target) return false;
+                  target.focus();
+                  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+                  setter && setter.set.call(target, notes);
+                  target.dispatchEvent(new Event('input', {bubbles: true}));
+                  target.dispatchEvent(new Event('change', {bubbles: true}));
+                  target.blur();
+                  return true;
+                }
+                """,
+                notes,
+            )
+        except Exception as e:
+            logger.warning(f"_write_seller_notes error: {e}")
+            return False
+
     async def _update_amazon_tracking(self, order_id: str, tracking_id: str, courier: str):
         """Update tracking on Amazon"""
         try:
@@ -3454,28 +3927,38 @@ class AmazonBrowserAgent:
                 "timestamp": datetime.now(timezone.utc).isoformat()
             })
     
+    def _session_key(self) -> dict:
+        """Mongo query/upsert key for this agent's session backup.
+        Keyed by (host, firm_id) so each firm's cookies are isolated."""
+        return {"host": self.host, "firm_id": self.firm_id}
+
     async def _save_cookies(self):
-        """Persist session cookies to MongoDB so they survive pm2 restarts +
-        host /tmp wipes. Mirror to disk as a fallback for emergencies.
+        """Persist session cookies to MongoDB as a recovery backup.
+
+        With launch_persistent_context the user_data_dir already stores
+        cookies/localStorage/IndexedDB on disk, so this DB write is purely a
+        belt-and-braces backup against profile-dir loss (host rebuild, wipe).
         Amazon's cookies last ~14 days; persisting them is the difference
         between an agent that runs autonomously for two weeks vs one that
-        needs a fresh login on every container bounce."""
+        needs a fresh login on every container bounce.
+        """
         if not self.context:
             return
         try:
             cookies = await self.context.cookies()
             now = datetime.now(timezone.utc).isoformat()
             await self.db.browser_sessions.update_one(
-                {"host": "amazon"},
+                self._session_key(),
                 {"$set": {
-                    "host": "amazon",
+                    "host": self.host,
+                    "firm_id": self.firm_id,
+                    "firm_name": self.firm_name,
                     "cookies": cookies,
                     "cookie_count": len(cookies),
                     "saved_at": now,
                 }},
                 upsert=True,
             )
-            # Best-effort disk mirror — never block the DB write on this.
             try:
                 self.cookies_path.write_text(json.dumps(cookies))
             except Exception:
@@ -3484,21 +3967,35 @@ class AmazonBrowserAgent:
             logger.error(f"Cookie save error: {e}")
 
     async def _load_cookies(self) -> bool:
-        """Restore cookies, preferring MongoDB. Falls back to /tmp so the
-        first run after this migration picks up an existing session.
-        Returns True if any cookies were applied to the browser context."""
+        """Restore cookies from DB backup ONLY on the first launch of a given
+        profile dir (or after manual recovery). After that, the persistent
+        profile's own cookie jar is authoritative.
+
+        We use a marker file `.cookies_restored` inside the profile dir to
+        decide. Checking `context.cookies()` was unreliable: Chromium creates
+        bootstrap cookies for about:blank, so a fresh profile is not actually
+        "empty" from Playwright's perspective.
+        """
         if not self.context:
             return False
+        marker = self.profile_dir / ".cookies_restored"
+        if marker.exists():
+            return True
         try:
             doc = await self.db.browser_sessions.find_one(
-                {"host": "amazon"}, {"_id": 0, "cookies": 1, "saved_at": 1}
+                self._session_key(), {"_id": 0, "cookies": 1, "saved_at": 1}
             )
             if doc and doc.get("cookies"):
                 await self.context.add_cookies(doc["cookies"])
                 logger.info(
-                    f"[browser-agent] loaded {len(doc['cookies'])} cookies from DB "
+                    f"[browser-agent firm={self.firm_id} host={self.host}] "
+                    f"restored {len(doc['cookies'])} cookies from DB backup "
                     f"(saved {doc.get('saved_at', 'unknown')})"
                 )
+                try:
+                    marker.write_text(datetime.now(timezone.utc).isoformat())
+                except Exception:
+                    pass
                 return True
         except Exception as e:
             logger.warning(f"DB cookie load failed, trying disk: {e}")
@@ -3506,13 +4003,17 @@ class AmazonBrowserAgent:
             try:
                 cookies = json.loads(self.cookies_path.read_text())
                 await self.context.add_cookies(cookies)
-                logger.info(f"[browser-agent] loaded {len(cookies)} cookies from disk fallback")
-                # Best-effort migrate to DB so next run finds them there.
+                logger.info(
+                    f"[browser-agent firm={self.firm_id} host={self.host}] "
+                    f"restored {len(cookies)} cookies from disk fallback"
+                )
                 try:
                     await self.db.browser_sessions.update_one(
-                        {"host": "amazon"},
+                        self._session_key(),
                         {"$set": {
-                            "host": "amazon",
+                            "host": self.host,
+                            "firm_id": self.firm_id,
+                            "firm_name": self.firm_name,
                             "cookies": cookies,
                             "cookie_count": len(cookies),
                             "saved_at": datetime.now(timezone.utc).isoformat(),
@@ -3520,6 +4021,10 @@ class AmazonBrowserAgent:
                         }},
                         upsert=True,
                     )
+                except Exception:
+                    pass
+                try:
+                    marker.write_text(datetime.now(timezone.utc).isoformat())
                 except Exception:
                     pass
                 return True

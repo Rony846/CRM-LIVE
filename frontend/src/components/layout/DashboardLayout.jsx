@@ -143,7 +143,6 @@ const adminNavGroups = [
     icon: Factory,
     items: [
       { label: 'Amazon Orders', icon: ShoppingBag, path: '/operations/amazon-orders' },
-      { label: 'Browser Agent', icon: Monitor, path: '/admin/browser-agent' },
       { label: 'File Repository', icon: FolderOpen, path: '/admin/file-repository' },
       { label: 'Courier Shipping', icon: Truck, path: '/operations/courier-shipping' },
       { label: 'Incoming Queue', icon: Inbox, path: '/accountant/incoming-queue' },
@@ -151,6 +150,20 @@ const adminNavGroups = [
       { label: 'Production', icon: Factory, path: '/accountant/production' },
       { label: 'Pending Fulfillment', icon: Clock, path: '/accountant/pending-fulfillment' },
       { label: 'Dispatch Queue', icon: Truck, path: '/view/dispatch-queue', viewOnly: true },
+    ]
+  },
+  {
+    label: 'Browser Agents',
+    icon: Monitor,
+    items: [
+      // One Chromium profile per firm. Only one alive at a time — switching
+      // here stops the previous browser and starts the selected firm's.
+      // First four are Amazon Seller Central; MGIPL is Bigship.
+      { label: 'EBAY UP Browser', icon: Monitor, path: '/admin/browser-agent/a9b65de0-ef07-47d7-b778-2a9f63ef52ab' },
+      { label: 'SPV Browser', icon: Monitor, path: '/admin/browser-agent/c715c1b7-aca3-4100-8b00-4f711a729829' },
+      { label: 'Electronics Bay Browser', icon: Monitor, path: '/admin/browser-agent/76b41510-bb17-42be-887f-abcbfd9f4180' },
+      { label: 'MuscleGrid Gurgaon Browser', icon: Monitor, path: '/admin/browser-agent/8bf93db6-045f-4aed-988c-352103ed049d' },
+      { label: 'MGIPL Bigship Browser', icon: Ship, path: '/admin/browser-agent/16abb602-875d-4283-bed9-f8789e688a17' },
     ]
   },
   {

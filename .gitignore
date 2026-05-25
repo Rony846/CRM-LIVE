@@ -716,3 +716,8 @@ migration/
 # product cards. Anything inside a sub-dir (claude_files/, dealer_*/,
 # warranty_invoices/, etc.) is user-uploaded runtime data — never commit.
 backend/uploads/*/
+
+# Per-firm Chromium user-data-dirs for the browser agent. These hold
+# cookies, localStorage, IndexedDB and cache for each Amazon/Bigship
+# account — sensitive session data and large binary files.
+backend/browser_profiles/
