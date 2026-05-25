@@ -26,6 +26,7 @@ import {
 import { toast } from 'sonner';
 import { Users, Search, Eye, Loader2, Shield, Ticket, Plus, Edit, Trash2, ChevronLeft, ChevronRight } from 'lucide-react';
 import ClickToCallButton from '@/components/calls/ClickToCallButton';
+import CustomerHistoryBadge from '@/components/customer/CustomerHistoryBadge';
 
 const STORAGE_KEY = 'admin_customers_filters';
 
@@ -406,7 +407,10 @@ export default function AdminCustomers() {
                 {customers.map((customer) => (
                   <TableRow key={customer.id} className="border-slate-700 hover:bg-slate-700/30" data-testid={`customer-row-${customer.id}`}>
                     <TableCell className="font-medium text-white">
-                      {customer.first_name} {customer.last_name}
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span>{customer.first_name} {customer.last_name}</span>
+                        <CustomerHistoryBadge phone={customer.phone} variant="badge" />
+                      </div>
                     </TableCell>
                     <TableCell className="text-slate-300">{customer.email}</TableCell>
                     <TableCell className="font-mono text-sm text-slate-300">
@@ -550,6 +554,7 @@ export default function AdminCustomers() {
           
           {selectedCustomer && (
             <div className="space-y-6">
+              <CustomerHistoryBadge phone={selectedCustomer.phone} />
               {/* Basic Info */}
               <div className="bg-slate-900 p-4 rounded-lg">
                 <h3 className="font-medium mb-3 text-cyan-400">Contact Information</h3>

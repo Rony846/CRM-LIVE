@@ -20,6 +20,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { toast } from 'sonner';
 import { openAuthedFile } from '@/lib/openFile';
 import AuthedImage from '@/components/ui/AuthedImage';
+import CustomerHistoryBadge from '@/components/customer/CustomerHistoryBadge';
 import {
   ArrowLeft, Loader2, User, Phone, Mail, MapPin, Package,
   FileText, Clock, CheckCircle, AlertTriangle, Wrench,
@@ -392,6 +393,7 @@ export default function AdminTicketDetail() {
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
+              <CustomerHistoryBadge phone={ticket.customer_phone} className="mb-2" />
               <div className="flex items-center gap-2 text-slate-300">
                 <User className="w-4 h-4 text-slate-500" />
                 <span>{ticket.customer_name || '-'}</span>

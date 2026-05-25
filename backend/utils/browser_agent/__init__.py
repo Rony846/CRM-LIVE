@@ -1059,12 +1059,30 @@ class AmazonBrowserAgent:
             wait_until="domcontentloaded",
             timeout=30000,
         )
-        await asyncio.sleep(2)
+        # Seller Central is a React SPA — wait longer for the right-column
+        # buyer-info / seller-notes block to render. With only domcontentloaded
+        # we get the shell, not the data fetched by client-side JS.
+        await asyncio.sleep(6)
 
         scraped = await self.page.evaluate(
             """
             () => {
-              const text = document.body.innerText || '';
+              // Prefer documentElement.innerText — captures more of the rendered
+              // SPA than body.innerText when the page uses portals/shadow DOM.
+              // Then APPEND all textarea + input values, because innerText does
+              // NOT include form-field contents — the "Seller notes" block is
+              // a <textarea> and that's where the team pastes buyer phones.
+              let text = (document.documentElement.innerText || document.body.innerText || '');
+              const formValues = [];
+              for (const ta of document.querySelectorAll('textarea')) {
+                const v = (ta.value || '').trim();
+                if (v) formValues.push('[SELLER NOTES]\\n' + v);
+              }
+              for (const inp of document.querySelectorAll('input[type="text"], input:not([type])')) {
+                const v = (inp.value || '').trim();
+                if (v && v.length < 200) formValues.push('[INPUT]\\n' + v);
+              }
+              if (formValues.length) text = text + '\\n\\n' + formValues.join('\\n\\n');
               const result = {
                 buyer_name: '',
                 raw_ship_to: '',
@@ -1267,6 +1285,62 @@ class AmazonBrowserAgent:
         )
 
         scraped = scraped or {}
+
+        # ---- Parse the [SELLER NOTES] textarea block in Python ----
+        # Amazon hides full street+phone from the visible page; the team pastes
+        # it into the Seller Notes textarea. We override the shipping-side
+        # fields with notes-side values when present (notes data is richer).
+        seller_notes_text = scraped.get("seller_notes") or ""
+        notes_marker = "[SELLER NOTES]"
+        idx = seller_notes_text.find(notes_marker)
+        notes_block = ""
+        if idx >= 0:
+            notes_block = seller_notes_text[idx + len(notes_marker):].strip()
+        if notes_block:
+            notes_lines = [l.strip() for l in notes_block.splitlines() if l.strip()]
+            # Find the canonical "CITY, STATE 6-digit-pincode" line — this is
+            # almost always the LAST line that has both a comma and a pincode.
+            # An earlier line might have a pincode embedded in a village/PO
+            # name; we want the city/state summary line, not that.
+            pin_line_idx = None
+            for i in range(len(notes_lines) - 1, -1, -1):
+                l = notes_lines[i]
+                if re.match(r'^[A-Za-z .]+,\s*[A-Za-z .]+?\s*\d{6}\b', l):
+                    pin_line_idx = i
+                    break
+            if pin_line_idx is None:
+                # Fallback: any line with a pincode
+                for i, l in enumerate(notes_lines):
+                    if re.search(r'\b\d{6}\b', l):
+                        pin_line_idx = i
+                        break
+            if pin_line_idx is not None:
+                pin_line = notes_lines[pin_line_idx]
+                m_pin = re.search(r'\b(\d{6})\b', pin_line)
+                if m_pin:
+                    scraped["pincode"] = m_pin.group(1)
+                m_cs = re.match(r'^([A-Za-z .]+),\s*([A-Za-z .]+?)\s*\d', pin_line)
+                if m_cs:
+                    scraped["city"]  = m_cs.group(1).strip()
+                    scraped["state"] = m_cs.group(2).strip()
+                # Address = lines between buyer name (line 0) and pin line, excluding marker noise
+                addr_lines = [l for l in notes_lines[1:pin_line_idx]
+                              if not re.match(r'^(Phone|Contact Buyer|Mobile)\s*:?', l, re.I)]
+                if addr_lines:
+                    scraped["address"] = ", ".join(addr_lines)
+            # Buyer name from first line of notes (if it looks like a name)
+            if notes_lines:
+                first = notes_lines[0]
+                if not re.search(r'\d', first) and 2 <= len(first) <= 80:
+                    scraped["buyer_name"] = first
+            # Phone — prefer one explicitly labelled "Phone:"
+            for l in notes_lines:
+                mp = re.match(r'(?:Phone|Mobile|Contact)\s*:?\s*(?:\+?91[\s-]?)?([6-9]\d{9})\b', l, re.I)
+                if mp:
+                    scraped["phone"] = mp.group(1)
+                    scraped["phone_found_in"] = "seller_notes"
+                    break
+
         buyer_name = (scraped.get("buyer_name") or "").strip()
         parts = buyer_name.split() if buyer_name else []
         first_name = parts[0] if parts else ""

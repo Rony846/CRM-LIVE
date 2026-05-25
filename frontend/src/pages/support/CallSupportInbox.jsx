@@ -9,6 +9,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
 import StatusBadge from '@/components/ui/StatusBadge';
+import CustomerHistoryBadge from '@/components/customer/CustomerHistoryBadge';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog';
@@ -385,7 +386,10 @@ function DetailPane({ ticket, onUpdate, onOpenMessage, onReload, onResolved }) {
               {(ticket.customer_name || '?').split(' ').map(s => s[0]).slice(0, 2).join('').toUpperCase()}
             </div>
             <div className="min-w-0 flex-1">
-              <p className="font-medium text-[15px] text-foreground">{ticket.customer_name || '—'}</p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="font-medium text-[15px] text-foreground">{ticket.customer_name || '—'}</p>
+                <CustomerHistoryBadge phone={ticket.customer_phone} variant="badge" />
+              </div>
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span className="font-mono">{ticket.customer_phone}</span>
                 {ticket.customer_phone && (

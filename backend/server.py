@@ -53191,6 +53191,121 @@ async def bot_customer_history(phone: str, user: dict = Depends(require_roles(["
     return history
 
 
+@api_router.get("/customer/refund-history")
+async def customer_refund_history(
+    phone: Optional[str] = None,
+    amazon_order_id: Optional[str] = None,
+    customer_name: Optional[str] = None,
+    pincode: Optional[str] = None,
+    user: dict = Depends(require_roles([
+        "admin", "accountant", "supervisor", "dispatcher",
+        "call_support", "service_agent", "customer",
+    ])),
+):
+    """Has this customer had a refunded or cancelled order before? Surfaces
+    a single payload the UI can use to show a 'previous refund/cancellation'
+    warning on ticket creation, warranty registration, customer detail page,
+    and global search results.
+
+    Match keys (any one is enough):
+      - phone               → exact match on amazon_orders.phone_manual
+      - amazon_order_id     → direct order lookup
+      - customer_name+pincode → fuzzy match on the manual customer fields
+
+    'Refunded' threshold (defined 2026-05-25): sum(amazon_refunds.refund_amount)
+    for the order must exceed 50% of its grand_total. Minor partial refunds
+    don't trip the warning.
+
+    'Cancelled' = amazon_orders.crm_status == 'cancelled'."""
+    or_clauses = []
+    if phone:
+        # Normalise to the last 10 digits so '+91 98...', '+9198...', and
+        # plain '98...' all hit. amazon_orders stores phones as 10-digit.
+        digits = ''.join(c for c in phone if c.isdigit())[-10:]
+        if len(digits) == 10:
+            or_clauses.append({"phone_manual": digits})
+    if amazon_order_id:
+        or_clauses.append({"amazon_order_id": amazon_order_id.strip()})
+    if customer_name and pincode:
+        or_clauses.append({
+            "customer_name_manual": {
+                "$regex": f"^{re.escape(customer_name.strip())}",
+                "$options": "i",
+            },
+            "pincode_manual": pincode.strip(),
+        })
+
+    empty = {"has_history": False, "refunded_count": 0,
+             "cancelled_count": 0, "matched_orders": []}
+    if not or_clauses:
+        return empty
+
+    matched = await db.amazon_orders.find(
+        {"$or": or_clauses},
+        {"_id": 0, "amazon_order_id": 1, "firm_id": 1, "firm_name": 1,
+         "purchase_date": 1, "crm_status": 1, "order_total": 1,
+         "customer_name_manual": 1, "phone_manual": 1, "pincode_manual": 1},
+    ).to_list(200)
+    if not matched:
+        return empty
+
+    def _money(v):
+        if isinstance(v, dict):
+            try: return float(v.get("Amount") or 0)
+            except (TypeError, ValueError): return 0.0
+        try: return float(v or 0)
+        except (TypeError, ValueError): return 0.0
+
+    flagged = []
+    for o in matched:
+        oid = o["amazon_order_id"]
+        refund_total = 0.0
+        async for r in db.amazon_refunds.find(
+            {"amazon_order_id": oid}, {"_id": 0, "refund_amount": 1},
+        ):
+            refund_total += _money(r.get("refund_amount"))
+
+        gt = _money(o.get("order_total"))
+        if gt <= 0:
+            inv = await db.sales_invoices.find_one(
+                {"marketplace_order_id": oid}, {"_id": 0, "grand_total": 1},
+            )
+            if inv:
+                gt = _money(inv.get("grand_total"))
+
+        ratio = (refund_total / gt) if gt > 0 else 0.0
+        is_refunded = refund_total > 0 and ratio > 0.5
+        is_cancelled = (o.get("crm_status") == "cancelled")
+        if not (is_refunded or is_cancelled):
+            continue
+        flagged.append({
+            "amazon_order_id": oid,
+            "firm_name": o.get("firm_name") or o.get("firm_id"),
+            "purchase_date": (o.get("purchase_date") or "")[:10],
+            "crm_status": o.get("crm_status"),
+            "customer_name": o.get("customer_name_manual"),
+            "phone": o.get("phone_manual"),
+            "pincode": o.get("pincode_manual"),
+            "grand_total": round(gt, 2),
+            "refund_amount": round(refund_total, 2),
+            "refund_ratio": round(ratio, 2),
+            "is_refunded": is_refunded,
+            "is_cancelled": is_cancelled,
+        })
+
+    refunded_n  = sum(1 for e in flagged if e["is_refunded"])
+    cancelled_n = sum(1 for e in flagged if e["is_cancelled"])
+    return {
+        "has_history": bool(flagged),
+        "refunded_count": refunded_n,
+        "cancelled_count": cancelled_n,
+        # Newest first so the UI shows recent activity at the top
+        "matched_orders": sorted(
+            flagged, key=lambda e: e["purchase_date"], reverse=True,
+        ),
+    }
+
+
 @api_router.get("/bot/comprehensive-order/{order_id}")
 async def bot_comprehensive_order_analysis(order_id: str, user: dict = Depends(require_roles(["admin", "accountant"]))):
     """
