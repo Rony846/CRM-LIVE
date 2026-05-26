@@ -88,6 +88,7 @@ import AmazonSettings from './pages/admin/AmazonSettings';
 // Browser Agent Pages
 import BrowserAgentPage from './pages/admin/browser-agent/BrowserAgentPage';
 import FileRepositoryPage from './pages/admin/browser-agent/FileRepositoryPage';
+import OrdersFoldersPage from './pages/admin/OrdersFoldersPage';
 import WhatsAppAgentPage from './pages/admin/whatsapp/WhatsAppAgentPage';
 import PublicDatasheetView from './pages/public/PublicDatasheetView';
 import CatalogueHome from './pages/public/CatalogueHome';
@@ -1041,6 +1042,12 @@ function App() {
           <Route path="/admin/browser-agent/:firmId" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <BrowserAgentPage />
+            </ProtectedRoute>
+          } />
+          {/* Order Folders — Year → Firm → Month → Date → Order */}
+          <Route path="/admin/orders-folders" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <OrdersFoldersPage />
             </ProtectedRoute>
           } />
           

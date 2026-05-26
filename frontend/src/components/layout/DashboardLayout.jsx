@@ -153,6 +153,17 @@ const adminNavGroups = [
     ]
   },
   {
+    label: 'Folders',
+    icon: FolderOpen,
+    items: [
+      // Windows-explorer-style hierarchical browser over processed Amazon
+      // orders. Drills down Year → Firm → Month → Date → Order; an order
+      // leaf reveals its Bigship label, Amazon invoice (when downloaded),
+      // and an auto-generated Amazon-format packing slip.
+      { label: 'Order Folders', icon: FolderOpen, path: '/admin/orders-folders' },
+    ]
+  },
+  {
     label: 'Browser Agents',
     icon: Monitor,
     items: [

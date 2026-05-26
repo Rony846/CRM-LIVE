@@ -13619,7 +13619,8 @@ ALLOWED_FILE_FOLDERS = {
     "dispatches", "dealer_documents", "dealer_payments", "ewaybills",
     "claude_files", "purchases", "expenses", "gate", "gate_media", "bot",
     "datasheets", "amazon", "bigship", "warranty_invoices", "feedback",
-    "tickets", "uploads", "payroll", "kyc", "product_images"
+    "tickets", "uploads", "payroll", "kyc", "product_images",
+    "amazon_orders",
 }
 
 
@@ -13631,6 +13632,31 @@ def _safe_uploads_path(folder: str, filename: str) -> Path:
         raise HTTPException(status_code=400, detail="Invalid filename")
     base = UPLOAD_DIR.resolve()
     target = (base / folder / filename).resolve()
+    try:
+        target.relative_to(base)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Path traversal denied")
+    return target
+
+
+def _safe_nested_uploads_path(relative_path: str) -> Path:
+    """Validate a nested file path like
+    'amazon_orders/2026/05-May/25/{order_id}/label_xxx.pdf' — first segment
+    must be an allowed folder, no traversal segments anywhere, and the
+    resolved path must stay inside UPLOAD_DIR.
+    """
+    rel = relative_path.strip("/")
+    if not rel:
+        raise HTTPException(status_code=400, detail="Empty path")
+    parts = rel.split("/")
+    if parts[0] not in ALLOWED_FILE_FOLDERS:
+        raise HTTPException(status_code=404, detail="Unknown folder")
+    if any(p in ("", ".", "..") or p.startswith(".") for p in parts):
+        raise HTTPException(status_code=400, detail="Invalid path segment")
+    if any("\\" in p for p in parts):
+        raise HTTPException(status_code=400, detail="Invalid path segment")
+    base = UPLOAD_DIR.resolve()
+    target = (base.joinpath(*parts)).resolve()
     try:
         target.relative_to(base)
     except ValueError:
@@ -13740,6 +13766,55 @@ async def check_file_exists(
         exists = file_path.exists()
 
     return {"exists": exists, "path": f"/api/files/{folder}/{filename}"}
+
+
+@api_router.get("/files-deep/{relative_path:path}")
+async def serve_file_deep(
+    relative_path: str,
+    exp: Optional[str] = Query(None),
+    sig: Optional[str] = Query(None),
+    u: Optional[str] = Query(None),
+    user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """Same as /files/{folder}/{filename} but supports arbitrary nesting —
+    e.g. 'amazon_orders/2026/05-May/25/{order_id}/label_xxx.pdf'. The
+    original 2-segment route stays in place for legacy callers."""
+    _safe_nested_uploads_path(relative_path)
+    if not user:
+        if not (sig and exp and verify_signed_file_url(relative_path, exp, sig, u)):
+            raise HTTPException(status_code=401, detail="Authentication required")
+    try:
+        file_data = await storage_download(relative_path)
+        if file_data is None:
+            local = UPLOAD_DIR / relative_path
+            if local.exists():
+                file_data = local.read_bytes()
+            else:
+                raise HTTPException(status_code=404, detail="File not found")
+        filename = relative_path.rsplit("/", 1)[-1]
+        ext = Path(filename).suffix.lower()
+        media_types = {
+            ".pdf": "application/pdf",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+        }
+        media_type = media_types.get(ext, "application/octet-stream")
+        safe_name = filename.replace('"', "").replace("\r", "").replace("\n", "")
+        return StreamingResponse(
+            BytesIO(file_data),
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f'inline; filename="{safe_name}"',
+                "X-Content-Type-Options": "nosniff",
+                "Content-Length": str(len(file_data)),
+            },
+        )
+    except StorageError as e:
+        logger.error(f"Storage error serving {relative_path}: {e}")
+        raise HTTPException(status_code=502, detail="Storage backend error")
 
 # ==================== HEALTH CHECK ====================
 
@@ -62039,6 +62114,194 @@ async def switch_browser_agent_endpoint(
     }
 
 
+class FirmCredentialsRequest(BaseModel):
+    firm_id: str
+    email: Optional[str] = None
+    password: Optional[str] = None
+
+
+@api_router.get("/browser-agent/firm-credentials")
+async def get_firm_credentials(
+    firm_id: str,
+    user: dict = Depends(require_roles(["admin"])),
+):
+    """Return the saved Seller Central credentials for a firm. The password
+    is NEVER returned — only a boolean flag for whether one is stored. The
+    email is returned so the UI can pre-fill the login helper. Stored on
+    `marketplace_credentials` under `seller_central_email` /
+    `seller_central_password` (same doc as the SP-API keys for the firm)."""
+    doc = await db.marketplace_credentials.find_one(
+        {"firm_id": firm_id, "platform": "amazon"},
+        {"_id": 0, "seller_central_email": 1, "seller_central_password": 1},
+    )
+    if not doc:
+        return {"firm_id": firm_id, "email": None, "has_password": False}
+    return {
+        "firm_id": firm_id,
+        "email": doc.get("seller_central_email") or None,
+        "has_password": bool(doc.get("seller_central_password")),
+    }
+
+
+@api_router.post("/browser-agent/firm-credentials")
+async def save_firm_credentials(
+    data: FirmCredentialsRequest,
+    user: dict = Depends(require_roles(["admin"])),
+):
+    """Upsert the saved Seller Central credentials for a firm. Passing
+    `password=null` (or omitting it) leaves any previously-stored password
+    untouched — handy for the "edit email only" path."""
+    if not data.firm_id:
+        raise HTTPException(status_code=400, detail="firm_id is required")
+    set_fields: Dict[str, Any] = {}
+    if data.email is not None:
+        set_fields["seller_central_email"] = data.email.strip() or None
+    if data.password:  # non-empty
+        set_fields["seller_central_password"] = data.password
+    if not set_fields:
+        raise HTTPException(status_code=400, detail="Nothing to save")
+    set_fields["seller_central_updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.marketplace_credentials.update_one(
+        {"firm_id": data.firm_id, "platform": "amazon"},
+        {"$set": set_fields, "$setOnInsert": {"platform": "amazon", "firm_id": data.firm_id, "is_active": True}},
+        upsert=True,
+    )
+    doc = await db.marketplace_credentials.find_one(
+        {"firm_id": data.firm_id, "platform": "amazon"},
+        {"_id": 0, "seller_central_email": 1, "seller_central_password": 1},
+    )
+    return {
+        "success": True,
+        "firm_id": data.firm_id,
+        "email": (doc or {}).get("seller_central_email"),
+        "has_password": bool((doc or {}).get("seller_central_password")),
+    }
+
+
+class AutoLoginRequest(BaseModel):
+    firm_id: Optional[str] = None
+    email: Optional[str] = None
+    password: Optional[str] = None
+
+
+@api_router.post("/browser-agent/auto-login")
+async def browser_auto_login(
+    data: AutoLoginRequest,
+    user: dict = Depends(require_roles(["admin"])),
+):
+    """Drive Amazon's two-step login (email page → Continue → password page →
+    Sign-In) by detecting which page is open and filling the matching field
+    via a Playwright locator. Idempotent — calling it twice on the same
+    state won't duplicate keystrokes because `.fill()` clears before typing.
+    """
+    agent = await get_browser_agent()
+    if agent.context is None or not agent.page:
+        raise HTTPException(status_code=400, detail="Browser is not started")
+    firm_id = data.firm_id or agent.firm_id
+    email = data.email
+    password = data.password
+    if not email or not password:
+        creds = await db.marketplace_credentials.find_one(
+            {"firm_id": firm_id, "platform": "amazon"},
+            {"_id": 0, "seller_central_email": 1, "seller_central_password": 1},
+        )
+        email = email or (creds or {}).get("seller_central_email")
+        password = password or (creds or {}).get("seller_central_password")
+    if not email or not password:
+        raise HTTPException(
+            status_code=400,
+            detail="No saved credentials for this firm — fill email and password and click Save first.",
+        )
+
+    page = agent.page
+    submitted = []  # what steps we actually performed, for the response
+
+    async def _first_visible(selectors):
+        """Return the first locator from `selectors` that's actually visible,
+        or None. Skips off-screen / hidden inputs that match by selector but
+        aren't the active form."""
+        for sel in selectors:
+            try:
+                loc = page.locator(sel).first
+                if await loc.count() == 0:
+                    continue
+                if await loc.is_visible():
+                    return loc
+            except Exception:
+                continue
+        return None
+
+    try:
+        # ---- Step 1: email page (if visible) ----
+        email_input = await _first_visible([
+            'input#ap_email_login', 'input#ap_email',
+            'input[name="email"][type="email"]', 'input[name="email"]',
+            'input[type="email"]:visible',
+        ])
+        if email_input is not None:
+            await email_input.click()
+            await email_input.fill(email, timeout=4000)
+            # "Continue" button. Amazon uses id="continue" on input[type=submit].
+            cont = await _first_visible([
+                'input#continue', 'button#continue',
+                'input[type="submit"][aria-labelledby*="continue"]',
+                'button:has-text("Continue")', 'input[type="submit"][value="Continue"]',
+            ])
+            if cont is not None:
+                await cont.click(timeout=4000)
+            else:
+                # Fallback: press Enter inside the email field
+                await email_input.press("Enter")
+            submitted.append("email")
+            # Give the password page a moment to render.
+            try:
+                await page.wait_for_selector('input#ap_password, input[name="password"]', timeout=8000, state="visible")
+            except Exception:
+                pass
+
+        # ---- Step 2: password page ----
+        pw_input = await _first_visible([
+            'input#ap_password', 'input[name="password"][type="password"]',
+            'input[type="password"]',
+        ])
+        if pw_input is not None:
+            await pw_input.click()
+            await pw_input.fill(password, timeout=4000)
+            sign_in = await _first_visible([
+                'input#signInSubmit', 'button#signInSubmit',
+                'input[type="submit"][aria-labelledby*="signin"]',
+                'button:has-text("Sign-In")', 'button:has-text("Sign in")',
+                'input[type="submit"][value*="Sign"]',
+            ])
+            if sign_in is not None:
+                await sign_in.click(timeout=4000)
+            else:
+                await pw_input.press("Enter")
+            submitted.append("password")
+        elif "email" not in submitted:
+            # Neither email nor password fields were visible — page isn't the
+            # Amazon signin form. Tell the caller.
+            raise HTTPException(
+                status_code=400,
+                detail="No email or password field is visible. Navigate to the Amazon sign-in page first.",
+            )
+
+        return {
+            "success": True,
+            "steps": submitted,
+            "message": (
+                "Login submitted — enter OTP if prompted"
+                if "password" in submitted else
+                "Email submitted — click Quick Login again on the password page (or wait if it auto-loads)"
+            ),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Auto-login failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Login failed: {e}")
+
+
 @api_router.post("/browser-agent/stop")
 async def stop_browser_agent(
     data: BrowserAgentFirmRequest = None,
@@ -62098,6 +62361,46 @@ async def browser_check_login(user: dict = Depends(require_roles(["admin"]))):
     agent = await get_browser_agent()
     logged_in = await agent.check_login_status()
     return {"logged_in": logged_in}
+
+
+class DebugQueryRequest(BaseModel):
+    selector: str
+
+
+@api_router.post("/browser-agent/debug-query")
+async def browser_debug_query(
+    data: DebugQueryRequest,
+    user: dict = Depends(require_roles(["admin"])),
+):
+    """Dev-only: return positions of every element matching `selector`
+    (any standard CSS selector). Used when the generic debug-probe text
+    search misses elements because it hits its 12-match limit before
+    reaching the one you want."""
+    agent = await get_browser_agent()
+    if not agent.page:
+        raise HTTPException(status_code=400, detail="Browser not started")
+    try:
+        return await agent.page.evaluate(
+            """
+            (sel) => {
+              const out = [];
+              for (const el of document.querySelectorAll(sel)) {
+                const r = el.getBoundingClientRect();
+                out.push({
+                  tag: el.tagName.toLowerCase(),
+                  text: (el.innerText || '').trim().slice(0, 80),
+                  rect: {x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height)},
+                  visible: r.width > 0 && r.height > 0,
+                });
+                if (out.length >= 50) break;
+              }
+              return {matches: out};
+            }
+            """,
+            data.selector,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @api_router.post("/browser-agent/debug-textareas")
@@ -62335,15 +62638,21 @@ async def get_browser_orders(user: dict = Depends(require_roles(["admin"]))):
 
 class ProcessOrderRequest(BaseModel):
     order_id: str
+    # Optional manual override for shipping_type. The agent normally routes
+    # by weight + value (>20kg or >₹30K → B2B, else B2C). Pass "b2b" or
+    # "b2c" here to bypass the router — useful when a SKU isn't in the
+    # weight DB and we'd otherwise mis-route a heavy item to B2C.
+    shipping_type: Optional[str] = None
 
 @api_router.post("/browser-agent/process-order")
 async def process_browser_order(
     data: ProcessOrderRequest,
     user: dict = Depends(require_roles(["admin"]))
 ):
-    """Process a single order"""
+    """Process a single order. Pass shipping_type="b2b"/"b2c" to override
+    the auto-router."""
     agent = await get_browser_agent()
-    result = await agent.process_order(data.order_id)
+    result = await agent.process_order(data.order_id, force_shipping_type=data.shipping_type)
     return result.__dict__
 
 
@@ -62965,6 +63274,366 @@ async def _process_job_background(job_id: str, agent, job_queue):
                 await job_queue.add_thinking_log(job_id, f"💥 Job failed: {str(e)}")
         except Exception:
             pass
+
+
+# ==================== ORDER FOLDERS (Year → Firm → Month → Date → Order) ====================
+#
+# Windows-Explorer-style hierarchical browser over processed Amazon orders.
+# Drives entirely from the `amazon_order_processing` collection rather than
+# raw storage — the collection has order_id + firm_id + processed_at + label
+# path, which is all we need to compute the tree. Each "leaf" folder lists
+# the order's label PDF + invoice (if downloaded) + an auto-generated
+# Amazon-format packing slip.
+
+_MONTH_LABELS = ["", "01-Jan", "02-Feb", "03-Mar", "04-Apr", "05-May", "06-Jun",
+                 "07-Jul", "08-Aug", "09-Sep", "10-Oct", "11-Nov", "12-Dec"]
+
+
+def _processed_at_parts(value: Any) -> Optional[tuple]:
+    """Return (year:int, month:int, day:int) parsed from an ISO timestamp.
+    Falls back to None if unparseable."""
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return (value.year, value.month, value.day)
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return (dt.year, dt.month, dt.day)
+    except ValueError:
+        return None
+
+
+@api_router.get("/order-folders/tree")
+async def order_folders_tree(
+    level: str = "root",
+    year: Optional[int] = None,
+    firm_id: Optional[str] = None,
+    month: Optional[int] = None,
+    day: Optional[int] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Return the children of a folder in the order-folders hierarchy.
+
+    Levels:
+      - root          → returns years   (no extra params needed)
+      - year (=YYYY)  → returns firms with orders in that year
+      - firm          → returns months   (params: year, firm_id)
+      - month         → returns days     (params: year, firm_id, month)
+      - day           → returns orders   (params: year, firm_id, month, day)
+
+    Each child entry: { name, type:"folder"|"order", count, meta:{...} }
+    """
+    # Accountant firm-scoping — if the caller is firm-scoped, restrict to
+    # orders for their firm regardless of `firm_id` query param.
+    scope_firm = get_user_firm_scope(user)
+    base_filter: Dict[str, Any] = {"status": "completed"}
+    if scope_firm:
+        base_filter["firm_id"] = scope_firm
+
+    # Pull only the fields we need, project light to keep this fast even
+    # when the collection grows.
+    proj = {"_id": 0, "order_id": 1, "amazon_order_id": 1, "firm_id": 1,
+            "firm_name": 1, "processed_at": 1, "customer_name": 1,
+            "tracking_id": 1, "order_value": 1, "label_path": 1,
+            "invoice_path": 1, "printed_at": 1, "printed_by_name": 1}
+    docs = await db.amazon_order_processing.find(base_filter, proj).to_list(10000)
+
+    # Build year → firm → month → day → orders index in memory. Cheap until
+    # we cross ~50k orders; revisit with a Mongo aggregation if it grows.
+    tree: Dict[int, Dict[str, Dict[int, Dict[int, List[dict]]]]] = {}
+    for d in docs:
+        parts = _processed_at_parts(d.get("processed_at"))
+        if not parts:
+            continue
+        y, m, dd = parts
+        fid = d.get("firm_id") or "unknown"
+        tree.setdefault(y, {}).setdefault(fid, {}).setdefault(m, {}).setdefault(dd, []).append(d)
+
+    if level == "root":
+        years = sorted(tree.keys(), reverse=True)
+        return {"level": "root", "items": [
+            {"name": str(y), "type": "folder", "year": y,
+             "count": sum(len(orders) for fm in tree[y].values() for mm in fm.values() for orders in mm.values())}
+            for y in years
+        ]}
+
+    if year is None:
+        raise HTTPException(status_code=400, detail="year is required for this level")
+    if year not in tree:
+        return {"level": level, "items": []}
+
+    if level == "year":
+        firms_in_year = tree[year]
+        # Hydrate firm names from the firms collection
+        firm_ids = [fid for fid in firms_in_year.keys() if fid != "unknown"]
+        firms_meta = {f["id"]: f["name"] async for f in db.firms.find(
+            {"id": {"$in": firm_ids}}, {"_id": 0, "id": 1, "name": 1}
+        )}
+        items = []
+        for fid, fm in firms_in_year.items():
+            firm_name = firms_meta.get(fid) or (
+                next((o.get("firm_name") for mm in fm.values() for orders in mm.values() for o in orders if o.get("firm_name")), None)
+                or "Unknown firm"
+            )
+            items.append({
+                "name": firm_name, "type": "folder", "firm_id": fid,
+                "count": sum(len(orders) for mm in fm.values() for orders in mm.values())
+            })
+        items.sort(key=lambda x: x["name"].lower())
+        return {"level": "year", "year": year, "items": items}
+
+    if firm_id is None or firm_id not in tree[year]:
+        raise HTTPException(status_code=400, detail="firm_id is required and must exist under that year")
+
+    if level == "firm":
+        months_in_firm = tree[year][firm_id]
+        items = []
+        for m, mm in months_in_firm.items():
+            items.append({
+                "name": _MONTH_LABELS[m] if 1 <= m <= 12 else f"{m:02d}",
+                "type": "folder", "month": m,
+                "count": sum(len(orders) for orders in mm.values()),
+            })
+        items.sort(key=lambda x: x["month"])
+        return {"level": "firm", "year": year, "firm_id": firm_id, "items": items}
+
+    if month is None or month not in tree[year][firm_id]:
+        raise HTTPException(status_code=400, detail="month is required and must exist under that firm/year")
+
+    if level == "month":
+        days_in_month = tree[year][firm_id][month]
+        items = [
+            {"name": f"{d:02d}", "type": "folder", "day": d, "count": len(orders)}
+            for d, orders in sorted(days_in_month.items())
+        ]
+        return {"level": "month", "year": year, "firm_id": firm_id, "month": month, "items": items}
+
+    if day is None or day not in tree[year][firm_id][month]:
+        raise HTTPException(status_code=400, detail="day is required and must exist under that month/firm/year")
+
+    if level == "day":
+        orders = tree[year][firm_id][month][day]
+        items = []
+        for o in sorted(orders, key=lambda x: x.get("processed_at", "")):
+            items.append({
+                "name": o.get("amazon_order_id") or o.get("order_id"),
+                "type": "order",
+                "order_id": o.get("amazon_order_id") or o.get("order_id"),
+                "customer_name": o.get("customer_name"),
+                "tracking_id": o.get("tracking_id"),
+                "order_value": o.get("order_value"),
+                "has_label": bool(o.get("label_path")),
+                "has_invoice": bool(o.get("invoice_path")),
+                "printed_at": o.get("printed_at"),
+                "printed_by_name": o.get("printed_by_name"),
+            })
+        return {"level": "day", "year": year, "firm_id": firm_id, "month": month, "day": day, "items": items}
+
+    raise HTTPException(status_code=400, detail=f"Unknown level: {level!r}")
+
+
+async def _fetch_bigship_label_pdf(system_order_id: str) -> Optional[bytes]:
+    """Pull a label PDF from Bigship on demand using the stored
+    system_order_id. Pure HTTP — does not need the browser agent. Mirrors
+    `AmazonBrowserAgent._download_bigship_label_via_api` but standalone so it
+    can be used from REST endpoints without an active browser.
+    """
+    import httpx, base64 as _b64
+    if not system_order_id:
+        return None
+    BIGSHIP_API_URL = os.environ.get("BIGSHIP_API_URL", "https://api.bigship.in/api")
+    BIGSHIP_USER_ID = os.environ.get("BIGSHIP_USER_ID")
+    BIGSHIP_PASSWORD = os.environ.get("BIGSHIP_PASSWORD")
+    BIGSHIP_ACCESS_KEY = os.environ.get("BIGSHIP_ACCESS_KEY")
+    if not all([BIGSHIP_USER_ID, BIGSHIP_PASSWORD, BIGSHIP_ACCESS_KEY]):
+        logger.error("Bigship credentials not configured")
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            auth = await client.post(
+                f"{BIGSHIP_API_URL}/login/user",
+                json={"user_name": BIGSHIP_USER_ID, "password": BIGSHIP_PASSWORD, "access_key": BIGSHIP_ACCESS_KEY},
+            )
+            ad = auth.json()
+            token = (ad.get("data") or {}).get("token")
+            if not token:
+                logger.error(f"Bigship auth failed: {ad}")
+                return None
+            r = await client.post(
+                f"{BIGSHIP_API_URL}/shipment/data",
+                params={"shipment_data_id": 2, "system_order_id": system_order_id},
+                json={},
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+            )
+            d = r.json()
+            if not (d.get("success") and d.get("data")):
+                return None
+            ld = d["data"]
+            if isinstance(ld, dict):
+                fc = ld.get("res_FileContent")
+                if fc:
+                    return _b64.b64decode(fc)
+                url = ld.get("label_url")
+                if url:
+                    return (await client.get(url)).content
+            elif isinstance(ld, str):
+                if ld.startswith("data:"):
+                    return _b64.b64decode(ld.split(",", 1)[1])
+                if ld.startswith("http"):
+                    return (await client.get(ld)).content
+                return _b64.b64decode(ld)
+            return None
+    except Exception as e:
+        logger.error(f"Bigship label fetch error: {e}")
+        return None
+
+
+@api_router.get("/order-folders/order/{order_id}/label.pdf")
+async def order_folders_label(
+    order_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Stream the Bigship shipping label for `order_id`. Re-fetched from
+    Bigship on demand via the stored system_order_id — bypasses storage so
+    it works even for orders where the storage upload silently failed."""
+    from fastapi.responses import Response
+    scope_firm = get_user_firm_scope(user)
+    q: Dict[str, Any] = {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]}
+    if scope_firm:
+        q["firm_id"] = scope_firm
+    d = await db.amazon_order_processing.find_one(
+        q, {"_id": 0, "system_order_id": 1, "tracking_id": 1, "label_path": 1}
+    )
+    if not d:
+        raise HTTPException(status_code=404, detail="Order not found")
+    pdf = await _fetch_bigship_label_pdf(d.get("system_order_id"))
+    if not pdf:
+        raise HTTPException(status_code=502, detail="Bigship label fetch failed — check credentials/system_order_id")
+    fname = f"label-{d.get('tracking_id') or order_id}.pdf"
+    return Response(
+        content=pdf, media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{fname}"'},
+    )
+
+
+@api_router.get("/order-folders/order/{order_id}/files")
+async def order_folders_order_files(
+    order_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """List the files that exist for an order: label, invoice, packing slip.
+    The packing slip is always available (auto-generated on demand)."""
+    scope_firm = get_user_firm_scope(user)
+    q: Dict[str, Any] = {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]}
+    if scope_firm:
+        q["firm_id"] = scope_firm
+    d = await db.amazon_order_processing.find_one(q, {"_id": 0})
+    if not d:
+        raise HTTPException(status_code=404, detail="Order not found")
+    files = []
+    # Label: always offered when we have a system_order_id (Bigship side).
+    # We re-fetch from Bigship on demand rather than trusting the stored
+    # `label_path` — earlier orders had the path filled in but the actual
+    # upload silently failed (asyncio.to_thread wrapping of an async fn).
+    if d.get("system_order_id"):
+        files.append({"name": "Bigship Label.pdf", "kind": "label",
+                      "url": f"/api/order-folders/order/{order_id}/label.pdf",
+                      "size": None, "generated": True})
+    elif d.get("label_path"):
+        files.append({"name": "Bigship Label.pdf", "kind": "label",
+                      "url": d["label_path"], "size": None})
+    if d.get("invoice_path"):
+        files.append({"name": "Amazon Invoice.pdf", "kind": "invoice",
+                      "url": d["invoice_path"], "size": None})
+    # Auto-generated packing slip is always offered
+    files.append({"name": "Amazon Packing Slip.pdf", "kind": "packing_slip",
+                  "url": f"/api/order-folders/order/{order_id}/packing-slip.pdf",
+                  "size": None, "generated": True})
+    return {
+        "order_id": order_id,
+        "amazon_order_id": d.get("amazon_order_id"),
+        "firm_name": d.get("firm_name"),
+        "customer_name": d.get("customer_name"),
+        "tracking_id": d.get("tracking_id"),
+        "order_value": d.get("order_value"),
+        "processed_at": d.get("processed_at"),
+        "printed_at": d.get("printed_at"),
+        "printed_by_name": d.get("printed_by_name"),
+        "files": files,
+    }
+
+
+class MarkPrintedRequest(BaseModel):
+    printed: bool = True
+
+
+@api_router.post("/order-folders/order/{order_id}/mark-printed")
+async def order_folders_mark_printed(
+    order_id: str,
+    data: MarkPrintedRequest,
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Toggle the "printed" flag on an order folder. When marked, the
+    Order Folders UI tints the tile green and shows the marker's name +
+    timestamp so the accounts team can see which orders have already been
+    printed and packed."""
+    scope_firm = get_user_firm_scope(user)
+    q: Dict[str, Any] = {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]}
+    if scope_firm:
+        q["firm_id"] = scope_firm
+    doc = await db.amazon_order_processing.find_one(q, {"_id": 1, "order_id": 1, "firm_id": 1})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if data.printed:
+        update = {"$set": {
+            "printed_at": datetime.now(timezone.utc).isoformat(),
+            "printed_by_id": user.get("id"),
+            "printed_by_name": (
+                f"{user.get('first_name') or ''} {user.get('last_name') or ''}".strip()
+                or user.get("email")
+                or "unknown"
+            ),
+        }}
+    else:
+        update = {"$unset": {"printed_at": "", "printed_by_id": "", "printed_by_name": ""}}
+    await db.amazon_order_processing.update_one({"_id": doc["_id"]}, update)
+    d = await db.amazon_order_processing.find_one(
+        {"_id": doc["_id"]},
+        {"_id": 0, "printed_at": 1, "printed_by_name": 1},
+    )
+    return {
+        "success": True,
+        "order_id": order_id,
+        "printed_at": (d or {}).get("printed_at"),
+        "printed_by_name": (d or {}).get("printed_by_name"),
+    }
+
+
+@api_router.get("/order-folders/order/{order_id}/packing-slip.pdf")
+async def order_folders_packing_slip(
+    order_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Stream an auto-generated Amazon-format packing slip for `order_id`."""
+    from utils.packing_slip import generate_packing_slip_pdf
+    from fastapi.responses import Response
+
+    scope_firm = get_user_firm_scope(user)
+    q: Dict[str, Any] = {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]}
+    if scope_firm:
+        q["firm_id"] = scope_firm
+    d = await db.amazon_order_processing.find_one(q, {"_id": 0})
+    if not d:
+        raise HTTPException(status_code=404, detail="Order not found")
+    try:
+        pdf = generate_packing_slip_pdf(d)
+    except Exception as e:
+        logger.error(f"Packing slip generation failed for {order_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"PS generation failed: {e}")
+    return Response(
+        content=pdf, media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="packing-slip-{order_id}.pdf"'},
+    )
 
 
 # ==================== FILE REPOSITORY (Windows Explorer Style) ====================

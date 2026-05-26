@@ -528,24 +528,66 @@ I'll handle the rest! What would you like to do?`,
     toast.info(`Clicked at (${x}, ${y}) - Now type to enter text!`);
   };
 
-  // Login helper
+  // Per-firm saved credentials (Seller Central email + password).
+  const [savedEmail, setSavedEmail] = useState(null);
+  const [hasPassword, setHasPassword] = useState(false);
+  const [credsSaving, setCredsSaving] = useState(false);
+
+  // Load saved credentials whenever the active firm changes.
+  useEffect(() => {
+    if (!activeFirmId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await axios.get(`${API}/api/browser-agent/firm-credentials?firm_id=${activeFirmId}`, { headers });
+        if (cancelled) return;
+        setSavedEmail(res.data.email || null);
+        setHasPassword(!!res.data.has_password);
+        if (res.data.email) setEmailInput(res.data.email);
+        setPasswordInput('');  // never pre-fill password
+      } catch (err) {
+        // Non-fatal — just means we won't pre-fill.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [activeFirmId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Persist email (+ optionally password) for the active firm.
+  const saveCredentials = async () => {
+    if (!activeFirmId) { toast.error('Pick a firm first'); return; }
+    if (!emailInput) { toast.error('Email is required'); return; }
+    setCredsSaving(true);
+    try {
+      const body = { firm_id: activeFirmId, email: emailInput };
+      if (passwordInput) body.password = passwordInput;
+      const res = await axios.post(`${API}/api/browser-agent/firm-credentials`, body, { headers });
+      setSavedEmail(res.data.email);
+      setHasPassword(res.data.has_password);
+      setPasswordInput('');
+      toast.success('Credentials saved for ' + (firms.find(f => f.firm_id === activeFirmId)?.firm_name || 'firm'));
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to save credentials');
+    } finally {
+      setCredsSaving(false);
+    }
+  };
+
+  // Quick login — server-side keystrokes using saved credentials. If user
+  // entered an override in the inputs we send those through; otherwise the
+  // backend falls back to stored values.
   const performLogin = async () => {
-    if (!emailInput || !passwordInput) {
-      toast.error('Please enter both email and password');
+    if (!hasPassword && !passwordInput) {
+      toast.error('No saved password — enter it once and click Save.');
       return;
     }
-    
     setLoading(true);
     try {
-      await axios.post(`${API}/api/browser-agent/type`, { text: emailInput }, { headers });
-      await new Promise(r => setTimeout(r, 500));
-      await axios.post(`${API}/api/browser-agent/key`, { key: 'Tab' }, { headers });
-      await new Promise(r => setTimeout(r, 300));
-      await axios.post(`${API}/api/browser-agent/type`, { text: passwordInput }, { headers });
-      await new Promise(r => setTimeout(r, 500));
-      await axios.post(`${API}/api/browser-agent/key`, { key: 'Enter' }, { headers });
-      
-      toast.success('Login submitted! Please wait...');
+      await axios.post(`${API}/api/browser-agent/auto-login`, {
+        firm_id: activeFirmId,
+        email: emailInput || undefined,
+        password: passwordInput || undefined,
+      }, { headers });
+      toast.success('Login submitted — enter OTP if prompted');
       await new Promise(r => setTimeout(r, 3000));
       await fetchStatus();
     } catch (err) {
@@ -739,7 +781,11 @@ I'll handle the rest! What would you like to do?`,
             </div>
           </div>
 
-          {/* AI Command Interface */}
+          {/* AI Assistant + chat panel intentionally removed.
+              Use the firm tab + Login Helper + per-order endpoints directly.
+              Old chat panel block follows as dead JSX inside a hidden guard
+              so the file diff stays localized; React tree-shakes it away. */}
+          {false && (
           <div className="bg-gray-800 rounded-xl overflow-hidden">
             <div className="p-3 bg-gray-900 border-b border-gray-700 flex items-center gap-2">
               <Bot className="w-5 h-5 text-blue-400" />
@@ -747,7 +793,7 @@ I'll handle the rest! What would you like to do?`,
               <span className="text-xs bg-green-600/20 text-green-400 px-2 py-0.5 rounded-full ml-2">GPT Powered</span>
               <span className="text-xs text-gray-500 ml-auto">Talk naturally - "process one order", "how many orders?"</span>
             </div>
-            
+
             {/* Chat Messages */}
             <div className="h-72 overflow-y-auto p-4 space-y-3" data-testid="chat-messages">
               {chatMessages.map((msg, idx) => (
@@ -839,11 +885,15 @@ I'll handle the rest! What would you like to do?`,
               </button>
             </div>
           </div>
+          )}
         </div>
 
         {/* Control Panel */}
         <div className="space-y-4">
-          {/* Quick Actions */}
+          {/* Quick Actions card intentionally removed. Wrapped as
+              {false && (...)} so the legacy JSX block compiles unchanged
+              but is never mounted. */}
+          {false && (
           <div className="bg-gray-800 rounded-xl p-4">
             <h3 className="font-semibold mb-3">Quick Actions</h3>
             <div className="space-y-2">
@@ -881,15 +931,27 @@ I'll handle the rest! What would you like to do?`,
               </button>
             </div>
           </div>
+          )}
 
-          {/* Login Helper */}
+          {/* Login Helper — per-firm saved credentials.
+              Email + password are stored per firm in marketplace_credentials.
+              On firm switch we pre-fill the email and indicate whether the
+              password is on file ("Saved"). Quick Login uses the stored
+              creds; the user only types the OTP. */}
           {browserRunning && !isLoggedIn && (
             <div className="bg-gray-800 rounded-xl p-4">
-              <h3 className="font-semibold mb-3 text-orange-400">Amazon Login Helper</h3>
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="font-semibold text-orange-400">Amazon Login Helper</h3>
+                {hasPassword && (
+                  <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-900/50 text-emerald-300 border border-emerald-700">
+                    Saved
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-gray-500 mb-3">
-                <strong>Step 1:</strong> Click "Log in" button in browser<br/>
-                <strong>Step 2:</strong> Click on email field, then "Auto Login"<br/>
-                <strong>Step 3:</strong> Enter OTP if prompted
+                <strong>Step 1:</strong> Click "Log in" in the browser & focus the email field<br/>
+                <strong>Step 2:</strong> Click "Quick Login" — fills your saved creds<br/>
+                <strong>Step 3:</strong> Enter the OTP below
               </p>
               <div className="space-y-2">
                 <input
@@ -905,24 +967,37 @@ I'll handle the rest! What would you like to do?`,
                   type="password"
                   value={passwordInput}
                   onChange={(e) => setPasswordInput(e.target.value)}
-                  placeholder="Amazon Password"
+                  placeholder={hasPassword ? "Password (saved — leave blank to keep)" : "Amazon Password"}
                   className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm"
                   disabled={loading}
                   data-testid="login-password-input"
                 />
-                <button
-                  onClick={performLogin}
-                  disabled={loading || !emailInput || !passwordInput}
-                  className="w-full px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 rounded flex items-center justify-center gap-2"
-                  data-testid="auto-login-btn"
-                >
-                  {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                  Auto Login (Email + Password)
-                </button>
-                
+                <div className="flex gap-2">
+                  <button
+                    onClick={saveCredentials}
+                    disabled={credsSaving || !emailInput || (!passwordInput && hasPassword === false)}
+                    className="flex-1 px-3 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-700/50 disabled:text-gray-500 rounded text-sm flex items-center justify-center gap-2"
+                    title={hasPassword ? 'Update saved credentials' : 'Save email + password for this firm'}
+                    data-testid="save-creds-btn"
+                  >
+                    {credsSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                    {hasPassword ? 'Update Saved' : 'Save Credentials'}
+                  </button>
+                  <button
+                    onClick={performLogin}
+                    disabled={loading || (!hasPassword && (!emailInput || !passwordInput))}
+                    className="flex-1 px-3 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 rounded text-sm flex items-center justify-center gap-2"
+                    title="Type email + password into the focused Amazon field"
+                    data-testid="auto-login-btn"
+                  >
+                    {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                    Quick Login
+                  </button>
+                </div>
+
                 {/* OTP Section */}
                 <div className="border-t border-gray-600 pt-2 mt-2">
-                  <p className="text-xs text-yellow-400 mb-2">If OTP is required:</p>
+                  <p className="text-xs text-yellow-400 mb-2">When OTP is shown on Amazon:</p>
                   <div className="flex gap-2">
                     <input
                       type="text"
@@ -970,13 +1045,22 @@ I'll handle the rest! What would you like to do?`,
             <h3 className="font-semibold mb-3">Orders Queue ({orders.length})</h3>
             <div className="max-h-48 overflow-y-auto space-y-2">
               {orders.length === 0 ? (
-                <p className="text-gray-500 text-sm">Use AI Assistant to fetch orders</p>
+                <p className="text-gray-500 text-sm">No orders loaded yet. Once logged in, the agent's processing flow populates this.</p>
               ) : (
                 orders.map((order, idx) => (
                   <div key={idx} className="flex items-center justify-between p-2 bg-gray-700 rounded text-sm">
                     <span className="font-mono text-xs">{order.order_id}</span>
                     <button
-                      onClick={() => sendAICommand(`process order ${order.order_id}`)}
+                      onClick={async () => {
+                        setLoading(true);
+                        try {
+                          const res = await axios.post(`${API}/api/browser-agent/process-order`, { order_id: order.order_id }, { headers });
+                          if (res.data.success) toast.success(`Processed ${order.order_id} → AWB ${res.data.tracking_id}`);
+                          else toast.error(`Failed: ${res.data.error || 'unknown'}`);
+                        } catch (err) {
+                          toast.error(err.response?.data?.detail || 'Process failed');
+                        } finally { setLoading(false); }
+                      }}
                       disabled={loading}
                       className="px-2 py-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded text-xs"
                     >
@@ -1033,8 +1117,9 @@ I'll handle the rest! What would you like to do?`,
             </div>
           )}
 
-          {/* AI Thinking Log Panel */}
-          {aiThinkingLog.length > 0 && (
+          {/* AI Thinking Log Panel — intentionally hidden alongside the
+              AI Assistant removal. Block kept inline-gated to minimize diff. */}
+          {false && aiThinkingLog.length > 0 && (
             <div className="bg-gradient-to-br from-purple-900/40 to-indigo-900/40 rounded-xl p-4 border border-purple-500/30">
               <div className="flex items-center gap-2 mb-3">
                 <div className="w-2 h-2 rounded-full bg-purple-500 animate-pulse"></div>

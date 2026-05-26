@@ -44,12 +44,17 @@ LOCAL_UPLOAD_DIR.mkdir(exist_ok=True)
 # Base folders (root level)
 BASE_FOLDERS = [
     "tickets",
-    "invoices", 
+    "invoices",
     "payments",
     "certificates",
     "Returns",
     "Dispatches",
-    "incoming"
+    "incoming",
+    # Browser-agent generated Amazon/Bigship artifacts. Nested under year/
+    # month/date/order_id by the agent. Without this entry,
+    # normalize_folder_path defaulted everything to "tickets" and silently
+    # mis-archived shipping labels.
+    "amazon_orders",
 ]
 
 # Folder mapping for backwards compatibility with existing code

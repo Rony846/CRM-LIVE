@@ -1348,6 +1348,56 @@ class AmazonBrowserAgent:
                 }
               }
 
+              // ===== Product extraction =====
+              // The order page renders product details inside a table cell
+              // that holds the title + ASIN + SKU lines. Other meta fields
+              // (Condition, Order Item ID) live in the adjacent
+              // "More Information" cell. We:
+              //   1. iterate only <td> (not <div>) to avoid matching outer
+              //      wrappers that include column-header text;
+              //   2. for the title, search the SAME td as the ASIN, skip
+              //      header strings ("Product name", "More Information",
+              //      etc.) and short noise lines;
+              //   3. for ASIN/SKU/Condition/Order Item ID, regex the entire
+              //      page text — those labels are unique.
+              result.product_title = '';
+              result.product_sku = '';
+              result.asin = '';
+              result.order_item_id = '';
+              result.condition = '';
+
+              const HEADER_WORDS = new Set([
+                'product name','product details','more information','image',
+                'status','unit price','order totals','proceeds','quantity',
+                'order details','condition','sku','asin','order item id',
+              ]);
+
+              for (const td of document.querySelectorAll('td')) {
+                const t = td.innerText || '';
+                if (!/ASIN[:\\s]*[A-Z0-9]{10}/.test(t)) continue;
+                if (t.length > 600) continue;  // skip the entire-row wrappers
+                const tLines = t.split('\\n').map(s => s.trim()).filter(Boolean);
+                const title = tLines.find(l =>
+                  l.length > 8 &&
+                  !HEADER_WORDS.has(l.toLowerCase()) &&
+                  !/^(ASIN|SKU|Condition|Order Item ID|Quantity|Item subtotal|Tax|Item total|Unit price)[:\\s]/i.test(l) &&
+                  // Real product titles tend to have spaces; reject single-word noise
+                  /\\s/.test(l)
+                );
+                if (title) { result.product_title = title; break; }
+              }
+
+              // ASIN / SKU / Order Item ID / Condition: regex the full text.
+              const fullText = text;
+              const asinM = fullText.match(/ASIN[:\\s]*([A-Z0-9]{10})/i);
+              const skuM = fullText.match(/SKU[:\\s]*([^\\n\\r]+)/i);
+              const itemM = fullText.match(/Order Item ID[:\\s]*([0-9]+)/i);
+              const condM = fullText.match(/Condition[:\\s]*([^\\n\\r]+)/i);
+              if (asinM) result.asin = asinM[1].trim();
+              if (skuM) result.product_sku = skuM[1].trim().replace(/[.\\s]+$/, '');
+              if (itemM) result.order_item_id = itemM[1].trim();
+              if (condM) result.condition = condM[1].trim();
+
               return result;
             }
             """
@@ -1433,6 +1483,12 @@ class AmazonBrowserAgent:
             "carrier": (scraped.get("carrier") or "").strip(),
             "shipped_on_amazon": bool(scraped.get("shipped_on_amazon")),
             "shipped_at": (scraped.get("shipped_at") or "").strip(),
+            # Product fields — used to render Amazon-format packing slips.
+            "product_title": (scraped.get("product_title") or "").strip(),
+            "product_sku": (scraped.get("product_sku") or "").strip(),
+            "asin": (scraped.get("asin") or "").strip(),
+            "order_item_id": (scraped.get("order_item_id") or "").strip(),
+            "condition": (scraped.get("condition") or "").strip(),
         }
 
         if result["cancelled_on_amazon"]:
@@ -2382,6 +2438,30 @@ class AmazonBrowserAgent:
         return ShippingType.B2C
 
     @staticmethod
+    def _format_seller_notes_block(order: "OrderInfo") -> str:
+        """Render an order's buyer info into the canonical Seller Notes
+        format that set_amazon_tracking_and_notes writes to the right-column
+        textarea on Amazon. Matches the layout the team has been using on
+        their manual entries."""
+        lines: List[str] = []
+        if order.buyer_name:
+            lines.append(order.buyer_name)
+        addr = (order.address or "").strip()
+        if addr:
+            # Split on commas (the new-style scrape) AND on newlines (older
+            # raw-block scrapes that still leak through), dedupe whitespace.
+            for chunk in re.split(r"[\n,]", addr):
+                chunk = re.sub(r"\s+", " ", chunk).strip()
+                if chunk and chunk.lower() != (order.buyer_name or "").lower():
+                    lines.append(chunk)
+        loc = f"{order.city}, {order.state} {order.pincode}".strip(", ")
+        if loc.strip() and not any(loc.lower() in l.lower() for l in lines):
+            lines.append(loc)
+        if order.phone:
+            lines.append(f"Phone: {order.phone}")
+        return "\n".join(lines)
+
+    @staticmethod
     def format_product_description(title: str, sku: str = "") -> str:
         """Turn a long Amazon product title into a short Bigship-friendly
         description. Examples:
@@ -2410,29 +2490,105 @@ class AmazonBrowserAgent:
         return t or (f"Amazon Order ({sku})" if sku else "Amazon Order Product")
     
     async def lookup_sku_dimensions(self, sku: str) -> Optional[SKUDimensions]:
-        """Look up SKU dimensions from database"""
-        product = await self.db.products.find_one(
-            {"sku": {"$regex": f"^{sku}$", "$options": "i"}},
-            {"_id": 0, "sku": 1, "weight_kg": 1, "length_cm": 1, "width_cm": 1, "height_cm": 1}
-        )
-        
-        if not product:
+        """Look up SKU shipping dimensions.
+
+        Resolution order (first hit wins):
+          1. `sku_dimensions` (override layer; lets ops fix wrong catalog
+             data without editing master_skus)
+          2. `master_skus.sku_code` (exact, case-insensitive)
+          3. `master_skus.aliases.alias_code` (Amazon/marketplace SKUs map
+             here — e.g. Amazon's MG10KVA90COML aliases to MG10KVA90VAML)
+          4. `amazon_sku_mappings.amazon_sku` → master_skus.sku_code
+             (an older mapping table; fallback for Amazon SKUs without an
+             alias entry on master_skus directly)
+
+        master_skus uses `breadth_cm` (not `width_cm`); we read it and feed
+        it into our `width_cm` field. Weight field on master_skus is
+        `weight_kg`. 71/96 master_skus docs have these populated; the
+        remaining 25 will return None here and fall back to the agent's
+        default (2kg) — those SKUs need weight entries on the master_skus
+        record.
+        """
+        if not sku:
             return None
-        
-        return SKUDimensions(
-            sku=product.get('sku', sku),
-            weight_kg=product.get('weight_kg', 0.5),
-            length_cm=product.get('length_cm', 20),
-            width_cm=product.get('width_cm', 15),
-            height_cm=product.get('height_cm', 10)
+        clean = sku.strip()
+        proj_ms = {"_id": 0, "sku_code": 1, "weight_kg": 1, "length_cm": 1, "breadth_cm": 1, "height_cm": 1}
+
+        def _from_ms(doc):
+            if not doc or doc.get("weight_kg") in (None, 0):
+                return None
+            return SKUDimensions(
+                sku=doc.get("sku_code") or clean,
+                weight_kg=float(doc.get("weight_kg")),
+                length_cm=int(doc.get("length_cm") or 20),
+                width_cm=int(doc.get("breadth_cm") or 15),
+                height_cm=int(doc.get("height_cm") or 10),
+            )
+
+        # 1. sku_dimensions override
+        override = await self.db.sku_dimensions.find_one(
+            {"sku": {"$regex": f"^{re.escape(clean)}$", "$options": "i"}},
+            {"_id": 0, "sku": 1, "weight_kg": 1, "length_cm": 1, "width_cm": 1, "height_cm": 1},
         )
+        if override and override.get("weight_kg"):
+            return SKUDimensions(
+                sku=override.get("sku", clean),
+                weight_kg=float(override.get("weight_kg")),
+                length_cm=int(override.get("length_cm") or 20),
+                width_cm=int(override.get("width_cm") or 15),
+                height_cm=int(override.get("height_cm") or 10),
+            )
+
+        # 2. master_skus by sku_code
+        d = await self.db.master_skus.find_one(
+            {"sku_code": {"$regex": f"^{re.escape(clean)}$", "$options": "i"}},
+            proj_ms,
+        )
+        res = _from_ms(d)
+        if res:
+            return res
+
+        # 3. master_skus by aliases.alias_code (Amazon SKUs)
+        d = await self.db.master_skus.find_one(
+            {"aliases.alias_code": {"$regex": f"^{re.escape(clean)}$", "$options": "i"}},
+            proj_ms,
+        )
+        res = _from_ms(d)
+        if res:
+            return res
+
+        # 4. amazon_sku_mappings → master_skus.sku_code
+        m = await self.db.amazon_sku_mappings.find_one(
+            {"amazon_sku": {"$regex": f"^{re.escape(clean)}$", "$options": "i"}},
+            {"_id": 0, "sku_code": 1, "master_sku_id": 1},
+        )
+        if m:
+            target = m.get("sku_code")
+            if target:
+                d = await self.db.master_skus.find_one(
+                    {"sku_code": {"$regex": f"^{re.escape(target)}$", "$options": "i"}}, proj_ms
+                )
+                res = _from_ms(d)
+                if res:
+                    return res
+            if m.get("master_sku_id"):
+                d = await self.db.master_skus.find_one({"id": m["master_sku_id"]}, proj_ms)
+                res = _from_ms(d)
+                if res:
+                    return res
+
+        return None
     
-    async def process_order(self, order_id: str) -> ProcessingResult:
+    async def process_order(self, order_id: str, force_shipping_type: Optional[str] = None) -> ProcessingResult:
         """
         Process a single order - HYBRID APPROACH:
         - Browser for Amazon (get details, update tracking)
         - API for Bigship (create shipment, get AWB, download label)
         - Returns thinking_log for real-time AI transparency
+
+        force_shipping_type: optional "b2b" / "b2c" override that bypasses
+        the auto-router. Use when a SKU isn't in the weight DB and the
+        default 2kg would mis-route a heavy item.
         """
         self.state = AgentState.PROCESSING
         self.current_order = order_id
@@ -2474,37 +2630,106 @@ class AmazonBrowserAgent:
             await self._notify_status(f"📍 Location: {order.city}, {order.state} - {order.pincode}")
             await self._notify_status(f"💰 Amount: ₹{order.total_amount}")
             
-            # Step 2: Calculate weight from SKU database
+            # Step 2: Calculate weight + dimensions from SKU database
             await self.ai_processor.think("Looking up product weight from SKU database...")
             total_weight = 2.0  # Default weight
+            sku_dims = None
             for item in order.items:
                 dims = await self.lookup_sku_dimensions(item.get('sku', ''))
                 if dims:
+                    sku_dims = dims  # remember for passing into the Bigship payload
                     total_weight = dims.weight_kg * item.get('quantity', 1)
-                    await self.ai_processor.think(f"📦 Found SKU {item.get('sku')}: {dims.weight_kg}kg")
+                    await self.ai_processor.think(
+                        f"📦 Found SKU {item.get('sku')}: {dims.weight_kg}kg, "
+                        f"{dims.length_cm}x{dims.width_cm}x{dims.height_cm} cm"
+                    )
                     await self._notify_status(f"📦 SKU {item.get('sku')}: {dims.weight_kg}kg")
                 else:
                     await self.ai_processor.think(f"⚠️ SKU {item.get('sku')} not in database. Using default weight: 2kg")
-            
-            total_weight = max(0.5, total_weight)
-            # Self-ship orders are always shipped as B2C via Delhivery per
-            # the standing operations policy — don't let weight/value flip
-            # them to B2B (e.g. heavy stabilizers or higher-value batteries
-            # otherwise tripped the >20kg / >₹30K B2B rule).
-            shipping_type = ShippingType.B2C
 
-            await self.ai_processor.think(f"🚛 Shipping type: B2C (forced) via Delhivery — Weight {total_weight}kg, Value ₹{order.total_amount}")
-            await self._notify_status(f"🚛 Shipping: B2C via Delhivery (Weight: {total_weight}kg)")
-            
+            total_weight = max(0.5, total_weight)
+
+            # ----- Tiered routing rules (Delhivery only) -----
+            # >₹50,000 → refuse (needs e-way bill, we can't auto-generate).
+            # >20kg OR >₹30,000 → B2B (Delhivery Surface).
+            #   For LIGHT-and-expensive (≤20kg, ₹30K-₹50K) we still try B2B
+            #   first; if Bigship reports that the destination isn't B2B-
+            #   serviceable / is ODA, we silently retry as B2C. Heavy items
+            #   (>20kg) can't fall back — B2C has a 20kg cap.
+            # Otherwise → B2C.
+            if order.total_amount > 50000:
+                msg = (
+                    f"Order value ₹{order.total_amount} exceeds the ₹50,000 e-way bill "
+                    f"threshold. The agent does not auto-generate e-way bills, so this "
+                    f"order must be shipped manually with an e-way bill from the firm."
+                )
+                await self.ai_processor.think(f"⛔ {msg}")
+                await self._notify_status(f"⛔ Skipping {order_id}: needs e-way bill")
+                return ProcessingResult(
+                    order_id=order_id, success=False, error=msg,
+                    thinking_log=self.ai_processor.get_thinking_log(),
+                )
+
+            override = (force_shipping_type or "").strip().lower()
+            if override == "b2b":
+                shipping_type = ShippingType.B2B
+                await self.ai_processor.think("🛠️ Routing override: B2B (manual)")
+            elif override == "b2c":
+                shipping_type = ShippingType.B2C
+                await self.ai_processor.think("🛠️ Routing override: B2C (manual)")
+            elif total_weight > 20 or order.total_amount > 30000:
+                shipping_type = ShippingType.B2B
+            else:
+                shipping_type = ShippingType.B2C
+
+            await self.ai_processor.think(
+                f"🚛 Routing: {shipping_type.value.upper()} via Delhivery — "
+                f"Weight {total_weight}kg, Value ₹{order.total_amount}"
+            )
+            await self._notify_status(f"🚛 Shipping: {shipping_type.value.upper()} via Delhivery (Weight: {total_weight}kg)")
+
             # Step 3: Create shipment via Bigship API (NOT browser)
             await self._notify_status("📡 Creating shipment via Bigship API...")
-            
             bigship_result = await self._create_bigship_shipment_via_api(
-                order=order,
-                total_weight=total_weight,
-                shipping_type=shipping_type
+                order=order, total_weight=total_weight, shipping_type=shipping_type, dims=sku_dims,
             )
-            
+
+            # ----- B2B → B2C fallback -----
+            # Two distinct triggers, both end in "retry as Delhivery B2C":
+            #   (a) ODA destination + light item — proactive fallback (B2B
+            #       skips ODA pincodes; B2C covers them).
+            #   (b) B2B carrier-side AWB refusal ("Not Successfully Waybill
+            #       Generated") — reactive fallback regardless of weight.
+            #       Bigship's rates table marks the lane serviceable but
+            #       Delhivery declines at AWB-allocation time. Per Ramesh
+            #       (2026-05-25): override to Delhivery B2C in this case.
+            if (
+                not bigship_result.get("success")
+                and shipping_type == ShippingType.B2B
+            ):
+                err = (bigship_result.get("error") or "").lower()
+                is_oda_light = (
+                    total_weight <= 20
+                    and any(k in err for k in ("not serviceable", "oda", "out of delivery", "out-of-delivery"))
+                )
+                is_carrier_refused = any(
+                    k in err for k in (
+                        "not successfully waybill generated",
+                        "not successfully waybill",
+                        "carrier did not generate a waybill",
+                    )
+                )
+                if is_oda_light or is_carrier_refused:
+                    reason = "ODA destination" if is_oda_light else "Delhivery B2B refused the AWB"
+                    await self.ai_processor.think(
+                        f"⚠️ {reason}. Falling back to Delhivery B2C."
+                    )
+                    await self._notify_status(f"⚠️ {reason}; retrying as B2C")
+                    shipping_type = ShippingType.B2C
+                    bigship_result = await self._create_bigship_shipment_via_api(
+                        order=order, total_weight=total_weight, shipping_type=shipping_type, dims=sku_dims,
+                    )
+
             if not bigship_result.get("success"):
                 await self.ai_processor.think("❌ Bigship shipment creation failed after all retries")
                 return ProcessingResult(
@@ -2534,11 +2759,39 @@ class AmazonBrowserAgent:
                 else:
                     await self.ai_processor.think("⚠️ Could not download label PDF. Continuing anyway.")
             
-            # Step 5: Update tracking on Amazon (Browser)
-            await self._notify_status("🔄 Updating tracking on Amazon...")
-            await self.ai_processor.think("Updating tracking information on Amazon...")
-            await self._update_amazon_tracking(order_id, tracking_id, "Delhivery")
-            await self.ai_processor.think("✅ Tracking updated on Amazon")
+            # Step 5: Update tracking on Amazon + write Seller Notes (Browser).
+            # Use set_amazon_tracking_and_notes which:
+            #   - handles both Confirm-shipment (unshipped) and Edit-shipment
+            #     (already-confirmed) flows
+            #   - uses the right selectors for Amazon's <span class="a-button">
+            #   - writes the buyer name / address / phone into the Seller
+            #     Notes textarea in the same call
+            #   - VERIFIES the writes actually persisted (not just clicked)
+            # The legacy _update_amazon_tracking silently swallowed errors
+            # — orders looked "shipped" in the agent log but were still
+            # Unshipped on Amazon.
+            await self._notify_status("🔄 Updating tracking on Amazon + writing Seller Notes...")
+            await self.ai_processor.think("Updating tracking + Seller Notes on Amazon...")
+            seller_notes = self._format_seller_notes_block(order)
+            tn_result = await self.set_amazon_tracking_and_notes(
+                order_id=order_id,
+                tracking_id=tracking_id,
+                courier="Delhivery",
+                seller_notes=seller_notes,
+            )
+            if tn_result.get("success"):
+                action = tn_result.get("action", "?")
+                notes_ok = tn_result.get("seller_notes_written")
+                await self.ai_processor.think(
+                    f"✅ Amazon updated — tracking action={action}, "
+                    f"seller_notes_written={notes_ok}"
+                )
+            else:
+                # Don't fail the whole order; log loudly so operator sees it.
+                await self.ai_processor.think(
+                    f"⚠️ Amazon tracking/notes update failed: {tn_result.get('error')}. "
+                    "Bigship side is fine — operator should set tracking on Amazon manually."
+                )
             
             # Step 6: Download Amazon invoice (Browser)
             invoice_path = None
@@ -2561,6 +2814,8 @@ class AmazonBrowserAgent:
             await self.db.amazon_order_processing.insert_one({
                 "order_id": order_id,
                 "amazon_order_id": order_id,
+                "firm_id": self.firm_id,
+                "firm_name": self.firm_name,
                 "processed_at": datetime.now(timezone.utc).isoformat(),
                 "shipping_type": shipping_type.value,
                 "tracking_id": tracking_id,
@@ -2575,7 +2830,10 @@ class AmazonBrowserAgent:
                 "customer_phone": order.phone,
                 "customer_address": order.address,
                 "customer_city": order.city,
+                "customer_state": order.state,
                 "customer_pincode": order.pincode,
+                "product_title": (order.items[0].get("title") if order.items else None),
+                "product_sku": (order.items[0].get("sku") if order.items else None),
                 "status": "completed"
             })
             
@@ -2608,7 +2866,7 @@ class AmazonBrowserAgent:
         finally:
             self.current_order = None
     
-    async def _create_bigship_shipment_via_api(self, order: OrderInfo, total_weight: float, shipping_type: ShippingType) -> dict:
+    async def _create_bigship_shipment_via_api(self, order: OrderInfo, total_weight: float, shipping_type: ShippingType, dims: Optional["SKUDimensions"] = None) -> dict:
         """
         Create shipment via Bigship API with intelligent error recovery.
         - Uses AI processor to validate and fix data before submission
@@ -2722,9 +2980,14 @@ class AmazonBrowserAgent:
                     "shipment_invoice_amount": int(fixed_data['total_amount']),
                     "box_details": [{
                         "each_box_dead_weight": max(0.5, total_weight),
-                        "each_box_length": 20,
-                        "each_box_width": 15,
-                        "each_box_height": 10,
+                        # Use real dimensions when SKU is registered; fall
+                        # back to the small-parcel default that the historic
+                        # B2C orders used. Delhivery B2B (especially MPS)
+                        # rejects waybill generation when box dimensions
+                        # disagree with declared weight class.
+                        "each_box_length": (dims.length_cm if dims else 20),
+                        "each_box_width": (dims.width_cm if dims else 15),
+                        "each_box_height": (dims.height_cm if dims else 10),
                         # B2C: use actual invoice amount, B2B: must be 0
                         "each_box_invoice_amount": 0 if shipment_category == "b2b" else int(fixed_data['total_amount']),
                         "each_box_collectable_amount": 0,
@@ -2834,16 +3097,90 @@ class AmazonBrowserAgent:
                         return {"success": False, "error": "No system_order_id returned from API"}
                 
                 await self.ai_processor.think(f"📋 System Order ID: {system_order_id}")
-                
-                # Step 6: Manifest with Delhivery
-                await self.ai_processor.think("🚚 Manifesting shipment with Delhivery courier...")
-                
+
+                # ----- Pick the Delhivery courier for THIS shipment via the
+                # Shipping Rates API. Bigship exposes multiple Delhivery
+                # variants (Delhivery / LTL Delhivery / Delhivery MPS / …)
+                # and which ones are serviceable depends on the lane and
+                # weight tier. The rates response also tells us the ODA
+                # surcharge per courier (`other_additional_charges.oda`)
+                # which drives the user's "if light item gets ODA on B2B,
+                # ship it B2C instead" rule.
+                rates_resp = await client.get(
+                    f"{BIGSHIP_API_URL}/order/shipping/rates",
+                    params={
+                        "shipment_category": shipment_category.upper(),
+                        "system_order_id": int(system_order_id),
+                        "risk_type": "OwnerRisk",
+                    },
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                rates_data = rates_resp.json() if rates_resp.status_code == 200 else {}
+                serviceable = (rates_data.get("data") or [])
+                delhivery_options = [
+                    o for o in serviceable
+                    if "delhivery" in (o.get("courier_name") or "").lower()
+                ]
+                if not delhivery_options:
+                    available = ", ".join(o.get("courier_name") or "?" for o in serviceable) or "none"
+                    await self.ai_processor.think(
+                        f"❌ Delhivery not serviceable for this lane (available: {available})."
+                    )
+                    return {
+                        "success": False,
+                        "error": f"Delhivery not serviceable. Bigship returned: {available}",
+                        "system_order_id": int(system_order_id),
+                    }
+                # Pick the cheapest Delhivery option; capture ODA charge for
+                # the routing decision.
+                delhivery = min(
+                    delhivery_options,
+                    key=lambda o: float(o.get("total_shipping_charges") or 0),
+                )
+                delhivery_courier_id = delhivery["courier_id"]
+                delhivery_name = delhivery.get("courier_name") or "Delhivery"
+                oda_charge = float(((delhivery.get("other_additional_charges") or {}).get("oda")) or 0)
+                await self.ai_processor.think(
+                    f"📦 Selected {delhivery_name} (courier_id={delhivery_courier_id}, "
+                    f"₹{delhivery.get('total_shipping_charges')}, ODA charge ₹{oda_charge})"
+                )
+
+                # ODA fallback: light item (≤20kg) routed B2B but destination
+                # is ODA → re-create as B2C per ops policy. Heavy items can't
+                # use this fallback (B2C tops out at 20kg).
+                if (
+                    shipment_category == "b2b"
+                    and oda_charge > 0
+                    and total_weight <= 20
+                ):
+                    await self.ai_processor.think(
+                        f"⚠️ Destination is ODA (₹{oda_charge} surcharge). "
+                        "Light item — caller should retry as B2C."
+                    )
+                    # Cancel the B2B shipment we just created so we don't
+                    # leave an orphan in Bigship.
+                    try:
+                        await client.post(
+                            f"{BIGSHIP_API_URL}/order/cancel",
+                            json={"system_order_id": int(system_order_id)},
+                            headers={"Authorization": f"Bearer {token}"},
+                        )
+                    except Exception:
+                        pass
+                    return {
+                        "success": False,
+                        "error": "ODA destination — light item should be shipped as B2C",
+                        "oda_fallback": True,
+                        "system_order_id": int(system_order_id),
+                    }
+
+                # Step 6: Manifest
+                await self.ai_processor.think(f"🚚 Manifesting via {delhivery_name}...")
                 manifest_endpoint = "/order/manifest/heavy" if shipment_category == "b2b" else "/order/manifest/single"
                 manifest_payload = {
                     "system_order_id": int(system_order_id),
-                    "courier_id": 1  # Delhivery
+                    "courier_id": delhivery_courier_id,
                 }
-                
                 if shipment_category == "b2b":
                     manifest_payload["risk_type"] = "OwnerRisk"
                 
@@ -2860,10 +3197,34 @@ class AmazonBrowserAgent:
                     
                     manifest_data = manifest_response.json()
                     logger.info(f"Bigship manifest response: {manifest_data}")
-                    
-                    if manifest_data.get("success"):
-                        await self.ai_processor.think("✅ Shipment manifested with Delhivery!")
+
+                    # Bigship's manifest API returns:
+                    #   success: success=True, data: null,
+                    #            message="Successfully Waybill Generated"
+                    #   failure: success=True, data: null,
+                    #            message="Not Successfully Waybill Generated"
+                    # The `data` field is null in BOTH cases — don't gate on
+                    # it. Discriminate purely on the message: anything that
+                    # starts with "not " is a failure, otherwise it's a win.
+                    msg = (manifest_data.get("message") or "").strip()
+                    msg_low = msg.lower()
+                    is_failure_msg = (
+                        msg_low.startswith("not ")
+                        or "not successfully" in msg_low
+                        or "failed" in msg_low
+                        or "error" in msg_low
+                    )
+                    waybill_ok = manifest_data.get("success") and not is_failure_msg
+                    if waybill_ok:
+                        await self.ai_processor.think(f"✅ Shipment manifested via {delhivery_name}! ({msg})")
                         break
+                    if manifest_data.get("success") and is_failure_msg:
+                        # success:true but message indicates carrier refused.
+                        await self.ai_processor.think(
+                            f"⚠️ Manifest accepted but no AWB issued: {msg or 'carrier refused waybill generation'}"
+                        )
+                        manifest_data["success"] = False
+                        manifest_data.setdefault("message", "Carrier did not generate a waybill — check weight/dimensions")
                     
                     if manifest_attempt == 0:
                         await self.ai_processor.think(f"⚠️ Manifest failed: {manifest_data.get('message', 'Unknown')}. Retrying...")
@@ -3491,6 +3852,17 @@ class AmazonBrowserAgent:
             )
             await asyncio.sleep(6)  # SPA needs time
 
+            # ----- Step A: Write Seller Notes FIRST (textarea is visible on
+            # the order detail page right now). Doing this before opening
+            # the Confirm shipment form has two upsides:
+            #   1. We don't have to re-navigate after tracking is submitted
+            #      (Amazon redirects to the order list on confirm).
+            #   2. If tracking submission later fails for any reason, the
+            #      notes are still saved — so the buyer info is captured.
+            if seller_notes is not None:
+                notes_written = await self._write_seller_notes(seller_notes)
+                result["seller_notes_written"] = notes_written
+
             # Inspect current state: read tracking row + presence of confirm/edit buttons.
             # Use plain text regex everywhere — Playwright pseudo-selectors
             # like `button:has-text` are NOT valid in browser querySelector.
@@ -3514,66 +3886,114 @@ class AmazonBrowserAgent:
             need_tracking_update = current != target
 
             if need_tracking_update:
-                # Decide which button to click: Edit (already confirmed) takes
-                # priority over Confirm (unshipped). Both lead to the same
+                # Decide which pill to open: Edit (already confirmed) takes
+                # priority over Confirm (unshipped). Both open the same
                 # carrier+tracking form; Edit pre-fills.
-                if state.get("has_edit_btn"):
-                    clicked = await self._click_text_button(["Edit shipment"])
-                    action_hint = "edited"
-                elif state.get("has_confirm_btn"):
-                    clicked = await self._click_text_button(["Confirm shipment"])
-                    action_hint = "confirmed_new"
-                else:
+                pill_text = (
+                    "Edit shipment" if state.get("has_edit_btn") else
+                    "Confirm shipment" if state.get("has_confirm_btn") else
+                    None
+                )
+                if not pill_text:
                     result["error"] = "Neither Edit shipment nor Confirm shipment button found"
                     return result
+                action_hint = "edited" if pill_text == "Edit shipment" else "confirmed_new"
 
-                if not clicked:
-                    result["error"] = f"{action_hint}: button click failed"
+                # ===== Step 1: open the form by clicking the narrow pill =====
+                # The pill is an <a> with that exact text in the order-actions
+                # row, width ≤ ~200px (anything wider is a section header /
+                # form title that has the same text but isn't clickable as
+                # the pill). Use a probe + mouse.click rather than a generic
+                # text locator — those matched multiple elements and often
+                # hit the wrong one on EBAY UP's slow-rendering form.
+                pill = await self.page.evaluate(
+                    """(text) => {
+                        for (const el of document.querySelectorAll('a')) {
+                            const t = (el.innerText || '').trim();
+                            if (t !== text) continue;
+                            const r = el.getBoundingClientRect();
+                            if (r.width > 200) continue;       // narrow pill only
+                            if (r.y < 0 || r.y > 760) continue; // visible
+                            return {x: r.x + r.width/2, y: r.y + r.height/2};
+                        }
+                        return null;
+                    }""",
+                    pill_text,
+                )
+                if not pill:
+                    result["error"] = f"{action_hint}: pill button not found in viewport"
                     return result
+                await self.page.mouse.click(pill["x"], pill["y"])
+                # Form takes 6-10s to render on EBAY UP for fresh confirms.
+                await asyncio.sleep(9)
 
-                await asyncio.sleep(4)  # form load
+                # ===== Step 2: scroll the form into the visible viewport =====
+                # The Confirm/Edit shipment form expands BELOW the existing
+                # content. Two PageDowns put the Tracking ID label + input +
+                # yellow Submit all within the 768px viewport (a single
+                # End-scroll over-shoots past the Submit).
+                await self.page.keyboard.press("PageDown")
+                await asyncio.sleep(0.5)
+                await self.page.keyboard.press("PageDown")
+                await asyncio.sleep(2)
 
-                # On the Edit shipment form Amazon pre-fills Carrier =
-                # Delhivery; we only need to overwrite the Tracking ID input.
-                # Use Playwright's native fill (real keyboard events) so the
-                # React controlled input actually picks up the new value —
-                # the JS value setter path is unreliable with React.
-                tracking_filled = await self._fill_tracking_input(target)
-                if not tracking_filled:
-                    result["error"] = f"{action_hint}: could not fill tracking input"
+                # ===== Step 3: click the Tracking ID input + type the AWB =====
+                # The input has no name/id/placeholder/aria — only a visible
+                # "Tracking ID:" label nearby. Locate the label by text and
+                # click ~30px below + 120px right (the form's column layout
+                # places the input directly under the label, offset by ~120px
+                # into the input cell).
+                label = await self.page.evaluate(
+                    """() => {
+                        for (const el of document.querySelectorAll('div, span')) {
+                            const t = (el.innerText || '').trim();
+                            if (t !== 'Tracking ID:') continue;
+                            const r = el.getBoundingClientRect();
+                            if (r.height > 30) continue;          // label, not container
+                            if (r.y < 50 || r.y > 700) continue;  // visible after scroll
+                            return {x: r.x, y: r.y};
+                        }
+                        return null;
+                    }"""
+                )
+                if not label:
+                    result["error"] = f"{action_hint}: could not find Tracking ID label after scroll"
                     return result
+                await self.page.mouse.click(label["x"] + 120, label["y"] + 30)
+                await asyncio.sleep(1)
+                await self.page.keyboard.type(target, delay=20)
+                await asyncio.sleep(1)
 
-                # Submit. "Re-confirm Shipment" is the edit-form button;
-                # "Confirm shipment" appears on the fresh-confirm form.
-                submitted = await self._click_text_button([
-                    "Re-confirm Shipment", "Re-confirm shipment",
-                    "Confirm shipment", "Save", "Submit", "Update",
-                ])
-                if not submitted:
-                    result["error"] = "Could not click submit button on tracking form"
+                # ===== Step 4: click the yellow Submit button =====
+                # Amazon's primary-action button uses .a-button-primary.
+                # That class is unique to the actual submit on this page —
+                # text-based selectors hit duplicate "Confirm shipment"
+                # strings (section header, original pill, etc.) ahead of
+                # the real submit. There may be many a-button-primary on
+                # the page; pick the first one in the visible viewport.
+                submit = await self.page.evaluate(
+                    """() => {
+                        for (const el of document.querySelectorAll('span.a-button-primary, .a-button-primary')) {
+                            const r = el.getBoundingClientRect();
+                            if (r.y < 0 || r.y > 760) continue;
+                            if (r.width < 80) continue;
+                            return {x: r.x + r.width/2, y: r.y + r.height/2};
+                        }
+                        return null;
+                    }"""
+                )
+                if not submit:
+                    result["error"] = "Could not find Submit button on tracking form"
                     return result
-
-                await asyncio.sleep(5)
+                await self.page.mouse.click(submit["x"], submit["y"])
+                # Form submit takes ~5-7s; wait for Amazon to redirect.
+                await asyncio.sleep(7)
                 result["action"] = action_hint
             else:
                 result["action"] = "already_correct"
 
-            # Now write Seller Notes (if provided). The textarea is in the
-            # right-column "Seller notes" card. We re-navigate to the order
-            # page to ensure we're back on it after the tracking submit
-            # redirect, then focus + clear + type.
-            if seller_notes is not None:
-                if order_id not in self.page.url:
-                    await self.page.goto(
-                        f"https://sellercentral.amazon.in/orders-v3/order/{order_id}",
-                        wait_until="domcontentloaded",
-                        timeout=30000,
-                    )
-                    await asyncio.sleep(5)
-
-                notes_written = await self._write_seller_notes(seller_notes)
-                result["seller_notes_written"] = notes_written
-
+            # Seller notes were written at Step A above, before opening the
+            # Confirm form — no need to re-navigate.
             result["success"] = True
             return result
 
@@ -3590,15 +4010,34 @@ class AmazonBrowserAgent:
         falls back to a JS click for buttons that fail the visibility check.
         """
         # Native Playwright locator path. Amazon Seller Central renders its
-        # buttons as <span class="a-button"> (not real <button>), so include
-        # that variant alongside the standard ones.
+        # buttons as <a> (links) wrapped in <span class="a-button"> — NOT
+        # real <button>s. The `:has-text` selector matches every ancestor
+        # containing the text (the wrapping <div>, <span>, etc.), so
+        # `.first` was often grabbing a non-clickable container. Use the
+        # accessibility role/name locator instead — it pinpoints the
+        # actual clickable element.
         for txt in candidate_texts:
+            # 1. Accessibility role-based selectors (most reliable).
+            for role in ("link", "button"):
+                try:
+                    loc = self.page.get_by_role(role, name=txt, exact=False).first
+                    if await loc.count() > 0:
+                        try:
+                            await loc.scroll_into_view_if_needed(timeout=3000)
+                        except Exception:
+                            pass
+                        await loc.click(timeout=8000)
+                        return True
+                except Exception as e:
+                    logger.debug(f"get_by_role({role!r}, {txt!r}) failed: {e}")
+            # 2. CSS selectors — try the most specific (the real interactive
+            # elements) before the generic `:has-text` containers.
             for selector in (
-                f'button:has-text("{txt}")',
                 f'a:has-text("{txt}")',
+                f'button:has-text("{txt}")',
                 f'[role="button"]:has-text("{txt}")',
-                f'.a-button:has-text("{txt}")',
                 f'span.a-button-text:has-text("{txt}")',
+                f'.a-button:has-text("{txt}")',
             ):
                 try:
                     loc = self.page.locator(selector).first
@@ -3710,6 +4149,66 @@ class AmazonBrowserAgent:
                     return True
             except Exception:
                 continue
+
+        # Strategy 4: label-proximity. Walk from the visible "Tracking ID:"
+        # label to the nearest empty text input — Amazon's Confirm Shipment
+        # form doesn't wire `<label for=>` or aria, so accessibility-based
+        # finders miss it. This is the actual mechanism the form uses.
+        try:
+            marker = await self.page.evaluate(
+                """
+                () => {
+                  // Find every element whose visible text starts with
+                  // exactly "Tracking ID" (label, not the column header).
+                  const labels = [];
+                  const walker = document.createTreeWalker(
+                    document.body, NodeFilter.SHOW_ELEMENT, null
+                  );
+                  let node;
+                  while ((node = walker.nextNode())) {
+                    const t = (node.innerText || '').trim();
+                    if (t === 'Tracking ID:' || t === 'Tracking ID') {
+                      labels.push(node);
+                    }
+                  }
+                  // For each candidate label, find the nearest input by
+                  // walking up the DOM and searching siblings/descendants.
+                  for (const label of labels) {
+                    let p = label.parentElement;
+                    for (let depth = 0; depth < 8 && p; depth++) {
+                      const inputs = p.querySelectorAll('input[type="text"], input:not([type])');
+                      for (const inp of inputs) {
+                        if (inp.disabled || inp.readOnly) continue;
+                        const r = inp.getBoundingClientRect();
+                        if (r.width < 80) continue;
+                        // Reject the search-bar input by checking it's not
+                        // labelled "Search" via placeholder.
+                        if (/search/i.test(inp.placeholder || '')) continue;
+                        const m = 'mg-track-' + Math.random().toString(36).slice(2,8);
+                        inp.setAttribute('data-mg-track', m);
+                        return m;
+                      }
+                      p = p.parentElement;
+                    }
+                  }
+                  return null;
+                }
+                """
+            )
+            if marker:
+                loc = self.page.locator(f'input[data-mg-track="{marker}"]').first
+                try:
+                    await loc.scroll_into_view_if_needed(timeout=2000)
+                except Exception:
+                    pass
+                await loc.click(timeout=4000)
+                await loc.fill(tracking_id, timeout=4000)
+                actual = await loc.input_value(timeout=2000)
+                if actual.strip() == tracking_id.strip():
+                    return True
+        except Exception as e:
+            logger.debug(f"label-proximity tracking fill failed: {e}")
+
         return False
 
     async def _fill_carrier_and_tracking(self, courier: str, tracking_id: str):
@@ -3788,42 +4287,97 @@ class AmazonBrowserAgent:
             return False
 
     async def _write_seller_notes(self, notes: str) -> bool:
-        """Find the Seller Notes textarea (right-column card titled
-        'Seller notes'), clear it, write `notes`. Amazon auto-saves on blur,
-        so we trigger blur after typing."""
+        """Write `notes` to the Seller Notes textarea on the current order
+        page and confirm the value persisted across a re-read.
+
+        Uses Playwright's native locator.fill() (real keyboard events) so
+        Amazon's React-controlled textarea picks up the change reliably —
+        the previous JS-setter + blur approach worked for most orders but
+        silently no-op'd on some (observed on 0720). After writing, we
+        re-query the value to confirm the write took. If it didn't, we fall
+        back to the JS-setter path so we still get a best-effort write.
+        """
         try:
-            return await self.page.evaluate(
+            # Locate the textarea by tagging it via a data attribute first,
+            # which Playwright can then target reliably.
+            marker = await self.page.evaluate(
                 """
-                (notes) => {
-                  // Find <textarea> whose surrounding card / label says "Seller notes".
+                () => {
+                  // Find <textarea> whose surrounding card / label says "Seller notes",
+                  // or fall back to one with the canonical placeholder.
                   const tas = Array.from(document.querySelectorAll('textarea'));
                   let target = null;
                   for (const ta of tas) {
                     let p = ta.parentElement;
-                    let found = false;
                     for (let i=0; i<8 && p; i++) {
                       const t = (p.innerText || '').toLowerCase();
-                      if (t.includes('seller notes') || t.includes('seller note')) { found = true; break; }
+                      if (t.includes('seller note')) { target = ta; break; }
                       p = p.parentElement;
                     }
-                    if (found) { target = ta; break; }
+                    if (target) break;
                   }
                   if (!target) {
-                    // Fallback: any textarea with placeholder mentioning "records only"
                     target = tas.find(ta => /records only/i.test(ta.placeholder || ''));
                   }
-                  if (!target) return false;
-                  target.focus();
+                  if (!target) return null;
+                  const m = 'mg-seller-notes-' + Math.random().toString(36).slice(2,8);
+                  target.setAttribute('data-mg-marker', m);
+                  return m;
+                }
+                """
+            )
+            if not marker:
+                logger.warning("_write_seller_notes: no Seller Notes textarea found")
+                return False
+
+            loc = self.page.locator(f'textarea[data-mg-marker="{marker}"]').first
+            # Native fill simulates real focus + keystrokes which React picks up.
+            try:
+                await loc.scroll_into_view_if_needed(timeout=2000)
+            except Exception:
+                pass
+            await loc.click(timeout=4000)
+            await loc.fill("", timeout=4000)
+            await loc.fill(notes, timeout=4000)
+            # Blur so Amazon's debounced auto-save fires.
+            await self.page.evaluate(
+                """(m) => {
+                    const el = document.querySelector('textarea[data-mg-marker="' + m + '"]');
+                    if (el) el.blur();
+                }""",
+                marker,
+            )
+            # Give the autosave a beat to flush before we verify.
+            await asyncio.sleep(1.2)
+            actual = await loc.input_value(timeout=2000)
+            if actual.strip() == notes.strip():
+                return True
+
+            # Fallback: React state didn't pick up the fill. Try the older
+            # JS-setter + dispatched-events path.
+            logger.warning("Seller Notes fill didn't persist via locator.fill; retrying via JS setter")
+            ok = await self.page.evaluate(
+                """
+                ({marker, notes}) => {
+                  const el = document.querySelector('textarea[data-mg-marker="' + marker + '"]');
+                  if (!el) return false;
+                  el.focus();
                   const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
-                  setter && setter.set.call(target, notes);
-                  target.dispatchEvent(new Event('input', {bubbles: true}));
-                  target.dispatchEvent(new Event('change', {bubbles: true}));
-                  target.blur();
+                  setter && setter.set.call(el, notes);
+                  el.dispatchEvent(new Event('input', {bubbles: true}));
+                  el.dispatchEvent(new Event('change', {bubbles: true}));
+                  el.blur();
                   return true;
                 }
                 """,
-                notes,
+                {"marker": marker, "notes": notes},
             )
+            await asyncio.sleep(1.2)
+            try:
+                actual2 = await loc.input_value(timeout=2000)
+                return actual2.strip() == notes.strip()
+            except Exception:
+                return bool(ok)
         except Exception as e:
             logger.warning(f"_write_seller_notes error: {e}")
             return False
@@ -4033,22 +4587,39 @@ class AmazonBrowserAgent:
         return False
     
     async def _save_to_storage(self, data: bytes, path: str) -> Optional[str]:
-        """Save file to storage"""
+        """Upload `data` (raw bytes) to remote storage and return a public
+        `/api/files/...` URL pointing at the ACTUAL stored path.
+
+        `path` is the *desired* logical path (e.g.
+        "amazon_orders/2026/05-May/25/{order_id}/label_{awb}.pdf"). The
+        storage layer (`utils.storage.upload_file`) auto-generates a unique
+        filename `{prefix}_{timestamp}_{uuid}.ext` inside the folder, so the
+        returned URL won't be the input path verbatim — we use the prefix to
+        keep the meaningful part (e.g. "label_17079315446733") in the name.
+
+        Earlier this method wrapped the async `upload_file` in
+        `asyncio.to_thread(...)`, which constructs the coroutine in a worker
+        thread but never awaits it — the upload silently no-op'd and we
+        returned a fictional URL anyway. Now we just `await` directly.
+        """
         try:
             from utils.storage import upload_file as storage_upload
-            from io import BytesIO
-            
-            file_obj = BytesIO(data)
-            file_obj.name = path.split('/')[-1]
-            
-            await asyncio.to_thread(
-                storage_upload,
-                file_obj,
-                path.rsplit('/', 1)[0],
-                path.rsplit('/', 1)[1]
+
+            folder = path.rsplit("/", 1)[0]
+            basename = path.rsplit("/", 1)[1]
+            stem, ext = (basename.rsplit(".", 1) + [""])[:2]
+            # upload_file uses original_filename only for the extension; the
+            # body of the filename comes from `filename_prefix` + timestamp.
+            relative_path, _src = await storage_upload(
+                data,
+                folder,
+                original_filename=basename,
+                filename_prefix=stem,
             )
-            
-            return f"/api/files/{path}"
+            if not relative_path:
+                logger.error(f"Storage upload returned empty path for {path}")
+                return None
+            return f"/api/files/{relative_path}"
         except Exception as e:
-            logger.error(f"Storage save error: {e}")
+            logger.error(f"Storage save error for {path}: {e}")
             return None
