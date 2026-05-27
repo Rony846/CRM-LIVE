@@ -33543,6 +33543,180 @@ async def record_amazon_refund(refund_doc: dict, user: dict, auto_credit_note: b
     return {"already_existed": False, "id": refund_id, "record": record}
 
 
+async def book_existing_refund(refund_id: str, user: Optional[dict] = None) -> dict:
+    """Book a credit note + party-ledger entry for an `amazon_refunds` row
+    that was ingested but never got `linked_credit_note_id` set.
+
+    Idempotent: skips if `linked_credit_note_id` already exists. Returns a
+    structured outcome so a backfill loop can summarize.
+
+    Skip reasons (returned with `skipped=True`):
+      - already_booked: the row already has a credit_note linked
+      - no_dispatch:    the original Amazon order has no dispatch_id, so we
+                        can't find the original invoice → can't post a
+                        proper credit note. Operator needs to ship the
+                        order first (or link the dispatch manually).
+      - no_invoice:     dispatch found but no sales_invoice exists for it.
+                        Means the order was shipped but its invoice was
+                        never generated — book those orders first.
+      - zero_amount:    refund_amount is 0 (nothing to credit).
+
+    On success: returns `{success: True, credit_note_id, credit_note_number}`.
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
+    r = await db.amazon_refunds.find_one({"id": refund_id}, {"_id": 0})
+    if not r:
+        return {"success": False, "skipped": True, "reason": "not_found"}
+    if r.get("linked_credit_note_id"):
+        return {"success": True, "skipped": True, "reason": "already_booked",
+                "credit_note_id": r["linked_credit_note_id"]}
+    refund_amount = float(r.get("refund_amount") or 0)
+    if refund_amount <= 0:
+        return {"success": False, "skipped": True, "reason": "zero_amount"}
+
+    aid = r.get("amazon_order_id")
+    fid = r.get("firm_id")
+    if not (aid and fid):
+        return {"success": False, "skipped": True, "reason": "missing_keys"}
+
+    az_order = await db.amazon_orders.find_one({"amazon_order_id": aid}, {"_id": 0})
+    dispatch_id = (az_order or {}).get("dispatch_id")
+    if not dispatch_id:
+        return {"success": False, "skipped": True, "reason": "no_dispatch"}
+    inv = await db.sales_invoices.find_one({"dispatch_id": dispatch_id}, {"_id": 0})
+    if not inv:
+        return {"success": False, "skipped": True, "reason": "no_invoice"}
+
+    try:
+        cn_number = await get_next_credit_note_number(fid)
+    except Exception as e:
+        return {"success": False, "skipped": False, "reason": f"cn_number_error: {e}"}
+
+    cn_id = str(uuid.uuid4())
+    items = inv.get("items") or [{}]
+    gst_rate = float(items[0].get("gst_rate", 18) or 18) if items else 18
+    taxable_part = round(refund_amount / (1 + gst_rate / 100), 2)
+    gst_part = round(refund_amount - taxable_part, 2)
+    is_igst = float(inv.get("igst", 0) or 0) > 0
+    refund_type = r.get("refund_type") or "partial_refund"
+
+    cn = {
+        "id": cn_id,
+        "credit_note_number": cn_number,
+        "firm_id": fid,
+        "firm_name": inv.get("firm_name"),
+        "party_id": inv.get("party_id"),
+        "party_name": inv.get("party_name"),
+        "party_gstin": inv.get("party_gstin"),
+        "original_invoice_id": inv.get("id"),
+        "original_invoice_number": inv.get("invoice_number"),
+        "credit_note_date": r.get("refund_date") or now_iso[:10],
+        "reason": f"Amazon refund ({refund_type}) — {r.get('refund_reason') or ''}".strip(" —"),
+        "items": [{
+            "name": items[0].get("name", ""),
+            "sku_code": items[0].get("sku_code", ""),
+            "quantity": 1,
+            "rate": refund_amount,
+            "gst_rate": gst_rate,
+            "taxable_value": taxable_part,
+            "gst_amount": gst_part,
+        }],
+        "subtotal": taxable_part,
+        "taxable_value": taxable_part,
+        "igst": gst_part if is_igst else 0,
+        "cgst": round(gst_part / 2, 2) if not is_igst else 0,
+        "sgst": round(gst_part / 2, 2) if not is_igst else 0,
+        "total_gst": gst_part,
+        "grand_total": round(refund_amount, 2),
+        "status": "issued",
+        "linked_refund_id": refund_id,
+        "created_by": (user or {}).get("id", "system"),
+        "created_by_name": (
+            f"{(user or {}).get('first_name','')} {(user or {}).get('last_name','')}".strip()
+            or "System (backfill)"
+        ),
+        "created_at": now_iso,
+        "source": "amazon_refund_backfill",
+    }
+    await db.credit_notes.insert_one(cn)
+    await db.amazon_refunds.update_one(
+        {"id": refund_id},
+        {"$set": {"linked_credit_note_id": cn_id, "updated_at": now_iso}},
+    )
+    # Party-ledger entry — credit reduces receivable
+    if inv.get("party_id"):
+        try:
+            await create_party_ledger_entry_atomic(
+                party_id=inv["party_id"],
+                party_name=inv.get("party_name", ""),
+                entry_type="credit_note",
+                debit=0, credit=refund_amount,
+                narration=f"Amazon refund {refund_type} — CN {cn_number}",
+                reference_type="credit_note",
+                reference_id=cn_id,
+                firm_id=fid,
+                user_id=cn["created_by"],
+                user_name=cn["created_by_name"],
+                entry_number=f"CN-{cn_number}",
+                opening_balance=0,
+            )
+        except Exception as e:
+            logger.warning(f"backfill refund {refund_id}: ledger entry failed: {e}")
+    # Stamp amazon_orders.refund_status (if not already)
+    await db.amazon_orders.update_one(
+        {"amazon_order_id": aid},
+        {"$set": {
+            "refund_status": refund_type,
+            "refund_amount": refund_amount,
+            "refund_id": refund_id,
+            "updated_at": now_iso,
+        }},
+    )
+    return {"success": True, "skipped": False,
+            "credit_note_id": cn_id, "credit_note_number": cn_number}
+
+
+class BookRefundsRequest(BaseModel):
+    firm_id: Optional[str] = None
+    limit: Optional[int] = None  # None = all
+    dry_run: bool = False
+
+
+@api_router.post("/amazon/refunds/book-unbooked")
+async def book_unbooked_refunds(
+    data: BookRefundsRequest,
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Backfill credit notes + party-ledger entries for all amazon_refunds
+    rows that were ingested but never linked to a credit note. Accountants
+    are firm-scoped; admin can target any firm or all.
+    """
+    query: Dict[str, Any] = {"linked_credit_note_id": None}
+    scope = firm_scope_filter(user, data.firm_id)
+    query.update(scope)
+    cursor = db.amazon_refunds.find(query, {"_id": 0, "id": 1}).sort("refund_date", 1)
+    if data.limit:
+        cursor = cursor.limit(data.limit)
+    summary = {"total": 0, "booked": 0, "skipped": {}, "errors": []}
+    async for r in cursor:
+        summary["total"] += 1
+        if data.dry_run:
+            continue
+        try:
+            res = await book_existing_refund(r["id"], user=user)
+        except Exception as e:
+            summary["errors"].append(f"{r['id']}: {str(e)[:120]}")
+            continue
+        if res.get("skipped"):
+            reason = res.get("reason", "unknown")
+            summary["skipped"][reason] = summary["skipped"].get(reason, 0) + 1
+        elif res.get("success"):
+            summary["booked"] += 1
+        else:
+            summary["errors"].append(f"{r['id']}: {res.get('reason', 'unknown')}")
+    return summary
+
+
 @api_router.get("/amazon/refunds")
 async def list_amazon_refunds(
     firm_id: Optional[str] = None,

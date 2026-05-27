@@ -332,6 +332,15 @@ const accountantNavGroups = [
       { label: 'Gate Control', icon: Scan, path: '/gate' },
     ]
   },
+  {
+    label: 'Folders',
+    icon: FolderOpen,
+    items: [
+      // Year → Firm → Month → Date → Order. Accountants see only their
+      // firm-scoped subset (server-side filter in /api/order-folders/*).
+      { label: 'Order Folders', icon: FolderOpen, path: '/admin/orders-folders' },
+    ]
+  },
 ];
 
 // Flat navigation for other roles

@@ -1013,27 +1013,49 @@ class AmazonBrowserAgent:
                 const addrSection = pageText.match(/Ship\\s*to[\\s\\S]*?(?=Order\\s*contents|Seller\\s*notes|$)/i);
                 if (addrSection) result.address = addrSection[0];
                 
-                // Extract SKU + product title. On the order detail page the
-                // product row has a cell containing the title followed by
-                // ASIN/SKU lines. Find the cell that holds an ASIN match,
-                // then take the first non-meta line as the title.
-                const skuMatch = pageText.match(/SKU[:\\s]*([A-Z0-9]+)/i);
+                // ===== SKU + product title + ASIN =====
+                // Same approach as scrape_order_pii: iterate only <td>
+                // (not <div> — div ancestors include the column-header text
+                // "Product name" which would otherwise become the title).
+                // Reject elements whose first non-meta line is a column
+                // header. Require the title to contain a space (rules out
+                // single-word noise like "Product").
                 let productTitle = '';
-                for (const td of document.querySelectorAll('td, div')) {
-                  const text = td.innerText || '';
-                  if (!/ASIN[:\\s]*[A-Z0-9]{10}/.test(text)) continue;
-                  if (text.length > 600) continue;
-                  const lines = text.split('\\n').map(s => s.trim()).filter(Boolean);
-                  const name = lines.find(l =>
-                    l.length > 6 &&
-                    !/^(ASIN|SKU|Condition|Order Item ID|Quantity|Item subtotal|Tax|Item total)[:\\s]/i.test(l)
+                let productSku = '';
+                let asin = '';
+                let orderItemId = '';
+                const HEADER_WORDS = new Set([
+                  'product name','product details','more information','image',
+                  'status','unit price','order totals','proceeds','quantity',
+                  'order details','condition','sku','asin','order item id',
+                ]);
+                for (const td of document.querySelectorAll('td')) {
+                  const t = td.innerText || '';
+                  if (!/ASIN[:\\s]*[A-Z0-9]{10}/.test(t)) continue;
+                  if (t.length > 600) continue;
+                  const tLines = t.split('\\n').map(s => s.trim()).filter(Boolean);
+                  const title = tLines.find(l =>
+                    l.length > 8 &&
+                    !HEADER_WORDS.has(l.toLowerCase()) &&
+                    !/^(ASIN|SKU|Condition|Order Item ID|Quantity|Item subtotal|Tax|Item total|Unit price)[:\\s]/i.test(l) &&
+                    /\\s/.test(l)
                   );
-                  if (name) { productTitle = name; break; }
+                  if (title) { productTitle = title; break; }
                 }
-                if (skuMatch || productTitle) {
+                // SKU codes can include dashes (e.g. 1CIK-IUZC-ESX5) and
+                // dots — the old [A-Z0-9]+ regex truncated them.
+                const skuM = pageText.match(/SKU[:\\s]*([A-Z0-9][A-Z0-9.\\-]*)/i);
+                const asinM = pageText.match(/ASIN[:\\s]*([A-Z0-9]{10})/i);
+                const oidM = pageText.match(/Order Item ID[:\\s]*([0-9]+)/i);
+                if (skuM) productSku = skuM[1].replace(/[.\\s]+$/, '').trim();
+                if (asinM) asin = asinM[1].trim();
+                if (oidM) orderItemId = oidM[1].trim();
+                if (productSku || productTitle || asin) {
                     result.items.push({
-                        sku: skuMatch ? skuMatch[1] : 'UNKNOWN',
+                        sku: productSku || 'UNKNOWN',
                         title: productTitle || 'Product',
+                        asin: asin,
+                        order_item_id: orderItemId,
                         quantity: 1
                     });
                 }
@@ -2834,6 +2856,8 @@ class AmazonBrowserAgent:
                 "customer_pincode": order.pincode,
                 "product_title": (order.items[0].get("title") if order.items else None),
                 "product_sku": (order.items[0].get("sku") if order.items else None),
+                "asin": (order.items[0].get("asin") if order.items else None),
+                "order_item_id": (order.items[0].get("order_item_id") if order.items else None),
                 "status": "completed"
             })
             
