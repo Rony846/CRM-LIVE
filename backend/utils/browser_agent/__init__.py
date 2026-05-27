@@ -2488,15 +2488,21 @@ class AmazonBrowserAgent:
         """Turn a long Amazon product title into a short Bigship-friendly
         description. Examples:
           "MuscleGrid 5kVA Voltage Stabilizer (70V-300V), Heavy Duty Stabilizer for 2 Ton AC, Refrigerator & Home Appliances, Output 230V"
-            → "MG 5kVA Voltage Stabilizer (70V-300V)"
+            → "MG 5kVA Voltage Stabilizer 70V-300V"
           "MuscleGrid 4kVA Voltage Stabilizer for 1.5 Ton AC | Wide Working Range 130V-280V | Heavy Duty..."
             → "MG 4kVA Voltage Stabilizer for 1.5 Ton AC"
 
+        Bigship's validator only accepts `[A-Za-z0-9 \\-,/]` in product_name
+        — parentheses, pipes, ampersands, dots, etc. all get rejected with
+        "Only Alphabets, numbers, spaces and some special characters(-,/) are
+        allowed". We strip everything outside the allowed set as the final
+        step so the real Amazon title still gets through but cleanly.
+
         Falls back to "Amazon Order Product" only if nothing useful was scraped.
         """
-        if not title or title.strip().lower() in ("product", "amazon order product", ""):
+        if not title or title.strip().lower() in ("product", "amazon order product", "product name", ""):
             # Try one last fallback using SKU if available
-            return f"Amazon Order ({sku})" if sku else "Amazon Order Product"
+            return f"Amazon Order {sku}".strip() if sku else "Amazon Order Product"
         t = title.strip()
         # Brand shorthand
         t = re.sub(r"\bMusc[l]eGrid\b", "MG", t, flags=re.IGNORECASE)
@@ -2507,8 +2513,13 @@ class AmazonBrowserAgent:
             if sep in t:
                 t = t.split(sep)[0].strip()
                 break
-        # Collapse whitespace and clip to a sane length for Bigship's input.
-        t = re.sub(r"\s+", " ", t)[:60].strip()
+        # Sanitize to Bigship's allowed character set. Anything else becomes
+        # a space (so "4.2KW" → "4 2KW", "(70V-300V)" → " 70V-300V "). Then
+        # collapse runs of whitespace.
+        t = re.sub(r"[^A-Za-z0-9 \-,/]", " ", t)
+        t = re.sub(r"\s+", " ", t).strip()
+        # Clip to a sane length for Bigship's input.
+        t = t[:60].strip()
         return t or (f"Amazon Order ({sku})" if sku else "Amazon Order Product")
     
     async def lookup_sku_dimensions(self, sku: str) -> Optional[SKUDimensions]:
