@@ -6818,7 +6818,7 @@ export default function OrderBotWidget() {
       {(!isOpen || isMinimized) && (
         <button
           onClick={handleOpen}
-          className="fixed bottom-20 right-2 sm:right-6 z-50 w-14 h-14 bg-gradient-to-br from-cyan-500 to-blue-600 rounded-full shadow-lg hover:shadow-xl transition-all flex items-center justify-center group hover:scale-105"
+          className="fixed bottom-24 right-2 sm:right-5 z-50 w-14 h-14 bg-gradient-to-br from-cyan-500 to-blue-600 rounded-full shadow-lg hover:shadow-xl transition-all flex items-center justify-center group hover:scale-105"
           data-testid="orderbot-toggle"
         >
           <MessageSquare className="w-6 h-6 text-white" />
@@ -6830,7 +6830,7 @@ export default function OrderBotWidget() {
       
       {isOpen && !isMinimized && (
         <div 
-          className="fixed bottom-20 right-2 sm:right-6 z-50 w-[calc(100vw-16px)] sm:w-[520px] max-w-[520px] h-[70vh] sm:h-[600px] rounded-2xl shadow-2xl flex flex-col overflow-hidden" 
+          className="fixed bottom-24 right-2 sm:right-5 z-50 w-[calc(100vw-16px)] sm:w-[520px] max-w-[520px] h-[70vh] sm:h-[600px] rounded-2xl shadow-2xl flex flex-col overflow-hidden"
           data-testid="orderbot-window"
           style={{ backgroundColor: '#ffffff', border: '1px solid #e2e8f0' }}
         >
