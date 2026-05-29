@@ -14,3 +14,10 @@ createRoot(document.getElementById('root')).render(
     </BrowserRouter>
   </React.StrictMode>
 );
+
+// Register the PWA service worker (installable + offline shell).
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/staff/sw.js', { scope: '/staff/' }).catch(() => {});
+  });
+}
