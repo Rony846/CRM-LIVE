@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import {
   Send, Paperclip, Smile, X, Pencil, Trash2, SmilePlus, Hash, Lock, FileText, Loader2,
-  Pin, Bookmark, BellOff, Bell, Settings2, BellRing, Check, Search, Ticket as TicketIcon, CheckCheck,
+  Pin, Bookmark, BellOff, Bell, Settings2, BellRing, Check, Search, Ticket as TicketIcon, CheckCheck, Clock,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -223,6 +223,9 @@ export default function ChatConversation({ compact = false }) {
   const [ticketMsg, setTicketMsg] = useState(null);
   const [ticketForm, setTicketForm] = useState({ device_type: 'Inverter', issue_description: '', customer_name: '', customer_phone: '' });
   const [ticketBusy, setTicketBusy] = useState(false);
+  const [schedAt, setSchedAt] = useState('');
+  const [schedOpen, setSchedOpen] = useState(false);
+  const [schedList, setSchedList] = useState([]);
   const scrollRef = useRef(null);
   const fileRef = useRef(null);
   const typingThrottle = useRef(0);
@@ -320,6 +323,17 @@ export default function ChatConversation({ compact = false }) {
     try { await chat.acknowledge(messageId); toast.success('Acknowledged'); }
     catch (e) { toast.error(e.response?.data?.detail || 'Could not acknowledge'); }
   };
+  const handleSchedule = async () => {
+    if (!text.trim()) { toast.error('Type a message first'); return; }
+    if (!schedAt) { toast.error('Pick a date & time'); return; }
+    const iso = new Date(schedAt).toISOString();
+    if (new Date(iso) <= new Date()) { toast.error('Pick a future time'); return; }
+    try {
+      await chat.scheduleMessage(activeId, { body: text, deliver_at: iso });
+      setText(''); setSchedAt(''); setSchedOpen(false);
+      toast.success(`Scheduled for ${new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}`);
+    } catch (e) { toast.error(e.response?.data?.detail || 'Could not schedule'); }
+  };
   const submitToTicket = async () => {
     if (ticketBusy || !ticketMsg) return;
     if (!ticketForm.issue_description.trim()) { toast.error('Issue description required'); return; }
@@ -376,6 +390,24 @@ export default function ChatConversation({ compact = false }) {
                     <div key={p.id} className="rounded border border-border/60 p-2 text-[12px]">
                       <div className="text-[10px] text-muted-foreground">{p.sender_name} · #{p.channel_name}</div>
                       <span>{(p.body || '(attachment)').slice(0, 140)}</span>
+                    </div>))}</div>}
+            </PopoverContent>
+          </Popover>
+          <Popover onOpenChange={(o) => o && chat.fetchScheduled(activeId).then(setSchedList)}>
+            <PopoverTrigger asChild>
+              <button className="rounded p-1.5 text-muted-foreground hover:text-foreground" title="Scheduled messages"><Clock className="h-4 w-4" /></button>
+            </PopoverTrigger>
+            <PopoverContent className="w-80 p-2">
+              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Scheduled</p>
+              {schedList.length === 0 ? <p className="py-3 text-center text-[12px] text-muted-foreground">Nothing scheduled here.</p>
+                : <div className="max-h-72 space-y-1 overflow-y-auto">{schedList.map((s) => (
+                    <div key={s.id} className="flex items-start gap-2 rounded border border-border/60 p-2 text-[12px]">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[10px] text-primary">{new Date(s.deliver_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</div>
+                        <div className="truncate text-muted-foreground">{s.body || '(attachment)'}</div>
+                      </div>
+                      <button onClick={async () => { try { await chat.cancelScheduled(s.id); setSchedList((l) => l.filter((x) => x.id !== s.id)); toast.success('Cancelled'); } catch { toast.error('Could not cancel'); } }}
+                        className="rounded p-1 text-muted-foreground hover:text-rose-400" title="Cancel"><X className="h-3.5 w-3.5" /></button>
                     </div>))}</div>}
             </PopoverContent>
           </Popover>
@@ -463,6 +495,19 @@ export default function ChatConversation({ compact = false }) {
             placeholder={`Message ${channel.type === 'dm' ? channel.name : '#' + (channel.slug || channel.name)}…`}
             className="max-h-28 min-h-[38px] flex-1 resize-none rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
           />
+          <Popover open={schedOpen} onOpenChange={setSchedOpen}>
+            <PopoverTrigger asChild>
+              <button className="rounded p-2 text-muted-foreground hover:text-foreground" title="Schedule send"><Clock className="h-4 w-4" /></button>
+            </PopoverTrigger>
+            <PopoverContent className="w-64 p-2">
+              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Schedule send</p>
+              <input type="datetime-local" value={schedAt} onChange={(e) => setSchedAt(e.target.value)}
+                className="mb-2 w-full rounded border border-border bg-background px-2 py-1 text-[12px] outline-none" />
+              <button onClick={handleSchedule} disabled={!text.trim() || !schedAt}
+                className="w-full rounded bg-primary px-2 py-1 text-[12px] font-medium text-primary-foreground disabled:opacity-40">Schedule</button>
+              <p className="mt-1 text-[10px] text-muted-foreground/70">Sends your current message at the chosen time.</p>
+            </PopoverContent>
+          </Popover>
           <button onClick={send} disabled={!text.trim() && !pending.length}
             className="rounded-md bg-primary px-3 py-2 text-primary-foreground disabled:opacity-40"><Send className="h-4 w-4" /></button>
         </div>

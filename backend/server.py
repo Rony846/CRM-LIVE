@@ -610,6 +610,17 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Scheduled (send-later) chat messages — deliver due ones every minute.
+        scheduler.add_job(
+            scheduled_chat_send_due,
+            IntervalTrigger(minutes=1),
+            id="chat_scheduled_send",
+            name="Chat Scheduled Messages (deliver due)",
+            replace_existing=True,
+            misfire_grace_time=300,
+            max_instances=1,
+        )
+
         scheduler.start()
         logger.info(
             f"Scheduled jobs started: SLA breach (30min), Payment verification (1hr), "
@@ -50003,6 +50014,101 @@ async def chat_ack(message_id: str, user: dict = Depends(require_internal_chat))
             await broadcast_chat(await _chat_recipients(ch),
                                  {"type": "message_update", "channel_id": ch["id"], "message_id": message_id, "ack": ack})
     return {"ack": ack}
+
+
+# ---- Scheduled (send-later) messages ---------------------------------------
+class ChatScheduleCreate(BaseModel):
+    body: str = ""
+    deliver_at: str  # ISO 8601 UTC
+    attachments: Optional[List[dict]] = None
+    mentions: Optional[List[str]] = None
+
+
+@api_router.post("/chat/channels/{channel_id}/schedule")
+async def chat_schedule_message(channel_id: str, body: ChatScheduleCreate, user: dict = Depends(require_internal_chat)):
+    """Queue a message for future delivery to a channel."""
+    ch = await db.chat_channels.find_one({"id": channel_id}, {"_id": 0})
+    if not await _chat_can_access(ch, user):
+        raise HTTPException(status_code=403, detail="No access to this channel")
+    text = (body.body or "").strip()
+    atts = body.attachments or []
+    if not text and not atts:
+        raise HTTPException(status_code=400, detail="Empty message")
+    try:
+        when = datetime.fromisoformat(body.deliver_at.replace("Z", "+00:00"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid deliver_at (expected ISO 8601)")
+    now = datetime.now(timezone.utc)
+    if when <= now:
+        raise HTTPException(status_code=400, detail="Pick a time in the future")
+    doc = {
+        "id": str(uuid.uuid4()), "channel_id": channel_id, "channel_slug": ch.get("slug"),
+        "sender_id": user["id"], "sender_name": _chat_user_brief(user)["name"], "sender_role": user.get("role"),
+        "body": text[:8000], "attachments": atts, "mentions": body.mentions or [],
+        "deliver_at": when.astimezone(timezone.utc).isoformat(), "status": "pending", "created_at": now.isoformat(),
+    }
+    await db.chat_scheduled.insert_one(doc)
+    doc.pop("_id", None)
+    return {"scheduled": doc}
+
+
+@api_router.get("/chat/scheduled")
+async def chat_list_scheduled(channel_id: Optional[str] = None, user: dict = Depends(require_internal_chat)):
+    """My pending scheduled messages (optionally for one channel)."""
+    q = {"sender_id": user["id"], "status": "pending"}
+    if channel_id:
+        q["channel_id"] = channel_id
+    rows = await db.chat_scheduled.find(q, {"_id": 0}).sort("deliver_at", 1).to_list(200)
+    return {"scheduled": rows}
+
+
+@api_router.delete("/chat/scheduled/{sched_id}")
+async def chat_cancel_scheduled(sched_id: str, user: dict = Depends(require_internal_chat)):
+    s = await db.chat_scheduled.find_one({"id": sched_id}, {"_id": 0})
+    if not s:
+        raise HTTPException(status_code=404, detail="Not found")
+    if s["sender_id"] != user["id"] and user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Only the author or an admin can cancel")
+    await db.chat_scheduled.update_one({"id": sched_id}, {"$set": {"status": "cancelled"}})
+    return {"ok": True}
+
+
+async def scheduled_chat_send_due():
+    """Every minute: deliver any pending scheduled messages whose time has come."""
+    try:
+        now = datetime.now(timezone.utc)
+        due = await db.chat_scheduled.find({"status": "pending", "deliver_at": {"$lte": now.isoformat()}}, {"_id": 0}).to_list(200)
+        for s in due:
+            try:
+                ch = await db.chat_channels.find_one({"id": s["channel_id"]}, {"_id": 0})
+                if not ch or ch.get("archived"):
+                    await db.chat_scheduled.update_one({"id": s["id"]}, {"$set": {"status": "cancelled"}})
+                    continue
+                ts = now.isoformat()
+                msg = {
+                    "id": str(uuid.uuid4()), "channel_id": s["channel_id"],
+                    "sender_id": s["sender_id"], "sender_name": s["sender_name"], "sender_role": s.get("sender_role"),
+                    "body": s.get("body", ""), "attachments": s.get("attachments") or [],
+                    "mentions": s.get("mentions") or [], "reactions": {}, "edited_at": None,
+                    "deleted": False, "is_action": False, "scheduled": True, "created_at": ts,
+                }
+                await db.chat_messages.insert_one(msg)
+                msg.pop("_id", None)
+                await db.chat_channels.update_one({"id": s["channel_id"]}, {"$set": {"updated_at": ts}})
+                await db.chat_scheduled.update_one({"id": s["id"]}, {"$set": {"status": "sent", "sent_at": ts, "message_id": msg["id"]}})
+                for mid in set(s.get("mentions") or []):
+                    if mid != s["sender_id"]:
+                        await create_notification(
+                            title=f"{s['sender_name']} mentioned you", message=(s.get("body") or "(attachment)")[:140],
+                            notification_type="info", link="/chat", target_user_ids=[mid],
+                            created_by=s["sender_id"], created_by_name=s["sender_name"], data={"channel_id": s["channel_id"]})
+                signed = json.loads(json.dumps(msg))
+                sign_file_urls_deep(signed, user_id=None)
+                await broadcast_chat(await _chat_recipients(ch), {"type": "message", "channel_id": s["channel_id"], "message": signed})
+            except Exception as e:
+                logger.warning(f"scheduled message {s.get('id')} delivery failed: {e}")
+    except Exception as e:
+        logger.warning(f"scheduled_chat_send_due failed: {e}")
 
 
 async def scheduled_chat_nudges():
