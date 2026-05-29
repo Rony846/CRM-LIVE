@@ -249,7 +249,12 @@ function QueuePane({ tickets, selectedId, onSelect, filter, setFilter, query, se
 // Detail Pane (middle)
 // =========================================================================
 // Saving the ticket with one of these statuses earns a reward burst.
-const RESOLVED_STATUSES = ['resolved', 'resolved_on_call', 'closed', 'software_issue'];
+// Status values must match backend TICKET_STATUSES + state-machine transitions.
+// 'resolved', 'diagnosed', 'software_issue', plain 'closed' were rejected by
+// the backend with HTTP 400 because they aren't valid transitions from
+// new_request (or aren't valid statuses at all). Canonical values:
+//   in_progress, resolved_on_call, closed_by_agent.
+const RESOLVED_STATUSES = ['resolved_on_call', 'closed_by_agent'];
 
 function DetailPane({ ticket, onUpdate, onOpenMessage, onReload, onResolved }) {
   const { token, user } = useAuth();
@@ -420,11 +425,8 @@ function DetailPane({ ticket, onUpdate, onOpenMessage, onReload, onResolved }) {
                 <SelectTrigger className="h-9 mt-1"><SelectValue placeholder="No change" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="in_progress">In Progress</SelectItem>
-                  <SelectItem value="diagnosed">Diagnosed</SelectItem>
-                  <SelectItem value="software_issue">Software Issue (Resolved)</SelectItem>
-                  <SelectItem value="resolved">Resolved</SelectItem>
                   <SelectItem value="resolved_on_call">Resolved on Call</SelectItem>
-                  <SelectItem value="closed">Closed</SelectItem>
+                  <SelectItem value="closed_by_agent">Closed</SelectItem>
                 </SelectContent>
               </Select>
             </div>

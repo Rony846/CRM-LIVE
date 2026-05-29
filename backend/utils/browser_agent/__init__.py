@@ -3941,24 +3941,56 @@ class AmazonBrowserAgent:
                 # the pill). Use a probe + mouse.click rather than a generic
                 # text locator — those matched multiple elements and often
                 # hit the wrong one on EBAY UP's slow-rendering form.
-                pill = await self.page.evaluate(
+                # For already-confirmed orders the "Edit shipment" pill lives
+                # in the shipment-details section, frequently BELOW the initial
+                # fold — the old viewport-only probe (0<=y<=760) returned null
+                # and bailed. Instead: find the narrowest clickable element
+                # carrying that exact text ANYWHERE on the page, mark it,
+                # scroll it to center, then click the marked element directly
+                # (element-handle click handles scrolling + actionability and,
+                # because we've already disambiguated to one element by
+                # smallest width, won't hit the wide section-header twin).
+                marked = await self.page.evaluate(
                     """(text) => {
-                        for (const el of document.querySelectorAll('a')) {
+                        let best = null, bestW = 1e9;
+                        const sel = 'a, button, span[role=button], [role=button], .a-button';
+                        for (const el of document.querySelectorAll(sel)) {
                             const t = (el.innerText || '').trim();
                             if (t !== text) continue;
                             const r = el.getBoundingClientRect();
-                            if (r.width > 200) continue;       // narrow pill only
-                            if (r.y < 0 || r.y > 760) continue; // visible
-                            return {x: r.x + r.width/2, y: r.y + r.height/2};
+                            if (r.width < 30 || r.width > 320) continue; // pill-sized
+                            if (r.height < 8) continue;
+                            if (r.width < bestW) { best = el; bestW = r.width; }
                         }
-                        return null;
+                        if (!best) return false;
+                        best.setAttribute('data-mg-pill', '1');
+                        best.scrollIntoView({block: 'center', inline: 'center'});
+                        return true;
                     }""",
                     pill_text,
                 )
-                if not pill:
-                    result["error"] = f"{action_hint}: pill button not found in viewport"
+                if not marked:
+                    result["error"] = f"{action_hint}: pill button not found on page"
                     return result
-                await self.page.mouse.click(pill["x"], pill["y"])
+                await asyncio.sleep(1.0)  # let the scroll settle
+                handle = await self.page.query_selector('[data-mg-pill="1"]')
+                if not handle:
+                    result["error"] = f"{action_hint}: pill handle lost after scroll"
+                    return result
+                try:
+                    await handle.click(timeout=8000)
+                except Exception:
+                    box = await handle.bounding_box()
+                    if not box:
+                        result["error"] = f"{action_hint}: pill not clickable"
+                        return result
+                    await self.page.mouse.click(
+                        box["x"] + box["width"] / 2,
+                        box["y"] + box["height"] / 2,
+                    )
+                await self.page.evaluate(
+                    """() => { const e = document.querySelector('[data-mg-pill="1"]'); if (e) e.removeAttribute('data-mg-pill'); }"""
+                )
                 # Form takes 6-10s to render on EBAY UP for fresh confirms.
                 await asyncio.sleep(9)
 
