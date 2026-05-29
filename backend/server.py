@@ -59344,7 +59344,12 @@ def _classify_delhivery_status(
         return "returned"
     if "TRANSIT" in sc or "DISPATCH" in sc or "OUT_FOR_DELIVERY" in sc:
         return "in_transit"
-    if "PICKUP" in sc or "NOT_PICKED" in sc or "MANIFEST" in sc or "PENDING" in sc:
+    # Pre-pickup: Delhivery has the AWB but it hasn't been collected/manifested out
+    # yet (WAITING_PICKUP, NOT_PICKED, MANIFESTED, "Pickup Pending"). This is the
+    # real "awaiting pickup" — tracking exists but the courier hasn't moved it.
+    if "PICKUP" in sc or "NOT_PICKED" in sc or "MANIFEST" in sc or "WAITING" in sc:
+        return "awaiting_pickup"
+    if "PENDING" in sc:
         return "pending"
     return "in_transit"
 
@@ -59483,7 +59488,6 @@ DELHIVERY_NON_CARRIER_CODES = [
     "dtdc", "DTDC", "xpressbees", "Xpressbees", "XPRESSBEES",
 ]
 DELHIVERY_BOARD_SELFSHIP_WINDOW_DAYS = 30  # only auto-track recent self-ship parcels (active ones)
-DELHIVERY_BOARD_AWAITING_WINDOW_DAYS = 30  # show 'awaiting pickup' for AWBs Delhivery has no record of yet (tracking pushed, not picked up), this recent; older = stale/retired
 DELHIVERY_BOARD_DELIVERED_TTL_HOURS = 24  # keep delivered parcels visible this long
 DELHIVERY_BOARD_POLL_DELAY_SECONDS = 0.6  # pace requests so we don't trip Delhivery's 429
 DELHIVERY_BOARD_MAX_FAILS = 6  # retire a persistently-unresolvable AWB after this many checks
@@ -59567,37 +59571,21 @@ async def refresh_delhivery_board() -> dict:
             errors += 1
             # Record the failed check so the board can show "last checked" honestly.
             fail_count = (existing or {}).get("fail_count", 0) + 1
-            age = _order_age_days(order, now)
             update = {
                 "last_checked": now.isoformat(),
                 "last_check_failed": True,
                 "fail_count": fail_count,
             }
-            # 404 = Delhivery has no record yet. For a recent parcel that's the
-            # normal "label/tracking created (e.g. pushed to Amazon) but courier
-            # hasn't picked it up / manifested it" state — surface it as
-            # 'awaiting_pickup' so it shows on the board instead of silently failing.
-            if e.status_code == 404 and not (existing or {}).get("retired") \
-                    and age <= DELHIVERY_BOARD_AWAITING_WINDOW_DAYS:
-                update.update({
-                    "state": "awaiting_pickup",
-                    "status_label": "Awaiting pickup",
-                    "retired": False,
-                    "amazon_order_id": order.get("amazon_order_id"),
-                    "firm_id": order.get("firm_id"),
-                    "firm_name": firms.get(order.get("firm_id")),
-                    "buyer_name": order.get("buyer_name"),
-                    "purchase_date": order.get("purchase_date"),
-                    "crm_status": order.get("crm_status"),
-                    "destination": order.get("city") or order.get("state"),
-                    "tracking": None,
-                    "terminal_at": None,
-                    "delivered_at": None,
-                })
-            # Stop polling AWBs that persistently never resolve (old/purged AWBs or
-            # short LR numbers Delhivery's wbn lookup rejects) — but never retire a
+            # 404 = Delhivery has NO record for this AWB (delivered-and-purged, or an
+            # AWB its wbn lookup doesn't index). It is NOT "awaiting pickup" — clear
+            # any stale state so it drops off the board (real awaiting parcels return
+            # 200 with status WAITING_PICKUP and are classified below).
+            if e.status_code == 404:
+                update["state"] = None
+            # Stop polling AWBs that persistently never resolve — but never retire a
             # recent order that may simply not be in Delhivery's system yet.
-            elif fail_count >= DELHIVERY_BOARD_MAX_FAILS and age > DELHIVERY_BOARD_FAIL_MIN_AGE_DAYS:
+            if (fail_count >= DELHIVERY_BOARD_MAX_FAILS
+                    and _order_age_days(order, now) > DELHIVERY_BOARD_FAIL_MIN_AGE_DAYS):
                 update["retired"] = True
                 pruned += 1
             await db.delhivery_tracking.update_one({"awb": awb}, {"$set": update}, upsert=True)
@@ -59691,16 +59679,11 @@ async def get_delhivery_board(
 
     # Only surface parcels with a known shipment status. Excludes retired parcels
     # (terminal + TTL elapsed) and unresolved ones (no `state`). 'awaiting_pickup'
-    # (tracking pushed, Delhivery hasn't picked up yet) is shown only while recent
-    # so a never-picked-up parcel that aged out of the poll window doesn't linger.
-    awaiting_cutoff = (datetime.now(timezone.utc)
-                       - timedelta(days=DELHIVERY_BOARD_AWAITING_WINDOW_DAYS + 3)).isoformat()
+    # is a real Delhivery status (WAITING_PICKUP / Manifested) — tracking exists but
+    # the courier hasn't collected it yet.
     query = {
         "retired": {"$ne": True},
-        "$or": [
-            {"state": {"$in": ["in_transit", "pending", "delivered", "returned", "cancelled"]}},
-            {"state": "awaiting_pickup", "purchase_date": {"$gte": awaiting_cutoff}},
-        ],
+        "state": {"$in": ["awaiting_pickup", "in_transit", "pending", "delivered", "returned", "cancelled"]},
     }
     query.update(firm_scope_filter(current_user, firm_id))
 
@@ -59758,24 +59741,9 @@ async def seed_delhivery_board_recent(
             continue
         try:
             tracking = await fetch_delhivery_tracking(awb)
-        except HTTPException as e:
-            # 404 on a recent order = tracking created (e.g. pushed to Amazon) but
-            # not picked up yet -> show as awaiting_pickup; other errors just skip.
-            if e.status_code == 404 and _order_age_days(order, now) <= DELHIVERY_BOARD_AWAITING_WINDOW_DAYS:
-                await db.delhivery_tracking.update_one({"awb": awb}, {"$set": {
-                    "awb": awb, "amazon_order_id": order.get("amazon_order_id"),
-                    "firm_id": order.get("firm_id"), "firm_name": firms.get(order.get("firm_id")),
-                    "buyer_name": order.get("buyer_name"), "purchase_date": order.get("purchase_date"),
-                    "crm_status": order.get("crm_status"), "tracking": None,
-                    "state": "awaiting_pickup", "status_label": "Awaiting pickup",
-                    "destination": order.get("city") or order.get("state"),
-                    "last_checked": now.isoformat(), "last_check_failed": True, "fail_count": 1,
-                    "retired": False, "terminal_at": None, "delivered_at": None, "seeded_recent": True,
-                }}, upsert=True)
-                resolved += 1
-                seeded.append({"awb": awb, "order": order.get("amazon_order_id"), "state": "awaiting_pickup"})
-            else:
-                failed += 1
+        except HTTPException:
+            # 404/error = Delhivery has no record (delivered-and-purged or invalid) -> skip.
+            failed += 1
             await asyncio.sleep(DELHIVERY_BOARD_POLL_DELAY_SECONDS)
             continue
         state = tracking.get("state")
