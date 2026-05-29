@@ -34,6 +34,11 @@ export default function QuotationForm() {
   const location = useLocation();
   const { token, user } = useAuth();
   const isEdit = Boolean(id);
+  // Dealer-PI mode: launched from a dealer profile's "Create PI". Lines are priced
+  // at the dealer's discounted rate (dealer's contracted discount if set, else the
+  // product's dealer_discount_percent, else 15%).
+  const dealerMode = Boolean(location.state?.prefillPartyId);
+  const dealerDiscount = (location.state?.dealerDiscount ?? null);
   
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -196,14 +201,24 @@ export default function QuotationForm() {
     
     // Get stock for selected firm
     const newItems = [...form.items];
+    // In dealer-PI mode, price the line at the dealer's discounted rate: list price
+    // (selling_price) as the rate + the dealer/product discount % on the line, so the
+    // PI transparently shows list rate and the dealer discount.
+    const dealerLineDiscount = dealerMode
+      ? (dealerDiscount != null ? dealerDiscount
+        : (sku.dealer_discount_percent != null ? sku.dealer_discount_percent : 15))
+      : null;
     newItems[index] = {
       ...newItems[index],
       master_sku_id: skuId,
       name: sku.name,
       sku_code: sku.sku_code,
-      rate: sku.mrp || sku.cost_price || 0,
+      rate: dealerMode
+        ? (sku.selling_price || sku.mrp || sku.cost_price || 0)
+        : (sku.mrp || sku.cost_price || 0),
       gst_rate: sku.gst_rate || 18,
-      current_stock: sku.stock_quantity || 0
+      current_stock: sku.stock_quantity || 0,
+      ...(dealerMode ? { discount_percent: dealerLineDiscount } : {}),
     };
     setForm({ ...form, items: newItems });
     
@@ -531,6 +546,13 @@ export default function QuotationForm() {
                 </Button>
               </CardHeader>
               <CardContent className="space-y-4">
+                {dealerMode && (
+                  <div className="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-[13px] text-cyan-300">
+                    Dealer pricing active — each item you add is priced at the dealer rate
+                    {dealerDiscount != null ? ` (${dealerDiscount}% dealer discount)` : ' (per-product dealer discount)'}.
+                    Rate shows list price; the discount is applied on the line.
+                  </div>
+                )}
                 {form.items.map((item, index) => (
                   <div key={index} className="p-4 bg-slate-900 rounded-lg space-y-3">
                     <div className="flex justify-between items-start">

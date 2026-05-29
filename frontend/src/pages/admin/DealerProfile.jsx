@@ -120,6 +120,9 @@ export default function DealerProfile() {
     navigate('/quotations/new', {
       state: {
         prefillPartyId: party.id,
+        // Dealer's contracted discount (if set) drives dealer-discounted PI line pricing;
+        // null falls back to each product's dealer_discount_percent in the form.
+        dealerDiscount: (dealer.discount_percent ?? null),
         prefillParty: {
           id: party.id, name: dealer.firm_name, phone: dealer.phone, email: dealer.email,
           gstin: dealer.gst_number, city: dealer.city, state: dealer.state, pincode: dealer.pincode,
