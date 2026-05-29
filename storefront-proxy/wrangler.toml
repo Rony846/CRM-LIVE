@@ -1,0 +1,13 @@
+name = "musclegrid-lead-proxy"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+
+# Non-secret vars (edit to taste). The CRM URL is the public backend + the new
+# public lead-intake route. ALLOWED_ORIGINS is your live storefront domain(s);
+# any *.myshopify.com origin is allowed automatically for theme previews.
+[vars]
+CRM_LEADS_URL = "https://newcrm.musclegrid.in/api/public/leads"
+ALLOWED_ORIGINS = "https://musclegrid.in,https://www.musclegrid.in"
+
+# LEAD_INTAKE_API_KEY is a SECRET — never put it here. Set it with:
+#   wrangler secret put LEAD_INTAKE_API_KEY
