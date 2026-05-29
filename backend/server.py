@@ -59677,6 +59677,60 @@ async def refresh_delhivery_board_now(
     return {"success": True, **summary}
 
 
+@api_router.post("/courier/delhivery-board/seed-recent")
+async def seed_delhivery_board_recent(
+    limit: int = 10,
+    current_user: dict = Depends(get_current_user),
+):
+    """Manual/test seed: take the most recent Amazon orders that carry a real
+    tracking number (any carrier label — Amazon self-ship parcels are labelled
+    'Standard' etc. but are Delhivery), poll Delhivery for each, and put the ones
+    that resolve onto the board. Marked seeded_recent=True for easy cleanup.
+    Admin/dispatcher only. (The scheduled poller only manages carrier=Delhivery
+    orders, so these stay as the snapshot taken here.)"""
+    if current_user["role"] not in ["admin", "dispatcher"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    limit = max(1, min(int(limit or 10), 50))
+    now = datetime.now(timezone.utc)
+    firms = {f["id"]: f.get("name") async for f in db.firms.find({}, {"_id": 0, "id": 1, "name": 1})}
+    orders = await db.amazon_orders.find(
+        {"tracking_number": {"$exists": True, "$nin": [None, ""]}, "crm_status": {"$ne": "cancelled"}},
+        {"_id": 0, "amazon_order_id": 1, "firm_id": 1, "tracking_number": 1, "buyer_name": 1,
+         "purchase_date": 1, "crm_status": 1},
+    ).sort("purchase_date", -1).to_list(length=limit)
+
+    resolved, failed, seeded = 0, 0, []
+    for order in orders:
+        awb = (order.get("tracking_number") or "").strip()
+        if not awb:
+            continue
+        try:
+            tracking = await fetch_delhivery_tracking(awb)
+        except HTTPException:
+            failed += 1
+            await asyncio.sleep(DELHIVERY_BOARD_POLL_DELAY_SECONDS)
+            continue
+        state = tracking.get("state")
+        doc = {
+            "awb": awb, "amazon_order_id": order.get("amazon_order_id"),
+            "firm_id": order.get("firm_id"), "firm_name": firms.get(order.get("firm_id")),
+            "buyer_name": order.get("buyer_name"), "purchase_date": order.get("purchase_date"),
+            "crm_status": order.get("crm_status"), "tracking": tracking, "state": state,
+            "status_label": tracking.get("status_label"), "destination": tracking.get("destination"),
+            "last_checked": now.isoformat(), "last_check_failed": False, "fail_count": 0,
+            "retired": False, "terminal_at": None, "delivered_at": None, "seeded_recent": True,
+        }
+        await db.delhivery_tracking.update_one({"awb": awb}, {"$set": doc}, upsert=True)
+        if state in ["in_transit", "pending", "delivered", "returned", "cancelled"]:
+            resolved += 1
+        else:
+            failed += 1
+        seeded.append({"awb": awb, "order": order.get("amazon_order_id"), "state": state})
+        await asyncio.sleep(DELHIVERY_BOARD_POLL_DELAY_SECONDS)
+
+    return {"success": True, "orders_considered": len(orders), "resolved": resolved, "failed": failed, "seeded": seeded}
+
+
 # =============================================================================
 # CLAUDE AI AGENT INTEGRATION APIs
 # Purpose: Endpoints for external AI agents (Claude) to automate order processing
