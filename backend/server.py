@@ -59475,6 +59475,14 @@ async def track_delhivery_shipment(
 # =============================================================================
 
 DELHIVERY_CARRIER_CODES = ["delhivery", "Delhivery", "DELHIVERY"]
+# Carriers that are definitely NOT Delhivery — never poll their AWBs against
+# Delhivery (Amazon's own logistics + other couriers). Used to safely auto-track
+# self-ship parcels, which Amazon labels by ship-speed ("Standard"/"Next-Day"…).
+DELHIVERY_NON_CARRIER_CODES = [
+    "AMAZON", "amazon", "Amazon Easy Ship", "amazon_easy_ship", "amazon_seller_central",
+    "dtdc", "DTDC", "xpressbees", "Xpressbees", "XPRESSBEES",
+]
+DELHIVERY_BOARD_SELFSHIP_WINDOW_DAYS = 30  # only auto-track recent self-ship parcels (active ones)
 DELHIVERY_BOARD_DELIVERED_TTL_HOURS = 24  # keep delivered parcels visible this long
 DELHIVERY_BOARD_POLL_DELAY_SECONDS = 0.6  # pace requests so we don't trip Delhivery's 429
 DELHIVERY_BOARD_MAX_FAILS = 6  # retire a persistently-unresolvable AWB after this many checks
@@ -59496,12 +59504,28 @@ def _order_age_days(order: dict, now: datetime) -> float:
 
 
 async def _delhivery_board_universe() -> list:
-    """All non-cancelled Delhivery-carried Amazon orders that have an AWB."""
+    """Active Delhivery-carried Amazon orders with an AWB. Two sources:
+      1. Orders explicitly carrier_code = Delhivery (any age — existing behaviour).
+      2. Recent self-ship parcels: Amazon labels these by ship-speed
+         ('Standard'/'Next-Day'/…) not 'Delhivery', but they ARE Delhivery — match
+         by a numeric Delhivery-style AWB on a non-courier carrier, within the
+         self-ship window. Amazon-logistics / dtdc / xpressbees are excluded so we
+         never poll their AWBs against Delhivery.
+    """
+    now = datetime.now(timezone.utc)
+    window = (now - timedelta(days=DELHIVERY_BOARD_SELFSHIP_WINDOW_DAYS)).isoformat()
     return await db.amazon_orders.find(
         {
-            "carrier_code": {"$in": DELHIVERY_CARRIER_CODES},
             "tracking_number": {"$exists": True, "$nin": [None, ""]},
             "crm_status": {"$ne": "cancelled"},
+            "$or": [
+                {"carrier_code": {"$in": DELHIVERY_CARRIER_CODES}},
+                {
+                    "carrier_code": {"$nin": DELHIVERY_NON_CARRIER_CODES},
+                    "tracking_number": {"$regex": r"^\d{11,16}$"},
+                    "purchase_date": {"$gte": window},
+                },
+            ],
         },
         {
             "_id": 0, "amazon_order_id": 1, "firm_id": 1, "tracking_number": 1,
@@ -59675,6 +59699,60 @@ async def refresh_delhivery_board_now(
         raise HTTPException(status_code=403, detail="Access denied")
     summary = await refresh_delhivery_board()
     return {"success": True, **summary}
+
+
+@api_router.post("/courier/delhivery-board/seed-recent")
+async def seed_delhivery_board_recent(
+    limit: int = 10,
+    current_user: dict = Depends(get_current_user),
+):
+    """Manual/test seed: take the most recent Amazon orders that carry a real
+    tracking number (any carrier label — Amazon self-ship parcels are labelled
+    'Standard' etc. but are Delhivery), poll Delhivery for each, and put the ones
+    that resolve onto the board. Marked seeded_recent=True for easy cleanup.
+    Admin/dispatcher only. (The scheduled poller only manages carrier=Delhivery
+    orders, so these stay as the snapshot taken here.)"""
+    if current_user["role"] not in ["admin", "dispatcher"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    limit = max(1, min(int(limit or 10), 50))
+    now = datetime.now(timezone.utc)
+    firms = {f["id"]: f.get("name") async for f in db.firms.find({}, {"_id": 0, "id": 1, "name": 1})}
+    orders = await db.amazon_orders.find(
+        {"tracking_number": {"$exists": True, "$nin": [None, ""]}, "crm_status": {"$ne": "cancelled"}},
+        {"_id": 0, "amazon_order_id": 1, "firm_id": 1, "tracking_number": 1, "buyer_name": 1,
+         "purchase_date": 1, "crm_status": 1},
+    ).sort("purchase_date", -1).to_list(length=limit)
+
+    resolved, failed, seeded = 0, 0, []
+    for order in orders:
+        awb = (order.get("tracking_number") or "").strip()
+        if not awb:
+            continue
+        try:
+            tracking = await fetch_delhivery_tracking(awb)
+        except HTTPException:
+            failed += 1
+            await asyncio.sleep(DELHIVERY_BOARD_POLL_DELAY_SECONDS)
+            continue
+        state = tracking.get("state")
+        doc = {
+            "awb": awb, "amazon_order_id": order.get("amazon_order_id"),
+            "firm_id": order.get("firm_id"), "firm_name": firms.get(order.get("firm_id")),
+            "buyer_name": order.get("buyer_name"), "purchase_date": order.get("purchase_date"),
+            "crm_status": order.get("crm_status"), "tracking": tracking, "state": state,
+            "status_label": tracking.get("status_label"), "destination": tracking.get("destination"),
+            "last_checked": now.isoformat(), "last_check_failed": False, "fail_count": 0,
+            "retired": False, "terminal_at": None, "delivered_at": None, "seeded_recent": True,
+        }
+        await db.delhivery_tracking.update_one({"awb": awb}, {"$set": doc}, upsert=True)
+        if state in ["in_transit", "pending", "delivered", "returned", "cancelled"]:
+            resolved += 1
+        else:
+            failed += 1
+        seeded.append({"awb": awb, "order": order.get("amazon_order_id"), "state": state})
+        await asyncio.sleep(DELHIVERY_BOARD_POLL_DELAY_SECONDS)
+
+    return {"success": True, "orders_considered": len(orders), "resolved": resolved, "failed": failed, "seeded": seeded}
 
 
 # =============================================================================
