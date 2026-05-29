@@ -59475,6 +59475,14 @@ async def track_delhivery_shipment(
 # =============================================================================
 
 DELHIVERY_CARRIER_CODES = ["delhivery", "Delhivery", "DELHIVERY"]
+# Carriers that are definitely NOT Delhivery — never poll their AWBs against
+# Delhivery (Amazon's own logistics + other couriers). Used to safely auto-track
+# self-ship parcels, which Amazon labels by ship-speed ("Standard"/"Next-Day"…).
+DELHIVERY_NON_CARRIER_CODES = [
+    "AMAZON", "amazon", "Amazon Easy Ship", "amazon_easy_ship", "amazon_seller_central",
+    "dtdc", "DTDC", "xpressbees", "Xpressbees", "XPRESSBEES",
+]
+DELHIVERY_BOARD_SELFSHIP_WINDOW_DAYS = 30  # only auto-track recent self-ship parcels (active ones)
 DELHIVERY_BOARD_DELIVERED_TTL_HOURS = 24  # keep delivered parcels visible this long
 DELHIVERY_BOARD_POLL_DELAY_SECONDS = 0.6  # pace requests so we don't trip Delhivery's 429
 DELHIVERY_BOARD_MAX_FAILS = 6  # retire a persistently-unresolvable AWB after this many checks
@@ -59496,12 +59504,28 @@ def _order_age_days(order: dict, now: datetime) -> float:
 
 
 async def _delhivery_board_universe() -> list:
-    """All non-cancelled Delhivery-carried Amazon orders that have an AWB."""
+    """Active Delhivery-carried Amazon orders with an AWB. Two sources:
+      1. Orders explicitly carrier_code = Delhivery (any age — existing behaviour).
+      2. Recent self-ship parcels: Amazon labels these by ship-speed
+         ('Standard'/'Next-Day'/…) not 'Delhivery', but they ARE Delhivery — match
+         by a numeric Delhivery-style AWB on a non-courier carrier, within the
+         self-ship window. Amazon-logistics / dtdc / xpressbees are excluded so we
+         never poll their AWBs against Delhivery.
+    """
+    now = datetime.now(timezone.utc)
+    window = (now - timedelta(days=DELHIVERY_BOARD_SELFSHIP_WINDOW_DAYS)).isoformat()
     return await db.amazon_orders.find(
         {
-            "carrier_code": {"$in": DELHIVERY_CARRIER_CODES},
             "tracking_number": {"$exists": True, "$nin": [None, ""]},
             "crm_status": {"$ne": "cancelled"},
+            "$or": [
+                {"carrier_code": {"$in": DELHIVERY_CARRIER_CODES}},
+                {
+                    "carrier_code": {"$nin": DELHIVERY_NON_CARRIER_CODES},
+                    "tracking_number": {"$regex": r"^\d{11,16}$"},
+                    "purchase_date": {"$gte": window},
+                },
+            ],
         },
         {
             "_id": 0, "amazon_order_id": 1, "firm_id": 1, "tracking_number": 1,
