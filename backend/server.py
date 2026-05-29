@@ -49791,11 +49791,13 @@ async def chat_saved_list(user: dict = Depends(require_internal_chat)):
 class ChatNudgeCreate(BaseModel):
     assignee_id: str
     interval_min: int = 15
+    escalate_after: int = 3  # un-done loops before auto-escalating to a supervisor; 0 = off
 
 
 def _nudge_brief(n: dict) -> dict:
     return {k: n.get(k) for k in ("id", "assignee_id", "assignee_name", "creator_id",
-                                  "creator_name", "interval_min", "status", "fired_count", "next_fire_at")}
+                                  "creator_name", "interval_min", "status", "fired_count", "next_fire_at",
+                                  "escalate_after", "escalated")}
 
 
 @api_router.post("/chat/messages/{message_id}/nudge")
@@ -49811,6 +49813,7 @@ async def chat_create_nudge(message_id: str, body: ChatNudgeCreate, user: dict =
     if not assignee or assignee.get("role") not in INTERNAL_CHAT_ROLES:
         raise HTTPException(status_code=400, detail="Assignee must be an internal team member")
     interval = max(5, min(int(body.interval_min or 15), 1440))
+    escalate_after = max(0, min(int(body.escalate_after if body.escalate_after is not None else 3), 50))
     now = datetime.now(timezone.utc)
     next_fire = (now + timedelta(minutes=interval)).isoformat()
     nudge = {
@@ -49818,6 +49821,7 @@ async def chat_create_nudge(message_id: str, body: ChatNudgeCreate, user: dict =
         "creator_id": user["id"], "creator_name": _chat_user_brief(user)["name"],
         "assignee_id": assignee["id"], "assignee_name": _chat_user_brief(assignee)["name"],
         "body": (msg.get("body") or "(attachment)")[:200], "interval_min": interval,
+        "escalate_after": escalate_after, "escalated": False,
         "status": "active", "fired_count": 0, "created_at": now.isoformat(), "next_fire_at": next_fire, "done_at": None,
     }
     # one active nudge per message — replace any prior one
@@ -50212,7 +50216,13 @@ async def scheduled_chat_nudges():
                     continue
                 fired = n.get("fired_count", 0) + 1
                 next_fire = (now + timedelta(minutes=n["interval_min"])).isoformat()
-                await db.chat_nudges.update_one({"id": n["id"]}, {"$set": {"fired_count": fired, "next_fire_at": next_fire}})
+                # Auto-escalate to supervisors once the assignee has missed N loops.
+                esc_after = n.get("escalate_after") or 0
+                do_escalate = esc_after and not n.get("escalated") and fired >= esc_after
+                updates = {"fired_count": fired, "next_fire_at": next_fire}
+                if do_escalate:
+                    updates["escalated"] = True
+                await db.chat_nudges.update_one({"id": n["id"]}, {"$set": updates})
                 await post_system_message(
                     n.get("channel_slug"),
                     f"🔔 Reminder for {n['assignee_name']} (#{fired}): \"{n['body']}\" — set by {n['creator_name']}, every {n['interval_min']} min. Mark it done to stop.",
@@ -50222,7 +50232,18 @@ async def scheduled_chat_nudges():
                     link="/chat", priority="high", target_user_ids=[n["assignee_id"]],
                     created_by=n["creator_id"], created_by_name=n["creator_name"],
                     data={"channel_id": n["channel_id"], "message_id": n["message_id"], "nudge_id": n["id"]})
-                brief = _nudge_brief({**n, "fired_count": fired, "next_fire_at": next_fire})
+                if do_escalate:
+                    await post_system_message(
+                        n.get("channel_slug"),
+                        f"⚠️ Escalation: {n['assignee_name']} hasn't actioned this after {fired} reminders — supervisors notified. (\"{n['body']}\", set by {n['creator_name']})",
+                        {"nudge_id": n["id"], "message_id": n["message_id"], "escalated": True})
+                    await create_notification(
+                        title="⚠️ Follow-up escalated", message=f"{n['assignee_name']} hasn't actioned: {n['body']}",
+                        notification_type="reminder", link="/chat", priority="high",
+                        target_roles=["supervisor", "admin"],
+                        created_by=n["creator_id"], created_by_name=n["creator_name"],
+                        data={"channel_id": n["channel_id"], "message_id": n["message_id"], "nudge_id": n["id"]})
+                brief = _nudge_brief({**n, "fired_count": fired, "next_fire_at": next_fire, "escalated": n.get("escalated") or do_escalate})
                 ch = await db.chat_channels.find_one({"id": n["channel_id"]}, {"_id": 0})
                 if ch:
                     await broadcast_chat(await _chat_recipients(ch),

@@ -68,6 +68,7 @@ function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onActi
   const [hover, setHover] = useState(false);
   const [nOpen, setNOpen] = useState(false);
   const [nivl, setNivl] = useState(15);
+  const [nEsc, setNEsc] = useState(3);
   const [nq, setNq] = useState('');
   const [aOpen, setAOpen] = useState(false);
   const [aSel, setASel] = useState(() => new Set());
@@ -139,6 +140,7 @@ function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onActi
               {msg.nudge.status === 'active' ? (
                 <>
                   <span>Follow-up: <b>{msg.nudge.assignee_name}</b> · every {msg.nudge.interval_min}m{msg.nudge.fired_count ? ` · pinged ${msg.nudge.fired_count}×` : ''}</span>
+                  {msg.nudge.escalated && <span className="rounded bg-amber-400/20 px-1.5 py-0.5 font-bold text-amber-200">⚠️ escalated</span>}
                   {canCloseNudge && (
                     <button onClick={() => onResolveNudge(msg.nudge.id)} className="ml-1 rounded bg-amber-400/20 px-1.5 py-0.5 font-medium hover:bg-amber-400/30">Mark done</button>
                   )}
@@ -186,13 +188,21 @@ function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onActi
                   <button key={m} onClick={() => setNivl(m)} className={`flex-1 rounded px-2 py-1 text-[11px] ${nivl === m ? 'bg-primary text-primary-foreground' : 'bg-muted/50 text-muted-foreground'}`}>{m < 60 ? `${m}m` : '1h'}</button>
                 ))}
               </div>
+              <div className="mb-2">
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Escalate to supervisor after</span>
+                <div className="mt-1 flex gap-1">
+                  {[[0, 'Off'], [3, '3 misses'], [5, '5 misses']].map(([v, l]) => (
+                    <button key={v} onClick={() => setNEsc(v)} className={`flex-1 rounded px-2 py-1 text-[11px] ${nEsc === v ? 'bg-amber-400/80 text-black' : 'bg-muted/50 text-muted-foreground'}`}>{l}</button>
+                  ))}
+                </div>
+              </div>
               <div className="relative mb-1">
                 <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
                 <input value={nq} onChange={(e) => setNq(e.target.value)} placeholder="Assign to…" className="w-full rounded border border-border bg-background pl-7 pr-2 py-1 text-[12px] outline-none" />
               </div>
               <div className="max-h-40 overflow-y-auto">
                 {(directory || []).filter((u) => !nq.trim() || u.name.toLowerCase().includes(nq.trim().toLowerCase())).slice(0, 8).map((u) => (
-                  <button key={u.id} onClick={() => { onNudge(msg.id, u.id, nivl); setNOpen(false); setNq(''); }}
+                  <button key={u.id} onClick={() => { onNudge(msg.id, u.id, nivl, nEsc); setNOpen(false); setNq(''); }}
                     className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[12px] hover:bg-accent">
                     <ChatAvatar id={u.id} name={u.name} size={20} /><span className="truncate">{u.name}</span>
                   </button>
@@ -340,8 +350,8 @@ export default function ChatConversation({ compact = false }) {
     try { await chat.resolveAction(id, confirm); }
     catch (e) { toast.error(e.response?.data?.detail || 'Action failed'); }
   };
-  const handleNudge = async (messageId, assigneeId, intervalMin) => {
-    try { const n = await chat.createNudge(messageId, assigneeId, intervalMin); toast.success(`Follow-up set for ${n.assignee_name} · every ${n.interval_min}m`); }
+  const handleNudge = async (messageId, assigneeId, intervalMin, escalateAfter) => {
+    try { const n = await chat.createNudge(messageId, assigneeId, intervalMin, escalateAfter); toast.success(`Follow-up set for ${n.assignee_name} · every ${n.interval_min}m${n.escalate_after ? ` · escalates after ${n.escalate_after}` : ''}`); }
     catch (e) { toast.error(e.response?.data?.detail || 'Could not set follow-up'); }
   };
   const handleResolveNudge = async (nudgeId) => {
