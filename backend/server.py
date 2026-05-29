@@ -598,6 +598,18 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Chat nudge loops — every minute, ping the assignee of each due follow-up
+        # until it's marked done.
+        scheduler.add_job(
+            scheduled_chat_nudges,
+            IntervalTrigger(minutes=1),
+            id="chat_nudge_loops",
+            name="Chat Nudge Loops (ping assignee until done)",
+            replace_existing=True,
+            misfire_grace_time=120,
+            max_instances=1,
+        )
+
         scheduler.start()
         logger.info(
             f"Scheduled jobs started: SLA breach (30min), Payment verification (1hr), "
@@ -49759,6 +49771,128 @@ async def chat_saved_list(user: dict = Depends(require_internal_chat)):
         sign_file_urls_deep(m, user_id=user["id"])
         out.append({**m, "channel_name": (ch or {}).get("name"), "saved_at": s["saved_at"]})
     return {"saved": out}
+
+
+# ---- Nudge loops -----------------------------------------------------------
+# Tag someone on a message + a recurring reminder. They get pinged (chat system
+# message + in-app notification) every interval until they (or the creator/admin)
+# mark it done. Backed by db.chat_nudges + a 1-minute APScheduler job.
+class ChatNudgeCreate(BaseModel):
+    assignee_id: str
+    interval_min: int = 15
+
+
+def _nudge_brief(n: dict) -> dict:
+    return {k: n.get(k) for k in ("id", "assignee_id", "assignee_name", "creator_id",
+                                  "creator_name", "interval_min", "status", "fired_count", "next_fire_at")}
+
+
+@api_router.post("/chat/messages/{message_id}/nudge")
+async def chat_create_nudge(message_id: str, body: ChatNudgeCreate, user: dict = Depends(require_internal_chat)):
+    """Start (or replace) a recurring follow-up reminder on a message."""
+    msg = await db.chat_messages.find_one({"id": message_id, "deleted": {"$ne": True}}, {"_id": 0})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    ch = await db.chat_channels.find_one({"id": msg["channel_id"]}, {"_id": 0})
+    if not await _chat_can_access(ch, user):
+        raise HTTPException(status_code=403, detail="No access to this channel")
+    assignee = await db.users.find_one({"id": body.assignee_id}, {"_id": 0, "id": 1, "first_name": 1, "last_name": 1, "role": 1})
+    if not assignee or assignee.get("role") not in INTERNAL_CHAT_ROLES:
+        raise HTTPException(status_code=400, detail="Assignee must be an internal team member")
+    interval = max(5, min(int(body.interval_min or 15), 1440))
+    now = datetime.now(timezone.utc)
+    next_fire = (now + timedelta(minutes=interval)).isoformat()
+    nudge = {
+        "id": str(uuid.uuid4()), "message_id": message_id, "channel_id": ch["id"], "channel_slug": ch.get("slug"),
+        "creator_id": user["id"], "creator_name": _chat_user_brief(user)["name"],
+        "assignee_id": assignee["id"], "assignee_name": _chat_user_brief(assignee)["name"],
+        "body": (msg.get("body") or "(attachment)")[:200], "interval_min": interval,
+        "status": "active", "fired_count": 0, "created_at": now.isoformat(), "next_fire_at": next_fire, "done_at": None,
+    }
+    # one active nudge per message — replace any prior one
+    await db.chat_nudges.delete_many({"message_id": message_id, "status": "active"})
+    await db.chat_nudges.insert_one(nudge)
+    nudge.pop("_id", None)
+    brief = _nudge_brief(nudge)
+    await db.chat_messages.update_one({"id": message_id}, {"$set": {"nudge": brief}})
+    await broadcast_chat(await _chat_recipients(ch),
+                         {"type": "message_update", "channel_id": ch["id"], "message_id": message_id, "nudge": brief})
+    await post_system_message(ch.get("slug"),
+                              f"🔔 {nudge['creator_name']} set a follow-up for {nudge['assignee_name']} — every {interval} min until marked done.",
+                              {"nudge_id": nudge["id"], "message_id": message_id})
+    if assignee["id"] != user["id"]:
+        await create_notification(
+            title="🔔 Follow-up assigned", message=nudge["body"], notification_type="reminder",
+            link="/chat", priority="high", target_user_ids=[assignee["id"]],
+            created_by=user["id"], created_by_name=nudge["creator_name"],
+            data={"channel_id": ch["id"], "message_id": message_id, "nudge_id": nudge["id"]})
+    return {"nudge": brief}
+
+
+@api_router.post("/chat/nudges/{nudge_id}/done")
+async def chat_nudge_done(nudge_id: str, user: dict = Depends(require_internal_chat)):
+    """Stop a nudge loop. Assignee, creator, or admin only."""
+    n = await db.chat_nudges.find_one({"id": nudge_id}, {"_id": 0})
+    if not n:
+        raise HTTPException(status_code=404, detail="Nudge not found")
+    if user["id"] not in (n["assignee_id"], n["creator_id"]) and user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Only the assignee, creator or an admin can close this follow-up")
+    now = datetime.now(timezone.utc).isoformat()
+    await db.chat_nudges.update_one({"id": nudge_id}, {"$set": {"status": "done", "done_at": now, "done_by": user["id"]}})
+    n["status"] = "done"
+    brief = _nudge_brief(n)
+    brief["done_by_name"] = _chat_user_brief(user)["name"]
+    await db.chat_messages.update_one({"id": n["message_id"]}, {"$set": {"nudge": brief}})
+    ch = await db.chat_channels.find_one({"id": n["channel_id"]}, {"_id": 0})
+    if ch:
+        await broadcast_chat(await _chat_recipients(ch),
+                             {"type": "message_update", "channel_id": ch["id"], "message_id": n["message_id"], "nudge": brief})
+        await post_system_message(ch.get("slug"), f"✅ {brief['done_by_name']} marked the follow-up done.",
+                                  {"nudge_id": nudge_id, "message_id": n["message_id"]})
+    return {"ok": True}
+
+
+@api_router.get("/chat/nudges")
+async def chat_my_nudges(user: dict = Depends(require_internal_chat)):
+    """Active follow-ups assigned to me or created by me."""
+    rows = await db.chat_nudges.find(
+        {"status": "active", "$or": [{"assignee_id": user["id"]}, {"creator_id": user["id"]}]},
+        {"_id": 0}).sort("next_fire_at", 1).to_list(200)
+    return {"nudges": rows, "assigned_to_me": sum(1 for r in rows if r["assignee_id"] == user["id"])}
+
+
+async def scheduled_chat_nudges():
+    """Every minute: ping the assignee of each due, active nudge until it's marked done."""
+    try:
+        now = datetime.now(timezone.utc)
+        due = await db.chat_nudges.find({"status": "active", "next_fire_at": {"$lte": now.isoformat()}}, {"_id": 0}).to_list(500)
+        for n in due:
+            try:
+                msg = await db.chat_messages.find_one({"id": n["message_id"], "deleted": {"$ne": True}}, {"_id": 0, "id": 1})
+                if not msg or n.get("fired_count", 0) >= 200:  # message gone or runaway guard -> stop
+                    await db.chat_nudges.update_one({"id": n["id"]}, {"$set": {"status": "done", "done_at": now.isoformat()}})
+                    continue
+                fired = n.get("fired_count", 0) + 1
+                next_fire = (now + timedelta(minutes=n["interval_min"])).isoformat()
+                await db.chat_nudges.update_one({"id": n["id"]}, {"$set": {"fired_count": fired, "next_fire_at": next_fire}})
+                await post_system_message(
+                    n.get("channel_slug"),
+                    f"🔔 Reminder for {n['assignee_name']} (#{fired}): \"{n['body']}\" — set by {n['creator_name']}, every {n['interval_min']} min. Mark it done to stop.",
+                    {"nudge_id": n["id"], "message_id": n["message_id"]})
+                await create_notification(
+                    title="🔔 Follow-up reminder", message=n["body"], notification_type="reminder",
+                    link="/chat", priority="high", target_user_ids=[n["assignee_id"]],
+                    created_by=n["creator_id"], created_by_name=n["creator_name"],
+                    data={"channel_id": n["channel_id"], "message_id": n["message_id"], "nudge_id": n["id"]})
+                brief = _nudge_brief({**n, "fired_count": fired, "next_fire_at": next_fire})
+                ch = await db.chat_channels.find_one({"id": n["channel_id"]}, {"_id": 0})
+                if ch:
+                    await broadcast_chat(await _chat_recipients(ch),
+                                         {"type": "message_update", "channel_id": n["channel_id"], "message_id": n["message_id"], "nudge": brief})
+            except Exception as e:
+                logger.warning(f"nudge {n.get('id')} fire failed: {e}")
+    except Exception as e:
+        logger.warning(f"scheduled_chat_nudges failed: {e}")
 
 
 @api_router.post("/chat/channels/{channel_id}/mute")

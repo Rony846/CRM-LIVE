@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import {
   Send, Paperclip, Smile, X, Pencil, Trash2, SmilePlus, Hash, Lock, FileText, Loader2,
-  Pin, Bookmark, BellOff, Bell, Settings2,
+  Pin, Bookmark, BellOff, Bell, Settings2, BellRing, Check, Search,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -29,8 +29,12 @@ function Reactions({ msg, onReact, meId }) {
   );
 }
 
-function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onAction, onPin, onSave, isSaved }) {
+function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onAction, onPin, onSave, isSaved, directory, onNudge, onResolveNudge }) {
   const [hover, setHover] = useState(false);
+  const [nOpen, setNOpen] = useState(false);
+  const [nivl, setNivl] = useState(15);
+  const [nq, setNq] = useState('');
+  const canCloseNudge = msg.nudge && (meId === msg.nudge.assignee_id || meId === msg.nudge.creator_id || meRole === 'admin');
   const grouped = prev && prev.sender_id === msg.sender_id
     && (new Date(msg.created_at) - new Date(prev.created_at)) < 5 * 60 * 1000 && !prev.deleted;
   if (msg.deleted) {
@@ -85,6 +89,19 @@ function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onActi
               )}
             </div>
           )}
+          {msg.nudge && (
+            <div className={`mt-1.5 inline-flex flex-wrap items-center gap-2 rounded-md px-2 py-1 text-[11px] ${msg.nudge.status === 'active' ? 'bg-amber-400/10 text-amber-300 ring-1 ring-amber-400/30' : 'bg-muted/40 text-muted-foreground'}`}>
+              {msg.nudge.status === 'active' ? <BellRing className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />}
+              {msg.nudge.status === 'active' ? (
+                <>
+                  <span>Follow-up: <b>{msg.nudge.assignee_name}</b> · every {msg.nudge.interval_min}m{msg.nudge.fired_count ? ` · pinged ${msg.nudge.fired_count}×` : ''}</span>
+                  {canCloseNudge && (
+                    <button onClick={() => onResolveNudge(msg.nudge.id)} className="ml-1 rounded bg-amber-400/20 px-1.5 py-0.5 font-medium hover:bg-amber-400/30">Mark done</button>
+                  )}
+                </>
+              ) : <span>Follow-up done{msg.nudge.done_by_name ? ` by ${msg.nudge.done_by_name}` : ''}</span>}
+            </div>
+          )}
           <Reactions msg={msg} onReact={onReact} meId={meId} />
         </div>
       </div>
@@ -100,6 +117,32 @@ function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onActi
           </Popover>
           <button onClick={() => onSave(msg.id)} className={`rounded p-1 hover:text-foreground ${isSaved ? 'text-primary' : 'text-muted-foreground'}`} title={isSaved ? 'Unsave' : 'Save'}><Bookmark className={`h-3.5 w-3.5 ${isSaved ? 'fill-current' : ''}`} /></button>
           <button onClick={() => onPin(msg.id)} className={`rounded p-1 hover:text-foreground ${msg.pinned ? 'text-amber-400' : 'text-muted-foreground'}`} title={msg.pinned ? 'Unpin' : 'Pin'}><Pin className="h-3.5 w-3.5" /></button>
+          <Popover open={nOpen} onOpenChange={setNOpen}>
+            <PopoverTrigger asChild>
+              <button className={`rounded p-1 hover:text-foreground ${msg.nudge?.status === 'active' ? 'text-amber-400' : 'text-muted-foreground'}`} title="Set follow-up reminder"><BellRing className="h-3.5 w-3.5" /></button>
+            </PopoverTrigger>
+            <PopoverContent className="w-64 p-2">
+              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Follow-up reminder</p>
+              <div className="mb-2 flex gap-1">
+                {[15, 30, 60].map((m) => (
+                  <button key={m} onClick={() => setNivl(m)} className={`flex-1 rounded px-2 py-1 text-[11px] ${nivl === m ? 'bg-primary text-primary-foreground' : 'bg-muted/50 text-muted-foreground'}`}>{m < 60 ? `${m}m` : '1h'}</button>
+                ))}
+              </div>
+              <div className="relative mb-1">
+                <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+                <input value={nq} onChange={(e) => setNq(e.target.value)} placeholder="Assign to…" className="w-full rounded border border-border bg-background pl-7 pr-2 py-1 text-[12px] outline-none" />
+              </div>
+              <div className="max-h-40 overflow-y-auto">
+                {(directory || []).filter((u) => !nq.trim() || u.name.toLowerCase().includes(nq.trim().toLowerCase())).slice(0, 8).map((u) => (
+                  <button key={u.id} onClick={() => { onNudge(msg.id, u.id, nivl); setNOpen(false); setNq(''); }}
+                    className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[12px] hover:bg-accent">
+                    <ChatAvatar id={u.id} name={u.name} size={20} /><span className="truncate">{u.name}</span>
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1 text-[10px] text-muted-foreground/70">Pinged every {nivl < 60 ? `${nivl}m` : '1h'} until marked done.</p>
+            </PopoverContent>
+          </Popover>
           {msg.sender_id === meId && (
             <>
               <button onClick={() => onEdit(msg)} className="rounded p-1 text-muted-foreground hover:text-foreground"><Pencil className="h-3.5 w-3.5" /></button>
@@ -204,6 +247,14 @@ export default function ChatConversation({ compact = false }) {
     try { await chat.resolveAction(id, confirm); }
     catch (e) { toast.error(e.response?.data?.detail || 'Action failed'); }
   };
+  const handleNudge = async (messageId, assigneeId, intervalMin) => {
+    try { const n = await chat.createNudge(messageId, assigneeId, intervalMin); toast.success(`Follow-up set for ${n.assignee_name} · every ${n.interval_min}m`); }
+    catch (e) { toast.error(e.response?.data?.detail || 'Could not set follow-up'); }
+  };
+  const handleResolveNudge = async (nudgeId) => {
+    try { await chat.resolveNudge(nudgeId); toast.success('Follow-up marked done'); }
+    catch (e) { toast.error(e.response?.data?.detail || 'Could not close follow-up'); }
+  };
 
   const typers = Object.values(typing[activeId] || {}).filter((t) => t.name && t.name !== chat.user?.name).map((t) => t.name);
 
@@ -270,7 +321,7 @@ export default function ChatConversation({ compact = false }) {
           return (
             <React.Fragment key={m.id}>
               {sep && <div className="my-2 flex items-center gap-2 px-3"><div className="h-px flex-1 bg-border" /><span className="text-[10px] uppercase tracking-wide text-muted-foreground">{day}</span><div className="h-px flex-1 bg-border" /></div>}
-              <MessageRow msg={m} prev={sep ? null : msgs[i - 1]} meId={user.id} meRole={user.role} onReact={chat.react} onEdit={startEdit} onDelete={chat.deleteMessage} onAction={handleAction} onPin={chat.pinMessage} onSave={chat.saveMessage} isSaved={chat.savedIds.has(m.id)} />
+              <MessageRow msg={m} prev={sep ? null : msgs[i - 1]} meId={user.id} meRole={user.role} onReact={chat.react} onEdit={startEdit} onDelete={chat.deleteMessage} onAction={handleAction} onPin={chat.pinMessage} onSave={chat.saveMessage} isSaved={chat.savedIds.has(m.id)} directory={directory} onNudge={handleNudge} onResolveNudge={handleResolveNudge} />
             </React.Fragment>
           );
         })}
