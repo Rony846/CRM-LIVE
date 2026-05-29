@@ -5,6 +5,7 @@ import { useAuth } from '../auth';
 // Shared hub. Lists the modules that are live in this slice; the rest of the
 // 28 Stitch screens get wired in here as they're built.
 const MODULES = [
+  { label: 'Admin Control', desc: 'System, staff & security', icon: 'shield_person', to: '/admin/dashboard', ready: true },
   { label: 'Repair Queue', desc: 'Technician work queue', icon: 'build', to: '/technician/queue', ready: true },
   { label: 'Accountant Portal', desc: 'Incoming queue & registers', icon: 'account_balance_wallet', to: '/accountant/inventory', ready: true },
   { label: 'Incoming Classification', desc: 'Classify gate-scanned stock', icon: 'inventory_2', to: '/accountant/classify', ready: true },

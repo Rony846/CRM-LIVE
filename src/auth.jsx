@@ -18,6 +18,8 @@ export function roleHome(role) {
       return '/accountant/inventory';
     case 'supervisor':
       return '/supervisor/dashboard';
+    case 'admin':
+      return '/admin/dashboard';
     default:
       return '/home';
   }
