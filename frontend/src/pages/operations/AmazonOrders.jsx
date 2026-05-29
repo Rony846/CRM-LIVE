@@ -800,12 +800,12 @@ export default function AmazonOrders() {
     <DashboardLayout>
       <div className="space-y-6">
         {/* Header */}
-        <div className="flex items-center justify-between">
-          <div>
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="shrink-0">
             <h1 className="text-2xl font-bold text-white">Amazon Orders</h1>
             <p className="text-slate-400">Sync and process orders from Amazon Seller Central</p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3 lg:justify-end">
             <Select value={selectedFirm} onValueChange={setSelectedFirm}>
               <SelectTrigger className="w-64 bg-slate-800 border-slate-700 text-white">
                 <SelectValue placeholder="Select Firm" />
