@@ -61,6 +61,7 @@ export default function CourierTracking() {
   const [refreshing, setRefreshing] = useState(false);
   const [lastLoaded, setLastLoaded] = useState(null);
   const [firmFilter, setFirmFilter] = useState('all');
+  const [stateFilter, setStateFilter] = useState('all');
 
   const [detail, setDetail] = useState(null); // selected shipment for dialog
 
@@ -114,12 +115,24 @@ export default function CourierTracking() {
     return names;
   }, [shipments]);
 
-  const visible = useMemo(() => {
-    if (firmFilter === 'all') return shipments;
-    return shipments.filter((s) => s.firm_name === firmFilter);
-  }, [shipments, firmFilter]);
+  // Firm-filtered set drives the chip counts; the state chip then narrows the table.
+  const base = useMemo(() => (
+    firmFilter === 'all' ? shipments : shipments.filter((s) => s.firm_name === firmFilter)
+  ), [shipments, firmFilter]);
 
-  const deliveredCount = visible.filter((s) => s.state === 'delivered').length;
+  const counts = useMemo(() => ({
+    all: base.length,
+    in_transit: base.filter((s) => s.state === 'in_transit').length,
+    awaiting_pickup: base.filter((s) => s.state === 'awaiting_pickup').length,
+    delivered: base.filter((s) => s.state === 'delivered').length,
+  }), [base]);
+
+  const visible = useMemo(() => (
+    stateFilter === 'all' ? base : base.filter((s) => s.state === stateFilter)
+  ), [base, stateFilter]);
+
+  const deliveredCount = counts.delivered;
+  const awaitingCount = counts.awaiting_pickup;
 
   return (
     <DashboardLayout>
@@ -158,7 +171,12 @@ export default function CourierTracking() {
           <CardHeader>
             <div className="flex items-center justify-between gap-4 flex-wrap">
               <CardTitle className="text-lg">
-                {visible.length} active parcel{visible.length === 1 ? '' : 's'}
+                {visible.length} parcel{visible.length === 1 ? '' : 's'}
+                {awaitingCount > 0 && (
+                  <span className="text-sm font-normal text-violet-500 ml-2">
+                    · {awaitingCount} awaiting pickup
+                  </span>
+                )}
                 {deliveredCount > 0 && (
                   <span className="text-sm font-normal text-emerald-600 ml-2">
                     · {deliveredCount} recently delivered
@@ -168,6 +186,26 @@ export default function CourierTracking() {
               <p className="text-xs text-muted-foreground">
                 Last loaded {timeAgo(lastLoaded)}
               </p>
+            </div>
+            <div className="flex flex-wrap gap-2 mt-3">
+              {[
+                ['all', 'All'],
+                ['in_transit', 'In Transit'],
+                ['awaiting_pickup', 'Awaiting Pickup'],
+                ['delivered', 'Delivered'],
+              ].map(([key, label]) => (
+                <button
+                  key={key}
+                  onClick={() => setStateFilter(key)}
+                  className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${
+                    stateFilter === key
+                      ? 'bg-primary text-primary-foreground border-primary'
+                      : 'bg-muted/40 text-muted-foreground border-border hover:text-foreground'
+                  }`}
+                >
+                  {label} <span className="opacity-70">{counts[key] ?? 0}</span>
+                </button>
+              ))}
             </div>
           </CardHeader>
           <CardContent>
@@ -208,7 +246,7 @@ export default function CourierTracking() {
                       <TableCell className="text-sm">{s.destination || '—'}</TableCell>
                       <TableCell>
                         <StatusBadge state={s.state} label={s.status_label} />
-                        {s.last_check_failed && (
+                        {s.last_check_failed && s.state !== 'awaiting_pickup' && (
                           <span className="block text-xs text-amber-600 mt-0.5">check failed</span>
                         )}
                       </TableCell>
