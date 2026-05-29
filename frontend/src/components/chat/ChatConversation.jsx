@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import {
   Send, Paperclip, Smile, X, Pencil, Trash2, SmilePlus, Hash, Lock, FileText, Loader2,
-  Pin, Bookmark, BellOff, Bell, Settings2, BellRing, Check, Search, Ticket as TicketIcon, CheckCheck, Clock,
+  Pin, Bookmark, BellOff, Bell, Settings2, BellRing, Check, Search, Ticket as TicketIcon, CheckCheck, Clock, BarChart3, Plus,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -29,9 +29,42 @@ function Reactions({ msg, onReact, meId }) {
   );
 }
 
+function PollCard({ poll, meId, meRole, onVote, onClose }) {
+  const total = poll.options.reduce((s, o) => s + (o.votes?.length || 0), 0);
+  const canClose = !poll.closed && (poll.created_by === meId || meRole === 'admin');
+  return (
+    <div className="mt-1 max-w-md rounded-lg border border-border bg-muted/30 p-3">
+      <div className="mb-2 flex items-center gap-2">
+        <BarChart3 className="h-4 w-4 text-primary" />
+        <span className="text-[13px] font-semibold text-foreground">{poll.question}</span>
+        {poll.closed && <span className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">Closed</span>}
+      </div>
+      <div className="space-y-1.5">
+        {poll.options.map((o) => {
+          const n = o.votes?.length || 0; const pct = total ? Math.round((n / total) * 100) : 0; const mine = (o.votes || []).includes(meId);
+          return (
+            <button key={o.id} disabled={poll.closed} onClick={() => onVote(o.id)}
+              className={`relative w-full overflow-hidden rounded-md border px-2.5 py-1.5 text-left text-[12px] ${mine ? 'border-primary/50' : 'border-border'} ${poll.closed ? 'cursor-default' : 'hover:border-primary/40'}`}>
+              <div className="absolute inset-y-0 left-0 bg-primary/15 transition-all" style={{ width: `${pct}%` }} />
+              <div className="relative flex items-center justify-between gap-2">
+                <span className="flex items-center gap-1.5 truncate">{mine && <Check className="h-3 w-3 text-primary" />}{o.text}</span>
+                <span className="text-muted-foreground">{n} · {pct}%</span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-2 flex items-center justify-between text-[10px] text-muted-foreground">
+        <span>{total} vote{total !== 1 ? 's' : ''}{poll.multi ? ' · multiple choice' : ''}</span>
+        {canClose && <button onClick={onClose} className="underline hover:text-foreground">Close poll</button>}
+      </div>
+    </div>
+  );
+}
+
 const TICKET_FROM_CHAT_ROLES = ['admin', 'call_support', 'supervisor'];
 
-function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onAction, onPin, onSave, isSaved, directory, onNudge, onResolveNudge, onToTicket, onRequestAck, onAck }) {
+function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onAction, onPin, onSave, isSaved, directory, onNudge, onResolveNudge, onToTicket, onRequestAck, onAck, onVote, onClosePoll }) {
   const [hover, setHover] = useState(false);
   const [nOpen, setNOpen] = useState(false);
   const [nivl, setNivl] = useState(15);
@@ -64,7 +97,9 @@ function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onActi
             </div>
           )}
           {msg.pinned && <div className="mb-0.5 flex items-center gap-1 text-[10px] font-medium text-amber-400"><Pin className="h-3 w-3" /> Pinned</div>}
-          {msg.body && (
+          {msg.poll ? (
+            <PollCard poll={msg.poll} meId={meId} meRole={meRole} onVote={(oid) => onVote(msg.id, oid)} onClose={() => onClosePoll(msg.id)} />
+          ) : msg.body && (
             msg.is_action
               ? <div className="text-[13px] italic text-muted-foreground break-words">{msg.sender_name} {msg.body}</div>
               : <div className="text-[13px] leading-relaxed text-foreground/90 break-words">{renderBody(msg.body)}</div>
@@ -226,6 +261,8 @@ export default function ChatConversation({ compact = false }) {
   const [schedAt, setSchedAt] = useState('');
   const [schedOpen, setSchedOpen] = useState(false);
   const [schedList, setSchedList] = useState([]);
+  const [pollOpen, setPollOpen] = useState(false);
+  const [pollForm, setPollForm] = useState({ question: '', options: ['', ''], multi: false });
   const scrollRef = useRef(null);
   const fileRef = useRef(null);
   const typingThrottle = useRef(0);
@@ -314,6 +351,23 @@ export default function ChatConversation({ compact = false }) {
   const openToTicket = (m) => {
     setTicketForm({ device_type: 'Inverter', issue_description: m.body || '', customer_name: '', customer_phone: '' });
     setTicketMsg(m);
+  };
+  const handleVote = async (messageId, optionId) => {
+    try { await chat.votePoll(messageId, optionId); }
+    catch (e) { toast.error(e.response?.data?.detail || 'Could not vote'); }
+  };
+  const handleClosePoll = async (messageId) => {
+    try { await chat.closePoll(messageId); toast.success('Poll closed'); }
+    catch (e) { toast.error(e.response?.data?.detail || 'Could not close poll'); }
+  };
+  const submitPoll = async () => {
+    const opts = pollForm.options.map((o) => o.trim()).filter(Boolean);
+    if (!pollForm.question.trim() || opts.length < 2) { toast.error('Add a question and at least 2 options'); return; }
+    try {
+      await chat.createPoll(activeId, { question: pollForm.question, options: opts, multi: pollForm.multi });
+      setPollOpen(false); setPollForm({ question: '', options: ['', ''], multi: false });
+      toast.success('Poll posted');
+    } catch (e) { toast.error(e.response?.data?.detail || 'Could not create poll'); }
   };
   const handleRequestAck = async (messageId, userIds) => {
     try { const a = await chat.requestAck(messageId, userIds); toast.success(`Acknowledgement requested from ${(a.required || []).length}`); }
@@ -429,7 +483,7 @@ export default function ChatConversation({ compact = false }) {
           return (
             <React.Fragment key={m.id}>
               {sep && <div className="my-2 flex items-center gap-2 px-3"><div className="h-px flex-1 bg-border" /><span className="text-[10px] uppercase tracking-wide text-muted-foreground">{day}</span><div className="h-px flex-1 bg-border" /></div>}
-              <MessageRow msg={m} prev={sep ? null : msgs[i - 1]} meId={user.id} meRole={user.role} onReact={chat.react} onEdit={startEdit} onDelete={chat.deleteMessage} onAction={handleAction} onPin={chat.pinMessage} onSave={chat.saveMessage} isSaved={chat.savedIds.has(m.id)} directory={directory} onNudge={handleNudge} onResolveNudge={handleResolveNudge} onToTicket={openToTicket} onRequestAck={handleRequestAck} onAck={handleAck} />
+              <MessageRow msg={m} prev={sep ? null : msgs[i - 1]} meId={user.id} meRole={user.role} onReact={chat.react} onEdit={startEdit} onDelete={chat.deleteMessage} onAction={handleAction} onPin={chat.pinMessage} onSave={chat.saveMessage} isSaved={chat.savedIds.has(m.id)} directory={directory} onNudge={handleNudge} onResolveNudge={handleResolveNudge} onToTicket={openToTicket} onRequestAck={handleRequestAck} onAck={handleAck} onVote={handleVote} onClosePoll={handleClosePoll} />
             </React.Fragment>
           );
         })}
@@ -484,6 +538,7 @@ export default function ChatConversation({ compact = false }) {
             {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
           </button>
           <input ref={fileRef} type="file" multiple className="hidden" onChange={(e) => { onFiles(e.target.files); e.target.value = ''; }} />
+          <button onClick={() => setPollOpen(true)} className="rounded p-2 text-muted-foreground hover:text-foreground" title="Create a poll"><BarChart3 className="h-4 w-4" /></button>
           <Popover>
             <PopoverTrigger asChild><button className="rounded p-2 text-muted-foreground hover:text-foreground" title="Emoji"><Smile className="h-4 w-4" /></button></PopoverTrigger>
             <PopoverContent className="w-auto p-1"><div className="flex flex-wrap gap-0.5" style={{ maxWidth: 200 }}>
@@ -591,6 +646,35 @@ export default function ChatConversation({ compact = false }) {
           </div>
           <DialogFooter>
             <Button onClick={submitToTicket} disabled={ticketBusy}>{ticketBusy ? 'Creating…' : 'Create ticket'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={pollOpen} onOpenChange={setPollOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Create a poll</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <Input placeholder="Ask a question…" value={pollForm.question} onChange={(e) => setPollForm({ ...pollForm, question: e.target.value })} />
+            <div className="space-y-2">
+              {pollForm.options.map((o, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <Input placeholder={`Option ${i + 1}`} value={o} onChange={(e) => setPollForm((f) => { const opts = [...f.options]; opts[i] = e.target.value; return { ...f, options: opts }; })} />
+                  {pollForm.options.length > 2 && (
+                    <button onClick={() => setPollForm((f) => ({ ...f, options: f.options.filter((_, j) => j !== i) }))} className="text-muted-foreground hover:text-rose-400"><X className="h-4 w-4" /></button>
+                  )}
+                </div>
+              ))}
+              {pollForm.options.length < 10 && (
+                <button onClick={() => setPollForm((f) => ({ ...f, options: [...f.options, ''] }))} className="flex items-center gap-1 text-[12px] text-primary hover:underline"><Plus className="h-3.5 w-3.5" /> Add option</button>
+              )}
+            </div>
+            <label className="flex items-center gap-2 text-sm text-muted-foreground">
+              <input type="checkbox" checked={pollForm.multi} onChange={(e) => setPollForm({ ...pollForm, multi: e.target.checked })} />
+              Allow multiple choices
+            </label>
+          </div>
+          <DialogFooter>
+            <Button onClick={submitPoll}>Post poll</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -245,6 +245,22 @@ export function ChatProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
+  const createPoll = useCallback(async (channelId, payload) => {
+    const r = await axios.post(`${API}/chat/channels/${channelId}/poll`, payload, { headers });
+    return r.data.message;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const votePoll = useCallback(async (messageId, optionId) => {
+    await axios.post(`${API}/chat/messages/${messageId}/vote`, { option_id: optionId }, { headers });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const closePoll = useCallback(async (messageId) => {
+    await axios.post(`${API}/chat/messages/${messageId}/poll/close`, {}, { headers });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
   // ---- SSE stream ---------------------------------------------------------
   useEffect(() => {
     if (!enabled || !token) return;
@@ -278,7 +294,7 @@ export function ChatProvider({ children }) {
         setMessages((m) => {
           const arr = m[e.channel_id]; if (!arr) return m;
           return { ...m, [e.channel_id]: arr.map((x) => x.id === e.message_id
-            ? { ...x, ...(e.deleted !== undefined ? { deleted: e.deleted, ...(e.deleted ? { body: '', attachments: [] } : {}) } : {}), ...(e.body !== undefined ? { body: e.body, edited_at: e.edited_at } : {}), ...(e.action ? { action: e.action } : {}), ...(e.pinned !== undefined ? { pinned: e.pinned } : {}), ...(e.nudge !== undefined ? { nudge: e.nudge } : {}), ...(e.ticket !== undefined ? { ticket: e.ticket } : {}), ...(e.ack !== undefined ? { ack: e.ack } : {}) } : x) };
+            ? { ...x, ...(e.deleted !== undefined ? { deleted: e.deleted, ...(e.deleted ? { body: '', attachments: [] } : {}) } : {}), ...(e.body !== undefined ? { body: e.body, edited_at: e.edited_at } : {}), ...(e.action ? { action: e.action } : {}), ...(e.pinned !== undefined ? { pinned: e.pinned } : {}), ...(e.nudge !== undefined ? { nudge: e.nudge } : {}), ...(e.ticket !== undefined ? { ticket: e.ticket } : {}), ...(e.ack !== undefined ? { ack: e.ack } : {}), ...(e.poll !== undefined ? { poll: e.poll } : {}) } : x) };
         });
       } else if (e.type === 'reaction') {
         setMessages((m) => {
@@ -333,7 +349,7 @@ export function ChatProvider({ children }) {
     totalUnread, refreshChannels, refreshDirectory, openChannel, loadOlder, sendMessage,
     react, editMessage, deleteMessage, createChannel, openDM, uploadFile, sendTyping, markRead, setActiveId, resolveAction,
     savedIds, pinMessage, saveMessage, muteChannel, fetchSaved, fetchPins,
-    reads, fetchReads, editChannel, addMembers, removeMember, createNudge, resolveNudge, messageToTicket, requestAck, acknowledge, scheduleMessage, fetchScheduled, cancelScheduled,
+    reads, fetchReads, editChannel, addMembers, removeMember, createNudge, resolveNudge, messageToTicket, requestAck, acknowledge, scheduleMessage, fetchScheduled, cancelScheduled, createPoll, votePoll, closePoll,
   };
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
 }

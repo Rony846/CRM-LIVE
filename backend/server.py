@@ -50016,6 +50016,94 @@ async def chat_ack(message_id: str, user: dict = Depends(require_internal_chat))
     return {"ack": ack}
 
 
+# ---- Quick polls -----------------------------------------------------------
+class ChatPollCreate(BaseModel):
+    question: str
+    options: List[str]
+    multi: bool = False
+
+
+class ChatVote(BaseModel):
+    option_id: str
+
+
+@api_router.post("/chat/channels/{channel_id}/poll")
+async def chat_create_poll(channel_id: str, body: ChatPollCreate, user: dict = Depends(require_internal_chat)):
+    """Post a poll into a channel."""
+    ch = await db.chat_channels.find_one({"id": channel_id}, {"_id": 0})
+    if not await _chat_can_access(ch, user):
+        raise HTTPException(status_code=403, detail="No access to this channel")
+    q = (body.question or "").strip()
+    opts = [o.strip() for o in (body.options or []) if o.strip()]
+    if not q or len(opts) < 2:
+        raise HTTPException(status_code=400, detail="A poll needs a question and at least 2 options")
+    poll = {
+        "question": q, "multi": bool(body.multi), "closed": False,
+        "created_by": user["id"], "created_by_name": _chat_user_brief(user)["name"],
+        "options": [{"id": str(uuid.uuid4()), "text": o[:200], "votes": []} for o in opts[:10]],
+    }
+    now = datetime.now(timezone.utc).isoformat()
+    msg = {
+        "id": str(uuid.uuid4()), "channel_id": channel_id,
+        "sender_id": user["id"], "sender_name": _chat_user_brief(user)["name"], "sender_role": user.get("role"),
+        "body": f"📊 {q}", "attachments": [], "mentions": [], "reactions": {}, "edited_at": None,
+        "deleted": False, "is_action": False, "is_poll": True, "poll": poll, "created_at": now,
+    }
+    await db.chat_messages.insert_one(msg)
+    msg.pop("_id", None)
+    await db.chat_channels.update_one({"id": channel_id}, {"$set": {"updated_at": now}})
+    await broadcast_chat(await _chat_recipients(ch), {"type": "message", "channel_id": channel_id, "message": msg})
+    return {"message": msg}
+
+
+@api_router.post("/chat/messages/{message_id}/vote")
+async def chat_vote(message_id: str, body: ChatVote, user: dict = Depends(require_internal_chat)):
+    """Toggle the caller's vote on a poll option (single-choice unless multi)."""
+    msg = await db.chat_messages.find_one({"id": message_id, "deleted": {"$ne": True}}, {"_id": 0})
+    if not msg or not msg.get("poll"):
+        raise HTTPException(status_code=404, detail="Poll not found")
+    poll = msg["poll"]
+    if poll.get("closed"):
+        raise HTTPException(status_code=400, detail="This poll is closed")
+    uid = user["id"]
+    found = next((o for o in poll["options"] if o["id"] == body.option_id), None)
+    if not found:
+        raise HTTPException(status_code=400, detail="Unknown option")
+    already = uid in found["votes"]
+    if not poll.get("multi"):
+        for o in poll["options"]:
+            o["votes"] = [v for v in o["votes"] if v != uid]
+    if already:
+        found["votes"] = [v for v in found["votes"] if v != uid]
+    else:
+        if uid not in found["votes"]:
+            found["votes"].append(uid)
+    await db.chat_messages.update_one({"id": message_id}, {"$set": {"poll": poll}})
+    ch = await db.chat_channels.find_one({"id": msg["channel_id"]}, {"_id": 0})
+    if ch:
+        await broadcast_chat(await _chat_recipients(ch),
+                             {"type": "message_update", "channel_id": msg["channel_id"], "message_id": message_id, "poll": poll})
+    return {"poll": poll}
+
+
+@api_router.post("/chat/messages/{message_id}/poll/close")
+async def chat_close_poll(message_id: str, user: dict = Depends(require_internal_chat)):
+    """Close a poll (creator or admin)."""
+    msg = await db.chat_messages.find_one({"id": message_id, "deleted": {"$ne": True}}, {"_id": 0})
+    if not msg or not msg.get("poll"):
+        raise HTTPException(status_code=404, detail="Poll not found")
+    poll = msg["poll"]
+    if user["id"] != poll.get("created_by") and user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Only the poll creator or an admin can close it")
+    poll["closed"] = True
+    await db.chat_messages.update_one({"id": message_id}, {"$set": {"poll": poll}})
+    ch = await db.chat_channels.find_one({"id": msg["channel_id"]}, {"_id": 0})
+    if ch:
+        await broadcast_chat(await _chat_recipients(ch),
+                             {"type": "message_update", "channel_id": msg["channel_id"], "message_id": message_id, "poll": poll})
+    return {"poll": poll}
+
+
 # ---- Scheduled (send-later) messages ---------------------------------------
 class ChatScheduleCreate(BaseModel):
     body: str = ""
