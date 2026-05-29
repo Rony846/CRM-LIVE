@@ -1,0 +1,172 @@
+/* ============================================================
+   motion-fx.css — MuscleGrid "Command Deck" global motion layer
+   ------------------------------------------------------------
+   Import AFTER themes-hud.css in frontend/src/index.js:
+
+       import './index.css';
+       import './themes-hud.css';
+       import './motion-fx.css';   // <-- add this line
+
+   Adds a LOT of cinematic motion across the entire CRM with zero
+   per-page edits. Everything is GPU-friendly (transform/opacity
+   only) and scoped to [data-theme^="hud-"]. All looping effects
+   are disabled automatically for users who prefer reduced motion.
+   ============================================================ */
+
+@media (prefers-reduced-motion: no-preference) {
+
+  /* ---------------------------------------------------------
+     1) AMBIENT — slow drifting glow on the app background
+     (purely background, never covers content)
+     --------------------------------------------------------- */
+  [data-theme^="hud-"] body {
+    background-size: 160% 160%, 160% 160%, auto;
+    animation: mgAurora 26s ease-in-out infinite alternate;
+  }
+  @keyframes mgAurora {
+    0%   { background-position: 100% 0%, 0% 100%, 0 0; }
+    100% { background-position: 70% 18%, 24% 78%, 0 0; }
+  }
+
+  /* A faint scan-beam that sweeps down the viewport, behind floating
+     content (z-index:-1 keeps it off modals & opaque panels) */
+  [data-theme^="hud-"] body::after {
+    content: "";
+    position: fixed; left: 0; right: 0; top: 0; height: 160px;
+    z-index: -1; pointer-events: none;
+    background: linear-gradient(to bottom, transparent, hsl(var(--primary) / 0.06), transparent);
+    animation: mgScanBeam 9s linear infinite;
+  }
+  @keyframes mgScanBeam {
+    0%   { transform: translateY(-160px); opacity: 0; }
+    8%   { opacity: 1; }
+    92%  { opacity: 1; }
+    100% { transform: translateY(100vh); opacity: 0; }
+  }
+
+  /* ---------------------------------------------------------
+     2) ENTRANCE — cards rise on every page mount (transform only,
+     so content is NEVER hidden even if an animation is throttled).
+     .sc-card is driven by framer-motion already → excluded.
+     --------------------------------------------------------- */
+  [data-theme^="hud-"] .mg-card:not(.sc-card),
+  [data-theme^="hud-"] .cd-panel {
+    animation: mgRise .5s cubic-bezier(.16,1,.3,1) both;
+  }
+  @keyframes mgRise {
+    from { transform: translateY(12px); }
+    to   { transform: none; }
+  }
+  /* stat-card grids stagger nicely */
+  [data-theme^="hud-"] .cd-statgrid > *,
+  [data-theme^="hud-"] .cd-kpigrid > * { animation: mgRise .5s cubic-bezier(.16,1,.3,1) both; }
+  [data-theme^="hud-"] .cd-statgrid > *:nth-child(2),
+  [data-theme^="hud-"] .cd-kpigrid  > *:nth-child(2) { animation-delay: .06s; }
+  [data-theme^="hud-"] .cd-statgrid > *:nth-child(3),
+  [data-theme^="hud-"] .cd-kpigrid  > *:nth-child(3) { animation-delay: .12s; }
+  [data-theme^="hud-"] .cd-statgrid > *:nth-child(4),
+  [data-theme^="hud-"] .cd-kpigrid  > *:nth-child(4) { animation-delay: .18s; }
+  [data-theme^="hud-"] .cd-statgrid > *:nth-child(5) { animation-delay: .24s; }
+  [data-theme^="hud-"] .cd-statgrid > *:nth-child(6) { animation-delay: .30s; }
+
+  /* main content settles up once on load (transform only — never hides) */
+  [data-theme^="hud-"] main { animation: mgSettle .45s ease both; }
+  @keyframes mgSettle { from { transform: translateY(6px); } to { transform: none; } }
+
+  /* ---------------------------------------------------------
+     3) SHIMMER — a light beam sweeps across KPI cards on a loop
+     Works on the shared StatCard (.sc-card) AND the hero-deck
+     cards (.cd-stat, .cd-kpi). Cards clip overflow, so it's tidy.
+     --------------------------------------------------------- */
+  [data-theme^="hud-"] .sc-card,
+  [data-theme^="hud-"] .cd-stat,
+  [data-theme^="hud-"] .cd-kpi { position: relative; }
+
+  [data-theme^="hud-"] .sc-card::after,
+  [data-theme^="hud-"] .cd-stat::after,
+  [data-theme^="hud-"] .cd-kpi::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 0;
+    background: linear-gradient(115deg, transparent 32%, hsl(var(--primary) / 0.10) 50%, transparent 68%);
+    transform: translateX(-130%);
+    animation: mgSweep 6s ease-in-out infinite;
+  }
+  [data-theme^="hud-"] .cd-stat:nth-child(2)::after,
+  [data-theme^="hud-"] .cd-kpi:nth-child(2)::after { animation-delay: .8s; }
+  [data-theme^="hud-"] .cd-stat:nth-child(3)::after,
+  [data-theme^="hud-"] .cd-kpi:nth-child(3)::after { animation-delay: 1.6s; }
+  [data-theme^="hud-"] .cd-stat:nth-child(4)::after,
+  [data-theme^="hud-"] .cd-kpi:nth-child(4)::after { animation-delay: 2.4s; }
+  @keyframes mgSweep {
+    0%   { transform: translateX(-130%); }
+    55%  { transform: translateX(130%); }
+    100% { transform: translateX(130%); }
+  }
+  /* keep card text above the sweep */
+  [data-theme^="hud-"] .sc-card > *,
+  [data-theme^="hud-"] .cd-stat > *,
+  [data-theme^="hud-"] .cd-kpi > * { position: relative; z-index: 1; }
+
+  /* ---------------------------------------------------------
+     4) PULSE — live dots, breathing glow on active tab/nav
+     --------------------------------------------------------- */
+  [data-theme^="hud-"] [role="tab"][data-state="active"] {
+    animation: mgTabGlow 2.6s ease-in-out infinite;
+  }
+  @keyframes mgTabGlow {
+    0%, 100% { box-shadow: 0 0 0 1px hsl(var(--primary) / 0.25), 0 0 10px hsl(var(--primary) / 0.10); }
+    50%      { box-shadow: 0 0 0 1px hsl(var(--primary) / 0.40), 0 0 20px hsl(var(--primary) / 0.22); }
+  }
+
+  [data-theme^="hud-"] nav a.active,
+  [data-theme^="hud-"] .sidebar-item-active {
+    animation: mgNavGlow 3s ease-in-out infinite;
+  }
+  @keyframes mgNavGlow {
+    0%, 100% { box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.22), 0 0 10px hsl(var(--primary) / 0.10); }
+    50%      { box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.35), 0 0 18px hsl(var(--primary) / 0.20); }
+  }
+
+  /* live status dots (.cd-dot already pings; add a glow halo) */
+  [data-theme^="hud-"] .cd-dot::after { animation: mgDot 1.8s ease-in-out infinite; }
+  @keyframes mgDot {
+    0%, 100% { box-shadow: 0 0 6px hsl(var(--primary)); }
+    50%      { box-shadow: 0 0 14px hsl(var(--primary)); }
+  }
+
+  /* ---------------------------------------------------------
+     5) MICRO-INTERACTIONS — hover lift + icon pop + button glow
+     --------------------------------------------------------- */
+  [data-theme^="hud-"] .mg-card,
+  [data-theme^="hud-"] [data-slot="card"] { transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease; }
+  [data-theme^="hud-"] .mg-card:hover,
+  [data-theme^="hud-"] [data-slot="card"]:hover { transform: translateY(-3px); }
+
+  /* icon tiles pop on card hover */
+  [data-theme^="hud-"] .sc-card:hover .rounded,
+  [data-theme^="hud-"] .cd-stat:hover .cd-stat-ico,
+  [data-theme^="hud-"] .cd-kpi:hover .cd-kpiico { transform: scale(1.08); }
+  [data-theme^="hud-"] .cd-stat-ico,
+  [data-theme^="hud-"] .cd-kpiico { transition: transform .22s ease; }
+
+  /* primary buttons: subtle breathing glow so CTAs feel alive */
+  [data-theme^="hud-"] button[data-variant="default"],
+  [data-theme^="hud-"] [data-slot="button"][data-variant="default"] {
+    animation: mgBtn 3.4s ease-in-out infinite;
+  }
+  @keyframes mgBtn {
+    0%, 100% { box-shadow: 0 0 0 0 hsl(var(--primary) / 0); }
+    50%      { box-shadow: 0 0 16px 0 hsl(var(--primary) / 0.28); }
+  }
+
+  /* spinners already use Tailwind animate-spin; give them an accent trail */
+  [data-theme^="hud-"] .animate-spin { filter: drop-shadow(0 0 6px hsl(var(--primary) / 0.5)); }
+
+  /* number / data cells get a soft glow so they read as "readouts" */
+  [data-theme^="hud-"] .tabular-nums { text-shadow: 0 0 10px hsl(var(--primary) / 0.10); }
+}
+
+/* Reduced-motion: keep ONE gentle entrance, no loops, full visibility */
+@media (prefers-reduced-motion: reduce) {
+  [data-theme^="hud-"] .mg-card:not(.sc-card),
+  [data-theme^="hud-"] .cd-panel { animation: none; opacity: 1; }
+}
