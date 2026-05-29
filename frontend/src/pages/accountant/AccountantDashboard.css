@@ -1,0 +1,132 @@
+/* ============================================================
+   AccountantDashboard.css — "Command Deck" HUD reskin
+   Scoped under .cd-deck. Reskins the shell (header, stat cards,
+   tab bar). The dense operational tables/dialogs inside keep their
+   existing classes and behaviour — they simply sit on the HUD bg.
+   Import at top of AccountantDashboard.jsx: import './AccountantDashboard.css';
+   ============================================================ */
+
+.cd-deck {
+  --cd-accent: #38bdf8;
+  --cd-accent-rgb: 56, 189, 248;
+  --cd-ink: #e8f1ff;
+  --cd-ink-dim: #8ea3c4;
+  --cd-ink-faint: #56698a;
+  --cd-line: rgba(var(--cd-accent-rgb), 0.16);
+  --cd-line-strong: rgba(var(--cd-accent-rgb), 0.42);
+  --cd-panel: rgba(13, 20, 35, 0.62);
+  --cd-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --cd-cond: 'Barlow Condensed', sans-serif;
+
+  position: relative;
+  margin: -1rem;
+  padding: 26px 22px 44px;
+  border-radius: 14px;
+  overflow: hidden;
+  background:
+    radial-gradient(1100px 640px at 80% -10%, rgba(var(--cd-accent-rgb), 0.10), transparent 60%),
+    radial-gradient(820px 560px at 4% 112%, rgba(37, 99, 235, 0.10), transparent 55%),
+    linear-gradient(180deg, #04070e 0%, #070b16 100%);
+  color: var(--cd-ink);
+}
+@media (min-width: 1024px) { .cd-deck { margin: -2rem; padding: 30px 30px 52px; } }
+
+.cd-deck::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(120,160,220,0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(120,160,220,0.05) 1px, transparent 1px);
+  background-size: 46px 46px;
+  -webkit-mask-image: radial-gradient(circle at 50% 28%, #000 55%, transparent 100%);
+          mask-image: radial-gradient(circle at 50% 28%, #000 55%, transparent 100%);
+}
+.cd-deck > * { position: relative; z-index: 1; }
+
+/* ---------- header ---------- */
+.cd-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 14px; margin-bottom: 20px; }
+.cd-eyebrow { display: flex; align-items: center; gap: 9px; font-family: var(--cd-mono); font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--cd-ink-dim); margin-bottom: 9px; }
+.cd-title { font-family: var(--cd-cond); font-weight: 700; font-size: 34px; line-height: 0.98; letter-spacing: 0.01em; text-transform: uppercase; margin: 0; color: #fff; }
+.cd-title .thin { color: var(--cd-ink-dim); font-weight: 600; }
+.cd-sub { margin: 7px 0 0; font-size: 13px; color: var(--cd-ink-dim); }
+.cd-dot { position: relative; display: inline-flex; width: 8px; height: 8px; }
+.cd-dot::before { content:""; position:absolute; inset:0; border-radius:50%; background:#34d399; animation: cd-ping 1.8s cubic-bezier(0,0,.2,1) infinite; }
+.cd-dot::after { content:""; position:relative; width:8px; height:8px; border-radius:50%; background:#34d399; box-shadow:0 0 8px #34d399; }
+@keyframes cd-ping { 75%,100% { transform: scale(2.6); opacity: 0; } }
+
+/* ---------- HUD stat cards (local CdStat component) ---------- */
+.cd-statgrid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-bottom: 22px; }
+@media (max-width: 1100px) { .cd-statgrid { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 640px) { .cd-statgrid { grid-template-columns: repeat(2, 1fr); } }
+.cd-stat { position: relative; padding: 18px; border-radius: 10px; border: 1px solid var(--cd-line); background: var(--cd-panel); backdrop-filter: blur(6px); overflow: hidden; }
+.cd-stat .cd-br { position: absolute; width: 11px; height: 11px; border-color: var(--cd-line-strong); pointer-events: none; }
+.cd-br.tl { top:-1px; left:-1px; border-top:1.5px solid; border-left:1.5px solid; border-top-left-radius:10px; }
+.cd-br.tr { top:-1px; right:-1px; border-top:1.5px solid; border-right:1.5px solid; border-top-right-radius:10px; }
+.cd-br.bl { bottom:-1px; left:-1px; border-bottom:1.5px solid; border-left:1.5px solid; border-bottom-left-radius:10px; }
+.cd-br.br { bottom:-1px; right:-1px; border-bottom:1.5px solid; border-right:1.5px solid; border-bottom-right-radius:10px; }
+.cd-stat-top { display: flex; align-items: flex-start; justify-content: space-between; }
+.cd-stat-label { font-family: var(--cd-mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--cd-ink-dim); }
+.cd-stat-ico { width: 30px; height: 30px; border-radius: 6px; display: grid; place-items: center; border: 1px solid currentColor; }
+.cd-stat-val { font-family: var(--cd-mono); font-weight: 700; font-size: 30px; line-height: 1; margin-top: 16px; color: #fff; text-shadow: 0 0 22px rgba(var(--cd-accent-rgb),0.28); font-variant-numeric: tabular-nums; }
+.cd-stat.amber .cd-stat-ico { color: #fbbf24; background: rgba(251,191,36,.08); }
+.cd-stat.indigo .cd-stat-ico { color: var(--cd-accent); background: rgba(var(--cd-accent-rgb),.08); }
+.cd-stat.emerald .cd-stat-ico { color: #34d399; background: rgba(52,211,153,.08); }
+.cd-stat.sky .cd-stat-ico { color: #7dd3fc; background: rgba(125,211,252,.08); }
+
+/* ---------- reskin the existing shadcn tab bar + card ---------- */
+.cd-deck .mg-card,
+.cd-deck [class*="bg-card"] {
+  background: var(--cd-panel) !important;
+  border-color: var(--cd-line) !important;
+  backdrop-filter: blur(6px);
+}
+.cd-deck [role="tablist"] {
+  background: rgba(4,7,14,0.5) !important;
+  border: 1px solid var(--cd-line);
+  border-radius: 10px;
+  padding: 4px;
+  gap: 4px;
+}
+.cd-deck [role="tab"] {
+  border-radius: 7px !important;
+  color: var(--cd-ink-faint) !important;
+  transition: all .16s ease;
+}
+.cd-deck [role="tab"]:hover { color: var(--cd-ink-dim) !important; }
+.cd-deck [role="tab"][data-state="active"] {
+  background: rgba(var(--cd-accent-rgb), 0.14) !important;
+  color: var(--cd-accent) !important;
+  box-shadow: inset 0 0 0 1px var(--cd-line-strong), 0 0 16px rgba(var(--cd-accent-rgb),0.18);
+}
+
+/* tables/filter bars inside tabs — nudge toward the HUD palette */
+.cd-deck [class*="bg-muted"] { background: rgba(255,255,255,0.03) !important; }
+.cd-deck table th { font-family: var(--cd-mono); letter-spacing: 0.08em; }
+.cd-deck .font-mono { font-family: var(--cd-mono) !important; }
+
+/* entrance */
+.cd-deck .cd-in { animation: cd-up .42s ease; }
+@keyframes cd-up { from { transform: translateY(10px); } to { transform: none; } }
+
+/* ----- Compliance banner -> Command Deck HUD skin (scoped to this page) ----- */
+.cd-deck .cd-compliance .bg-yellow-900\/20,
+.cd-deck .cd-compliance .bg-red-900\/20,
+.cd-deck .cd-compliance .bg-blue-900\/20 {
+  background-color: var(--cd-panel) !important;
+  border-color: var(--cd-line) !important;
+  border-left: 3px solid var(--cd-accent) !important;
+  color: var(--cd-ink) !important;
+  backdrop-filter: blur(6px);
+  box-shadow: inset 0 0 0 1px rgba(var(--cd-accent-rgb), 0.05),
+              0 0 26px rgba(var(--cd-accent-rgb), 0.05);
+}
+.cd-deck .cd-compliance .bg-slate-800 {
+  background-color: rgba(var(--cd-accent-rgb), 0.07) !important;
+  border: 1px solid var(--cd-line);
+}
+.cd-deck .cd-compliance .text-white { color: var(--cd-ink) !important; letter-spacing: 0.01em; }
+.cd-deck .cd-compliance .text-slate-400,
+.cd-deck .cd-compliance .text-slate-300 { color: var(--cd-ink-dim) !important; }
+.cd-deck .cd-compliance .bg-slate-800 .text-sm {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  color: var(--cd-ink) !important;
+}

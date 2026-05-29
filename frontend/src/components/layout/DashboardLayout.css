@@ -1,0 +1,76 @@
+/* ============================================================
+   DashboardLayout.css — modern sidebar ("Command Deck" menu)
+   Scoped to .cd-aside / .cd-nav so it only touches the sidebar.
+   Respects the existing theme variables (works in Obsidian + Lumina).
+   Import this at the top of DashboardLayout.jsx:  import './DashboardLayout.css';
+   Width is intentionally NOT changed (stays w-64 / 256px) so it keeps
+   matching the main content's lg:pl-64 offset.
+   ============================================================ */
+
+.cd-aside {
+  background:
+    radial-gradient(360px 180px at 18% -8%, hsl(var(--primary) / 0.12), transparent 72%),
+    hsl(var(--theme-sidebar)) !important;
+  border-right: 1px solid hsl(var(--border) / 0.85);
+  box-shadow: 22px 0 60px -42px rgba(0, 0, 0, 0.7);
+  display: flex;
+  flex-direction: column;
+}
+
+/* Logo mark — glow + crisp ring */
+.cd-aside a[href="/"] .rounded-lg {
+  box-shadow: 0 0 0 1px hsl(var(--primary) / 0.35), 0 0 20px hsl(var(--primary) / 0.4) !important;
+  letter-spacing: 0.04em;
+}
+
+/* ---------- nav scroll area ---------- */
+.cd-nav { scrollbar-width: thin; scrollbar-color: hsl(var(--border)) transparent; padding-top: 10px !important; }
+.cd-nav::-webkit-scrollbar { width: 6px; }
+.cd-nav::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 3px; }
+.cd-nav::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground) / 0.5); }
+.cd-nav::-webkit-scrollbar-track { background: transparent; }
+
+/* group header buttons + every link: rounder, springier */
+.cd-nav a,
+.cd-nav > div > button {
+  border-radius: 10px !important;
+  transition: background .16s ease, color .16s ease, transform .16s ease, box-shadow .16s ease !important;
+}
+.cd-nav a:hover,
+.cd-nav > div > button:hover { transform: translateX(2px); }
+.cd-nav a:hover svg { transform: scale(1.08); }
+
+/* group header (top-level) — subtle overline feel */
+.cd-nav > div > button {
+  font-weight: 600 !important;
+  letter-spacing: 0.01em;
+}
+
+/* sub-link group container — softer guide line */
+.cd-nav .border-l { border-color: hsl(var(--border) / 0.5) !important; }
+
+/* ACTIVE sub-link (Tailwind applies bg-primary/10 text-primary) — glowing accent rail */
+.cd-nav a[class*="bg-primary/10"] {
+  position: relative;
+  box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.18);
+  background: hsl(var(--primary) / 0.12) !important;
+}
+.cd-nav a[class*="bg-primary/10"]::before {
+  content: "";
+  position: absolute; left: -7px; top: 50%; transform: translateY(-50%);
+  width: 3px; height: 16px; border-radius: 3px;
+  background: hsl(var(--primary));
+  box-shadow: 0 0 10px hsl(var(--primary) / 0.85);
+}
+
+/* logout button — modern danger treatment */
+.cd-aside button[class*="text-red-400"] {
+  border-radius: 10px !important;
+  transition: background .16s ease, transform .16s ease !important;
+}
+.cd-aside button[class*="text-red-400"]:hover { transform: translateX(2px); }
+
+/* User chip up top — give it a faint card */
+.cd-aside .px-4.py-3 {
+  background: hsl(var(--foreground) / 0.02);
+}

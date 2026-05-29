@@ -3,7 +3,7 @@ import axios from 'axios';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
 import ComplianceAlertBanner from '@/components/compliance/ComplianceAlertBanner';
-import StatCard from '@/components/dashboard/StatCard';
+import './AccountantDashboard.css';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -54,6 +54,20 @@ const INDIAN_STATES = [
   "Delhi", "Jammu and Kashmir", "Ladakh", "Puducherry", "Chandigarh",
   "Andaman and Nicobar Islands", "Dadra and Nagar Haveli and Daman and Diu", "Lakshadweep"
 ];
+
+// HUD stat card for the Command Deck reskin (scoped via AccountantDashboard.css)
+function CdStat({ title, value, icon: Icon, tone = 'indigo' }) {
+  return (
+    <div className={`cd-stat ${tone}`}>
+      <span className="cd-br tl" /><span className="cd-br tr" /><span className="cd-br bl" /><span className="cd-br br" />
+      <div className="cd-stat-top">
+        <span className="cd-stat-label">{title}</span>
+        <span className="cd-stat-ico">{Icon ? <Icon className="w-4 h-4" /> : null}</span>
+      </div>
+      <div className="cd-stat-val">{value}</div>
+    </div>
+  );
+}
 
 export default function AccountantDashboard() {
   const { token } = useAuth();
@@ -842,16 +856,26 @@ export default function AccountantDashboard() {
 
   return (
     <DashboardLayout title="Accountant Dashboard">
+      <div className="cd-deck">
       {/* Compliance Alert Banner */}
-      <ComplianceAlertBanner />
-      
+      <div className="cd-compliance"><ComplianceAlertBanner /></div>
+
+      {/* HUD header */}
+      <div className="cd-head cd-in">
+        <div>
+          <div className="cd-eyebrow"><span className="cd-dot" /> Live · Dispatch ops</div>
+          <h2 className="cd-title">Accountant <span className="thin">Dispatch Deck</span></h2>
+          <p className="cd-sub">Reverse pickups, spare dispatch, repaired returns &amp; label uploads</p>
+        </div>
+      </div>
+
       {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6" data-testid="accountant-stats">
-        <StatCard title="Reverse Pickup" value={reversePickupTickets.length} icon={ArrowDownToLine} tone="amber" />
-        <StatCard title="Spare Dispatch" value={spareDispatchTickets.length} icon={Package} tone="indigo" />
-        <StatCard title="Repaired Items" value={repairedTickets.length} icon={Wrench} tone="emerald" />
-        <StatCard title="Pending Labels" value={stats?.pending_labels || 0} icon={FileText} tone="sky" />
-        <StatCard title="Ready to Ship" value={stats?.ready_to_dispatch || 0} icon={Truck} tone="indigo" />
+      <div className="cd-statgrid cd-in" data-testid="accountant-stats">
+        <CdStat title="Reverse Pickup" value={reversePickupTickets.length} icon={ArrowDownToLine} tone="amber" />
+        <CdStat title="Spare Dispatch" value={spareDispatchTickets.length} icon={Package} tone="indigo" />
+        <CdStat title="Repaired Items" value={repairedTickets.length} icon={Wrench} tone="emerald" />
+        <CdStat title="Pending Labels" value={stats?.pending_labels || 0} icon={FileText} tone="sky" />
+        <CdStat title="Ready to Ship" value={stats?.ready_to_dispatch || 0} icon={Truck} tone="indigo" />
       </div>
 
       {/* Tabs */}
@@ -2714,6 +2738,7 @@ export default function AccountantDashboard() {
           )}
         </DialogContent>
       </Dialog>
+      </div>
     </DashboardLayout>
   );
 }
