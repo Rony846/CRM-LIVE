@@ -199,6 +199,18 @@ export function ChatProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
+  const createNudge = useCallback(async (messageId, assigneeId, intervalMin) => {
+    const r = await axios.post(`${API}/chat/messages/${messageId}/nudge`,
+      { assignee_id: assigneeId, interval_min: intervalMin }, { headers });
+    return r.data.nudge;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const resolveNudge = useCallback(async (nudgeId) => {
+    await axios.post(`${API}/chat/nudges/${nudgeId}/done`, {}, { headers });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
   // ---- SSE stream ---------------------------------------------------------
   useEffect(() => {
     if (!enabled || !token) return;
@@ -232,7 +244,7 @@ export function ChatProvider({ children }) {
         setMessages((m) => {
           const arr = m[e.channel_id]; if (!arr) return m;
           return { ...m, [e.channel_id]: arr.map((x) => x.id === e.message_id
-            ? { ...x, ...(e.deleted !== undefined ? { deleted: e.deleted, ...(e.deleted ? { body: '', attachments: [] } : {}) } : {}), ...(e.body !== undefined ? { body: e.body, edited_at: e.edited_at } : {}), ...(e.action ? { action: e.action } : {}), ...(e.pinned !== undefined ? { pinned: e.pinned } : {}) } : x) };
+            ? { ...x, ...(e.deleted !== undefined ? { deleted: e.deleted, ...(e.deleted ? { body: '', attachments: [] } : {}) } : {}), ...(e.body !== undefined ? { body: e.body, edited_at: e.edited_at } : {}), ...(e.action ? { action: e.action } : {}), ...(e.pinned !== undefined ? { pinned: e.pinned } : {}), ...(e.nudge !== undefined ? { nudge: e.nudge } : {}) } : x) };
         });
       } else if (e.type === 'reaction') {
         setMessages((m) => {
@@ -287,7 +299,7 @@ export function ChatProvider({ children }) {
     totalUnread, refreshChannels, refreshDirectory, openChannel, loadOlder, sendMessage,
     react, editMessage, deleteMessage, createChannel, openDM, uploadFile, sendTyping, markRead, setActiveId, resolveAction,
     savedIds, pinMessage, saveMessage, muteChannel, fetchSaved, fetchPins,
-    reads, fetchReads, editChannel, addMembers, removeMember,
+    reads, fetchReads, editChannel, addMembers, removeMember, createNudge, resolveNudge,
   };
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
 }
