@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import Icon from '../lib/icon';
 import { api } from '../lib/api';
-import { GlassKpi, GradientHeader, GlassPanel } from '../components/Glass';
+import { GlassKpi, GradientHeader, GlassPanel, ReadOnlyBadge } from '../components/Glass';
+import { WRITE_ENABLED, READONLY_MSG } from '../lib/flags';
 
 // Gate control — real CRM data: scheduled incoming pickups (GET /api/gate/scheduled)
 // + recent scan logs (GET /api/gate/logs). The scan itself (POST /api/gate/scan)
@@ -31,6 +32,7 @@ export default function GateDashboard() {
   const doScan = async () => {
     const id = tracking.trim();
     if (!id || busy) return;
+    if (!WRITE_ENABLED) { setResult({ ok: false, msg: READONLY_MSG }); return; }
     setBusy(true); setResult(null);
     try {
       const r = await api('/gate/scan', { method: 'POST', body: { scan_type: tab, tracking_id: id } });
@@ -45,7 +47,7 @@ export default function GateDashboard() {
 
   return (
     <div className="relative px-margin-mobile space-y-stack-lg">
-      <GradientHeader title="Gate Control" subtitle="Inward & outward scanning" />
+      <GradientHeader title="Gate Control" subtitle="Inward & outward scanning" action={<ReadOnlyBadge />} />
 
       {/* KPIs (real) */}
       <div className="relative z-10 grid grid-cols-2 gap-gutter">

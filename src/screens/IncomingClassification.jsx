@@ -3,6 +3,8 @@ import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import Icon from '../lib/icon';
 import { api } from '../lib/api';
 import Modal from '../components/Modal';
+import { ReadOnlyBadge } from '../components/Glass';
+import { WRITE_ENABLED, READONLY_MSG } from '../lib/flags';
 
 // LIVE classify: POST /api/incoming-queue/{id}/classify. Writes an immutable
 // party_ledger entry for the inventory paths — so it's behind a confirm modal.
@@ -57,7 +59,10 @@ export default function IncomingClassification() {
     return '';
   };
 
-  const openConfirm = () => { const e = validate(); if (e) { setErr(e); return; } setErr(''); setConfirm(true); };
+  const openConfirm = () => {
+    if (!WRITE_ENABLED) { setErr(READONLY_MSG); return; }
+    const e = validate(); if (e) { setErr(e); return; } setErr(''); setConfirm(true);
+  };
 
   const submit = async () => {
     if (busy) return;
@@ -102,7 +107,10 @@ export default function IncomingClassification() {
       </section>
 
       <section className="bg-surface-card border border-border-subtle rounded-xl p-stack-md flex flex-col gap-stack-lg">
-        <h2 className="font-headline-card text-headline-card text-text-primary">Classification</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="font-headline-card text-headline-card text-text-primary">Classification</h2>
+          <ReadOnlyBadge />
+        </div>
 
         {/* type grid (real types) */}
         <div className="grid grid-cols-2 gap-stack-sm">

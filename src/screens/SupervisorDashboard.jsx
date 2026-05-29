@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import Icon from '../lib/icon';
 import { api } from '../lib/api';
-import { GlassKpi, GradientHeader } from '../components/Glass';
+import { GlassKpi, GradientHeader, ReadOnlyBadge } from '../components/Glass';
 import Modal from '../components/Modal';
+import { WRITE_ENABLED, READONLY_MSG } from '../lib/flags';
 
 // Supervisor portal — live CRM data + LIVE actions.
 // Actions POST form-encoded to /api/tickets/{id}/supervisor-action
@@ -43,6 +44,7 @@ export default function SupervisorDashboard() {
 
   const submit = async () => {
     if (busy || !modal) return;
+    if (!WRITE_ENABLED) { setErr(READONLY_MSG); return; }
     if (notes.trim().length < MIN_NOTES) { setErr(`Notes must be at least ${MIN_NOTES} characters.`); return; }
     if (modal.action === 'spare_dispatch' && !sku.trim()) { setErr('SKU is required for a spare-part dispatch.'); return; }
     setBusy(true); setErr('');
@@ -61,7 +63,7 @@ export default function SupervisorDashboard() {
 
   return (
     <div className="relative px-margin-mobile space-y-stack-lg">
-      <GradientHeader title="Supervisor" subtitle="Escalations & actions" />
+      <GradientHeader title="Supervisor" subtitle="Escalations & actions" action={<ReadOnlyBadge />} />
 
       <div className="relative z-10 grid grid-cols-2 gap-gutter">
         <GlassKpi label="Escalated" value={v(stats?.escalated_tickets)} icon="priority_high" accent="primary" sub="Awaiting supervisor" />

@@ -4,6 +4,7 @@ dist/
 *.local
 .env
 .env.*
+!.env.example
 # Capacitor native projects (generated)
 /android/
 /ios/

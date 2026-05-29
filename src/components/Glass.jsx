@@ -1,6 +1,17 @@
 import Icon from '../lib/icon';
+import { WRITE_ENABLED } from '../lib/flags';
 
 // Shared glassmorphism building blocks for the premium dashboards.
+
+// Shown wherever actions live, so it's obvious when writes are disabled.
+export function ReadOnlyBadge() {
+  if (WRITE_ENABLED) return null;
+  return (
+    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg font-label-caps text-[10px] tracking-wide bg-warning/10 text-warning border border-warning/20">
+      <Icon name="lock" style={{ fontSize: 13 }} /> READ-ONLY
+    </span>
+  );
+}
 
 export function GlassKpi({ label, value, icon, accent = 'primary', sub, pulse }) {
   const TONE = {
