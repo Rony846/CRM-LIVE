@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useChat } from './ChatProvider';
 import { ChatAvatar } from './chatUtils';
-import { Hash, Lock, Plus, Search, ChevronDown } from 'lucide-react';
+import { Hash, Lock, Plus, Search, BellOff } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog';
@@ -38,10 +38,11 @@ export default function ChatChannelList({ onSelect }) {
     catch (e) { toast.error(e.response?.data?.detail || 'Could not create channel'); }
   };
 
-  const Item = ({ id, icon, label, online, unread, active }) => (
+  const Item = ({ id, icon, label, unread, active, muted }) => (
     <button onClick={() => open(id)}
-      className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[13px] ${active ? 'bg-primary/15 text-foreground' : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'}`}>
-      {icon} <span className="truncate">{label}</span> <Unread n={unread} />
+      className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[13px] ${active ? 'bg-primary/15 text-foreground' : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'} ${muted ? 'opacity-50' : ''}`}>
+      {icon} <span className="truncate">{label}</span>
+      {muted ? <BellOff className="ml-auto h-3 w-3 flex-shrink-0" /> : <Unread n={unread} />}
     </button>
   );
 
@@ -62,7 +63,7 @@ export default function ChatChannelList({ onSelect }) {
             )}
           </div>
           {groups.map((c) => (
-            <Item key={c.id} id={c.id} active={c.id === activeId} unread={c.unread}
+            <Item key={c.id} id={c.id} active={c.id === activeId} unread={c.unread} muted={c.muted}
               icon={c.is_private ? <Lock className="h-3.5 w-3.5 flex-shrink-0" /> : <Hash className="h-3.5 w-3.5 flex-shrink-0" />}
               label={c.name} />
           ))}
@@ -74,7 +75,7 @@ export default function ChatChannelList({ onSelect }) {
             <button key={c.id} onClick={() => open(c.id)}
               className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[13px] ${c.id === activeId ? 'bg-primary/15 text-foreground' : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'}`}>
               <ChatAvatar id={c.dm_user?.id} name={c.name} online={c.dm_user?.online} size={22} />
-              <span className="truncate">{c.name}</span><Unread n={c.unread} />
+              <span className="truncate">{c.name}</span>{c.muted ? <BellOff className="ml-auto h-3 w-3" /> : <Unread n={c.unread} />}
             </button>
           ))}
           {!dms.length && <p className="px-2 text-[11px] text-muted-foreground/60">Start a DM from People below.</p>}

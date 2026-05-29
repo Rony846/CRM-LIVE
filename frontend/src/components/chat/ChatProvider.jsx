@@ -19,6 +19,7 @@ export function ChatProvider({ children }) {
   const [typing, setTyping] = useState({});          // { channelId: { userId: {name, ts} } }
   const [connected, setConnected] = useState(false);
   const [open, setOpen] = useState(false);           // dock/page actively viewing
+  const [savedIds, setSavedIds] = useState(() => new Set());
 
   const headers = { Authorization: `Bearer ${token}` };
   const activeRef = useRef(activeId); activeRef.current = activeId;
@@ -77,11 +78,13 @@ export function ChatProvider({ children }) {
       { body, attachments: attachments || [], mentions: mentions || [] }, { headers });
     // optimistic append (the SSE echo is filtered by id)
     const msg = r.data.message;
-    setMessages((m) => {
-      const arr = m[channelId] || [];
-      if (arr.some((x) => x.id === msg.id)) return m;
-      return { ...m, [channelId]: [...arr, msg] };
-    });
+    if (msg) {
+      setMessages((m) => {
+        const arr = m[channelId] || [];
+        if (arr.some((x) => x.id === msg.id)) return m;
+        return { ...m, [channelId]: [...arr, msg] };
+      });
+    }
     return msg;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
@@ -129,18 +132,50 @@ export function ChatProvider({ children }) {
   }, [token]);
 
   const resolveAction = useCallback(async (messageId, confirm) => {
+    await axios.post(`${API}/chat/actions/${messageId}/${confirm ? 'confirm' : 'cancel'}`, {}, { headers });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const pinMessage = useCallback(async (id) => {
+    try { await axios.post(`${API}/chat/messages/${id}/pin`, {}, { headers }); } catch { /* ignore */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const saveMessage = useCallback(async (id) => {
     try {
-      await axios.post(`${API}/chat/actions/${messageId}/${confirm ? 'confirm' : 'cancel'}`, {}, { headers });
-    } catch (e) {
-      throw e;
-    }
+      const r = await axios.post(`${API}/chat/messages/${id}/save`, {}, { headers });
+      setSavedIds((s) => { const n = new Set(s); r.data.saved ? n.add(id) : n.delete(id); return n; });
+    } catch { /* ignore */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const muteChannel = useCallback(async (id) => {
+    try {
+      const r = await axios.post(`${API}/chat/channels/${id}/mute`, {}, { headers });
+      setChannels((cs) => cs.map((c) => (c.id === id ? { ...c, muted: r.data.muted } : c)));
+    } catch { /* ignore */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const fetchSaved = useCallback(async () => {
+    try {
+      const r = await axios.get(`${API}/chat/saved`, { headers });
+      setSavedIds(new Set((r.data.saved || []).map((m) => m.id)));
+      return r.data.saved || [];
+    } catch { return []; }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const fetchPins = useCallback(async (channelId) => {
+    try { const r = await axios.get(`${API}/chat/channels/${channelId}/pins`, { headers }); return r.data.pins || []; }
+    catch { return []; }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
   // ---- SSE stream ---------------------------------------------------------
   useEffect(() => {
     if (!enabled || !token) return;
-    refreshChannels(); refreshDirectory();
+    refreshChannels(); refreshDirectory(); fetchSaved();
     const es = new EventSource(`${API}/chat/stream?token=${encodeURIComponent(token)}`);
     esRef.current = es;
     es.onopen = () => setConnected(true);
@@ -170,7 +205,7 @@ export function ChatProvider({ children }) {
         setMessages((m) => {
           const arr = m[e.channel_id]; if (!arr) return m;
           return { ...m, [e.channel_id]: arr.map((x) => x.id === e.message_id
-            ? { ...x, ...(e.deleted ? { deleted: true, body: '', attachments: [] } : { body: e.body, edited_at: e.edited_at }), ...(e.action ? { action: e.action } : {}) } : x) };
+            ? { ...x, ...(e.deleted !== undefined ? { deleted: e.deleted, ...(e.deleted ? { body: '', attachments: [] } : {}) } : {}), ...(e.body !== undefined ? { body: e.body, edited_at: e.edited_at } : {}), ...(e.action ? { action: e.action } : {}), ...(e.pinned !== undefined ? { pinned: e.pinned } : {}) } : x) };
         });
       } else if (e.type === 'reaction') {
         setMessages((m) => {
@@ -203,7 +238,7 @@ export function ChatProvider({ children }) {
     return () => clearInterval(iv);
   }, []);
 
-  const totalUnread = channels.reduce((s, c) => s + (c.unread || 0), 0);
+  const totalUnread = channels.reduce((s, c) => s + (c.muted ? 0 : (c.unread || 0)), 0);
 
   if (!enabled) return <>{children}</>;
 
@@ -211,6 +246,7 @@ export function ChatProvider({ children }) {
     user, channels, directory, messages, activeId, typing, connected, open, setOpen,
     totalUnread, refreshChannels, refreshDirectory, openChannel, loadOlder, sendMessage,
     react, editMessage, deleteMessage, createChannel, openDM, uploadFile, sendTyping, markRead, setActiveId, resolveAction,
+    savedIds, pinMessage, saveMessage, muteChannel, fetchSaved, fetchPins,
   };
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
 }

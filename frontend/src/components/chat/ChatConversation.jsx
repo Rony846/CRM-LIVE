@@ -5,6 +5,7 @@ import MGUnfurl, { extractRefs } from './MGUnfurl';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
   Send, Paperclip, Smile, X, Pencil, Trash2, SmilePlus, Hash, Lock, FileText, Loader2,
+  Pin, Bookmark, BellOff, Bell,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -23,7 +24,7 @@ function Reactions({ msg, onReact, meId }) {
   );
 }
 
-function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onAction }) {
+function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onAction, onPin, onSave, isSaved }) {
   const [hover, setHover] = useState(false);
   const grouped = prev && prev.sender_id === msg.sender_id
     && (new Date(msg.created_at) - new Date(prev.created_at)) < 5 * 60 * 1000 && !prev.deleted;
@@ -44,7 +45,12 @@ function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onActi
               {msg.edited_at && <span className="text-[10px] text-muted-foreground/60">(edited)</span>}
             </div>
           )}
-          {msg.body && <div className="text-[13px] leading-relaxed text-foreground/90 break-words">{renderBody(msg.body)}</div>}
+          {msg.pinned && <div className="mb-0.5 flex items-center gap-1 text-[10px] font-medium text-amber-400"><Pin className="h-3 w-3" /> Pinned</div>}
+          {msg.body && (
+            msg.is_action
+              ? <div className="text-[13px] italic text-muted-foreground break-words">{msg.sender_name} {msg.body}</div>
+              : <div className="text-[13px] leading-relaxed text-foreground/90 break-words">{renderBody(msg.body)}</div>
+          )}
           {(msg.attachments || []).map((att, i) => (
             <div key={i} className="mt-1">
               {isImage(att) ? (
@@ -87,6 +93,8 @@ function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onActi
               {QUICK_EMOJIS.map((e) => <button key={e} onClick={() => onReact(msg.id, e)} className="rounded p-1 text-base hover:bg-accent">{e}</button>)}
             </div></PopoverContent>
           </Popover>
+          <button onClick={() => onSave(msg.id)} className={`rounded p-1 hover:text-foreground ${isSaved ? 'text-primary' : 'text-muted-foreground'}`} title={isSaved ? 'Unsave' : 'Save'}><Bookmark className={`h-3.5 w-3.5 ${isSaved ? 'fill-current' : ''}`} /></button>
+          <button onClick={() => onPin(msg.id)} className={`rounded p-1 hover:text-foreground ${msg.pinned ? 'text-amber-400' : 'text-muted-foreground'}`} title={msg.pinned ? 'Unpin' : 'Pin'}><Pin className="h-3.5 w-3.5" /></button>
           {msg.sender_id === meId && (
             <>
               <button onClick={() => onEdit(msg)} className="rounded p-1 text-muted-foreground hover:text-foreground"><Pencil className="h-3.5 w-3.5" /></button>
@@ -109,6 +117,8 @@ export default function ChatConversation({ compact = false }) {
   const [uploading, setUploading] = useState(false);
   const [editing, setEditing] = useState(null);
   const [mentionQ, setMentionQ] = useState(null); // {query} when typing @
+  const [pins, setPins] = useState([]);
+  const [savedList, setSavedList] = useState([]);
   const scrollRef = useRef(null);
   const fileRef = useRef(null);
   const typingThrottle = useRef(0);
@@ -204,6 +214,39 @@ export default function ChatConversation({ compact = false }) {
           {channel.type !== 'dm' && channel.topic && <p className="truncate text-[11px] text-muted-foreground">{channel.topic}</p>}
           {channel.type === 'dm' && <p className="text-[11px] text-muted-foreground">{channel.dm_user?.online ? 'Active now' : 'Offline'}</p>}
         </div>
+        <div className="ml-auto flex items-center gap-0.5">
+          <Popover onOpenChange={(o) => o && chat.fetchPins(activeId).then(setPins)}>
+            <PopoverTrigger asChild>
+              <button className="rounded p-1.5 text-muted-foreground hover:text-foreground" title="Pinned messages"><Pin className="h-4 w-4" /></button>
+            </PopoverTrigger>
+            <PopoverContent className="w-80 p-2">
+              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Pinned</p>
+              {pins.length === 0 ? <p className="py-3 text-center text-[12px] text-muted-foreground">No pinned messages.</p>
+                : <div className="max-h-72 space-y-1 overflow-y-auto">{pins.map((p) => (
+                    <div key={p.id} className="rounded border border-border/60 p-2 text-[12px]">
+                      <span className="font-medium">{p.sender_name}</span>
+                      <span className="ml-1 text-muted-foreground">{(p.body || '(attachment)').slice(0, 140)}</span>
+                    </div>))}</div>}
+            </PopoverContent>
+          </Popover>
+          <Popover onOpenChange={(o) => o && chat.fetchSaved().then(setSavedList)}>
+            <PopoverTrigger asChild>
+              <button className="rounded p-1.5 text-muted-foreground hover:text-foreground" title="Saved messages"><Bookmark className="h-4 w-4" /></button>
+            </PopoverTrigger>
+            <PopoverContent className="w-80 p-2">
+              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Saved</p>
+              {savedList.length === 0 ? <p className="py-3 text-center text-[12px] text-muted-foreground">No saved messages.</p>
+                : <div className="max-h-72 space-y-1 overflow-y-auto">{savedList.map((p) => (
+                    <div key={p.id} className="rounded border border-border/60 p-2 text-[12px]">
+                      <div className="text-[10px] text-muted-foreground">{p.sender_name} · #{p.channel_name}</div>
+                      <span>{(p.body || '(attachment)').slice(0, 140)}</span>
+                    </div>))}</div>}
+            </PopoverContent>
+          </Popover>
+          <button onClick={() => chat.muteChannel(activeId)} className={`rounded p-1.5 hover:text-foreground ${channel.muted ? 'text-amber-400' : 'text-muted-foreground'}`} title={channel.muted ? 'Unmute' : 'Mute'}>
+            {channel.muted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
+          </button>
+        </div>
       </div>
 
       {/* messages */}
@@ -214,7 +257,7 @@ export default function ChatConversation({ compact = false }) {
           return (
             <React.Fragment key={m.id}>
               {sep && <div className="my-2 flex items-center gap-2 px-3"><div className="h-px flex-1 bg-border" /><span className="text-[10px] uppercase tracking-wide text-muted-foreground">{day}</span><div className="h-px flex-1 bg-border" /></div>}
-              <MessageRow msg={m} prev={sep ? null : msgs[i - 1]} meId={user.id} meRole={user.role} onReact={chat.react} onEdit={startEdit} onDelete={chat.deleteMessage} onAction={handleAction} />
+              <MessageRow msg={m} prev={sep ? null : msgs[i - 1]} meId={user.id} meRole={user.role} onReact={chat.react} onEdit={startEdit} onDelete={chat.deleteMessage} onAction={handleAction} onPin={chat.pinMessage} onSave={chat.saveMessage} isSaved={chat.savedIds.has(m.id)} />
             </React.Fragment>
           );
         })}

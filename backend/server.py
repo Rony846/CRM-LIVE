@@ -49052,9 +49052,11 @@ async def chat_list_channels(user: dict = Depends(require_internal_chat)):
     ).sort("created_at", 1).to_list(500)
     online = _chat_online_ids()
     out = []
+    rd_docs = {r["channel_id"]: r async for r in db.chat_reads.find({"user_id": user["id"]}, {"_id": 0, "channel_id": 1, "muted": 1})}
     for ch in chans:
         v = _chat_channel_view(ch)
         v["unread"] = await _chat_unread_count(ch["id"], user["id"])
+        v["muted"] = bool(rd_docs.get(ch["id"], {}).get("muted"))
         if ch.get("type") == "dm":
             other_id = next((m for m in (ch.get("members") or []) if m != user["id"]), None)
             other = await db.users.find_one({"id": other_id}, {"_id": 0, "first_name": 1, "last_name": 1, "email": 1, "role": 1}) if other_id else None
@@ -49475,6 +49477,20 @@ async def chat_send_message(channel_id: str, body: ChatMessageCreate, user: dict
         raise HTTPException(status_code=403, detail="No access to this channel")
     text = (body.body or "").strip()
     atts = body.attachments or []
+    is_action = False
+    # Slash commands.
+    if text.startswith("/"):
+        low = text.lower()
+        if low == "/help" or low.startswith("/help"):
+            await _crm_assistant_post(channel_id,
+                "Slash commands: /me <action> · /shrug · /help.  Also: @crm <question> for lookups, "
+                "and @crm close|reopen|escalate <ticket> for confirmable actions.")
+            return {"message": None}
+        if low.startswith("/shrug"):
+            text = (text[6:].strip() + " ¯\\_(ツ)_/¯").strip()
+        elif low.startswith("/me "):
+            is_action = True
+            text = text[4:].strip()
     if not text and not atts:
         raise HTTPException(status_code=400, detail="Empty message")
     now = datetime.now(timezone.utc).isoformat()
@@ -49483,7 +49499,7 @@ async def chat_send_message(channel_id: str, body: ChatMessageCreate, user: dict
         "sender_id": user["id"], "sender_name": _chat_user_brief(user)["name"],
         "sender_role": user.get("role"), "body": text[:8000], "attachments": atts,
         "mentions": body.mentions or [], "reactions": {}, "edited_at": None,
-        "deleted": False, "created_at": now,
+        "deleted": False, "is_action": is_action, "created_at": now,
     }
     await db.chat_messages.insert_one(msg)
     msg.pop("_id", None)  # insert_one injects a non-serializable ObjectId
@@ -49573,6 +49589,67 @@ async def chat_typing(channel_id: str, user: dict = Depends(require_internal_cha
         await broadcast_chat((await _chat_recipients(ch)) - {user["id"]},
                              {"type": "typing", "channel_id": channel_id, "user": _chat_user_brief(user)})
     return {"ok": True}
+
+
+@api_router.post("/chat/messages/{message_id}/pin")
+async def chat_pin(message_id: str, user: dict = Depends(require_internal_chat)):
+    """Toggle pin on a message (any channel member)."""
+    m = await db.chat_messages.find_one({"id": message_id}, {"_id": 0})
+    if not m:
+        raise HTTPException(status_code=404, detail="Message not found")
+    pinned = not m.get("pinned")
+    await db.chat_messages.update_one({"id": message_id},
+                                      {"$set": {"pinned": pinned, "pinned_by": user["id"] if pinned else None}})
+    ch = await db.chat_channels.find_one({"id": m["channel_id"]}, {"_id": 0})
+    await broadcast_chat(await _chat_recipients(ch), {"type": "message_update", "channel_id": m["channel_id"], "message_id": message_id, "pinned": pinned})
+    return {"pinned": pinned}
+
+
+@api_router.get("/chat/channels/{channel_id}/pins")
+async def chat_pins(channel_id: str, user: dict = Depends(require_internal_chat)):
+    ch = await db.chat_channels.find_one({"id": channel_id}, {"_id": 0})
+    if not await _chat_can_access(ch, user):
+        raise HTTPException(status_code=403, detail="No access")
+    pins = await db.chat_messages.find({"channel_id": channel_id, "pinned": True, "deleted": {"$ne": True}},
+                                       {"_id": 0}).sort("created_at", -1).to_list(50)
+    sign_file_urls_deep(pins, user_id=user["id"])
+    return {"pins": pins}
+
+
+@api_router.post("/chat/messages/{message_id}/save")
+async def chat_save(message_id: str, user: dict = Depends(require_internal_chat)):
+    """Toggle a personal bookmark on a message."""
+    existing = await db.chat_saved.find_one({"message_id": message_id, "user_id": user["id"]}, {"_id": 0})
+    if existing:
+        await db.chat_saved.delete_one({"message_id": message_id, "user_id": user["id"]})
+        return {"saved": False}
+    await db.chat_saved.insert_one({"id": str(uuid.uuid4()), "message_id": message_id, "user_id": user["id"],
+                                    "saved_at": datetime.now(timezone.utc).isoformat()})
+    return {"saved": True}
+
+
+@api_router.get("/chat/saved")
+async def chat_saved_list(user: dict = Depends(require_internal_chat)):
+    saved = await db.chat_saved.find({"user_id": user["id"]}, {"_id": 0}).sort("saved_at", -1).to_list(100)
+    out = []
+    for s in saved:
+        m = await db.chat_messages.find_one({"id": s["message_id"], "deleted": {"$ne": True}}, {"_id": 0})
+        if not m:
+            continue
+        ch = await db.chat_channels.find_one({"id": m["channel_id"]}, {"_id": 0, "name": 1, "id": 1})
+        sign_file_urls_deep(m, user_id=user["id"])
+        out.append({**m, "channel_name": (ch or {}).get("name"), "saved_at": s["saved_at"]})
+    return {"saved": out}
+
+
+@api_router.post("/chat/channels/{channel_id}/mute")
+async def chat_mute(channel_id: str, user: dict = Depends(require_internal_chat)):
+    """Toggle mute on a channel (stored on the user's read marker)."""
+    rd = await db.chat_reads.find_one({"channel_id": channel_id, "user_id": user["id"]}, {"_id": 0, "muted": 1})
+    muted = not (rd or {}).get("muted")
+    await db.chat_reads.update_one({"channel_id": channel_id, "user_id": user["id"]},
+                                   {"$set": {"muted": muted}}, upsert=True)
+    return {"muted": muted}
 
 
 @api_router.post("/chat/upload")
