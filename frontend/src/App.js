@@ -153,6 +153,7 @@ import DealerManagement from './pages/admin/DealerManagement';
 import AdminDealerProfile from './pages/admin/DealerProfile';
 import { ChatProvider } from '@/components/chat/ChatProvider';
 import ChatDock from '@/components/chat/ChatDock';
+import ChatErrorBoundary from '@/components/chat/ChatErrorBoundary';
 import ChatPage from './pages/chat/ChatPage';
 import AdminDealerTerms from './pages/admin/AdminDealerTerms';
 import AdminWarrantyClaims from './pages/admin/AdminWarrantyClaims';
@@ -1100,7 +1101,7 @@ function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         <RoleBasedOrderBot />
-        <ChatDock />
+        <ChatErrorBoundary><ChatDock /></ChatErrorBoundary>
         </ChatProvider>
       </BrowserRouter>
     </AuthProvider>

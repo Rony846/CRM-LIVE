@@ -20,6 +20,7 @@ export function ChatProvider({ children }) {
   const [connected, setConnected] = useState(false);
   const [open, setOpen] = useState(false);           // dock/page actively viewing
   const [savedIds, setSavedIds] = useState(() => new Set());
+  const [reads, setReads] = useState({}); // { channelId: { userId: {name, at} } }
 
   const headers = { Authorization: `Bearer ${token}` };
   const activeRef = useRef(activeId); activeRef.current = activeId;
@@ -172,6 +173,18 @@ export function ChatProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
+  const fetchReads = useCallback(async (channelId) => {
+    try { const r = await axios.get(`${API}/chat/channels/${channelId}/reads`, { headers }); setReads((rr) => ({ ...rr, [channelId]: r.data.reads || {} })); }
+    catch { /* ignore */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const editChannel = useCallback(async (id, payload) => {
+    await axios.patch(`${API}/chat/channels/${id}`, payload, { headers });
+    setChannels((cs) => cs.map((c) => (c.id === id ? { ...c, ...payload } : c)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
   // ---- SSE stream ---------------------------------------------------------
   useEffect(() => {
     if (!enabled || !token) return;
@@ -217,6 +230,10 @@ export function ChatProvider({ children }) {
       } else if (e.type === 'presence') {
         setDirectory((d) => d.map((u) => (u.id === e.user_id ? { ...u, online: e.online } : u)));
         setChannels((cs) => cs.map((c) => (c.dm_user && c.dm_user.id === e.user_id ? { ...c, dm_user: { ...c.dm_user, online: e.online } } : c)));
+      } else if (e.type === 'read') {
+        setReads((rr) => ({ ...rr, [e.channel_id]: { ...(rr[e.channel_id] || {}), [e.user.id]: { name: e.user.name, at: e.at } } }));
+      } else if (e.type === 'channel_update') {
+        setChannels((cs) => cs.map((c) => (c.id === e.channel_id ? { ...c, name: e.name, topic: e.topic } : c)));
       }
     });
     return () => { es.close(); esRef.current = null; setConnected(false); };
@@ -247,6 +264,7 @@ export function ChatProvider({ children }) {
     totalUnread, refreshChannels, refreshDirectory, openChannel, loadOlder, sendMessage,
     react, editMessage, deleteMessage, createChannel, openDM, uploadFile, sendTyping, markRead, setActiveId, resolveAction,
     savedIds, pinMessage, saveMessage, muteChannel, fetchSaved, fetchPins,
+    reads, fetchReads, editChannel,
   };
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
 }

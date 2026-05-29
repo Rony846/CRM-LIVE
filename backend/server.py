@@ -49309,7 +49309,7 @@ async def crm_command_respond(channel_id: str, text: str, asker_name: str):
         q = re.sub(r"@crm", " ", text, flags=re.I).strip()
         refs = _CRM_REF_RE.findall(q)
         # Write-action intent: a verb + a ticket ref -> propose a confirmable action.
-        verb_m = re.match(r"^(close|reopen|escalate)\b", q.lower())
+        verb_m = re.match(r"^(close|reopen|escalate|resolve)\b", q.lower())
         if verb_m and refs:
             kind = CHAT_VERB_TO_KIND[verb_m.group(1)]
             ref = refs[0]
@@ -49366,8 +49366,9 @@ CHAT_ACTION_SPECS = {
     "close_ticket":    {"verb": "close",    "roles": ["admin", "supervisor", "call_support"]},
     "reopen_ticket":   {"verb": "reopen",   "roles": ["admin", "supervisor", "call_support"]},
     "escalate_ticket": {"verb": "escalate", "roles": ["admin", "call_support", "supervisor"]},
+    "resolve_ticket":  {"verb": "resolve",  "roles": ["admin", "supervisor", "call_support"]},
 }
-CHAT_VERB_TO_KIND = {"close": "close_ticket", "reopen": "reopen_ticket", "escalate": "escalate_ticket"}
+CHAT_VERB_TO_KIND = {"close": "close_ticket", "reopen": "reopen_ticket", "escalate": "escalate_ticket", "resolve": "resolve_ticket"}
 
 
 async def _execute_chat_action(kind: str, target_id: str, user: dict):
@@ -49389,6 +49390,13 @@ async def _execute_chat_action(kind: str, target_id: str, user: dict):
         await db.tickets.update_one({"id": target_id}, {"$set": {"status": "escalated_to_supervisor", "escalated_by": user["id"], "escalated_by_name": by, "escalated_at": now, "sla_due": sla_due, "updated_at": now}})
         await add_ticket_history(target_id, "Escalated to supervisor via team chat (@crm)", user, {})
         return True, f"escalated {t['ticket_number']}"
+    if kind == "resolve_ticket":
+        # "resolved" is a dealer-ticket-only status; the canonical terminal
+        # "resolved" state for regular tickets is resolved_on_call (queues,
+        # open-ticket counts and the state machine all key off that).
+        await db.tickets.update_one({"id": target_id}, {"$set": {"status": "resolved_on_call", "resolved_by": user["id"], "resolved_by_name": by, "closed_at": now, "updated_at": now}})
+        await add_ticket_history(target_id, "Resolved via team chat (@crm)", user, {})
+        return True, f"resolved {t['ticket_number']}"
     return False, "unknown action"
 
 
@@ -49579,6 +49587,51 @@ async def chat_mark_read(channel_id: str, user: dict = Depends(require_internal_
     now = datetime.now(timezone.utc).isoformat()
     await db.chat_reads.update_one({"channel_id": channel_id, "user_id": user["id"]},
                                    {"$set": {"last_read_at": now}}, upsert=True)
+    ch = await db.chat_channels.find_one({"id": channel_id}, {"_id": 0})
+    if ch:
+        await broadcast_chat(await _chat_recipients(ch),
+                             {"type": "read", "channel_id": channel_id, "user": _chat_user_brief(user), "at": now})
+    return {"ok": True}
+
+
+@api_router.get("/chat/channels/{channel_id}/reads")
+async def chat_channel_reads(channel_id: str, user: dict = Depends(require_internal_chat)):
+    """Who has read this channel and up to when — drives 'seen by' avatars."""
+    ch = await db.chat_channels.find_one({"id": channel_id}, {"_id": 0})
+    if not await _chat_can_access(ch, user):
+        raise HTTPException(status_code=403, detail="No access")
+    rds = await db.chat_reads.find({"channel_id": channel_id, "last_read_at": {"$ne": None}},
+                                   {"_id": 0, "user_id": 1, "last_read_at": 1}).to_list(500)
+    reads = {}
+    for r in rds:
+        u = await db.users.find_one({"id": r["user_id"]}, {"_id": 0, "first_name": 1, "last_name": 1, "id": 1})
+        if u:
+            reads[r["user_id"]] = {"name": _chat_user_brief(u)["name"], "at": r["last_read_at"]}
+    return {"reads": reads}
+
+
+class ChatChannelEdit(BaseModel):
+    name: Optional[str] = None
+    topic: Optional[str] = None
+
+
+@api_router.patch("/chat/channels/{channel_id}")
+async def chat_edit_channel(channel_id: str, body: ChatChannelEdit, user: dict = Depends(require_internal_chat)):
+    """Rename / re-topic a channel. Admin/supervisor (or creator) only; not DMs."""
+    ch = await db.chat_channels.find_one({"id": channel_id}, {"_id": 0})
+    if not ch or ch.get("type") != "channel":
+        raise HTTPException(status_code=404, detail="Channel not found")
+    if user["role"] not in CHAT_CHANNEL_CREATE_ROLES and ch.get("created_by") != user["id"]:
+        raise HTTPException(status_code=403, detail="Only admins/supervisors (or the creator) can edit a channel")
+    updates = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    if body.name is not None and body.name.strip():
+        updates["name"] = body.name.strip()
+    if body.topic is not None:
+        updates["topic"] = body.topic.strip()
+    await db.chat_channels.update_one({"id": channel_id}, {"$set": updates})
+    await broadcast_chat(await _chat_recipients(ch),
+                         {"type": "channel_update", "channel_id": channel_id,
+                          "name": updates.get("name", ch.get("name")), "topic": updates.get("topic", ch.get("topic"))})
     return {"ok": True}
 
 

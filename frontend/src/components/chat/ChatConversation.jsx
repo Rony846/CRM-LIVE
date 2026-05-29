@@ -3,11 +3,16 @@ import { useChat } from './ChatProvider';
 import { ChatAvatar, fmtTime, fmtDay, renderBody, isImage, fileUrl, QUICK_EMOJIS } from './chatUtils';
 import MGUnfurl, { extractRefs } from './MGUnfurl';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
 import {
   Send, Paperclip, Smile, X, Pencil, Trash2, SmilePlus, Hash, Lock, FileText, Loader2,
-  Pin, Bookmark, BellOff, Bell,
+  Pin, Bookmark, BellOff, Bell, Settings2,
 } from 'lucide-react';
 import { toast } from 'sonner';
+
+const CAN_EDIT_CHANNEL = ['admin', 'supervisor'];
 
 function Reactions({ msg, onReact, meId }) {
   const entries = Object.entries(msg.reactions || {}).filter(([, u]) => u.length);
@@ -119,6 +124,8 @@ export default function ChatConversation({ compact = false }) {
   const [mentionQ, setMentionQ] = useState(null); // {query} when typing @
   const [pins, setPins] = useState([]);
   const [savedList, setSavedList] = useState([]);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editForm, setEditForm] = useState({ name: '', topic: '' });
   const scrollRef = useRef(null);
   const fileRef = useRef(null);
   const typingThrottle = useRef(0);
@@ -128,6 +135,7 @@ export default function ChatConversation({ compact = false }) {
     const el = scrollRef.current; if (!el) return;
     if (atBottom.current) el.scrollTop = el.scrollHeight;
   }, [msgs.length, activeId]);
+  useEffect(() => { if (activeId) chat.fetchReads(activeId); /* eslint-disable-next-line */ }, [activeId]);
 
   const mentionMatches = useMemo(() => {
     if (mentionQ == null) return [];
@@ -246,6 +254,10 @@ export default function ChatConversation({ compact = false }) {
           <button onClick={() => chat.muteChannel(activeId)} className={`rounded p-1.5 hover:text-foreground ${channel.muted ? 'text-amber-400' : 'text-muted-foreground'}`} title={channel.muted ? 'Unmute' : 'Mute'}>
             {channel.muted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
           </button>
+          {channel.type !== 'dm' && CAN_EDIT_CHANNEL.includes(user.role) && (
+            <button onClick={() => { setEditForm({ name: channel.name, topic: channel.topic || '' }); setEditOpen(true); }}
+              className="rounded p-1.5 text-muted-foreground hover:text-foreground" title="Edit channel"><Settings2 className="h-4 w-4" /></button>
+          )}
         </div>
       </div>
 
@@ -261,6 +273,21 @@ export default function ChatConversation({ compact = false }) {
             </React.Fragment>
           );
         })}
+        {(() => {
+          const last = msgs[msgs.length - 1];
+          if (!last) return null;
+          const readers = Object.entries((chat.reads || {})[activeId] || {})
+            .filter(([uid, info]) => uid !== user.id && uid !== last.sender_id && info.at && new Date(info.at) >= new Date(last.created_at))
+            .map(([uid, info]) => ({ id: uid, name: info.name }));
+          if (!readers.length) return null;
+          return (
+            <div className="flex items-center justify-end gap-1 px-3 pt-1 pb-2">
+              <span className="text-[10px] text-muted-foreground">Seen by</span>
+              {readers.slice(0, 5).map((r) => <ChatAvatar key={r.id} id={r.id} name={r.name} size={16} />)}
+              {readers.length > 5 && <span className="text-[10px] text-muted-foreground">+{readers.length - 5}</span>}
+            </div>
+          );
+        })()}
         {!msgs.length && <div className="py-10 text-center text-sm text-muted-foreground">No messages yet — say hello 👋</div>}
       </div>
 
@@ -312,6 +339,22 @@ export default function ChatConversation({ compact = false }) {
             className="rounded-md bg-primary px-3 py-2 text-primary-foreground disabled:opacity-40"><Send className="h-4 w-4" /></button>
         </div>
       </div>
+
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Edit channel</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <Input placeholder="Channel name" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} />
+            <Input placeholder="Topic" value={editForm.topic} onChange={(e) => setEditForm({ ...editForm, topic: e.target.value })} />
+          </div>
+          <DialogFooter>
+            <Button onClick={async () => {
+              try { await chat.editChannel(activeId, { name: editForm.name, topic: editForm.topic }); setEditOpen(false); }
+              catch (e) { toast.error(e.response?.data?.detail || 'Could not edit channel'); }
+            }}>Save</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

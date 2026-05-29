@@ -2,6 +2,17 @@ import React from 'react';
 
 export const QUICK_EMOJIS = ['👍', '❤️', '😂', '🎉', '🙏', '🔥', '✅', '👀', '😮', '😢'];
 
+// Pop the chat out into a standalone browser window (chrome-less /chat?popout=1).
+// Reuses an already-open popout (named target) instead of stacking windows.
+export function openChatPopout() {
+  const w = Math.min(1100, Math.round(window.screen.availWidth * 0.6));
+  const h = Math.min(800, Math.round(window.screen.availHeight * 0.8));
+  const features = `popup=yes,width=${w},height=${h},menubar=no,toolbar=no,location=no,status=no`;
+  const win = window.open('/chat?popout=1', 'mg-team-chat', features);
+  if (win) win.focus();
+  return win;
+}
+
 // Deterministic accent per user id (consistent avatar colors).
 const TONES = [
   'bg-primary/20 text-primary', 'bg-[#a4d64c]/20 text-[#a4d64c]', 'bg-sky-400/20 text-sky-300',
