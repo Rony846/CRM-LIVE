@@ -8,7 +8,7 @@ const MODULES = [
   { label: 'Admin Control', desc: 'System, staff & security', icon: 'shield_person', to: '/admin/dashboard', ready: true },
   { label: 'Repair Queue', desc: 'Technician work queue', icon: 'build', to: '/technician/queue', ready: true },
   { label: 'Accountant Portal', desc: 'Incoming queue & registers', icon: 'account_balance_wallet', to: '/accountant/inventory', ready: true },
-  { label: 'Incoming Classification', desc: 'Classify gate-scanned stock', icon: 'inventory_2', to: '/accountant/classify', ready: true },
+  { label: 'Incoming Classification', desc: 'Classify gate-scanned stock', icon: 'inventory_2', to: '/accountant/inventory', ready: true },
   { label: 'Finance Ledger', desc: 'Party ledger & GST', icon: 'account_balance', to: '/accountant/ledger', ready: true },
   { label: 'Gate Scan', desc: 'Inward / outward scanning', icon: 'qr_code_scanner', to: '/gate/scan', ready: true },
   { label: 'Supervisor Portal', desc: 'Escalations & actions', icon: 'supervisor_account', to: '/supervisor/dashboard', ready: true },

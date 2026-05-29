@@ -38,7 +38,8 @@ export default function AccountantPortal() {
         if (!off && Array.isArray(list) && list.length) {
           setQueue(list.slice(0, 8).map((r, i) => ({
             id: r.id || r.tracking_id || `row-${i}`,
-            title: `${r.tracking_id || r.id} — ${r.party_name || r.courier || 'Incoming'}`,
+            realId: r.id, raw: r,
+            title: `${r.tracking_id || r.id} — ${r.customer_name || r.courier || 'Incoming'}`,
             sub: `Incoming • ${r.status || 'QC Pending'}`,
             icon: 'inventory_2',
             prio: 'PRIORITY', prioCls: 'bg-warning/20 text-warning border-warning/30',
@@ -171,7 +172,7 @@ export default function AccountantPortal() {
             {q.actions && (
               <div className="px-stack-md pb-stack-md flex gap-stack-sm">
                 <button className="flex-1 py-2 bg-surface-container-high rounded text-xs font-bold border border-border-subtle">REJECT</button>
-                <button onClick={() => navigate('/accountant/classify')} className="flex-1 py-2 bg-primary text-on-primary rounded text-xs font-bold shadow-md transition-colors">CLASSIFY</button>
+                <button onClick={() => navigate(`/accountant/classify/${q.realId || q.id}`, { state: { entry: q.raw } })} className="flex-1 py-2 bg-primary text-on-primary rounded text-xs font-bold shadow-md transition-colors">CLASSIFY</button>
               </div>
             )}
           </div>

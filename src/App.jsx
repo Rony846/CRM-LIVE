@@ -30,6 +30,7 @@ export default function App() {
         <Route path="/technician/queue" element={<TechnicianQueue />} />
         <Route path="/accountant/inventory" element={<AccountantPortal />} />
         <Route path="/accountant/classify" element={<IncomingClassification />} />
+        <Route path="/accountant/classify/:id" element={<IncomingClassification />} />
         <Route path="/accountant/ledger" element={<FinanceLedger />} />
         <Route path="/profile" element={<Profile />} />
       </Route>

@@ -1,42 +1,68 @@
 import { useEffect, useState } from 'react';
 import Icon from '../lib/icon';
 import { api } from '../lib/api';
-import { GlassKpi, GradientHeader, GlassPanel } from '../components/Glass';
+import { GlassKpi, GradientHeader } from '../components/Glass';
+import Modal from '../components/Modal';
 
-// Supervisor portal — real CRM data: stats (GET /api/supervisor/stats) +
-// escalation queue (GET /api/supervisor/queue). Actions (resolve / spare /
-// escalate via POST /api/tickets/{id}/supervisor-action) are demo-safe here.
+// Supervisor portal — live CRM data + LIVE actions.
+// Actions POST form-encoded to /api/tickets/{id}/supervisor-action
+// (notes must be >= 100 chars; spare_dispatch needs a SKU).
 const STATUS_TONE = {
   escalated_to_supervisor: 'glass-badge-primary text-primary',
   supervisor_followup: 'bg-warning/15 text-warning border border-warning/20',
   customer_escalated: 'bg-error/15 text-error border border-error/20',
+};
+const MIN_NOTES = 100;
+const ACTIONS = {
+  resolve: { label: 'Resolve', icon: 'task_alt', cls: 'bg-success/15 text-success' },
+  spare_dispatch: { label: 'Spare Part', icon: 'inventory_2', cls: 'glass-badge-primary text-primary' },
+  in_process: { label: 'In Process', icon: 'pending_actions', cls: 'bg-warning/15 text-warning' },
 };
 
 export default function SupervisorDashboard() {
   const [stats, setStats] = useState(null);
   const [queue, setQueue] = useState([]);
   const [tab, setTab] = useState('all');
-  const [flash, setFlash] = useState(null);
+  const [modal, setModal] = useState(null); // { ticket, action }
+  const [notes, setNotes] = useState('');
+  const [sku, setSku] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [toast, setToast] = useState('');
 
-  useEffect(() => {
-    let off = false;
-    (async () => {
-      try { const s = await api('/supervisor/stats'); if (!off) setStats(s); } catch { /* */ }
-      try { const q = await api('/supervisor/queue'); if (!off) setQueue(Array.isArray(q) ? q : q?.tickets || []); } catch { /* */ }
-    })();
-    return () => { off = true; };
-  }, []);
+  const refresh = async () => {
+    try { const s = await api('/supervisor/stats'); setStats(s); } catch { /* */ }
+    try { const q = await api('/supervisor/queue'); setQueue(Array.isArray(q) ? q : q?.tickets || []); } catch { /* */ }
+  };
+  useEffect(() => { refresh(); /* eslint-disable-next-line */ }, []);
 
   const v = (n) => (n == null ? '…' : n.toLocaleString('en-IN'));
   const shown = tab === 'urgent' ? queue.filter((t) => t.status === 'customer_escalated') : queue;
 
-  const act = (label, t) => setFlash(`Demo: would POST /tickets/${t.ticket_number}/supervisor-action { action: "${label}" }. Live action kept off against production.`);
+  const openAction = (action, ticket) => { setModal({ action, ticket }); setNotes(''); setSku(''); setErr(''); };
+
+  const submit = async () => {
+    if (busy || !modal) return;
+    if (notes.trim().length < MIN_NOTES) { setErr(`Notes must be at least ${MIN_NOTES} characters.`); return; }
+    if (modal.action === 'spare_dispatch' && !sku.trim()) { setErr('SKU is required for a spare-part dispatch.'); return; }
+    setBusy(true); setErr('');
+    try {
+      const form = { action: modal.action, notes: notes.trim() };
+      if (modal.action === 'spare_dispatch') form.sku = sku.trim();
+      const r = await api(`/tickets/${modal.ticket.id}/supervisor-action`, { method: 'POST', form });
+      setToast(r.message || `${ACTIONS[modal.action].label} done`);
+      setModal(null);
+      await refresh();
+      setTimeout(() => setToast(''), 4000);
+    } catch (e) {
+      setErr(e.data?.detail || e.message || 'Action failed');
+    } finally { setBusy(false); }
+  };
 
   return (
     <div className="relative px-margin-mobile space-y-stack-lg">
       <GradientHeader title="Supervisor" subtitle="Escalations & actions" />
 
-      {/* KPIs (real) */}
       <div className="relative z-10 grid grid-cols-2 gap-gutter">
         <GlassKpi label="Escalated" value={v(stats?.escalated_tickets)} icon="priority_high" accent="primary" sub="Awaiting supervisor" />
         <GlassKpi label="Customer Escalated" value={v(stats?.customer_escalated)} icon="sentiment_dissatisfied" accent="error" pulse sub="No update" />
@@ -44,7 +70,6 @@ export default function SupervisorDashboard() {
         <GlassKpi label="Resolved Today" value={v(stats?.resolved_today)} icon="task_alt" accent="success" />
       </div>
 
-      {/* Filter tabs */}
       <div className="relative z-10 flex p-1 bg-surface-container-low/60 border border-border-subtle rounded-xl">
         {[['all', 'All Escalations'], ['urgent', 'Customer Escalated']].map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)}
@@ -54,14 +79,13 @@ export default function SupervisorDashboard() {
         ))}
       </div>
 
-      {flash && (
-        <div className="relative z-10 flex items-start gap-2 rounded-lg border border-info/30 bg-info/10 p-stack-sm text-info">
-          <Icon name="info" style={{ fontSize: 18 }} />
-          <p className="font-mono-data text-mono-data">{flash}</p>
+      {toast && (
+        <div className="relative z-10 flex items-center gap-2 rounded-lg border border-success/30 bg-success/10 p-stack-sm text-success">
+          <Icon name="check_circle" style={{ fontSize: 18 }} />
+          <p className="font-mono-data text-mono-data">{toast}</p>
         </div>
       )}
 
-      {/* Escalation queue (real) */}
       <div className="relative z-10 space-y-stack-md">
         <div className="flex items-center justify-between">
           <h2 className="font-headline-card text-headline-card text-text-primary">Escalation Queue</h2>
@@ -91,14 +115,56 @@ export default function SupervisorDashboard() {
                 </div>
               </div>
               <div className="grid grid-cols-3 gap-stack-sm mt-1">
-                <button onClick={() => act('resolve', t)} className="py-2 bg-success/15 text-success rounded-lg text-xs font-bold active:scale-95 transition-transform">Resolve</button>
-                <button onClick={() => act('spare_dispatch', t)} className="py-2 glass-badge-primary text-primary rounded-lg text-xs font-bold active:scale-95 transition-transform">Spare Part</button>
-                <button onClick={() => act('escalate', t)} className="py-2 bg-warning/15 text-warning rounded-lg text-xs font-bold active:scale-95 transition-transform">Escalate</button>
+                {Object.entries(ACTIONS).map(([key, a]) => (
+                  <button key={key} onClick={() => openAction(key, t)} className={`py-2 rounded-lg text-xs font-bold active:scale-95 transition-transform ${a.cls}`}>{a.label}</button>
+                ))}
               </div>
             </div>
           </div>
         ))}
       </div>
+
+      {/* Action modal — real mutation */}
+      <Modal
+        open={!!modal} onClose={() => !busy && setModal(null)}
+        title={modal ? `${ACTIONS[modal.action].label} · ${modal.ticket.ticket_number}` : ''}
+        icon={modal ? ACTIONS[modal.action].icon : undefined}
+        footer={modal && (
+          <>
+            <button onClick={() => setModal(null)} disabled={busy} className="flex-1 h-touch-target rounded-lg bg-surface-container-high text-text-primary font-body-bold disabled:opacity-50">Cancel</button>
+            <button onClick={submit} disabled={busy || notes.trim().length < MIN_NOTES}
+              className="flex-1 h-touch-target rounded-lg bg-gradient-to-r from-primary-container to-inverse-primary text-on-primary-container font-body-bold disabled:opacity-50">
+              {busy ? 'Submitting…' : 'Confirm'}
+            </button>
+          </>
+        )}
+      >
+        {modal && (
+          <>
+            <p className="font-body-base text-text-secondary text-sm">
+              {modal.action === 'resolve' && 'Resolve this escalation. The customer ticket will be marked resolved.'}
+              {modal.action === 'spare_dispatch' && 'Create a spare-part dispatch task for the accountant.'}
+              {modal.action === 'in_process' && 'Mark in-process (follow-up required); SLA timer is reset.'}
+            </p>
+            {modal.action === 'spare_dispatch' && (
+              <div className="flex flex-col gap-unit">
+                <label className="font-label-caps text-label-caps text-text-secondary uppercase">SKU code</label>
+                <input value={sku} onChange={(e) => setSku(e.target.value)} placeholder="e.g. MG-BAT-24100"
+                  className="h-touch-target bg-surface-container border border-border-subtle rounded-lg px-stack-md text-on-surface font-mono-data outline-none focus:border-primary" />
+              </div>
+            )}
+            <div className="flex flex-col gap-unit">
+              <div className="flex justify-between">
+                <label className="font-label-caps text-label-caps text-text-secondary uppercase">Notes (required)</label>
+                <span className={`font-mono-data text-mono-data ${notes.trim().length < MIN_NOTES ? 'text-warning' : 'text-success'}`}>{notes.trim().length}/{MIN_NOTES}</span>
+              </div>
+              <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={4} placeholder={`Describe the action taken (min ${MIN_NOTES} characters)…`}
+                className="bg-surface-container border border-border-subtle rounded-lg p-stack-md text-on-surface font-body-base outline-none focus:border-primary resize-none" />
+            </div>
+            {err && <div className="flex items-center gap-2 text-error font-mono-data text-mono-data"><Icon name="error" style={{ fontSize: 16 }} />{err}</div>}
+          </>
+        )}
+      </Modal>
     </div>
   );
 }

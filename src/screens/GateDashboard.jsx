@@ -14,26 +14,33 @@ export default function GateDashboard() {
   const [logs, setLogs] = useState([]);
   const [tab, setTab] = useState('inward');
   const [tracking, setTracking] = useState('');
-  const [flash, setFlash] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null); // {ok, msg}
 
-  useEffect(() => {
-    let off = false;
-    (async () => {
-      try { const s = await api('/gate/scheduled'); if (!off) setScheduled(s?.scheduled_incoming || []); } catch { /* */ }
-      try { const l = await api('/gate/logs?limit=8'); if (!off) setLogs(Array.isArray(l) ? l : []); } catch { /* */ }
-    })();
-    return () => { off = true; };
-  }, []);
+  const refresh = async () => {
+    try { const s = await api('/gate/scheduled'); setScheduled(s?.scheduled_incoming || []); } catch { /* */ }
+    try { const l = await api('/gate/logs?limit=8'); setLogs(Array.isArray(l) ? l : []); } catch { /* */ }
+  };
+  useEffect(() => { refresh(); /* eslint-disable-next-line */ }, []);
 
   const today = todayISO();
   const scansToday = logs.filter((l) => (l.scanned_at || '').slice(0, 10) === today).length;
   const inwardCt = logs.filter((l) => l.scan_type === 'inward').length;
   const outwardCt = logs.filter((l) => l.scan_type === 'outward').length;
 
-  const doScan = () => {
-    if (!tracking.trim()) return;
-    setFlash(`Demo: would POST /gate/scan { scan_type: "${tab}", tracking_id: "${tracking.trim()}" } → ${tab === 'inward' ? 'received_at_factory' : 'dispatched'}. Live scan kept off against production.`);
-    setTracking('');
+  const doScan = async () => {
+    const id = tracking.trim();
+    if (!id || busy) return;
+    setBusy(true); setResult(null);
+    try {
+      const r = await api('/gate/scan', { method: 'POST', body: { scan_type: tab, tracking_id: id } });
+      const matched = r.ticket_number || r.dispatch_number;
+      setResult({ ok: true, msg: `${tab === 'inward' ? 'Inward' : 'Outward'} scan recorded${matched ? ` · ${matched}` : ' (no ticket/dispatch matched)'}${r.status ? ` → ${r.status}` : ''}` });
+      setTracking('');
+      await refresh();
+    } catch (e) {
+      setResult({ ok: false, msg: e.data?.detail || e.message || 'Scan failed' });
+    } finally { setBusy(false); }
   };
 
   return (
@@ -66,15 +73,15 @@ export default function GateDashboard() {
             className="w-full h-touch-target pl-12 pr-4 bg-surface-container border border-border-subtle rounded-lg text-on-surface font-mono-data focus:ring-2 focus:ring-primary/15 focus:border-primary outline-none"
           />
         </div>
-        <button onClick={doScan}
-          className="w-full h-touch-target bg-gradient-to-r from-primary-container to-inverse-primary text-on-primary-container font-body-bold rounded-xl flex items-center justify-center gap-2 active:scale-95 transition-all"
+        <button onClick={doScan} disabled={busy || !tracking.trim()}
+          className="w-full h-touch-target bg-gradient-to-r from-primary-container to-inverse-primary text-on-primary-container font-body-bold rounded-xl flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-50"
           style={{ boxShadow: '0 8px 16px rgba(37,99,235,0.3)' }}>
-          <Icon name="document_scanner" /> Record {tab} scan
+          <Icon name="document_scanner" /> {busy ? 'Recording…' : `Record ${tab} scan`}
         </button>
-        {flash && (
-          <div className="flex items-start gap-2 rounded-lg border border-info/30 bg-info/10 p-stack-sm text-info">
-            <Icon name="info" style={{ fontSize: 18 }} />
-            <p className="font-mono-data text-mono-data">{flash}</p>
+        {result && (
+          <div className={`flex items-start gap-2 rounded-lg border p-stack-sm ${result.ok ? 'border-success/30 bg-success/10 text-success' : 'border-error/30 bg-error/10 text-error'}`}>
+            <Icon name={result.ok ? 'check_circle' : 'error'} style={{ fontSize: 18 }} />
+            <p className="font-mono-data text-mono-data">{result.msg}</p>
           </div>
         )}
       </div>
