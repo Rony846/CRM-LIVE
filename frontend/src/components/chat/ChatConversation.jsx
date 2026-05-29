@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import {
   Send, Paperclip, Smile, X, Pencil, Trash2, SmilePlus, Hash, Lock, FileText, Loader2,
-  Pin, Bookmark, BellOff, Bell, Settings2, BellRing, Check, Search,
+  Pin, Bookmark, BellOff, Bell, Settings2, BellRing, Check, Search, Ticket as TicketIcon,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -29,7 +29,9 @@ function Reactions({ msg, onReact, meId }) {
   );
 }
 
-function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onAction, onPin, onSave, isSaved, directory, onNudge, onResolveNudge }) {
+const TICKET_FROM_CHAT_ROLES = ['admin', 'call_support', 'supervisor'];
+
+function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onAction, onPin, onSave, isSaved, directory, onNudge, onResolveNudge, onToTicket }) {
   const [hover, setHover] = useState(false);
   const [nOpen, setNOpen] = useState(false);
   const [nivl, setNivl] = useState(15);
@@ -102,6 +104,11 @@ function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onActi
               ) : <span>Follow-up done{msg.nudge.done_by_name ? ` by ${msg.nudge.done_by_name}` : ''}</span>}
             </div>
           )}
+          {msg.ticket && (
+            <div className="mt-1.5 inline-flex items-center gap-1.5 rounded-md bg-sky-400/10 px-2 py-1 text-[11px] text-sky-300 ring-1 ring-sky-400/30">
+              <TicketIcon className="h-3.5 w-3.5" /> Ticket <b>{msg.ticket.ticket_number}</b> raised{msg.ticket.by_name ? ` by ${msg.ticket.by_name}` : ''}
+            </div>
+          )}
           <Reactions msg={msg} onReact={onReact} meId={meId} />
         </div>
       </div>
@@ -143,6 +150,9 @@ function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onActi
               <p className="mt-1 text-[10px] text-muted-foreground/70">Pinged every {nivl < 60 ? `${nivl}m` : '1h'} until marked done.</p>
             </PopoverContent>
           </Popover>
+          {TICKET_FROM_CHAT_ROLES.includes(meRole) && !msg.is_system && (
+            <button onClick={() => onToTicket(msg)} className={`rounded p-1 hover:text-foreground ${msg.ticket ? 'text-sky-400' : 'text-muted-foreground'}`} title="Raise a ticket from this message"><TicketIcon className="h-3.5 w-3.5" /></button>
+          )}
           {msg.sender_id === meId && (
             <>
               <button onClick={() => onEdit(msg)} className="rounded p-1 text-muted-foreground hover:text-foreground"><Pencil className="h-3.5 w-3.5" /></button>
@@ -170,6 +180,9 @@ export default function ChatConversation({ compact = false }) {
   const [editOpen, setEditOpen] = useState(false);
   const [editForm, setEditForm] = useState({ name: '', topic: '' });
   const [memberQ, setMemberQ] = useState('');
+  const [ticketMsg, setTicketMsg] = useState(null);
+  const [ticketForm, setTicketForm] = useState({ device_type: 'Inverter', issue_description: '', customer_name: '', customer_phone: '' });
+  const [ticketBusy, setTicketBusy] = useState(false);
   const scrollRef = useRef(null);
   const fileRef = useRef(null);
   const typingThrottle = useRef(0);
@@ -255,6 +268,21 @@ export default function ChatConversation({ compact = false }) {
     try { await chat.resolveNudge(nudgeId); toast.success('Follow-up marked done'); }
     catch (e) { toast.error(e.response?.data?.detail || 'Could not close follow-up'); }
   };
+  const openToTicket = (m) => {
+    setTicketForm({ device_type: 'Inverter', issue_description: m.body || '', customer_name: '', customer_phone: '' });
+    setTicketMsg(m);
+  };
+  const submitToTicket = async () => {
+    if (ticketBusy || !ticketMsg) return;
+    if (!ticketForm.issue_description.trim()) { toast.error('Issue description required'); return; }
+    setTicketBusy(true);
+    try {
+      const r = await chat.messageToTicket(ticketMsg.id, ticketForm);
+      toast.success(`Ticket ${r.ticket_number} created`);
+      setTicketMsg(null);
+    } catch (e) { toast.error(e.response?.data?.detail || 'Could not create ticket'); }
+    finally { setTicketBusy(false); }
+  };
 
   const typers = Object.values(typing[activeId] || {}).filter((t) => t.name && t.name !== chat.user?.name).map((t) => t.name);
 
@@ -321,7 +349,7 @@ export default function ChatConversation({ compact = false }) {
           return (
             <React.Fragment key={m.id}>
               {sep && <div className="my-2 flex items-center gap-2 px-3"><div className="h-px flex-1 bg-border" /><span className="text-[10px] uppercase tracking-wide text-muted-foreground">{day}</span><div className="h-px flex-1 bg-border" /></div>}
-              <MessageRow msg={m} prev={sep ? null : msgs[i - 1]} meId={user.id} meRole={user.role} onReact={chat.react} onEdit={startEdit} onDelete={chat.deleteMessage} onAction={handleAction} onPin={chat.pinMessage} onSave={chat.saveMessage} isSaved={chat.savedIds.has(m.id)} directory={directory} onNudge={handleNudge} onResolveNudge={handleResolveNudge} />
+              <MessageRow msg={m} prev={sep ? null : msgs[i - 1]} meId={user.id} meRole={user.role} onReact={chat.react} onEdit={startEdit} onDelete={chat.deleteMessage} onAction={handleAction} onPin={chat.pinMessage} onSave={chat.saveMessage} isSaved={chat.savedIds.has(m.id)} directory={directory} onNudge={handleNudge} onResolveNudge={handleResolveNudge} onToTicket={openToTicket} />
             </React.Fragment>
           );
         })}
@@ -442,6 +470,34 @@ export default function ChatConversation({ compact = false }) {
               try { await chat.editChannel(activeId, { name: editForm.name, topic: editForm.topic }); setEditOpen(false); }
               catch (e) { toast.error(e.response?.data?.detail || 'Could not edit channel'); }
             }}>Save</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!ticketMsg} onOpenChange={(o) => !o && setTicketMsg(null)}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Raise a ticket from this message</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Device type</label>
+              <select value={ticketForm.device_type} onChange={(e) => setTicketForm({ ...ticketForm, device_type: e.target.value })}
+                className="mt-1 h-9 w-full rounded-md border border-border bg-background px-2 text-sm outline-none">
+                {['Inverter', 'Battery', 'Stabilizer', 'Solar', 'Other'].map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Issue</label>
+              <textarea value={ticketForm.issue_description} onChange={(e) => setTicketForm({ ...ticketForm, issue_description: e.target.value })} rows={3}
+                className="mt-1 w-full rounded-md border border-border bg-background p-2 text-sm outline-none resize-none" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <Input placeholder="Customer name (optional)" value={ticketForm.customer_name} onChange={(e) => setTicketForm({ ...ticketForm, customer_name: e.target.value })} />
+              <Input placeholder="Customer phone (optional)" value={ticketForm.customer_phone} onChange={(e) => setTicketForm({ ...ticketForm, customer_phone: e.target.value })} />
+            </div>
+            <p className="text-[11px] text-muted-foreground">Creates a new support ticket (status: new request) and links it back here.</p>
+          </div>
+          <DialogFooter>
+            <Button onClick={submitToTicket} disabled={ticketBusy}>{ticketBusy ? 'Creating…' : 'Create ticket'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

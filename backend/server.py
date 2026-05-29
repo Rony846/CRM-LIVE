@@ -49861,6 +49861,81 @@ async def chat_my_nudges(user: dict = Depends(require_internal_chat)):
     return {"nudges": rows, "assigned_to_me": sum(1 for r in rows if r["assignee_id"] == user["id"])}
 
 
+TICKET_FROM_CHAT_ROLES = ["admin", "call_support", "supervisor"]
+
+
+class ChatToTicket(BaseModel):
+    device_type: str
+    issue_description: str
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
+    customer_id: Optional[str] = None
+    serial_number: Optional[str] = None
+
+
+@api_router.post("/chat/messages/{message_id}/to-ticket")
+async def chat_message_to_ticket(message_id: str, body: ChatToTicket, user: dict = Depends(require_internal_chat)):
+    """Convert a chat message into a real CRM support ticket and link it back."""
+    if user["role"] not in TICKET_FROM_CHAT_ROLES:
+        raise HTTPException(status_code=403, detail="Only admin / call support / supervisor can raise tickets from chat")
+    msg = await db.chat_messages.find_one({"id": message_id, "deleted": {"$ne": True}}, {"_id": 0})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    ch = await db.chat_channels.find_one({"id": msg["channel_id"]}, {"_id": 0})
+    if not await _chat_can_access(ch, user):
+        raise HTTPException(status_code=403, detail="No access to this channel")
+    issue = (body.issue_description or msg.get("body") or "").strip()
+    if not issue:
+        raise HTTPException(status_code=400, detail="Issue description required")
+
+    # Resolve customer: linked customer_id wins; else free-text name/phone (walk-in style).
+    cust_id, cname, cphone, cemail, caddr, ccity = None, (body.customer_name or "").strip(), (body.customer_phone or "").strip(), None, None, None
+    if body.customer_id:
+        c = await db.users.find_one({"id": body.customer_id}, {"_id": 0})
+        if not c:
+            raise HTTPException(status_code=404, detail="Customer not found")
+        cust_id = c["id"]; cname = f"{c.get('first_name','')} {c.get('last_name','')}".strip()
+        cphone = c.get("phone"); cemail = c.get("email"); caddr = c.get("address"); ccity = c.get("city")
+    if not cname:
+        cname = "Chat-raised"
+
+    now = datetime.now(timezone.utc)
+    ticket_id = str(uuid.uuid4())
+    ticket_number = await generate_ticket_number()
+    try:
+        firm_id = await derive_ticket_firm_id(None, None, body.serial_number)
+    except Exception:
+        firm_id = None
+    ticket_doc = {
+        "id": ticket_id, "ticket_number": ticket_number, "firm_id": firm_id,
+        "customer_id": cust_id, "customer_name": cname, "customer_phone": cphone, "customer_email": cemail,
+        "customer_address": caddr, "customer_city": ccity,
+        "device_type": body.device_type, "product_name": None, "serial_number": body.serial_number,
+        "invoice_number": None, "order_id": None, "invoice_file": None, "issue_photo": None,
+        "issue_description": issue, "support_type": "phone", "status": "new_request",
+        "diagnosis": None, "agent_notes": f"Raised from team chat by {_chat_user_brief(user)['name']}",
+        "repair_notes": None, "assigned_to": None, "assigned_to_name": None,
+        "sla_due": calculate_sla_due("phone", now).isoformat(), "sla_breached": False,
+        "created_by": user["id"], "created_at": now.isoformat(), "updated_at": now.isoformat(),
+        "closed_at": None, "received_at": None, "repaired_at": None, "dispatched_at": None,
+        "source": "team_chat", "source_message_id": message_id,
+        "history": [{"action": "Ticket created from team chat", "by": _chat_user_brief(user)["name"],
+                     "by_id": user["id"], "by_role": user["role"], "timestamp": now.isoformat(),
+                     "details": {"status": "new_request", "channel_id": ch["id"]}}],
+    }
+    await db.tickets.insert_one(ticket_doc)
+
+    # Tag the source message + announce in-channel (auto-unfurls the ticket ref).
+    tinfo = {"id": ticket_id, "ticket_number": ticket_number, "by_name": _chat_user_brief(user)["name"]}
+    await db.chat_messages.update_one({"id": message_id}, {"$set": {"ticket": tinfo}})
+    await broadcast_chat(await _chat_recipients(ch),
+                         {"type": "message_update", "channel_id": ch["id"], "message_id": message_id, "ticket": tinfo})
+    await post_system_message(ch.get("slug"),
+                              f"🎫 {tinfo['by_name']} raised {ticket_number} from a message — {issue[:120]}",
+                              {"ticket_id": ticket_id, "ticket_number": ticket_number, "message_id": message_id})
+    return {"ticket_id": ticket_id, "ticket_number": ticket_number}
+
+
 async def scheduled_chat_nudges():
     """Every minute: ping the assignee of each due, active nudge until it's marked done."""
     try:

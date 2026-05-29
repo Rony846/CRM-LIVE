@@ -211,6 +211,12 @@ export function ChatProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
+  const messageToTicket = useCallback(async (messageId, payload) => {
+    const r = await axios.post(`${API}/chat/messages/${messageId}/to-ticket`, payload, { headers });
+    return r.data; // {ticket_id, ticket_number}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
   // ---- SSE stream ---------------------------------------------------------
   useEffect(() => {
     if (!enabled || !token) return;
@@ -244,7 +250,7 @@ export function ChatProvider({ children }) {
         setMessages((m) => {
           const arr = m[e.channel_id]; if (!arr) return m;
           return { ...m, [e.channel_id]: arr.map((x) => x.id === e.message_id
-            ? { ...x, ...(e.deleted !== undefined ? { deleted: e.deleted, ...(e.deleted ? { body: '', attachments: [] } : {}) } : {}), ...(e.body !== undefined ? { body: e.body, edited_at: e.edited_at } : {}), ...(e.action ? { action: e.action } : {}), ...(e.pinned !== undefined ? { pinned: e.pinned } : {}), ...(e.nudge !== undefined ? { nudge: e.nudge } : {}) } : x) };
+            ? { ...x, ...(e.deleted !== undefined ? { deleted: e.deleted, ...(e.deleted ? { body: '', attachments: [] } : {}) } : {}), ...(e.body !== undefined ? { body: e.body, edited_at: e.edited_at } : {}), ...(e.action ? { action: e.action } : {}), ...(e.pinned !== undefined ? { pinned: e.pinned } : {}), ...(e.nudge !== undefined ? { nudge: e.nudge } : {}), ...(e.ticket !== undefined ? { ticket: e.ticket } : {}) } : x) };
         });
       } else if (e.type === 'reaction') {
         setMessages((m) => {
@@ -299,7 +305,7 @@ export function ChatProvider({ children }) {
     totalUnread, refreshChannels, refreshDirectory, openChannel, loadOlder, sendMessage,
     react, editMessage, deleteMessage, createChannel, openDM, uploadFile, sendTyping, markRead, setActiveId, resolveAction,
     savedIds, pinMessage, saveMessage, muteChannel, fetchSaved, fetchPins,
-    reads, fetchReads, editChannel, addMembers, removeMember, createNudge, resolveNudge,
+    reads, fetchReads, editChannel, addMembers, removeMember, createNudge, resolveNudge, messageToTicket,
   };
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
 }
