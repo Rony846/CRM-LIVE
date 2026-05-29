@@ -12,6 +12,7 @@ const MODULES = [
   { label: 'Finance Ledger', desc: 'Party ledger & GST', icon: 'account_balance', to: '/accountant/ledger', ready: true },
   { label: 'Gate Scan', desc: 'Inward / outward scanning', icon: 'qr_code_scanner', to: '/gate/scan', ready: true },
   { label: 'Supervisor Portal', desc: 'Escalations & actions', icon: 'supervisor_account', to: '/supervisor/dashboard', ready: true },
+  { label: 'Dealer Network', desc: 'Partners, tiers & balances', icon: 'store', to: '/dealers', ready: true },
 ];
 
 export default function Home() {
