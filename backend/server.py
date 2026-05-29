@@ -35413,14 +35413,27 @@ async def amazon_bulk_rescan_awaiting_tracking(
             raise HTTPException(status_code=400,
                                 detail="Browser agent not logged in to Seller Central.")
 
+    # Orders missing a tracking number that Amazon may now show one for:
+    #   - details_captured (the classic "Awaiting Tracking" tab), any age, AND
+    #   - amazon_shipped within the last 30 days — Amazon reported these Shipped
+    #     (so the sync flipped crm_status) but their tracking was never scraped
+    #     back, leaving them invisible to the courier board. Scoped to recent so
+    #     we don't re-scrape thousands of long-delivered historical orders.
+    recent_cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    no_tracking = {"$or": [
+        {"tracking_number": {"$exists": False}},
+        {"tracking_number": None},
+        {"tracking_number": ""},
+    ]}
     stuck = await db.amazon_orders.find(
         {
             "firm_id": firm_id,
-            "crm_status": "details_captured",
-            "$or": [
-                {"tracking_number": {"$exists": False}},
-                {"tracking_number": None},
-                {"tracking_number": ""},
+            "$and": [
+                no_tracking,
+                {"$or": [
+                    {"crm_status": "details_captured"},
+                    {"crm_status": "amazon_shipped", "purchase_date": {"$gte": recent_cutoff}},
+                ]},
             ],
         },
         {"_id": 0, "amazon_order_id": 1},
