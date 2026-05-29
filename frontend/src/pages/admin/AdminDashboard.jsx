@@ -313,7 +313,7 @@ export default function AdminDashboard() {
         {/* Overview */}
         {activeAdminTab === 'overview' && (
           <>
-            <ComplianceAlertBanner />
+            <div className="cd-compliance"><ComplianceAlertBanner /></div>
             <ExecutiveOverview data={loading ? null : execData} onRefresh={fetchExecutive} />
           </>
         )}
