@@ -17,7 +17,29 @@ import {
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Tooltip as RTooltip } from 'recharts';
 import './AdminDashboard.css';
 
-const ACCENT = '#38bdf8';
+const ACCENT_FALLBACK = '#38bdf8';
+
+// Reads the live --hud-accent / --hud-void from the active theme and
+// re-reads whenever the theme (data-theme attribute) changes, so the
+// Recharts revenue area follows Arc Dark / Holo Bright / Neon Pink / Matrix Green.
+function useThemeColors() {
+  const read = () => {
+    if (typeof window === 'undefined') return { accent: ACCENT_FALLBACK, void: '#04070e' };
+    const cs = getComputedStyle(document.documentElement);
+    return {
+      accent: (cs.getPropertyValue('--hud-accent') || ACCENT_FALLBACK).trim() || ACCENT_FALLBACK,
+      void: (cs.getPropertyValue('--hud-void') || '#04070e').trim() || '#04070e',
+    };
+  };
+  const [colors, setColors] = React.useState(read);
+  React.useEffect(() => {
+    const obs = new MutationObserver(() => setColors(read()));
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class'] });
+    setColors(read());
+    return () => obs.disconnect();
+  }, []);
+  return colors;
+}
 
 /* ---------- formatting ---------- */
 const fmtINR = (n) => {
@@ -108,6 +130,7 @@ function MiniStat({ label, value, icon: Icon }) {
 
 /* ===================== Executive Overview ===================== */
 function ExecutiveOverview({ data, onRefresh }) {
+  const { accent: ACCENT, void: VOID } = useThemeColors();
   if (!data) {
     return (
       <div>
@@ -183,8 +206,8 @@ function ExecutiveOverview({ data, onRefresh }) {
                   <YAxis tickLine={false} axisLine={false} width={46} tick={{ fontSize: 10, fill: '#56698a' }} tickFormatter={fmtK} />
                   <RTooltip content={<RevTooltip />} cursor={{ stroke: ACCENT, strokeOpacity: 0.3, strokeWidth: 1 }} />
                   <Area type="monotone" dataKey="value" stroke={ACCENT} strokeWidth={2.5} fill="url(#cdArea)" dot={false}
-                    style={{ filter: 'drop-shadow(0 0 6px rgba(56,189,248,0.55))' }}
-                    activeDot={{ r: 4, fill: '#04070e', stroke: ACCENT, strokeWidth: 2 }} />
+                    style={{ filter: `drop-shadow(0 0 6px ${ACCENT})` }}
+                    activeDot={{ r: 4, fill: VOID, stroke: ACCENT, strokeWidth: 2 }} />
                 </AreaChart>
               </ResponsiveContainer>
             ) : <div className="cd-empty">No revenue data for this period</div>}
@@ -313,7 +336,7 @@ export default function AdminDashboard() {
         {/* Overview */}
         {activeAdminTab === 'overview' && (
           <>
-            <div className="cd-compliance"><ComplianceAlertBanner /></div>
+            <ComplianceAlertBanner />
             <ExecutiveOverview data={loading ? null : execData} onRefresh={fetchExecutive} />
           </>
         )}

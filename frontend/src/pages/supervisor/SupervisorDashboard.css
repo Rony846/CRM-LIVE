@@ -1,5 +1,5 @@
 /* ============================================================
-   AccountantDashboard.css — "Command Deck" HUD reskin
+   SupervisorDashboard.css — "Command Deck" HUD reskin
    Scoped under .cd-deck. Reskins the shell (header, stat cards,
    tab bar). The dense operational tables/dialogs inside keep their
    existing classes and behaviour — they simply sit on the HUD bg.
@@ -55,7 +55,7 @@
 @keyframes cd-ping { 75%,100% { transform: scale(2.6); opacity: 0; } }
 
 /* ---------- HUD stat cards (local CdStat component) ---------- */
-.cd-statgrid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-bottom: 22px; }
+.cd-statgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 22px; }
 @media (max-width: 1100px) { .cd-statgrid { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 640px) { .cd-statgrid { grid-template-columns: repeat(2, 1fr); } }
 .cd-stat { position: relative; padding: 18px; border-radius: 10px; border: 1px solid var(--cd-line); background: var(--cd-panel); backdrop-filter: blur(6px); overflow: hidden; }
@@ -107,3 +107,9 @@
 /* entrance */
 .cd-deck .cd-in { animation: cd-up .42s ease; }
 @keyframes cd-up { from { transform: translateY(10px); } to { transform: none; } }
+
+/* Supervisor tones */
+.cd-stat.violet .cd-stat-ico { color: #c084fc; background: rgba(192,132,252,.08); }
+.cd-stat.orange .cd-stat-ico { color: #fb923c; background: rgba(251,146,60,.08); }
+.cd-stat.rose .cd-stat-ico { color: #fb7185; background: rgba(251,113,133,.08); }
+.cd-stat.emerald .cd-stat-ico { color: #34d399; background: rgba(52,211,153,.08); }
