@@ -6,7 +6,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 const config: CapacitorConfig = {
   appId: 'in.musclegrid.staff',
   appName: 'MuscleGrid Staff',
-  webDir: 'dist',
+  webDir: 'dist-native',
   server: {
     androidScheme: 'https',
   },

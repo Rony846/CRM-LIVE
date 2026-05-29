@@ -3,6 +3,13 @@
 // pattern the Stitch integration docs assume.
 const TOKEN_KEY = 'mg.staff.token';
 
+// In the PWA (served under /staff/ by the CRM nginx) /api is same-origin and
+// proxied. In the native Capacitor app the bundle is served from the WebView
+// root (no proxy), so calls must hit the CRM backend by absolute URL — set via
+// VITE_NATIVE_API_BASE. The backend must allow the WebView origin in CORS.
+const isNative = typeof window !== 'undefined' && !!window.Capacitor?.isNativePlatform?.();
+const API_BASE = isNative ? (import.meta.env.VITE_NATIVE_API_BASE || '').replace(/\/$/, '') : '';
+
 export const getToken = () => localStorage.getItem(TOKEN_KEY);
 export const setToken = (t) => (t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY));
 
@@ -22,7 +29,7 @@ export async function api(path, { method = 'GET', body, form, auth = true } = {}
     headers['Content-Type'] = 'application/json';
     payload = JSON.stringify(body);
   }
-  const res = await fetch(`/api${path}`, { method, headers, body: payload });
+  const res = await fetch(`${API_BASE}/api${path}`, { method, headers, body: payload });
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }

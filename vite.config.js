@@ -8,8 +8,10 @@ import react from '@vitejs/plugin-react';
 const API_TARGET = process.env.VITE_API_PROXY || 'http://127.0.0.1:8001';
 
 export default defineConfig({
-  // Served under /staff/ by the CRM nginx (and dev mirrors it for parity).
-  base: '/staff/',
+  // PWA build is served under /staff/ by the CRM nginx. The native (Capacitor)
+  // build serves the bundle from the WebView root, so it builds with base '/'
+  // via `VITE_BASE=/` (see the build:native script).
+  base: process.env.VITE_BASE || '/staff/',
   plugins: [react()],
   server: {
     host: '0.0.0.0',

@@ -7,8 +7,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:native": "VITE_BASE=/ vite build --outDir dist-native --emptyOutDir",
     "preview": "vite preview",
-    "cap:sync": "cap sync"
+    "cap:sync": "npm run build:native && cap sync"
   },
   "dependencies": {
     "lucide-react": "^0.456.0",
