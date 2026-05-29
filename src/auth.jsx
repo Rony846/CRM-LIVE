@@ -5,24 +5,32 @@ import { api, getToken, setToken } from './lib/api';
 const AuthContext = createContext(null);
 export const useAuth = () => useContext(AuthContext);
 
-// Where each role lands after login (per integration_strategy_map.md). Screens
-// not yet ported fall back to the shared /home hub so nothing dead-ends.
+// Each role's own landing screen. Admin lands on the hub (the only role that
+// can reach every dashboard); every other role lands on — and is confined to —
+// its own dashboard.
+const ROLE_HOME = {
+  admin: '/home',
+  supervisor: '/supervisor/dashboard',
+  service_agent: '/technician/queue',
+  technician: '/technician/queue',
+  accountant: '/accountant/inventory',
+  gate: '/gate/scan',
+  dispatcher: '/dispatch',
+  call_support: '/support',
+  dealer: '/dealer/home',
+};
 export function roleHome(role) {
-  switch (role) {
-    case 'technician':
-    case 'service_agent':
-      return '/technician/queue';
-    case 'gate':
-      return '/gate/scan';
-    case 'accountant':
-      return '/accountant/inventory';
-    case 'supervisor':
-      return '/supervisor/dashboard';
-    case 'admin':
-      return '/admin/dashboard';
-    default:
-      return '/home';
-  }
+  return ROLE_HOME[role] || '/profile';
+}
+
+// Route guard: admin sees everything; every other role may only open routes
+// whose `roles` include it — otherwise it's bounced to its own dashboard.
+export function RoleRoute({ roles, children }) {
+  const { user, loading } = useAuth();
+  if (loading) return null;
+  if (!user) return <Navigate to="/login" replace />;
+  if (user.role === 'admin' || (roles || []).includes(user.role)) return children;
+  return <Navigate to={roleHome(user.role)} replace />;
 }
 
 export function AuthProvider({ children }) {
