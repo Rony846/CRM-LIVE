@@ -3,6 +3,7 @@ import axios from 'axios';
 import { motion, useReducedMotion } from 'framer-motion';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
+import './SupervisorDashboard.css';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -24,22 +25,15 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-// ── Tone map: icon-tile bg + text (opacity-based, works on any dark surface)
-const STAT_TONES = {
-  violet:  'bg-violet-400/15 text-violet-400',
-  orange:  'bg-orange-400/15 text-orange-400',
-  rose:    'bg-rose-500/15 text-rose-400',
-  emerald: 'bg-emerald-500/15 text-emerald-500',
-};
-
-// KPI card — glass panel, mono numerals, tinted icon tile
-const SupKpi = ({ icon: Icon, tone, label, value }) => (
-  <div className="mg-card rounded-lg border border-border bg-card p-5 transition-colors hover:border-primary/40">
-    <div className={cn('flex h-10 w-10 items-center justify-center rounded', tone)}>
-      <Icon className="h-5 w-5" />
+// HUD stat card for the Command Deck reskin (styles in SupervisorDashboard.css)
+const CdStat = ({ icon: Icon, tone = 'violet', title, value }) => (
+  <div className={`cd-stat ${tone}`}>
+    <span className="cd-br tl" /><span className="cd-br tr" /><span className="cd-br bl" /><span className="cd-br br" />
+    <div className="cd-stat-top">
+      <span className="cd-stat-label">{title}</span>
+      <span className="cd-stat-ico">{Icon ? <Icon className="h-4 w-4" /> : null}</span>
     </div>
-    <p className="mt-4 font-mono text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">{label}</p>
-    <p className="mt-1 font-mono text-[30px] leading-none font-semibold tabular-nums text-foreground">{value}</p>
+    <div className="cd-stat-val">{value}</div>
   </div>
 );
 
@@ -191,37 +185,27 @@ export default function SupervisorDashboard() {
 
   return (
     <DashboardLayout title="Supervisor Dashboard">
+      <div className="cd-deck">
       <div className="space-y-6">
 
-        {/* ── Page header ── */}
-        <div className="flex flex-wrap items-end justify-between gap-3">
+        {/* HUD header */}
+        <div className="cd-head cd-in">
           <div>
-            <div className="mb-1.5 flex items-center gap-2">
-              <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-              </span>
-              <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                Live · 30 s refresh
-              </span>
-            </div>
-            <h2 className="text-[26px] leading-tight font-semibold text-foreground tracking-tight">Supervisor Dashboard</h2>
-            <p className="mt-1 text-sm text-muted-foreground">Escalations and urgent tickets that need a decision</p>
+            <div className="cd-eyebrow"><span className="cd-dot" /> Live · 30 s refresh</div>
+            <h2 className="cd-title">Supervisor <span className="thin">Command</span></h2>
+            <p className="cd-sub">Escalations and urgent tickets that need a decision</p>
           </div>
-          <motion.button
-            whileHover={hover} whileTap={tap} onClick={fetchData}
-            className="inline-flex items-center gap-2 rounded border border-border bg-card px-3 py-2 text-[13px] font-medium text-foreground transition-colors hover:border-primary/50 hover:bg-accent active:scale-[0.98]"
-          >
+          <motion.button whileHover={hover} whileTap={tap} onClick={fetchData} className="cd-btn">
             <RefreshCw className="h-4 w-4" /> Refresh
           </motion.button>
         </div>
 
-        {/* ── KPI cards ── */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4" data-testid="supervisor-stats">
-          <SupKpi icon={ArrowUpCircle} tone={STAT_TONES.violet} label="Escalated Tickets" value={stats?.escalated_tickets || 0} />
-          <SupKpi icon={AlertTriangle} tone={STAT_TONES.orange} label="Customer Escalations" value={stats?.customer_escalated || 0} />
-          <SupKpi icon={Clock} tone={STAT_TONES.rose} label="Urgent (SLA)" value={stats?.urgent_tickets || 0} />
-          <SupKpi icon={CheckCircle} tone={STAT_TONES.emerald} label="Resolved Today" value={stats?.resolved_today || 0} />
+        {/* KPI cards */}
+        <div className="cd-statgrid cd-in" data-testid="supervisor-stats">
+          <CdStat icon={ArrowUpCircle} tone="violet" title="Escalated Tickets" value={stats?.escalated_tickets || 0} />
+          <CdStat icon={AlertTriangle} tone="orange" title="Customer Escalations" value={stats?.customer_escalated || 0} />
+          <CdStat icon={Clock} tone="rose" title="Urgent (SLA)" value={stats?.urgent_tickets || 0} />
+          <CdStat icon={CheckCircle} tone="emerald" title="Resolved Today" value={stats?.resolved_today || 0} />
         </div>
 
         {/* ── Urgent banner ── */}
@@ -746,6 +730,7 @@ export default function SupervisorDashboard() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      </div>
     </DashboardLayout>
   );
 }

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
-import StatCard from '@/components/dashboard/StatCard';
+import './CallSupportDashboard.css';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -79,6 +79,20 @@ const warrantyExpiryInfo = (warranty) => {
   if (days <= 30) return { tone: 'amber', label: `Expires in ${days}d`, days };
   return null; // no badge for healthy warranties
 };
+
+// HUD stat card for the Command Deck reskin (styles in CallSupportDashboard.css)
+function CdStat({ title, value, icon: Icon, tone = 'indigo', alert = null }) {
+  return (
+    <div className={`cd-stat ${tone} ${alert ? `alert ${alert}` : ''}`}>
+      <span className="cd-br tl" /><span className="cd-br tr" /><span className="cd-br bl" /><span className="cd-br br" />
+      <div className="cd-stat-top">
+        <span className="cd-stat-label">{title}</span>
+        <span className="cd-stat-ico">{Icon ? <Icon className="w-4 h-4" /> : null}</span>
+      </div>
+      <div className="cd-stat-val">{value}</div>
+    </div>
+  );
+}
 
 export default function CallSupportDashboard() {
   const { token, user } = useAuth();
@@ -579,32 +593,23 @@ export default function CallSupportDashboard() {
 
   return (
     <DashboardLayout title="Call Support Dashboard">
+      <div className="cd-deck">
+      {/* HUD header */}
+      <div className="cd-head cd-in">
+        <div>
+          <div className="cd-eyebrow"><span className="cd-dot" /> Live · Support ops</div>
+          <h2 className="cd-title">Call <span className="thin">Support Deck</span></h2>
+          <p className="cd-sub">Ticket queue, SLA watch, feedback &amp; missed calls</p>
+        </div>
+      </div>
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6" data-testid="support-stats">
-        <StatCard
-          title="SLA Breached"
-          value={stats?.sla_breached || 0}
-          icon={AlarmClock}
-          tone="rose"
-          className={stats?.sla_breached > 0 ? 'ring-2 ring-rose-500/40 bg-rose-500/10' : ''}
-        />
-        <StatCard
-          title="Breaching in 2h"
-          value={stats?.sla_soon || 0}
-          icon={Timer}
-          tone="amber"
-          className={stats?.sla_soon > 0 ? 'ring-2 ring-amber-400/40 bg-amber-500/10' : ''}
-        />
-        <StatCard title="Open Tickets" value={stats?.open_tickets || 0} icon={Ticket} tone="indigo" />
-        <StatCard title="In Progress" value={stats?.in_progress || 0} icon={Clock} tone="sky" />
-        <StatCard title="Diagnosed" value={stats?.diagnosed_today || 0} icon={CheckCircle} tone="emerald" />
-        <StatCard
-          title="Pending Feedback"
-          value={stats?.pending_feedback_calls || 0}
-          icon={PhoneCall}
-          tone="amber"
-          className={stats?.pending_feedback_calls > 0 ? 'ring-2 ring-amber-400/40' : ''}
-        />
+      <div className="cd-statgrid cd-in" data-testid="support-stats">
+        <CdStat title="SLA Breached" value={stats?.sla_breached || 0} icon={AlarmClock} tone="rose" alert={stats?.sla_breached > 0 ? 'bad' : null} />
+        <CdStat title="Breaching in 2h" value={stats?.sla_soon || 0} icon={Timer} tone="amber" alert={stats?.sla_soon > 0 ? 'warn' : null} />
+        <CdStat title="Open Tickets" value={stats?.open_tickets || 0} icon={Ticket} tone="indigo" />
+        <CdStat title="In Progress" value={stats?.in_progress || 0} icon={Clock} tone="sky" />
+        <CdStat title="Diagnosed" value={stats?.diagnosed_today || 0} icon={CheckCircle} tone="emerald" />
+        <CdStat title="Pending Feedback" value={stats?.pending_feedback_calls || 0} icon={PhoneCall} tone="amber" alert={stats?.pending_feedback_calls > 0 ? 'warn' : null} />
       </div>
 
       {/* Tabs */}
@@ -2003,6 +2008,7 @@ export default function CallSupportDashboard() {
           )}
         </DialogContent>
       </Dialog>
+      </div>
     </DashboardLayout>
   );
 }

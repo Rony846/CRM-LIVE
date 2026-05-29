@@ -6,21 +6,23 @@
    ============================================================ */
 
 .cd-deck {
-  /* accent + tokens — overridable, but defaults to brand-blue → cyan glow */
-  --cd-accent: #38bdf8;
-  --cd-accent-rgb: 56, 189, 248;
-  --cd-ink: #e8f1ff;
-  --cd-ink-dim: #8ea3c4;
-  --cd-ink-faint: #56698a;
-  --cd-line: rgba(var(--cd-accent-rgb), 0.16);
-  --cd-line-strong: rgba(var(--cd-accent-rgb), 0.42);
-  --cd-panel: rgba(13, 20, 35, 0.62);
-  --cd-panel-solid: #0a1120;
+  /* tokens follow the active theme (themes-hud.css sets --hud-*);
+     fall back to Arc-Dark cyan if loaded standalone */
+  --cd-accent: var(--hud-accent, #38bdf8);
+  --cd-accent-rgb: var(--hud-accent-rgb, 56, 189, 248);
+  --cd-ink: var(--hud-ink, #e8f1ff);
+  --cd-ink-dim: var(--hud-ink-dim, #8ea3c4);
+  --cd-ink-faint: var(--hud-ink-faint, #56698a);
+  --cd-line: var(--hud-line, rgba(56,189,248,0.16));
+  --cd-line-strong: var(--hud-line-strong, rgba(56,189,248,0.42));
+  --cd-panel: var(--hud-panel, rgba(13, 20, 35, 0.62));
+  --cd-panel-solid: var(--hud-panel-solid, #0a1120);
   --cd-ok: #34d399;
   --cd-warn: #fbbf24;
   --cd-bad: #fb7185;
+  --cd-white: var(--hud-white, #fff);
 
-  --cd-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --cd-mono: 'JetBrains Mono', 'Geist Mono', ui-monospace, monospace;
   --cd-cond: 'Barlow Condensed', sans-serif;
 
   position: relative;
@@ -30,8 +32,8 @@
   overflow: hidden;
   background:
     radial-gradient(1100px 640px at 80% -10%, rgba(var(--cd-accent-rgb), 0.10), transparent 60%),
-    radial-gradient(820px 560px at 4% 112%, rgba(37, 99, 235, 0.10), transparent 55%),
-    linear-gradient(180deg, #04070e 0%, #070b16 100%);
+    radial-gradient(820px 560px at 4% 112%, rgba(var(--cd-accent-rgb), 0.06), transparent 55%),
+    linear-gradient(180deg, var(--hud-void, #04070e) 0%, var(--hud-void-2, #070b16) 100%);
   color: var(--cd-ink);
 }
 @media (min-width: 1024px) { .cd-deck { margin: -2rem; padding: 30px 32px 56px; } }
@@ -60,7 +62,7 @@
 /* ---------- header / eyebrow ---------- */
 .cd-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
 .cd-eyebrow { display: flex; align-items: center; gap: 9px; font-family: var(--cd-mono); font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--cd-ink-dim); margin-bottom: 10px; }
-.cd-title { font-family: var(--cd-cond); font-weight: 700; font-size: 36px; line-height: 0.98; letter-spacing: 0.01em; text-transform: uppercase; margin: 0; color: #fff; }
+.cd-title { font-family: var(--cd-cond); font-weight: 700; font-size: 36px; line-height: 0.98; letter-spacing: 0.01em; text-transform: uppercase; margin: 0; color: var(--cd-white); }
 .cd-title .thin { color: var(--cd-ink-dim); font-weight: 600; }
 .cd-sub { margin: 8px 0 0; font-size: 13px; color: var(--cd-ink-dim); }
 .cd-headbtns { display: flex; gap: 8px; }
@@ -101,7 +103,7 @@
 .cd-kpilabel { font-family: var(--cd-mono); font-size: 10px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--cd-ink-dim); }
 .cd-kpiico { width: 30px; height: 30px; border-radius: 6px; display: grid; place-items: center; border: 1px solid var(--cd-line); background: rgba(var(--cd-accent-rgb),0.06); color: var(--cd-accent); }
 .cd-kpiico svg { width: 16px; height: 16px; }
-.cd-kpival { font-family: var(--cd-mono); font-weight: 700; font-size: 32px; line-height: 1; letter-spacing: -0.01em; margin-top: 18px; color: #fff; text-shadow: 0 0 22px rgba(var(--cd-accent-rgb),0.28); font-variant-numeric: tabular-nums; }
+.cd-kpival { font-family: var(--cd-mono); font-weight: 700; font-size: 32px; line-height: 1; letter-spacing: -0.01em; margin-top: 18px; color: var(--cd-white); text-shadow: 0 0 22px rgba(var(--cd-accent-rgb),0.28); font-variant-numeric: tabular-nums; }
 .cd-kpifoot { display: flex; align-items: center; gap: 9px; margin-top: 12px; }
 .cd-delta { font-family: var(--cd-mono); font-size: 11px; font-weight: 700; }
 .cd-delta.up { color: var(--cd-ok);} .cd-delta.down{ color: var(--cd-bad);} .cd-delta.warn{ color: var(--cd-warn);} .cd-delta.neutral{ color: var(--cd-accent);}
@@ -111,14 +113,14 @@
 .cd-split { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
 @media (max-width:1000px){ .cd-split{ grid-template-columns: 1fr;} }
 .cd-phead { display: flex; align-items: flex-start; justify-content: space-between; padding: 18px 20px; border-bottom: 1px solid var(--cd-line); }
-.cd-ptitle { font-family: var(--cd-cond); font-weight: 700; font-size: 19px; letter-spacing: 0.05em; text-transform: uppercase; margin: 0; color: #fff; }
+.cd-ptitle { font-family: var(--cd-cond); font-weight: 700; font-size: 19px; letter-spacing: 0.05em; text-transform: uppercase; margin: 0; color: var(--cd-white); }
 .cd-pmeta { font-family: var(--cd-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--cd-ink-faint); margin-top: 4px; }
 .cd-pico { color: var(--cd-accent); }
 
 /* ---------- chart ---------- */
 .cd-chart { padding: 18px 8px 8px; position: relative; }
 .cd-readout { position: absolute; right: 20px; top: 16px; text-align: right; z-index: 2; }
-.cd-readout .big { font-family: var(--cd-mono); font-weight: 700; font-size: 22px; color: #fff; text-shadow: 0 0 18px rgba(var(--cd-accent-rgb),0.3); font-variant-numeric: tabular-nums; }
+.cd-readout .big { font-family: var(--cd-mono); font-weight: 700; font-size: 22px; color: var(--cd-white); text-shadow: 0 0 18px rgba(var(--cd-accent-rgb),0.3); font-variant-numeric: tabular-nums; }
 .cd-readout .lbl { font-family: var(--cd-mono); font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--cd-ink-faint); }
 .cd-empty { display: grid; place-items: center; height: 280px; font-size: 13px; color: var(--cd-ink-dim); }
 
@@ -133,7 +135,7 @@
 .cd-abody { flex: 1; min-width: 0; }
 .cd-atitlerow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .cd-atitle { font-size: 13.5px; font-weight: 600; color: var(--cd-ink); }
-.cd-acount { font-family: var(--cd-mono); font-weight: 700; font-size: 15px; color: #fff; font-variant-numeric: tabular-nums; }
+.cd-acount { font-family: var(--cd-mono); font-weight: 700; font-size: 15px; color: var(--cd-white); font-variant-numeric: tabular-nums; }
 .cd-ameta { font-size: 11.5px; color: var(--cd-ink-dim); margin-top: 2px; }
 .cd-acode { font-family: var(--cd-mono); font-size: 9px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; margin-top: 5px; }
 .cd-acode.bad{ color: var(--cd-bad);} .cd-acode.warn{ color: var(--cd-warn);} .cd-acode.info{ color: var(--cd-accent);}
@@ -180,33 +182,3 @@ table.cd-tbl tr:hover td { background: rgba(var(--cd-accent-rgb),0.04); }
 /* skeleton */
 .cd-skel { background: rgba(var(--cd-accent-rgb),0.06); border-radius: 10px; animation: cd-pulse 1.4s ease-in-out infinite; }
 @keyframes cd-pulse { 50% { opacity: .5; } }
-
-/* ----- Compliance banner -> Command Deck HUD skin (scoped to this page) ----- */
-.cd-deck .cd-compliance .bg-yellow-900\/20,
-.cd-deck .cd-compliance .bg-red-900\/20,
-.cd-deck .cd-compliance .bg-blue-900\/20 {
-  background-color: var(--cd-panel) !important;
-  border-color: var(--cd-line) !important;
-  border-left: 3px solid var(--cd-accent) !important;
-  color: var(--cd-ink) !important;
-  backdrop-filter: blur(6px);
-  box-shadow: inset 0 0 0 1px rgba(var(--cd-accent-rgb), 0.05),
-              0 0 26px rgba(var(--cd-accent-rgb), 0.05);
-}
-/* draft "quick finalize" chips */
-.cd-deck .cd-compliance .bg-slate-800 {
-  background-color: rgba(var(--cd-accent-rgb), 0.07) !important;
-  border: 1px solid var(--cd-line);
-}
-/* heading -> HUD type */
-.cd-deck .cd-compliance .text-white {
-  color: var(--cd-ink) !important;
-  letter-spacing: 0.01em;
-}
-.cd-deck .cd-compliance .text-slate-400,
-.cd-deck .cd-compliance .text-slate-300 { color: var(--cd-ink-dim) !important; }
-/* reference numbers read like the rest of the deck's IDs */
-.cd-deck .cd-compliance .bg-slate-800 .text-sm {
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-  color: var(--cd-ink) !important;
-}

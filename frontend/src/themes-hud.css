@@ -1,0 +1,301 @@
+/* ============================================================
+   themes-hud.css — MuscleGrid "Command Deck" theme system
+   ------------------------------------------------------------
+   Four JARVIS-style themes that replace ALL previous themes.
+   Import ONCE, AFTER index.css, in frontend/src/index.js:
+
+       import './index.css';
+       import './themes-hud.css';   // <-- add this line
+
+   Loading it after index.css means these rules win the cascade
+   over the old theme blocks (equal specificity → later wins),
+   so you don't have to delete anything from index.css.
+
+   Each theme defines:
+     • the standard shadcn tokens (--background, --primary, …)
+       → repaints the ENTIRE app (sidebar, cards, tables, forms)
+     • a set of --hud-* tokens consumed by the .cd-deck dashboards
+       → admin / accountant / call-support / supervisor decks
+       automatically follow the active theme.
+
+   The shared [data-theme^="hud-"] block at the bottom gives the
+   whole CRM the HUD feel (glass cards, glow, mono data, sharp
+   geometry, glowing nav) in every theme.
+   ============================================================ */
+
+/* ============================== ARC DARK (cyan) ============================== */
+[data-theme="hud-dark"] {
+  --radius: 0.3rem;
+  color-scheme: dark;
+
+  --background: 222 56% 4%;
+  --foreground: 213 100% 95%;
+  --card: 222 45% 8%;
+  --card-foreground: 213 100% 95%;
+  --popover: 222 50% 7%;
+  --popover-foreground: 213 100% 95%;
+  --primary: 199 92% 60%;
+  --primary-foreground: 222 80% 6%;
+  --secondary: 217 33% 14%;
+  --secondary-foreground: 213 60% 92%;
+  --muted: 217 33% 12%;
+  --muted-foreground: 214 22% 66%;
+  --accent: 205 45% 16%;
+  --accent-foreground: 199 92% 72%;
+  --destructive: 350 90% 65%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 205 45% 16%;
+  --input: 205 45% 18%;
+  --ring: 199 92% 60%;
+
+  --theme-sidebar: 222 56% 5%;
+  --theme-sidebar-foreground: 213 100% 95%;
+  --theme-sidebar-muted: 214 22% 60%;
+  --theme-header: 222 56% 4%;
+  --theme-header-foreground: 213 100% 95%;
+  --theme-accent: 199 92% 60%;
+
+  --input-bg: 222 60% 5%;
+  --input-text: 213 100% 95%;
+  --input-border: 205 45% 20%;
+  --input-placeholder: 214 18% 50%;
+
+  --chart-1: 199 92% 60%;
+  --chart-2: 217 91% 65%;
+  --chart-3: 188 90% 55%;
+  --chart-4: 213 90% 75%;
+  --chart-5: 165 80% 55%;
+
+  --hud-void: #04070e; --hud-void-2: #070b16;
+  --hud-panel: rgba(13,20,35,0.62); --hud-panel-solid: #0a1120;
+  --hud-ink: #e8f1ff; --hud-ink-dim: #8ea3c4; --hud-ink-faint: #56698a;
+  --hud-accent: #38bdf8; --hud-accent-2: #2563eb; --hud-accent-rgb: 56,189,248;
+  --hud-line: rgba(56,189,248,0.16); --hud-line-strong: rgba(56,189,248,0.42);
+  --hud-grid: rgba(120,160,220,0.05); --hud-white: #ffffff;
+}
+
+/* ============================== HOLO BRIGHT (light) ============================== */
+[data-theme="hud-light"] {
+  --radius: 0.3rem;
+  color-scheme: light;
+
+  --background: 213 45% 94%;
+  --foreground: 213 56% 12%;
+  --card: 0 0% 100%;
+  --card-foreground: 213 56% 12%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 213 56% 12%;
+  --primary: 200 98% 39%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 210 40% 92%;
+  --secondary-foreground: 213 56% 18%;
+  --muted: 210 40% 90%;
+  --muted-foreground: 214 18% 38%;
+  --accent: 200 80% 90%;
+  --accent-foreground: 200 98% 28%;
+  --destructive: 0 75% 48%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 205 35% 82%;
+  --input: 205 35% 80%;
+  --ring: 200 98% 39%;
+
+  --theme-sidebar: 210 50% 98%;
+  --theme-sidebar-foreground: 213 56% 12%;
+  --theme-sidebar-muted: 214 18% 35%;
+  --theme-header: 0 0% 100%;
+  --theme-header-foreground: 213 56% 12%;
+  --theme-accent: 200 98% 39%;
+
+  --input-bg: 0 0% 100%;
+  --input-text: 213 56% 12%;
+  --input-border: 205 35% 78%;
+  --input-placeholder: 214 14% 50%;
+
+  --chart-1: 200 98% 39%;
+  --chart-2: 199 89% 48%;
+  --chart-3: 217 80% 55%;
+  --chart-4: 188 80% 42%;
+  --chart-5: 165 70% 40%;
+
+  --hud-void: #e9f0f8; --hud-void-2: #f5f9fd;
+  --hud-panel: rgba(255,255,255,0.72); --hud-panel-solid: #ffffff;
+  --hud-ink: #0d1b2e; --hud-ink-dim: #46566e; --hud-ink-faint: #8090a6;
+  --hud-accent: #0284c7; --hud-accent-2: #0ea5e9; --hud-accent-rgb: 2,132,199;
+  --hud-line: rgba(2,132,199,0.20); --hud-line-strong: rgba(2,132,199,0.45);
+  --hud-grid: rgba(2,132,199,0.06); --hud-white: #0d1b2e;
+}
+
+/* ============================== NEON PINK ============================== */
+[data-theme="hud-pink"] {
+  --radius: 0.3rem;
+  color-scheme: dark;
+
+  --background: 270 60% 4%;
+  --foreground: 322 80% 95%;
+  --card: 282 45% 8%;
+  --card-foreground: 322 80% 95%;
+  --popover: 282 45% 7%;
+  --popover-foreground: 322 80% 95%;
+  --primary: 311 100% 65%;
+  --primary-foreground: 300 80% 6%;
+  --secondary: 290 30% 16%;
+  --secondary-foreground: 322 60% 92%;
+  --muted: 290 30% 13%;
+  --muted-foreground: 318 24% 70%;
+  --accent: 300 35% 18%;
+  --accent-foreground: 311 100% 78%;
+  --destructive: 350 90% 65%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 305 35% 20%;
+  --input: 305 35% 22%;
+  --ring: 311 100% 65%;
+
+  --theme-sidebar: 275 55% 5%;
+  --theme-sidebar-foreground: 322 80% 95%;
+  --theme-sidebar-muted: 318 24% 64%;
+  --theme-header: 270 60% 4%;
+  --theme-header-foreground: 322 80% 95%;
+  --theme-accent: 311 100% 65%;
+
+  --input-bg: 280 60% 5%;
+  --input-text: 322 80% 95%;
+  --input-border: 305 35% 24%;
+  --input-placeholder: 318 18% 54%;
+
+  --chart-1: 311 100% 65%;
+  --chart-2: 330 90% 62%;
+  --chart-3: 280 85% 68%;
+  --chart-4: 350 90% 70%;
+  --chart-5: 260 80% 70%;
+
+  --hud-void: #0a0410; --hud-void-2: #0f0617;
+  --hud-panel: rgba(28,12,32,0.6); --hud-panel-solid: #150a1d;
+  --hud-ink: #fde7f6; --hud-ink-dim: #c79bbd; --hud-ink-faint: #8a6a85;
+  --hud-accent: #ff4fd8; --hud-accent-2: #ec4899; --hud-accent-rgb: 255,79,216;
+  --hud-line: rgba(255,79,216,0.16); --hud-line-strong: rgba(255,79,216,0.42);
+  --hud-grid: rgba(220,120,200,0.05); --hud-white: #ffffff;
+}
+
+/* ============================== MATRIX GREEN ============================== */
+[data-theme="hud-green"] {
+  --radius: 0.3rem;
+  color-scheme: dark;
+
+  --background: 154 70% 4%;
+  --foreground: 154 100% 93%;
+  --card: 156 45% 8%;
+  --card-foreground: 154 100% 93%;
+  --popover: 156 45% 7%;
+  --popover-foreground: 154 100% 93%;
+  --primary: 154 82% 52%;
+  --primary-foreground: 156 90% 6%;
+  --secondary: 160 30% 14%;
+  --secondary-foreground: 154 60% 90%;
+  --muted: 160 30% 12%;
+  --muted-foreground: 156 24% 66%;
+  --accent: 158 35% 16%;
+  --accent-foreground: 154 82% 66%;
+  --destructive: 0 85% 64%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 158 35% 17%;
+  --input: 158 35% 19%;
+  --ring: 154 82% 52%;
+
+  --theme-sidebar: 156 60% 5%;
+  --theme-sidebar-foreground: 154 100% 93%;
+  --theme-sidebar-muted: 156 24% 60%;
+  --theme-header: 154 70% 4%;
+  --theme-header-foreground: 154 100% 93%;
+  --theme-accent: 154 82% 52%;
+
+  --input-bg: 156 60% 5%;
+  --input-text: 154 100% 93%;
+  --input-border: 158 35% 21%;
+  --input-placeholder: 156 18% 48%;
+
+  --chart-1: 154 82% 52%;
+  --chart-2: 165 80% 50%;
+  --chart-3: 142 75% 55%;
+  --chart-4: 180 70% 50%;
+  --chart-5: 120 70% 55%;
+
+  --hud-void: #03100a; --hud-void-2: #061410;
+  --hud-panel: rgba(10,28,20,0.6); --hud-panel-solid: #0a1c14;
+  --hud-ink: #ddfff0; --hud-ink-dim: #7fc9a6; --hud-ink-faint: #5a8a72;
+  --hud-accent: #22e88a; --hud-accent-2: #34d399; --hud-accent-rgb: 34,232,138;
+  --hud-line: rgba(34,232,138,0.16); --hud-line-strong: rgba(34,232,138,0.42);
+  --hud-grid: rgba(120,220,170,0.05); --hud-white: #ffffff;
+}
+
+/* ============================================================
+   SHARED HUD CHROME — applies to all four themes (app-wide)
+   Uses theme variables, so it auto-tints per theme.
+   ============================================================ */
+
+/* Atmospheric background glows */
+[data-theme^="hud-"] body {
+  background-image:
+    radial-gradient(900px 480px at 100% -5%, hsl(var(--primary) / 0.08), transparent 70%),
+    radial-gradient(700px 420px at -10% 110%, hsl(var(--primary) / 0.05), transparent 70%);
+  background-attachment: fixed;
+}
+
+/* Cards → glass panels with luminous hover */
+[data-theme^="hud-"] .mg-card,
+[data-theme^="hud-"] [data-slot="card"],
+[data-theme^="hud-"] .card {
+  border: 1px solid hsl(var(--border)) !important;
+  border-radius: var(--radius) !important;
+  box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.03), 0 12px 32px -20px rgba(0,0,0,0.8) !important;
+  transition: border-color .2s ease, box-shadow .2s ease;
+}
+[data-theme^="hud-"] .mg-card:hover,
+[data-theme^="hud-"] [data-slot="card"]:hover,
+[data-theme^="hud-"] .card:hover {
+  border-color: hsl(var(--primary) / 0.4) !important;
+  box-shadow: 0 0 0 1px hsl(var(--primary) / 0.10), 0 16px 40px -20px rgba(0,0,0,0.9) !important;
+}
+
+/* Monospace for all numeric / code surfaces */
+[data-theme^="hud-"] .tabular-nums,
+[data-theme^="hud-"] .font-mono {
+  font-family: 'Geist Mono', 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace !important;
+  letter-spacing: -0.01em;
+}
+
+/* Tactical scrollbars */
+[data-theme^="hud-"] ::-webkit-scrollbar { width: 8px; height: 8px; }
+[data-theme^="hud-"] ::-webkit-scrollbar-track { background: transparent; }
+[data-theme^="hud-"] ::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 4px; }
+[data-theme^="hud-"] ::-webkit-scrollbar-thumb:hover { background: hsl(var(--primary) / 0.6); }
+
+/* Glowing active nav item */
+[data-theme^="hud-"] nav a.active,
+[data-theme^="hud-"] .sidebar-item.active,
+[data-theme^="hud-"] .sidebar-item-active {
+  background: hsl(var(--primary) / 0.12) !important;
+  box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.22), 0 0 14px hsl(var(--primary) / 0.14);
+  border-left: 2px solid hsl(var(--primary)) !important;
+}
+
+/* Primary buttons get a glow on hover */
+[data-theme^="hud-"] button[data-variant="default"]:hover,
+[data-theme^="hud-"] [data-slot="button"][data-variant="default"]:hover {
+  box-shadow: 0 0 16px hsl(var(--primary) / 0.4) !important;
+}
+
+/* Active tab glow */
+[data-theme^="hud-"] [role="tab"][data-state="active"] {
+  box-shadow: 0 0 0 1px hsl(var(--primary) / 0.25), 0 0 14px hsl(var(--primary) / 0.12) !important;
+}
+
+/* Sharp geometry on inputs */
+[data-theme^="hud-"] input:not([type="checkbox"]):not([type="radio"]),
+[data-theme^="hud-"] textarea,
+[data-theme^="hud-"] select { border-radius: var(--radius) !important; }
+
+/* Status colors tuned for the bright theme (dark themes use the index.css defaults) */
+[data-theme="hud-light"] .text-green-400, [data-theme="hud-light"] .text-green-500 { color: #16a34a !important; }
+[data-theme="hud-light"] .text-yellow-400, [data-theme="hud-light"] .text-yellow-500 { color: #ca8a04 !important; }
+[data-theme="hud-light"] .text-red-400, [data-theme="hud-light"] .text-red-500 { color: #dc2626 !important; }
+[data-theme="hud-light"] .text-blue-400, [data-theme="hud-light"] .text-blue-500 { color: #0284c7 !important; }
