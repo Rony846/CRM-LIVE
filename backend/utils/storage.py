@@ -55,6 +55,8 @@ BASE_FOLDERS = [
     # normalize_folder_path defaulted everything to "tickets" and silently
     # mis-archived shipping labels.
     "amazon_orders",
+    # Internal team-chat attachments.
+    "chat",
 ]
 
 # Folder mapping for backwards compatibility with existing code

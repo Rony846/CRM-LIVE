@@ -13917,7 +13917,7 @@ ALLOWED_FILE_FOLDERS = {
     "claude_files", "purchases", "expenses", "gate", "gate_media", "bot",
     "datasheets", "amazon", "bigship", "warranty_invoices", "feedback",
     "tickets", "uploads", "payroll", "kyc", "product_images",
-    "amazon_orders",
+    "amazon_orders", "chat",
 }
 
 
@@ -48914,6 +48914,361 @@ async def screen_pop_context(
         "dispatches": dispatches,
         "last_call": last_call,
     }
+
+
+# =============================================================================
+# INTERNAL TEAM CHAT — Slack-style staff messaging embedded in the dashboard.
+# Internal staff only (never customers/dealers). Real-time via SSE (mirrors the
+# screen-pop pub/sub above): each client opens /chat/stream which registers a
+# per-user asyncio.Queue in CHAT_SUBSCRIBERS; broadcast_chat fans events out.
+# =============================================================================
+INTERNAL_CHAT_ROLES = ["admin", "supervisor", "call_support", "service_agent",
+                       "technician", "accountant", "dispatcher", "gate"]
+CHAT_CHANNEL_CREATE_ROLES = ["admin", "supervisor"]
+STARTER_CHANNELS = [
+    ("general", "General", "Company-wide announcements & chatter"),
+    ("support", "Support", "Call support team"),
+    ("dispatch", "Dispatch", "Dispatch & logistics"),
+    ("accounts", "Accounts", "Accounting & finance"),
+    ("service", "Service", "Technicians & hardware service"),
+    ("gate", "Gate", "Gate / warehouse inward-outward"),
+]
+require_internal_chat = require_roles(INTERNAL_CHAT_ROLES)
+
+# user_id -> set[asyncio.Queue]; presence = which user_ids have a live stream.
+CHAT_SUBSCRIBERS: dict = {}
+_chat_seeded = False
+
+
+def _chat_online_ids() -> set:
+    return {uid for uid, qs in CHAT_SUBSCRIBERS.items() if qs}
+
+
+async def broadcast_chat(recipient_ids, event: dict) -> None:
+    """Fan a chat event out to the given users' live SSE queues (drop if full)."""
+    for uid in set(recipient_ids or []):
+        for q in list(CHAT_SUBSCRIBERS.get(uid, ())):
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                pass
+
+
+def _chat_user_brief(u: dict) -> dict:
+    name = f"{u.get('first_name','')} {u.get('last_name','')}".strip() or u.get("email") or "User"
+    return {"id": u.get("id"), "name": name, "role": u.get("role")}
+
+
+async def _chat_recipients(channel: dict) -> set:
+    """Who should receive a live event for this channel."""
+    if channel.get("type") == "channel" and not channel.get("is_private"):
+        return _chat_online_ids()  # public: everyone online sees it live
+    return set(channel.get("members") or [])
+
+
+async def _ensure_starter_channels():
+    global _chat_seeded
+    if _chat_seeded:
+        return
+    for slug, name, topic in STARTER_CHANNELS:
+        existing = await db.chat_channels.find_one({"slug": slug})
+        if not existing:
+            now = datetime.now(timezone.utc).isoformat()
+            await db.chat_channels.insert_one({
+                "id": str(uuid.uuid4()), "slug": slug, "name": name, "topic": topic,
+                "type": "channel", "is_private": False, "members": [],
+                "created_by": "system", "archived": False, "created_at": now, "updated_at": now,
+            })
+    _chat_seeded = True
+
+
+async def _chat_unread_count(channel_id: str, user_id: str) -> int:
+    rd = await db.chat_reads.find_one({"channel_id": channel_id, "user_id": user_id}, {"_id": 0, "last_read_at": 1})
+    q = {"channel_id": channel_id, "deleted": {"$ne": True}, "sender_id": {"$ne": user_id}}
+    if rd and rd.get("last_read_at"):
+        q["created_at"] = {"$gt": rd["last_read_at"]}
+    return await db.chat_messages.count_documents(q)
+
+
+async def _chat_can_access(channel: dict, user: dict) -> bool:
+    if not channel or channel.get("archived"):
+        return False
+    if channel.get("type") == "channel" and not channel.get("is_private"):
+        return True  # any internal user can read public channels
+    return user["id"] in (channel.get("members") or [])
+
+
+def _chat_channel_view(ch: dict) -> dict:
+    return {k: ch.get(k) for k in ("id", "slug", "name", "topic", "type", "is_private", "members", "created_by", "created_at")}
+
+
+@api_router.get("/chat/channels")
+async def chat_list_channels(user: dict = Depends(require_internal_chat)):
+    await _ensure_starter_channels()
+    chans = await db.chat_channels.find(
+        {"archived": {"$ne": True}, "$or": [
+            {"type": "channel", "is_private": False},
+            {"members": user["id"]},
+        ]}, {"_id": 0},
+    ).sort("created_at", 1).to_list(500)
+    online = _chat_online_ids()
+    out = []
+    for ch in chans:
+        v = _chat_channel_view(ch)
+        v["unread"] = await _chat_unread_count(ch["id"], user["id"])
+        if ch.get("type") == "dm":
+            other_id = next((m for m in (ch.get("members") or []) if m != user["id"]), None)
+            other = await db.users.find_one({"id": other_id}, {"_id": 0, "first_name": 1, "last_name": 1, "email": 1, "role": 1}) if other_id else None
+            if other:
+                v["name"] = _chat_user_brief(other)["name"]
+                v["dm_user"] = {**_chat_user_brief(other), "online": other_id in online}
+        out.append(v)
+    return {"channels": out}
+
+
+class ChatChannelCreate(BaseModel):
+    name: str
+    topic: Optional[str] = ""
+    is_private: bool = False
+    members: Optional[List[str]] = None  # for private channels
+
+
+@api_router.post("/chat/channels")
+async def chat_create_channel(body: ChatChannelCreate, user: dict = Depends(require_internal_chat)):
+    if user["role"] not in CHAT_CHANNEL_CREATE_ROLES:
+        raise HTTPException(status_code=403, detail="Only admins/supervisors can create channels")
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Channel name required")
+    slug = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-")[:40] or str(uuid.uuid4())[:8]
+    if await db.chat_channels.find_one({"slug": slug, "type": "channel"}):
+        slug = f"{slug}-{str(uuid.uuid4())[:4]}"
+    now = datetime.now(timezone.utc).isoformat()
+    members = list({user["id"], *(body.members or [])}) if body.is_private else [user["id"]]
+    ch = {
+        "id": str(uuid.uuid4()), "slug": slug, "name": name, "topic": body.topic or "",
+        "type": "channel", "is_private": bool(body.is_private), "members": members,
+        "created_by": user["id"], "archived": False, "created_at": now, "updated_at": now,
+    }
+    await db.chat_channels.insert_one(ch)
+    return {"channel": _chat_channel_view(ch)}
+
+
+@api_router.post("/chat/channels/{channel_id}/join")
+async def chat_join_channel(channel_id: str, user: dict = Depends(require_internal_chat)):
+    ch = await db.chat_channels.find_one({"id": channel_id}, {"_id": 0})
+    if not ch or ch.get("type") != "channel" or ch.get("is_private"):
+        raise HTTPException(status_code=404, detail="Channel not joinable")
+    await db.chat_channels.update_one({"id": channel_id}, {"$addToSet": {"members": user["id"]}})
+    return {"ok": True}
+
+
+@api_router.post("/chat/dm/{other_user_id}")
+async def chat_open_dm(other_user_id: str, user: dict = Depends(require_internal_chat)):
+    other = await db.users.find_one({"id": other_user_id}, {"_id": 0})
+    if not other or other.get("role") not in INTERNAL_CHAT_ROLES:
+        raise HTTPException(status_code=404, detail="Internal user not found")
+    pair = sorted([user["id"], other_user_id])
+    dm_key = f"dm:{pair[0]}:{pair[1]}"
+    ch = await db.chat_channels.find_one({"slug": dm_key}, {"_id": 0})
+    if not ch:
+        now = datetime.now(timezone.utc).isoformat()
+        ch = {"id": str(uuid.uuid4()), "slug": dm_key, "name": _chat_user_brief(other)["name"],
+              "topic": "", "type": "dm", "is_private": True, "members": pair,
+              "created_by": user["id"], "archived": False, "created_at": now, "updated_at": now}
+        await db.chat_channels.insert_one(ch)
+    v = _chat_channel_view(ch)
+    v["name"] = _chat_user_brief(other)["name"]
+    v["dm_user"] = {**_chat_user_brief(other), "online": other_user_id in _chat_online_ids()}
+    return {"channel": v}
+
+
+@api_router.get("/chat/directory")
+async def chat_directory(user: dict = Depends(require_internal_chat)):
+    users = await db.users.find(
+        {"role": {"$in": INTERNAL_CHAT_ROLES}},
+        {"_id": 0, "id": 1, "first_name": 1, "last_name": 1, "email": 1, "role": 1},
+    ).sort("first_name", 1).to_list(2000)
+    online = _chat_online_ids()
+    return {"users": [{**_chat_user_brief(u), "online": u["id"] in online} for u in users if u["id"] != user["id"]]}
+
+
+@api_router.get("/chat/channels/{channel_id}/messages")
+async def chat_get_messages(channel_id: str, before: Optional[str] = None, limit: int = 40,
+                            search: Optional[str] = None, user: dict = Depends(require_internal_chat)):
+    ch = await db.chat_channels.find_one({"id": channel_id}, {"_id": 0})
+    if not await _chat_can_access(ch, user):
+        raise HTTPException(status_code=403, detail="No access to this channel")
+    q = {"channel_id": channel_id, "deleted": {"$ne": True}}
+    if before:
+        q["created_at"] = {"$lt": before}
+    if search:
+        q["body"] = {"$regex": re.escape(search), "$options": "i"}
+    msgs = await db.chat_messages.find(q, {"_id": 0}).sort("created_at", -1).limit(min(limit, 100)).to_list(100)
+    msgs.reverse()
+    sign_file_urls_deep(msgs, user_id=user["id"])
+    return {"messages": msgs, "channel": _chat_channel_view(ch)}
+
+
+class ChatMessageCreate(BaseModel):
+    body: str = ""
+    attachments: Optional[List[dict]] = None
+    mentions: Optional[List[str]] = None
+
+
+@api_router.post("/chat/channels/{channel_id}/messages")
+async def chat_send_message(channel_id: str, body: ChatMessageCreate, user: dict = Depends(require_internal_chat)):
+    ch = await db.chat_channels.find_one({"id": channel_id}, {"_id": 0})
+    if not await _chat_can_access(ch, user):
+        raise HTTPException(status_code=403, detail="No access to this channel")
+    text = (body.body or "").strip()
+    atts = body.attachments or []
+    if not text and not atts:
+        raise HTTPException(status_code=400, detail="Empty message")
+    now = datetime.now(timezone.utc).isoformat()
+    msg = {
+        "id": str(uuid.uuid4()), "channel_id": channel_id,
+        "sender_id": user["id"], "sender_name": _chat_user_brief(user)["name"],
+        "sender_role": user.get("role"), "body": text[:8000], "attachments": atts,
+        "mentions": body.mentions or [], "reactions": {}, "edited_at": None,
+        "deleted": False, "created_at": now,
+    }
+    await db.chat_messages.insert_one(msg)
+    msg.pop("_id", None)  # insert_one injects a non-serializable ObjectId
+    await db.chat_channels.update_one({"id": channel_id}, {"$set": {"updated_at": now}})
+    # mark sender's own read up to now
+    await db.chat_reads.update_one({"channel_id": channel_id, "user_id": user["id"]},
+                                   {"$set": {"last_read_at": now}}, upsert=True)
+    # @mentions -> in-app notification
+    for mid in set(body.mentions or []):
+        if mid != user["id"]:
+            await create_notification(
+                title=f"{msg['sender_name']} mentioned you",
+                message=(text[:140] or "(attachment)"),
+                notification_type="info", link="/chat",
+                target_user_ids=[mid], created_by=user["id"], created_by_name=msg["sender_name"],
+                data={"channel_id": channel_id})
+    signed = json.loads(json.dumps(msg))
+    sign_file_urls_deep(signed, user_id=None)
+    await broadcast_chat(await _chat_recipients(ch), {"type": "message", "channel_id": channel_id, "message": signed})
+    return {"message": msg}
+
+
+@api_router.patch("/chat/messages/{message_id}")
+async def chat_edit_message(message_id: str, body: ChatMessageCreate, user: dict = Depends(require_internal_chat)):
+    msg = await db.chat_messages.find_one({"id": message_id}, {"_id": 0})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if msg["sender_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Can only edit your own message")
+    now = datetime.now(timezone.utc).isoformat()
+    await db.chat_messages.update_one({"id": message_id}, {"$set": {"body": (body.body or "").strip()[:8000], "edited_at": now}})
+    ch = await db.chat_channels.find_one({"id": msg["channel_id"]}, {"_id": 0})
+    await broadcast_chat(await _chat_recipients(ch), {"type": "message_update", "channel_id": msg["channel_id"], "message_id": message_id, "body": (body.body or "").strip(), "edited_at": now})
+    return {"ok": True}
+
+
+@api_router.delete("/chat/messages/{message_id}")
+async def chat_delete_message(message_id: str, user: dict = Depends(require_internal_chat)):
+    msg = await db.chat_messages.find_one({"id": message_id}, {"_id": 0})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if msg["sender_id"] != user["id"] and user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Not allowed")
+    await db.chat_messages.update_one({"id": message_id}, {"$set": {"deleted": True, "body": "", "attachments": []}})
+    ch = await db.chat_channels.find_one({"id": msg["channel_id"]}, {"_id": 0})
+    await broadcast_chat(await _chat_recipients(ch), {"type": "message_update", "channel_id": msg["channel_id"], "message_id": message_id, "deleted": True})
+    return {"ok": True}
+
+
+@api_router.post("/chat/messages/{message_id}/react")
+async def chat_react(message_id: str, emoji: str = Body(..., embed=True), user: dict = Depends(require_internal_chat)):
+    msg = await db.chat_messages.find_one({"id": message_id}, {"_id": 0})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    reactions = msg.get("reactions") or {}
+    users = set(reactions.get(emoji, []))
+    users.symmetric_difference_update({user["id"]})  # toggle
+    if users:
+        reactions[emoji] = list(users)
+    else:
+        reactions.pop(emoji, None)
+    await db.chat_messages.update_one({"id": message_id}, {"$set": {"reactions": reactions}})
+    ch = await db.chat_channels.find_one({"id": msg["channel_id"]}, {"_id": 0})
+    await broadcast_chat(await _chat_recipients(ch), {"type": "reaction", "channel_id": msg["channel_id"], "message_id": message_id, "reactions": reactions})
+    return {"reactions": reactions}
+
+
+@api_router.post("/chat/channels/{channel_id}/read")
+async def chat_mark_read(channel_id: str, user: dict = Depends(require_internal_chat)):
+    now = datetime.now(timezone.utc).isoformat()
+    await db.chat_reads.update_one({"channel_id": channel_id, "user_id": user["id"]},
+                                   {"$set": {"last_read_at": now}}, upsert=True)
+    return {"ok": True}
+
+
+@api_router.post("/chat/channels/{channel_id}/typing")
+async def chat_typing(channel_id: str, user: dict = Depends(require_internal_chat)):
+    ch = await db.chat_channels.find_one({"id": channel_id}, {"_id": 0})
+    if ch:
+        await broadcast_chat((await _chat_recipients(ch)) - {user["id"]},
+                             {"type": "typing", "channel_id": channel_id, "user": _chat_user_brief(user)})
+    return {"ok": True}
+
+
+@api_router.post("/chat/upload")
+async def chat_upload(file: UploadFile = File(...), user: dict = Depends(require_internal_chat)):
+    content = await file.read()
+    if len(content) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large (max 25MB)")
+    try:
+        rel, _ = await storage_upload(file_data=content, folder="chat", original_filename=file.filename or "file")
+    except StorageError as e:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+    return {"url": f"/api/files/{rel}", "name": file.filename, "type": file.content_type, "size": len(content)}
+
+
+@api_router.get("/chat/stream")
+async def chat_stream(request: Request, token: str = Query(None)):
+    """SSE stream of chat events for the authenticated internal user. Also drives
+    presence (the user is 'online' while a stream is open)."""
+    if not token:
+        raise HTTPException(status_code=401, detail="token query param required")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        u = await db.users.find_one({"id": payload.get("user_id")})
+        if not u or u.get("role") not in INTERNAL_CHAT_ROLES:
+            raise HTTPException(status_code=403, detail="Not allowed")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    uid = u["id"]
+    queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+    first = uid not in _chat_online_ids()
+    CHAT_SUBSCRIBERS.setdefault(uid, set()).add(queue)
+    if first:
+        await broadcast_chat(_chat_online_ids(), {"type": "presence", "user_id": uid, "online": True})
+
+    async def event_gen():
+        try:
+            yield ": connected\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=20.0)
+                    yield f"event: chat\ndata: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    yield f": ping {datetime.now(timezone.utc).isoformat()}\n\n"
+        finally:
+            qs = CHAT_SUBSCRIBERS.get(uid)
+            if qs:
+                qs.discard(queue)
+                if not qs:
+                    CHAT_SUBSCRIBERS.pop(uid, None)
+                    await broadcast_chat(_chat_online_ids(), {"type": "presence", "user_id": uid, "online": False})
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no", "Connection": "keep-alive"})
 
 
 @api_router.post("/smartflo/webhook")

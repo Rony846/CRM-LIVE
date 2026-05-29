@@ -151,6 +151,9 @@ import DealerReorderSuggestions from './pages/dealer/DealerReorderSuggestions';
 import AdminDealerApplications from './pages/admin/AdminDealerApplications';
 import DealerManagement from './pages/admin/DealerManagement';
 import AdminDealerProfile from './pages/admin/DealerProfile';
+import { ChatProvider } from '@/components/chat/ChatProvider';
+import ChatDock from '@/components/chat/ChatDock';
+import ChatPage from './pages/chat/ChatPage';
 import AdminDealerTerms from './pages/admin/AdminDealerTerms';
 import AdminWarrantyClaims from './pages/admin/AdminWarrantyClaims';
 import AdminSpareParts from './pages/admin/AdminSpareParts';
@@ -328,6 +331,7 @@ function App() {
     <AuthProvider>
       <Toaster position="top-right" richColors />
       <BrowserRouter>
+        <ChatProvider>
         <Routes>
           {/* Public Routes */}
           <Route path="/login" element={<LoginPage />} />
@@ -1085,10 +1089,19 @@ function App() {
             </ProtectedRoute>
           } />
           
+          {/* Internal team chat (full screen) */}
+          <Route path="/chat" element={
+            <ProtectedRoute allowedRoles={['admin', 'supervisor', 'call_support', 'service_agent', 'technician', 'accountant', 'dispatcher', 'gate']}>
+              <ChatPage />
+            </ProtectedRoute>
+          } />
+
           {/* Fallback */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         <RoleBasedOrderBot />
+        <ChatDock />
+        </ChatProvider>
       </BrowserRouter>
     </AuthProvider>
   );
