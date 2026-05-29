@@ -49936,6 +49936,75 @@ async def chat_message_to_ticket(message_id: str, body: ChatToTicket, user: dict
     return {"ticket_id": ticket_id, "ticket_number": ticket_number}
 
 
+# ---- Acknowledgement requests ----------------------------------------------
+# Mark a message "needs ack from @A, @B"; required people get an Acknowledge
+# button and the message tracks who has / hasn't acked.
+class ChatAckRequest(BaseModel):
+    user_ids: List[str]
+
+
+@api_router.post("/chat/messages/{message_id}/ack-request")
+async def chat_ack_request(message_id: str, body: ChatAckRequest, user: dict = Depends(require_internal_chat)):
+    """Require acknowledgement of a message from specific team members."""
+    msg = await db.chat_messages.find_one({"id": message_id, "deleted": {"$ne": True}}, {"_id": 0})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    ch = await db.chat_channels.find_one({"id": msg["channel_id"]}, {"_id": 0})
+    if not await _chat_can_access(ch, user):
+        raise HTTPException(status_code=403, detail="No access to this channel")
+    existing = msg.get("ack") or {}
+    required = list(existing.get("required") or [])
+    required_names = dict(existing.get("required_names") or {})
+    for uid in (body.user_ids or []):
+        u = await db.users.find_one({"id": uid}, {"_id": 0, "id": 1, "first_name": 1, "last_name": 1, "role": 1})
+        if not u or u.get("role") not in INTERNAL_CHAT_ROLES:
+            continue
+        if uid not in required:
+            required.append(uid)
+        required_names[uid] = _chat_user_brief(u)["name"]
+    if not required:
+        raise HTTPException(status_code=400, detail="Pick at least one internal team member")
+    ack = {
+        "required": required, "required_names": required_names,
+        "acked": existing.get("acked") or [],
+        "requested_by": existing.get("requested_by") or user["id"],
+        "requested_by_name": existing.get("requested_by_name") or _chat_user_brief(user)["name"],
+        "created_at": existing.get("created_at") or datetime.now(timezone.utc).isoformat(),
+    }
+    await db.chat_messages.update_one({"id": message_id}, {"$set": {"ack": ack}})
+    await broadcast_chat(await _chat_recipients(ch),
+                         {"type": "message_update", "channel_id": ch["id"], "message_id": message_id, "ack": ack})
+    acked_ids = {a["id"] for a in ack["acked"]}
+    for uid in required:
+        if uid != user["id"] and uid not in acked_ids:
+            await create_notification(
+                title="✅ Acknowledgement requested", message=(msg.get("body") or "(attachment)")[:140],
+                notification_type="info", link="/chat", priority="high", target_user_ids=[uid],
+                created_by=user["id"], created_by_name=ack["requested_by_name"],
+                data={"channel_id": ch["id"], "message_id": message_id})
+    return {"ack": ack}
+
+
+@api_router.post("/chat/messages/{message_id}/ack")
+async def chat_ack(message_id: str, user: dict = Depends(require_internal_chat)):
+    """Acknowledge a message you were asked to."""
+    msg = await db.chat_messages.find_one({"id": message_id, "deleted": {"$ne": True}}, {"_id": 0})
+    if not msg or not msg.get("ack"):
+        raise HTTPException(status_code=404, detail="No acknowledgement requested on this message")
+    ack = msg["ack"]
+    if user["id"] not in (ack.get("required") or []):
+        raise HTTPException(status_code=400, detail="You weren't asked to acknowledge this")
+    if not any(a["id"] == user["id"] for a in ack.get("acked", [])):
+        ack.setdefault("acked", []).append(
+            {"id": user["id"], "name": _chat_user_brief(user)["name"], "at": datetime.now(timezone.utc).isoformat()})
+        await db.chat_messages.update_one({"id": message_id}, {"$set": {"ack": ack}})
+        ch = await db.chat_channels.find_one({"id": msg["channel_id"]}, {"_id": 0})
+        if ch:
+            await broadcast_chat(await _chat_recipients(ch),
+                                 {"type": "message_update", "channel_id": ch["id"], "message_id": message_id, "ack": ack})
+    return {"ack": ack}
+
+
 async def scheduled_chat_nudges():
     """Every minute: ping the assignee of each due, active nudge until it's marked done."""
     try:

@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import {
   Send, Paperclip, Smile, X, Pencil, Trash2, SmilePlus, Hash, Lock, FileText, Loader2,
-  Pin, Bookmark, BellOff, Bell, Settings2, BellRing, Check, Search, Ticket as TicketIcon,
+  Pin, Bookmark, BellOff, Bell, Settings2, BellRing, Check, Search, Ticket as TicketIcon, CheckCheck,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -31,12 +31,19 @@ function Reactions({ msg, onReact, meId }) {
 
 const TICKET_FROM_CHAT_ROLES = ['admin', 'call_support', 'supervisor'];
 
-function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onAction, onPin, onSave, isSaved, directory, onNudge, onResolveNudge, onToTicket }) {
+function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onAction, onPin, onSave, isSaved, directory, onNudge, onResolveNudge, onToTicket, onRequestAck, onAck }) {
   const [hover, setHover] = useState(false);
   const [nOpen, setNOpen] = useState(false);
   const [nivl, setNivl] = useState(15);
   const [nq, setNq] = useState('');
+  const [aOpen, setAOpen] = useState(false);
+  const [aSel, setASel] = useState(() => new Set());
+  const [aq, setAq] = useState('');
   const canCloseNudge = msg.nudge && (meId === msg.nudge.assignee_id || meId === msg.nudge.creator_id || meRole === 'admin');
+  const ack = msg.ack;
+  const ackedIds = new Set((ack?.acked || []).map((a) => a.id));
+  const ackPending = (ack?.required || []).filter((id) => !ackedIds.has(id)).map((id) => ack.required_names?.[id] || 'someone');
+  const iMustAck = ack && (ack.required || []).includes(meId) && !ackedIds.has(meId);
   const grouped = prev && prev.sender_id === msg.sender_id
     && (new Date(msg.created_at) - new Date(prev.created_at)) < 5 * 60 * 1000 && !prev.deleted;
   if (msg.deleted) {
@@ -109,6 +116,15 @@ function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onActi
               <TicketIcon className="h-3.5 w-3.5" /> Ticket <b>{msg.ticket.ticket_number}</b> raised{msg.ticket.by_name ? ` by ${msg.ticket.by_name}` : ''}
             </div>
           )}
+          {ack && (
+            <div className="mt-1.5 inline-flex flex-wrap items-center gap-2 rounded-md bg-emerald-400/10 px-2 py-1 text-[11px] text-emerald-300 ring-1 ring-emerald-400/30">
+              <CheckCheck className="h-3.5 w-3.5" />
+              <span>Acknowledged {(ack.acked || []).length}/{(ack.required || []).length}{ackPending.length ? ` · pending: ${ackPending.slice(0, 3).join(', ')}${ackPending.length > 3 ? '…' : ''}` : ' · all done'}</span>
+              {iMustAck && (
+                <button onClick={() => onAck(msg.id)} className="ml-1 rounded bg-emerald-400/20 px-1.5 py-0.5 font-medium hover:bg-emerald-400/30">Acknowledge</button>
+              )}
+            </div>
+          )}
           <Reactions msg={msg} onReact={onReact} meId={meId} />
         </div>
       </div>
@@ -152,6 +168,30 @@ function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onActi
           </Popover>
           {TICKET_FROM_CHAT_ROLES.includes(meRole) && !msg.is_system && (
             <button onClick={() => onToTicket(msg)} className={`rounded p-1 hover:text-foreground ${msg.ticket ? 'text-sky-400' : 'text-muted-foreground'}`} title="Raise a ticket from this message"><TicketIcon className="h-3.5 w-3.5" /></button>
+          )}
+          {!msg.is_system && (
+            <Popover open={aOpen} onOpenChange={(o) => { setAOpen(o); if (o) setASel(new Set(msg.ack?.required || [])); }}>
+              <PopoverTrigger asChild>
+                <button className={`rounded p-1 hover:text-foreground ${msg.ack ? 'text-emerald-400' : 'text-muted-foreground'}`} title="Request acknowledgement"><CheckCheck className="h-3.5 w-3.5" /></button>
+              </PopoverTrigger>
+              <PopoverContent className="w-64 p-2">
+                <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Request acknowledgement</p>
+                <div className="relative mb-1">
+                  <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+                  <input value={aq} onChange={(e) => setAq(e.target.value)} placeholder="Who must acknowledge?" className="w-full rounded border border-border bg-background pl-7 pr-2 py-1 text-[12px] outline-none" />
+                </div>
+                <div className="max-h-40 overflow-y-auto">
+                  {(directory || []).filter((u) => !aq.trim() || u.name.toLowerCase().includes(aq.trim().toLowerCase())).slice(0, 20).map((u) => (
+                    <label key={u.id} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[12px] hover:bg-accent">
+                      <input type="checkbox" checked={aSel.has(u.id)} onChange={() => setASel((s) => { const n = new Set(s); n.has(u.id) ? n.delete(u.id) : n.add(u.id); return n; })} />
+                      <ChatAvatar id={u.id} name={u.name} size={20} /><span className="truncate">{u.name}</span>
+                    </label>
+                  ))}
+                </div>
+                <button disabled={!aSel.size} onClick={() => { onRequestAck(msg.id, [...aSel]); setAOpen(false); setAq(''); }}
+                  className="mt-1 w-full rounded bg-primary px-2 py-1 text-[12px] font-medium text-primary-foreground disabled:opacity-40">Request from {aSel.size || 0}</button>
+              </PopoverContent>
+            </Popover>
           )}
           {msg.sender_id === meId && (
             <>
@@ -272,6 +312,14 @@ export default function ChatConversation({ compact = false }) {
     setTicketForm({ device_type: 'Inverter', issue_description: m.body || '', customer_name: '', customer_phone: '' });
     setTicketMsg(m);
   };
+  const handleRequestAck = async (messageId, userIds) => {
+    try { const a = await chat.requestAck(messageId, userIds); toast.success(`Acknowledgement requested from ${(a.required || []).length}`); }
+    catch (e) { toast.error(e.response?.data?.detail || 'Could not request acknowledgement'); }
+  };
+  const handleAck = async (messageId) => {
+    try { await chat.acknowledge(messageId); toast.success('Acknowledged'); }
+    catch (e) { toast.error(e.response?.data?.detail || 'Could not acknowledge'); }
+  };
   const submitToTicket = async () => {
     if (ticketBusy || !ticketMsg) return;
     if (!ticketForm.issue_description.trim()) { toast.error('Issue description required'); return; }
@@ -349,7 +397,7 @@ export default function ChatConversation({ compact = false }) {
           return (
             <React.Fragment key={m.id}>
               {sep && <div className="my-2 flex items-center gap-2 px-3"><div className="h-px flex-1 bg-border" /><span className="text-[10px] uppercase tracking-wide text-muted-foreground">{day}</span><div className="h-px flex-1 bg-border" /></div>}
-              <MessageRow msg={m} prev={sep ? null : msgs[i - 1]} meId={user.id} meRole={user.role} onReact={chat.react} onEdit={startEdit} onDelete={chat.deleteMessage} onAction={handleAction} onPin={chat.pinMessage} onSave={chat.saveMessage} isSaved={chat.savedIds.has(m.id)} directory={directory} onNudge={handleNudge} onResolveNudge={handleResolveNudge} onToTicket={openToTicket} />
+              <MessageRow msg={m} prev={sep ? null : msgs[i - 1]} meId={user.id} meRole={user.role} onReact={chat.react} onEdit={startEdit} onDelete={chat.deleteMessage} onAction={handleAction} onPin={chat.pinMessage} onSave={chat.saveMessage} isSaved={chat.savedIds.has(m.id)} directory={directory} onNudge={handleNudge} onResolveNudge={handleResolveNudge} onToTicket={openToTicket} onRequestAck={handleRequestAck} onAck={handleAck} />
             </React.Fragment>
           );
         })}
