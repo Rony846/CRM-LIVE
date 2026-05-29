@@ -275,7 +275,7 @@ export default function MyWarranties() {
               </div>
 
               {/* Details Grid */}
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <p className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">Device Type</p>
                   <p className="text-sm font-medium text-foreground">{selectedWarranty.device_type}</p>

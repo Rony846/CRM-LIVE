@@ -227,7 +227,7 @@ export default function CreateTicket() {
                     )}
 
                     <div className="mg-card rounded-lg border border-border bg-muted/50 p-4">
-                      <div className="grid grid-cols-2 gap-4 text-sm">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
                         <div>
                           <p className="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">Product</p>
                           <p className="text-foreground font-medium">{selectedWarranty.product_name || selectedWarranty.device_type}</p>

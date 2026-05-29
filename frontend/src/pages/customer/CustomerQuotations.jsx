@@ -169,7 +169,7 @@ export default function CustomerQuotations() {
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full">
+              <table className="w-full min-w-[620px]">
                 <thead>
                   <tr className="border-b border-border bg-muted/20">
                     <th className={thCls}>PI Number</th>

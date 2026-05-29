@@ -148,7 +148,7 @@ export default function WarrantyRegistration() {
               {/* Personal Information */}
               <div className="space-y-4">
                 <SectionLabel>Personal Information</SectionLabel>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label htmlFor="first_name" className="font-mono text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                       First Name *
@@ -177,7 +177,7 @@ export default function WarrantyRegistration() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label htmlFor="phone" className="font-mono text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                       Phone *
@@ -232,7 +232,7 @@ export default function WarrantyRegistration() {
                   </Select>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label htmlFor="invoice_date" className="font-mono text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                       Invoice Date *

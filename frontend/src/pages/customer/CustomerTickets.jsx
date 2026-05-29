@@ -160,7 +160,7 @@ export default function CustomerTickets() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full">
+            <table className="w-full min-w-[620px]">
               <thead>
                 <tr className="border-b border-border bg-muted/20">
                   <th className={thCls}>Ticket #</th>
@@ -226,7 +226,7 @@ export default function CustomerTickets() {
           {selectedTicket && (
             <div className="space-y-5">
               {/* Status & Basic Info */}
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <p className={`${labelCls} mb-1`}>Status</p>
                   <StatusBadge status={selectedTicket.status} />
