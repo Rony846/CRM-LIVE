@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
+import './DashboardLayout.css';
 import { useAuth, API } from '@/App';
 import NotificationBell from '@/components/notifications/NotificationBell';
 import ThemeSwitcher from '@/components/ui/ThemeSwitcher';
@@ -779,7 +780,7 @@ export default function DashboardLayout({ children, title }) {
 
       {/* Sidebar */}
       <aside 
-        className={`
+        className={`cd-aside
           fixed top-0 left-0 z-50 h-full w-64 transform transition-transform duration-200
           lg:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
         `}
@@ -825,7 +826,7 @@ export default function DashboardLayout({ children, title }) {
         </div>
 
         {/* Navigation */}
-        <nav className="p-4 space-y-1 flex-1 overflow-y-auto pb-20 max-h-[calc(100vh-180px)]">
+        <nav className="cd-nav p-4 space-y-1 flex-1 overflow-y-auto pb-20 max-h-[calc(100vh-180px)]">
           {useGroupedNav ? (
             // Grouped navigation for Admin & Accountant
             navGroups.map((group) => (
