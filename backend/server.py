@@ -25,6 +25,7 @@ import base64
 import shutil
 import asyncio
 import json
+import re
 import random
 import string
 import secrets
@@ -6340,7 +6341,12 @@ async def escalate_to_supervisor(
     )
     
     await add_ticket_history(ticket_id, "Escalated to supervisor", user, {"notes": notes})
-    
+
+    asyncio.create_task(post_system_message(
+        "support",
+        f"🚩 {ticket.get('ticket_number')} escalated to supervisor by {user['first_name']} {user['last_name']} — {notes[:140]}",
+        {"ref": ticket.get("ticket_number")}))
+
     return {"message": "Ticket escalated to supervisor", "new_status": "escalated_to_supervisor"}
 
 @api_router.post("/tickets/{ticket_id}/supervisor-action")
@@ -6432,7 +6438,13 @@ async def supervisor_action(
         
         action_name = "Reverse pickup requested" if action == "reverse_pickup" else "Spare dispatch requested"
         await add_ticket_history(ticket_id, f"Supervisor: {action_name}", user, {"notes": notes, "sku": sku})
-        
+
+        emoji = "🔄" if action == "reverse_pickup" else "📦"
+        asyncio.create_task(post_system_message(
+            "service",
+            f"{emoji} {action_name}: {ticket.get('ticket_number')} ({ticket.get('customer_name','')}) — sent to accountant by {user['first_name']} {user['last_name']}",
+            {"ref": ticket.get("ticket_number")}))
+
         return {"message": f"{action_name} - sent to accountant"}
     
     else:
@@ -43632,7 +43644,12 @@ async def create_dealer_order(
     # Send order confirmation email to dealer
     if dealer.get("email"):
         asyncio.create_task(send_dealer_email(dealer, order_doc, "order_confirmation"))
-    
+
+    asyncio.create_task(post_system_message(
+        "accounts",
+        f"🛒 New dealer order {order_number} from {dealer['firm_name']} — ₹{total_amount:,.0f} ({len(order_items)} item{'s' if len(order_items) != 1 else ''})",
+        {"ref": order_number}))
+
     return {
         "id": order_id,
         "order_number": order_number,
@@ -48966,6 +48983,28 @@ async def _chat_recipients(channel: dict) -> set:
     return set(channel.get("members") or [])
 
 
+async def post_system_message(channel_slug: str, text: str, data: dict | None = None):
+    """Post a system/bot message into a channel by slug (CRM event auto-posts).
+    Best-effort: never raise into the caller's flow."""
+    try:
+        ch = await db.chat_channels.find_one({"slug": channel_slug, "type": "channel"}, {"_id": 0})
+        if not ch:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        msg = {
+            "id": str(uuid.uuid4()), "channel_id": ch["id"], "sender_id": "system",
+            "sender_name": "MuscleGrid", "sender_role": "system", "body": (text or "")[:4000],
+            "attachments": [], "mentions": [], "reactions": {}, "edited_at": None,
+            "deleted": False, "is_system": True, "data": data or {}, "created_at": now,
+        }
+        await db.chat_messages.insert_one(msg)
+        msg.pop("_id", None)
+        await db.chat_channels.update_one({"id": ch["id"]}, {"$set": {"updated_at": now}})
+        await broadcast_chat(await _chat_recipients(ch), {"type": "message", "channel_id": ch["id"], "message": msg})
+    except Exception as e:
+        logger.warning(f"post_system_message({channel_slug}) failed: {e}")
+
+
 async def _ensure_starter_channels():
     global _chat_seeded
     if _chat_seeded:
@@ -49093,6 +49132,219 @@ async def chat_directory(user: dict = Depends(require_internal_chat)):
     return {"users": [{**_chat_user_brief(u), "online": u["id"] in online} for u in users if u["id"] != user["id"]]}
 
 
+@api_router.get("/chat/unfurl")
+async def chat_unfurl(ref: str, user: dict = Depends(require_internal_chat)):
+    """Resolve an MG-style entity reference (ticket / dispatch / dealer order) to a
+    rich inline card for chat. Returns {found: False} if nothing matches."""
+    ref = (ref or "").strip()
+    if not ref:
+        return {"found": False}
+    t = await db.tickets.find_one({"ticket_number": ref}, {"_id": 0})
+    if t:
+        sub = " · ".join([x for x in [t.get("customer_name"), t.get("device_type") or t.get("product_name")] if x])
+        return {"found": True, "kind": "ticket", "title": ref, "subtitle": sub,
+                "status": t.get("status"), "url": f"/admin/tickets/{t['id']}"}
+    d = await db.dispatches.find_one({"dispatch_number": ref}, {"_id": 0})
+    if d:
+        sub = " · ".join([x for x in [d.get("customer_name"), (d.get("dispatch_type") or "").replace("_", " ")] if x])
+        extra = f"Tracking {d['tracking_id']}" if d.get("tracking_id") else None
+        return {"found": True, "kind": "dispatch", "title": ref, "subtitle": sub,
+                "status": d.get("status"), "url": None, "extra": extra}
+    o = await db.dealer_orders.find_one({"order_number": ref}, {"_id": 0})
+    if o:
+        return {"found": True, "kind": "order", "title": ref,
+                "subtitle": f"{o.get('dealer_name','')} · ₹{(o.get('total_amount') or 0):,.0f}",
+                "status": o.get("status"), "url": "/admin/dealers"}
+    return {"found": False}
+
+
+# ---------------------------------------------------------------------------
+# @crm — Claude-powered assistant inside chat. READ-ONLY: it answers questions
+# and looks things up; it never mutates CRM data (write actions are deferred
+# behind an explicit confirmation step, not auto-executed from a chat line).
+# ---------------------------------------------------------------------------
+CRM_ASSISTANT_MODEL = os.environ.get("CRM_ASSISTANT_MODEL", "claude-opus-4-7")
+# Default: FREE rules-based assistant (no API cost). Set CRM_ASSISTANT_USE_LLM=true
+# to use the Claude brain instead (requires Anthropic credits).
+CRM_ASSISTANT_USE_LLM = os.environ.get("CRM_ASSISTANT_USE_LLM", "").lower() in ("1", "true", "yes", "on")
+_CRM_REF_RE = re.compile(r"\b(MG-[A-Z]{1,2}-[\dA-Z-]+|MGPO-\d+|DSP-[\dA-Z-]+|DIS-[\dA-Z-]+)\b", re.I)
+_CRM_HELP = (
+    "I can look things up instantly (no AI, free):\n"
+    "• @crm MG-R-… — ticket / dispatch / order details\n"
+    "• @crm open tickets  (or  @crm counts) — live operational counts\n"
+    "• @crm dealer <name> — dealer summary\n"
+    "• @crm stock <sku or product> — product stock\n"
+    "• @crm tickets <status>  /  @crm <10-digit phone> — search tickets"
+)
+_OPEN_TICKET_STATUSES = ["new_request", "call_support_followup", "escalated_to_supervisor",
+                         "supervisor_followup", "in_progress", "customer_escalated"]
+
+CRM_ASSISTANT_TOOLS = [
+    {"name": "lookup_entity", "description": "Look up a single CRM entity by its reference number (ticket MG-R-/MG-W-…, dispatch MG-D-/DSP-…, or dealer order). Returns its key details.",
+     "input_schema": {"type": "object", "properties": {"ref": {"type": "string"}}, "required": ["ref"]}},
+    {"name": "search_tickets", "description": "Search support tickets. Optional filters: status, phone (10-digit), or free text (matched against customer/issue). Returns a count and up to 5 examples.",
+     "input_schema": {"type": "object", "properties": {"status": {"type": "string"}, "phone": {"type": "string"}, "text": {"type": "string"}}}},
+    {"name": "crm_counts", "description": "Live operational counts: open tickets, escalated tickets, dispatches awaiting action, pending dealer orders.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "dealer_summary", "description": "Summarize a dealer by firm name (partial ok): status, outstanding balance, order count.",
+     "input_schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
+    {"name": "sku_stock", "description": "Look up product stock by SKU code or name (partial ok). Returns matching SKUs with available stock.",
+     "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+]
+
+
+async def _crm_assistant_tool(name: str, inp: dict) -> str:
+    try:
+        if name == "lookup_entity":
+            ref = (inp.get("ref") or "").strip()
+            t = await db.tickets.find_one({"ticket_number": ref}, {"_id": 0})
+            if t:
+                return f"Ticket {ref}: {t.get('customer_name')} · {t.get('device_type') or t.get('product_name') or ''} · status={t.get('status')} · phone={t.get('customer_phone')}"
+            d = await db.dispatches.find_one({"dispatch_number": ref}, {"_id": 0})
+            if d:
+                return f"Dispatch {ref}: {d.get('customer_name')} · {d.get('dispatch_type')} · status={d.get('status')} · tracking={d.get('tracking_id') or '—'}"
+            o = await db.dealer_orders.find_one({"order_number": ref}, {"_id": 0})
+            if o:
+                return f"Dealer order {ref}: {o.get('dealer_name')} · ₹{o.get('total_amount')} · status={o.get('status')} · payment={o.get('payment_status')}"
+            return f"No entity found for '{ref}'."
+        if name == "search_tickets":
+            q = {}
+            if inp.get("status"):
+                q["status"] = inp["status"]
+            if inp.get("phone"):
+                q["customer_phone"] = {"$regex": re.escape(inp["phone"][-10:])}
+            if inp.get("text"):
+                q["$or"] = [{"customer_name": {"$regex": re.escape(inp["text"]), "$options": "i"}},
+                            {"issue_description": {"$regex": re.escape(inp["text"]), "$options": "i"}}]
+            total = await db.tickets.count_documents(q)
+            ex = await db.tickets.find(q, {"_id": 0, "ticket_number": 1, "customer_name": 1, "status": 1}).sort("created_at", -1).limit(5).to_list(5)
+            return f"{total} tickets. Examples: " + "; ".join(f"{x.get('ticket_number')} ({x.get('customer_name')}, {x.get('status')})" for x in ex) if total else "No matching tickets."
+        if name == "crm_counts":
+            open_t = await db.tickets.count_documents({"status": {"$in": _OPEN_TICKET_STATUSES}})
+            esc = await db.tickets.count_documents({"status": "escalated_to_supervisor"})
+            disp = await db.dispatches.count_documents({"status": {"$in": ["pending_label", "ready_for_dispatch", "ready_to_dispatch"]}})
+            do = await db.dealer_orders.count_documents({"status": "pending"})
+            return f"Open tickets: {open_t} (escalated: {esc}). Dispatches awaiting action: {disp}. Pending dealer orders: {do}."
+        if name == "dealer_summary":
+            d = await db.dealers.find_one({"firm_name": {"$regex": re.escape(inp.get("name", "")), "$options": "i"}}, {"_id": 0})
+            if not d:
+                return f"No dealer matching '{inp.get('name')}'."
+            party = await db.parties.find_one({"dealer_id": d["id"]}, {"_id": 0, "current_balance": 1})
+            oc = await db.dealer_orders.count_documents({"dealer_id": d["id"]})
+            return f"Dealer {d.get('firm_name')}: status={d.get('status')}, outstanding=₹{(party or {}).get('current_balance', 0)}, orders={oc}, city={d.get('city') or '—'}."
+        if name == "sku_stock":
+            qy = inp.get("query", "")
+            skus = await db.master_skus.find({"$or": [{"sku_code": {"$regex": re.escape(qy), "$options": "i"}}, {"name": {"$regex": re.escape(qy), "$options": "i"}}]},
+                                             {"_id": 0, "sku_code": 1, "name": 1, "id": 1}).limit(5).to_list(5)
+            if not skus:
+                return f"No SKU matching '{qy}'."
+            out = []
+            for s in skus:
+                cnt = await db.finished_good_serials.count_documents({"master_sku_id": s["id"], "status": {"$in": ["in_stock", "available"]}})
+                out.append(f"{s.get('sku_code')} ({s.get('name')}): {cnt} in stock")
+            return "; ".join(out)
+    except Exception as e:
+        return f"(tool error: {e})"
+    return "(unknown tool)"
+
+
+async def _crm_assistant_post(channel_id: str, text: str):
+    ch = await db.chat_channels.find_one({"id": channel_id}, {"_id": 0})
+    if not ch:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    msg = {"id": str(uuid.uuid4()), "channel_id": channel_id, "sender_id": "crm-assistant",
+           "sender_name": "CRM Assistant", "sender_role": "system", "body": (text or "")[:4000],
+           "attachments": [], "mentions": [], "reactions": {}, "edited_at": None,
+           "deleted": False, "is_system": True, "is_assistant": True, "created_at": now}
+    await db.chat_messages.insert_one(msg)
+    msg.pop("_id", None)
+    await broadcast_chat(await _chat_recipients(ch), {"type": "message", "channel_id": channel_id, "message": msg})
+
+
+async def crm_assistant_respond(channel_id: str, question: str, asker_name: str):
+    """Run a bounded Claude tool-loop to answer an @crm question, then post the reply."""
+    try:
+        import anthropic
+        key = os.environ.get("ANTHROPIC_API_KEY")
+        if not key:
+            return
+        client = anthropic.AsyncAnthropic(api_key=key)
+        system = (
+            "You are 'CRM Assistant' inside MuscleGrid's internal staff team chat. "
+            f"{asker_name} asked the question. Be concise — 1 to 3 sentences, plain text. "
+            "Use the tools to fetch real facts; never invent data. When you mention a ticket/"
+            "dispatch/order, write its reference number verbatim (e.g. MG-R-20260325-77358) so it links. "
+            "You are READ-ONLY: if asked to change, cancel, dispatch, send, or otherwise act, do NOT — "
+            "briefly say that actions aren't enabled from chat yet and point them to the relevant page."
+        )
+        messages = [{"role": "user", "content": question}]
+        for _ in range(5):
+            resp = await client.messages.create(model=CRM_ASSISTANT_MODEL, max_tokens=700,
+                                                 system=system, tools=CRM_ASSISTANT_TOOLS, messages=messages)
+            if resp.stop_reason == "tool_use":
+                messages.append({"role": "assistant", "content": resp.content})
+                results = []
+                for block in resp.content:
+                    if getattr(block, "type", None) == "tool_use":
+                        out = await _crm_assistant_tool(block.name, block.input or {})
+                        results.append({"type": "tool_result", "tool_use_id": block.id, "content": out})
+                messages.append({"role": "user", "content": results})
+                continue
+            text = "".join(getattr(b, "text", "") for b in resp.content if getattr(b, "type", None) == "text").strip()
+            await _crm_assistant_post(channel_id, text or "I'm not sure — could you rephrase?")
+            return
+        await _crm_assistant_post(channel_id, "That took too many steps — try narrowing the question.")
+    except Exception as e:
+        logger.warning(f"crm_assistant_respond failed: {e}")
+        await _crm_assistant_post(channel_id, "Sorry, I hit an error answering that.")
+
+
+async def crm_command_respond(channel_id: str, text: str, asker_name: str):
+    """FREE rules-based @crm assistant — routes the message to a read-only lookup
+    by intent. No LLM, no API cost, instant."""
+    try:
+        q = re.sub(r"@crm", " ", text, flags=re.I).strip()
+        refs = _CRM_REF_RE.findall(q)
+        if refs:
+            outs = [await _crm_assistant_tool("lookup_entity", {"ref": r}) for r in refs[:3]]
+            await _crm_assistant_post(channel_id, "\n".join(outs))
+            return
+        ql = q.lower()
+        if not ql or ql in ("help", "?", "hi", "hello"):
+            await _crm_assistant_post(channel_id, _CRM_HELP)
+            return
+        if "dealer" in ql:
+            name = re.sub(r".*dealer", "", q, flags=re.I).strip(" :")
+            await _crm_assistant_post(channel_id, await _crm_assistant_tool("dealer_summary", {"name": name or q}))
+            return
+        if any(k in ql for k in ("stock", "sku", "inventory")):
+            query = re.sub(r".*(stock|sku|inventory)", "", q, flags=re.I).strip(" :")
+            await _crm_assistant_post(channel_id, await _crm_assistant_tool("sku_stock", {"query": query or q}))
+            return
+        digits = re.sub(r"\D", "", q)
+        if len(digits) >= 10:
+            await _crm_assistant_post(channel_id, await _crm_assistant_tool("search_tickets", {"phone": digits[-10:]}))
+            return
+        if "ticket" in ql:
+            statuses = ["new_request", "escalated_to_supervisor", "in_progress", "hardware_service",
+                        "awaiting_label", "label_uploaded", "closed", "resolved", "dispatched", "pending"]
+            st = next((s for s in statuses if s in ql or s.replace("_", " ") in ql), None)
+            if st:
+                await _crm_assistant_post(channel_id, await _crm_assistant_tool("search_tickets", {"status": st}))
+                return
+            await _crm_assistant_post(channel_id, await _crm_assistant_tool("crm_counts", {}))
+            return
+        if any(k in ql for k in ("count", "how many", "open", "pending", "summary", "overview", "status")):
+            await _crm_assistant_post(channel_id, await _crm_assistant_tool("crm_counts", {}))
+            return
+        res = await _crm_assistant_tool("search_tickets", {"text": q})
+        await _crm_assistant_post(channel_id, f"{res}\n\n{_CRM_HELP}")
+    except Exception as e:
+        logger.warning(f"crm_command_respond failed: {e}")
+        await _crm_assistant_post(channel_id, "Sorry, I couldn't process that — try `@crm help`.")
+
+
 @api_router.get("/chat/channels/{channel_id}/messages")
 async def chat_get_messages(channel_id: str, before: Optional[str] = None, limit: int = 40,
                             search: Optional[str] = None, user: dict = Depends(require_internal_chat)):
@@ -49151,6 +49403,13 @@ async def chat_send_message(channel_id: str, body: ChatMessageCreate, user: dict
     signed = json.loads(json.dumps(msg))
     sign_file_urls_deep(signed, user_id=None)
     await broadcast_chat(await _chat_recipients(ch), {"type": "message", "channel_id": channel_id, "message": signed})
+    # @crm — summon the read-only assistant. Free rules-based by default; Claude
+    # only if CRM_ASSISTANT_USE_LLM is enabled (and credits are available).
+    if "@crm" in text.lower():
+        if CRM_ASSISTANT_USE_LLM and os.environ.get("ANTHROPIC_API_KEY"):
+            asyncio.create_task(crm_assistant_respond(channel_id, text, msg["sender_name"]))
+        else:
+            asyncio.create_task(crm_command_respond(channel_id, text, msg["sender_name"]))
     return {"message": msg}
 
 

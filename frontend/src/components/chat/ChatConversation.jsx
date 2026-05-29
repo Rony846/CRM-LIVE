@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { useChat } from './ChatProvider';
 import { ChatAvatar, fmtTime, fmtDay, renderBody, isImage, fileUrl, QUICK_EMOJIS } from './chatUtils';
+import MGUnfurl, { extractRefs } from './MGUnfurl';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
   Send, Paperclip, Smile, X, Pencil, Trash2, SmilePlus, Hash, Lock, FileText, Loader2,
@@ -38,6 +39,7 @@ function MessageRow({ msg, prev, meId, onReact, onEdit, onDelete }) {
           {!grouped && (
             <div className="flex items-baseline gap-2">
               <span className="text-[13px] font-semibold text-foreground">{msg.sender_name}</span>
+              {msg.is_system && <span className="rounded bg-primary/15 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide text-primary">bot</span>}
               <span className="text-[10px] text-muted-foreground">{fmtTime(msg.created_at)}</span>
               {msg.edited_at && <span className="text-[10px] text-muted-foreground/60">(edited)</span>}
             </div>
@@ -57,6 +59,7 @@ function MessageRow({ msg, prev, meId, onReact, onEdit, onDelete }) {
               )}
             </div>
           ))}
+          {extractRefs(msg.body).map((r) => <MGUnfurl key={r} refStr={r} />)}
           <Reactions msg={msg} onReact={onReact} meId={meId} />
         </div>
       </div>
