@@ -4,6 +4,8 @@ import AppShell from './components/AppShell';
 import Login from './screens/Login';
 import TechnicianQueue from './screens/TechnicianQueue';
 import AdminDashboard from './screens/AdminDashboard';
+import GateDashboard from './screens/GateDashboard';
+import SupervisorDashboard from './screens/SupervisorDashboard';
 import AccountantPortal from './screens/AccountantPortal';
 import IncomingClassification from './screens/IncomingClassification';
 import FinanceLedger from './screens/FinanceLedger';
@@ -23,6 +25,8 @@ export default function App() {
       <Route element={<ProtectedRoute><AppShell /></ProtectedRoute>}>
         <Route path="/home" element={<Home />} />
         <Route path="/admin/dashboard" element={<AdminDashboard />} />
+        <Route path="/gate/scan" element={<GateDashboard />} />
+        <Route path="/supervisor/dashboard" element={<SupervisorDashboard />} />
         <Route path="/technician/queue" element={<TechnicianQueue />} />
         <Route path="/accountant/inventory" element={<AccountantPortal />} />
         <Route path="/accountant/classify" element={<IncomingClassification />} />
