@@ -149,6 +149,38 @@ async def get_default_firm_id() -> Optional[str]:
     return firm.get("id") if firm else None
 
 
+async def derive_ticket_firm_id(
+    order_id: Optional[str] = None,
+    invoice_number: Optional[str] = None,
+    serial_number: Optional[str] = None,
+) -> Optional[str]:
+    """Best-effort: figure out which firm a support ticket belongs to.
+
+    Support tickets carry no firm of their own, so we infer it from the unit that
+    was sold: first via the Amazon order/invoice reference (amazon_orders.firm_id),
+    then via the unit serial (finished_good_serials.firm_id). Returns None when the
+    ticket can't be attributed — the caller must treat None as "unscoped / global"
+    and never hide it, because most legacy tickets have no derivable firm.
+    """
+    try:
+        for ref in (order_id, invoice_number):
+            if ref:
+                amz = await db.amazon_orders.find_one(
+                    {"amazon_order_id": ref}, {"_id": 0, "firm_id": 1}
+                )
+                if amz and amz.get("firm_id"):
+                    return amz["firm_id"]
+        if serial_number:
+            ser = await db.finished_good_serials.find_one(
+                {"serial_number": serial_number}, {"_id": 0, "firm_id": 1}
+            )
+            if ser and ser.get("firm_id"):
+                return ser["firm_id"]
+    except Exception as e:
+        logger.warning(f"derive_ticket_firm_id failed: {e}")
+    return None
+
+
 async def create_party_ledger_entry_atomic(
     party_id: str,
     party_name: str,
@@ -537,6 +569,32 @@ async def create_indexes():
             replace_existing=True,
             misfire_grace_time=900,
             max_instances=1,  # never overlap pulses
+        )
+
+        # Delhivery Tracking Board — every 30 min, polls Delhivery for each active
+        # Delhivery-carried Amazon order and stores status in db.delhivery_tracking.
+        # Delivered parcels are pruned 1 day after delivery.
+        scheduler.add_job(
+            scheduled_delhivery_board_refresh,
+            IntervalTrigger(minutes=30),
+            id="delhivery_board_refresh",
+            name="Delhivery Tracking Board Refresh (every 30m)",
+            replace_existing=True,
+            misfire_grace_time=900,
+            max_instances=1,  # never overlap refreshes
+        )
+
+        # Dispatch auto-finalize — hourly, completes gate-scanned-but-unfinalized
+        # dispatches so shipped orders don't linger in the active queue. Only acts
+        # when an outward gate scan is on file (never bypasses the COGS/sales control).
+        scheduler.add_job(
+            scheduled_dispatch_autofinalize,
+            IntervalTrigger(hours=1),
+            id="dispatch_autofinalize",
+            name="Dispatch Auto-Finalize (gate-scanned, finalize missed)",
+            replace_existing=True,
+            misfire_grace_time=1800,
+            max_instances=1,
         )
 
         scheduler.start()
@@ -1038,6 +1096,8 @@ class DispatchResponse(BaseModel):
     eway_bill_number: Optional[str] = None  # E-way bill for orders > 50K
     eway_bill_url: Optional[str] = None  # E-way bill document URL
     items: Optional[List[dict]] = None  # For multi-item orders
+    needs_gate_scan: Optional[bool] = False  # has tracking but no outward gate scan yet
+    queue_age_days: Optional[int] = None  # days since the dispatch was created
 
 # SKU/Inventory Models
 class SKUCreate(BaseModel):
@@ -4403,11 +4463,16 @@ async def get_current_user_optional(credentials: HTTPAuthorizationCredentials = 
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
-def make_signed_file_url(relative_path: str, ttl_seconds: int = 600, user_id: str | None = None) -> str:
-    """Return a short-lived signed path for serving a file without a Bearer token.
+FILE_URL_TTL_SECONDS = int(os.environ.get("FILE_URL_TTL_SECONDS", str(6 * 3600)))  # default 6h
+
+
+def make_signed_file_url(relative_path: str, ttl_seconds: int = FILE_URL_TTL_SECONDS, user_id: str | None = None) -> str:
+    """Return a signed path for serving a file without a Bearer token.
 
     The signature binds the relative path + expiry to FILE_DOWNLOAD_SECRET; an
-    optional user_id is also bound so the URL is single-user.
+    optional user_id is also bound so the URL is single-user. TTL defaults to 6h
+    (was 10 min) so links embedded in a dashboard stay clickable for a full work
+    session — a 10-min TTL meant invoices opened later 401'd.
     """
     import hmac as _hmac, hashlib as _hashlib, base64 as _b64
     exp = int((datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)).timestamp())
@@ -5703,6 +5768,26 @@ def sign_ticket_file_urls(ticket: dict, user_id: str | None = None) -> dict:
     return ticket
 
 
+def sign_file_urls_deep(obj, user_id: str | None = None):
+    """Recursively replace every "/api/files/..." string anywhere in a dict/list
+    with a signed URL, so non-ticket documents (dispatches, purchases, sales
+    invoices) open via plain browser links too. Only strings under /api/files/
+    are touched; already-signed values are re-signed cleanly. Mutates in place."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(v, str) and v.startswith("/api/files/"):
+                rel = v.split("?", 1)[0][len("/api/files/"):].strip("/")
+                if rel:
+                    obj[k] = make_signed_file_url(rel, user_id=user_id)
+            elif isinstance(v, (dict, list)):
+                sign_file_urls_deep(v, user_id)
+    elif isinstance(obj, list):
+        for item in obj:
+            if isinstance(item, (dict, list)):
+                sign_file_urls_deep(item, user_id)
+    return obj
+
+
 @api_router.post("/tickets")
 async def create_ticket(
     background_tasks: BackgroundTasks,
@@ -5803,10 +5888,15 @@ async def create_ticket(
     
     # Calculate SLA
     sla_due = calculate_sla_due("phone", now)
-    
+
+    # Attribute the ticket to the firm that sold the unit, where derivable.
+    # None = unattributed (treated as global by the firm-scoped queue).
+    firm_id = await derive_ticket_firm_id(order_id, invoice_number, serial_number)
+
     ticket_doc = {
         "id": ticket_id,
         "ticket_number": ticket_number,
+        "firm_id": firm_id,
         "customer_id": cust_id,
         "customer_name": f"{customer['first_name']} {customer['last_name']}",
         "customer_phone": customer["phone"],
@@ -6030,6 +6120,18 @@ async def list_tickets(
             "hardware_service", "awaiting_label", "label_uploaded",
             "repair_completed", "service_invoice_added",
         ]}
+        # Firm scope (soft): an accountant tied to a firm sees that firm's tickets
+        # PLUS any ticket we couldn't attribute to a firm (firm_id null/missing —
+        # {"firm_id": None} matches both in Mongo). We deliberately do NOT hard-
+        # filter: most legacy tickets carry no firm_id and a strict filter would
+        # empty the queue. Uses the real caller's scope, so admin (view_as) and
+        # accountants with no firm_id remain unscoped (see all). Wrapped in $and so
+        # it composes with the search $or below instead of clobbering it.
+        acct_firm = get_user_firm_scope(user)
+        if acct_firm:
+            query.setdefault("$and", []).append(
+                {"$or": [{"firm_id": acct_firm}, {"firm_id": None}]}
+            )
     elif effective_role == "dispatcher":
         # Dispatchers only need to see tickets reaching dispatch.
         query["status"] = {"$in": [
@@ -6311,7 +6413,14 @@ async def supervisor_action(
         await db.tickets.update_one(
             {"id": ticket_id},
             {"$set": {
-                "status": "hardware_service" if action == "reverse_pickup" else "awaiting_label",
+                # reverse_pickup → awaiting_label: the accountant must produce/upload a
+                # pickup label next, which is exactly what "awaiting_label" means.
+                # spare_dispatch → hardware_service: no pickup label is involved (a new
+                # unit ships out), so it waits in the generic hardware queue for the
+                # accountant to raise the outbound dispatch. (These were previously
+                # swapped, which mislabelled spare dispatches and leaked them into the
+                # dispatcher's awaiting_label queue.)
+                "status": "awaiting_label" if action == "reverse_pickup" else "hardware_service",
                 "support_type": "hardware",
                 "supervisor_notes": notes,
                 "supervisor_action": action,
@@ -6465,17 +6574,24 @@ async def set_accountant_decision(
         raise HTTPException(status_code=400, detail="Invalid decision. Use 'reverse_pickup' or 'spare_dispatch'")
     
     now = datetime.now(timezone.utc)
-    
-    await db.tickets.update_one(
-        {"id": ticket_id},
-        {"$set": {
-            "accountant_decision": body.decision,
-            "accountant_decided_by": user["id"],
-            "accountant_decided_at": now.isoformat(),
-            "updated_at": now.isoformat()
-        }}
-    )
-    
+
+    # Drive the status the same way the supervisor path does, so a ticket lands in
+    # the same place regardless of who made the call: reverse_pickup → awaiting_label
+    # (accountant uploads a pickup label next), spare_dispatch → hardware_service
+    # (accountant raises the outbound dispatch). Don't regress a ticket that's
+    # already moved past the decision stage (e.g. label already uploaded).
+    new_status = "awaiting_label" if body.decision == "reverse_pickup" else "hardware_service"
+    set_fields = {
+        "accountant_decision": body.decision,
+        "accountant_decided_by": user["id"],
+        "accountant_decided_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+    }
+    if ticket.get("status") == "hardware_service":
+        set_fields["status"] = new_status
+
+    await db.tickets.update_one({"id": ticket_id}, {"$set": set_fields})
+
     action_name = "Spare Dispatch" if body.decision == "spare_dispatch" else "Reverse Pickup"
     await add_ticket_history(ticket_id, f"Accountant decided: {action_name}", user, {
         "decision": body.decision
@@ -6661,6 +6777,51 @@ async def complete_repair(
     })
     
     return {"message": "Repair marked as completed", "status": new_status}
+
+@api_router.post("/tickets/{ticket_id}/attach-invoice")
+async def attach_ticket_invoice(
+    ticket_id: str,
+    invoice_file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["accountant", "admin"]))
+):
+    """Attach or replace the customer invoice on an existing ticket.
+
+    Built to re-collect the early invoices lost before the file store went live
+    (the original upload only happened at ticket creation), but usable any time an
+    invoice needs (re)attaching. Stores the file and repoints ticket.invoice_file.
+    """
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    assert_firm_access(user, ticket.get("firm_id"))
+
+    try:
+        content = await invoice_file.read()
+        relative_path, _ = await storage_upload(
+            file_data=content,
+            folder="invoices",
+            original_filename=invoice_file.filename,
+            filename_prefix=f"ticket_{ticket_id}",
+        )
+    except StorageError as e:
+        logger.error(f"attach-invoice upload failed for {ticket_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"File upload failed: {e}")
+
+    now = datetime.now(timezone.utc)
+    url = f"/api/files/{relative_path}"
+    await db.tickets.update_one(
+        {"id": ticket_id},
+        {"$set": {"invoice_file": url, "updated_at": now.isoformat()}},
+    )
+    await add_ticket_history(
+        ticket_id,
+        "Invoice attached/replaced" if ticket.get("invoice_file") else "Invoice attached",
+        user,
+        {"file": url, "filename": invoice_file.filename},
+    )
+    # Return a signed URL so the caller can open it immediately.
+    return {"success": True, "invoice_file": make_signed_file_url(relative_path, user_id=user["id"])}
+
 
 @api_router.post("/tickets/{ticket_id}/add-service-invoice")
 async def add_service_invoice(
@@ -9126,7 +9287,33 @@ async def list_dispatches(
         ]
     
     dispatches = await db.dispatches.find(query, {"_id": 0}).sort("created_at", -1).to_list(10000)
-    return [DispatchResponse(**d) for d in dispatches]
+
+    # Some dispatches (esp. Amazon-sourced) stored money fields as SP-API dicts
+    # ({"Amount": "5410.00", "CurrencyCode": "INR"}) instead of plain floats. Coerce
+    # them so Pydantic doesn't reject the row, and skip any single doc that still
+    # won't validate — one bad row must not 500 the whole list (which blanks the
+    # accountant/dispatcher dashboards).
+    def _money(v):
+        if isinstance(v, dict):
+            try:
+                return float(v.get("Amount") or 0)
+            except (TypeError, ValueError):
+                return None
+        return v
+
+    result = []
+    for d in dispatches:
+        for fld in ("invoice_value", "service_charges", "gst_rate"):
+            if isinstance(d.get(fld), dict):
+                d[fld] = _money(d[fld])
+        sign_file_urls_deep(d, user["id"])  # invoice/label/eway URLs open via plain link
+        try:
+            result.append(DispatchResponse(**d))
+        except Exception as e:
+            logger.error(
+                f"Skipping malformed dispatch {d.get('dispatch_number') or d.get('id')}: {e}"
+            )
+    return result
 
 @api_router.patch("/dispatches/{dispatch_id}/label")
 async def upload_dispatch_label(
@@ -9352,7 +9539,39 @@ async def get_dispatcher_queue(
             "scanned_out_at": None
         }
         dispatches.append(dispatch_item)
-    
+
+    # Flag items that have a tracking_id but no outward gate scan on file. These
+    # can't be finalized (the gate-scan control blocks COGS/sales without proof of
+    # handover) and so silently pile up in the queue — surface them so the floor
+    # scans the package out. One batched gate_logs query, not one-per-row.
+    ids = [d["id"] for d in dispatches if d.get("id")]
+    trackings = [t for t in ((d.get("tracking_id") or "").strip() for d in dispatches) if t]
+    scanned_ids, scanned_trackings = set(), set()
+    if ids or trackings:
+        async for g in db.gate_logs.find(
+            {"scan_type": "outward",
+             "$or": [{"dispatch_id": {"$in": ids}}, {"tracking_id": {"$in": trackings}}]},
+            {"_id": 0, "dispatch_id": 1, "tracking_id": 1},
+        ):
+            if g.get("dispatch_id"):
+                scanned_ids.add(g["dispatch_id"])
+            if g.get("tracking_id"):
+                scanned_trackings.add(g["tracking_id"])
+
+    now = datetime.now(timezone.utc)
+    for d in dispatches:
+        tracking = (d.get("tracking_id") or "").strip()
+        has_scan = d.get("id") in scanned_ids or (tracking and tracking in scanned_trackings)
+        d["needs_gate_scan"] = bool(tracking) and not has_scan
+        try:
+            created = datetime.fromisoformat(str(d.get("created_at")).replace("Z", "+00:00"))
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            d["queue_age_days"] = max(0, (now - created).days)
+        except (ValueError, TypeError):
+            d["queue_age_days"] = None
+        sign_file_urls_deep(d, user["id"])  # invoice/label URLs (incl. original_ticket_info) open via plain link
+
     return [DispatchResponse(**d) for d in dispatches]
 
 @api_router.patch("/dispatcher/dispatches/{dispatch_id}/update-courier")
@@ -10109,6 +10328,80 @@ async def attach_dispatch_invoice(
         "dispatch_id": dispatch_id,
         "invoice_file": f"/api/files/dispatches/{file_name}"
     }
+
+
+# Synthetic actor for the auto-finalize job. Only the keys dispatcher_finalize_dispatch
+# reads are required (role/id/first_name/last_name).
+_AUTOFINALIZE_SYSTEM_USER = {
+    "id": "system-autofinalize",
+    "role": "admin",
+    "first_name": "System",
+    "last_name": "Auto-Finalize",
+}
+
+
+async def scheduled_dispatch_autofinalize():
+    """Stop shipped dispatches from lingering in the active queue.
+
+    A dispatch reaches `ready_for_dispatch` when its label/tracking is set, then a
+    dispatcher must scan it out at the gate and click Finalize (which deducts stock
+    and books the sale). When the gate scan happened but the final click was missed,
+    the row sits in the queue forever. This job completes exactly that case: for any
+    `ready_for_dispatch` dispatch that has a tracking_id AND a matching OUTWARD gate
+    scan, it runs the real finalize (same code path, same accounting).
+
+    It deliberately does NOT touch dispatches that have a tracking_id but NO gate
+    scan — finalizing those would book COGS/sales with no proof the package left the
+    building, which is exactly the control finalize enforces. Those still need a
+    physical scan and are left for a human.
+    """
+    try:
+        candidates = await db.dispatches.find(
+            {
+                "status": {"$in": ["ready_for_dispatch", "ready_to_dispatch"]},
+                "tracking_id": {"$nin": [None, ""]},
+                "stock_deducted": {"$ne": True},
+            },
+            {"_id": 0, "id": 1, "dispatch_number": 1, "tracking_id": 1},
+        ).to_list(500)
+
+        finalized = 0
+        skipped_no_scan = 0
+        errors = 0
+        for d in candidates:
+            tracking = (d.get("tracking_id") or "").strip()
+            clauses = [{"dispatch_id": d["id"]}]
+            if tracking:
+                clauses.append({"tracking_id": tracking})
+            scan = await db.gate_logs.find_one(
+                {"scan_type": "outward", "$or": clauses}, {"_id": 0, "id": 1}
+            )
+            if not scan:
+                skipped_no_scan += 1
+                continue
+            try:
+                await dispatcher_finalize_dispatch(
+                    dispatch_id=d["id"],
+                    notes="Auto-finalized: outward gate scan on file, finalize step was missed",
+                    override_gate_scan=False,
+                    override_reason=None,
+                    user=_AUTOFINALIZE_SYSTEM_USER,
+                )
+                finalized += 1
+            except HTTPException as e:
+                logger.warning(f"Auto-finalize skipped {d.get('dispatch_number')}: {e.detail}")
+            except Exception as e:
+                errors += 1
+                logger.error(f"Auto-finalize error on {d.get('dispatch_number')}: {e}")
+
+        if finalized or skipped_no_scan or errors:
+            logger.info(
+                f"Dispatch auto-finalize: finalized={finalized}, "
+                f"skipped_no_gate_scan={skipped_no_scan}, errors={errors}, "
+                f"candidates={len(candidates)}"
+            )
+    except Exception as e:
+        logger.error(f"scheduled_dispatch_autofinalize failed: {e}")
 
 
 @api_router.post("/dispatcher/dispatches/{dispatch_id}/finalize-retroactive")
@@ -12562,9 +12855,13 @@ async def create_walkin_ticket(
     random_suffix = str(random.randint(10000, 99999))
     ticket_number = f"MG-W-{date_str}-{random_suffix}"  # W for Walk-in
     
+    # Attribute to the selling firm where derivable (walk-ins only have a serial).
+    firm_id = await derive_ticket_firm_id(serial_number=serial_number)
+
     ticket = {
         "id": str(uuid.uuid4()),
         "ticket_number": ticket_number,
+        "firm_id": firm_id,
         "customer_id": customer_id,
         "customer_name": customer_name,
         "customer_phone": customer_phone,
@@ -13626,7 +13923,10 @@ ALLOWED_FILE_FOLDERS = {
 
 def _safe_uploads_path(folder: str, filename: str) -> Path:
     """Resolve {folder}/{filename} under UPLOAD_DIR, rejecting traversal."""
-    if folder not in ALLOWED_FILE_FOLDERS:
+    # Allowlist check is case-insensitive (some legacy uploads used "Dispatches"
+    # with a capital D); the original casing is kept for the on-disk path so it
+    # still matches the real directory.
+    if folder.lower() not in ALLOWED_FILE_FOLDERS:
         raise HTTPException(status_code=404, detail="Unknown folder")
     if "/" in filename or "\\" in filename or filename.startswith("."):
         raise HTTPException(status_code=400, detail="Invalid filename")
@@ -23208,6 +23508,7 @@ async def list_purchases(
         for k, v in list(p.items()):
             if isinstance(v, _OID):
                 p[k] = str(v)
+        sign_file_urls_deep(p, user["id"])  # supplier invoice opens via plain link
     total = await db.purchases.count_documents(query)
     
     # Calculate summary
@@ -23249,6 +23550,7 @@ async def get_purchase(
     if not purchase:
         raise HTTPException(status_code=404, detail="Purchase not found")
     assert_firm_access(user, purchase.get("firm_id"))
+    sign_file_urls_deep(purchase, user["id"])  # supplier invoice opens via plain link
     return purchase
 
 
@@ -25698,6 +26000,8 @@ async def list_sales_invoices(
         ]
     
     invoices = await db.sales_invoices.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    for inv in invoices:
+        sign_file_urls_deep(inv, user["id"])  # invoice PDF / attachments open via plain link
     return invoices
 
 
@@ -25711,6 +26015,7 @@ async def get_sales_invoice(
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
     assert_firm_access(user, invoice.get("firm_id"))
+    sign_file_urls_deep(invoice, user["id"])
     return invoice
 
 
@@ -57562,11 +57867,372 @@ async def track_courier_shipment(
         
         if not data.get("success"):
             raise HTTPException(status_code=400, detail=data.get("message", "Failed to track shipment"))
-        
+
         return {
             "success": True,
             "tracking": data.get("data", {})
         }
+
+
+# States that will never progress further — used to retire parcels off the board.
+DELHIVERY_TERMINAL_STATES = {"delivered", "cancelled", "returned"}
+
+
+def _classify_delhivery_status(
+    status_type: Optional[str],
+    status_code: Optional[str],
+    pill_label: Optional[str] = None,
+) -> str:
+    """Map a Delhivery status into delivered / cancelled / returned / pending / in_transit.
+
+    Keyed primarily off the `status` code string (IN_TRANSIT, NOT_PICKED, DELIVERED,
+    WAITING_PICKUP, ...), which is reliable. `statusType` is NOT used to distinguish
+    pending vs in-transit: Delhivery returns "UD" (undelivered) for everything that
+    isn't delivered yet, in-transit parcels included, so it can't separate them. The
+    pill label ("Cancelled", "Delivered") is Delhivery's own verdict and wins when set.
+    """
+    st = (status_type or "").upper()
+    sc = (status_code or "").upper()
+    pill = (pill_label or "").upper()
+    if pill == "CANCELLED" or "CANCEL" in sc:
+        return "cancelled"
+    if "DELIVERED" in sc or pill == "DELIVERED" or st == "DL":
+        return "delivered"
+    if "RTO" in sc or "RETURN" in sc or st in {"RT", "RTO"}:
+        return "returned"
+    if "TRANSIT" in sc or "DISPATCH" in sc or "OUT_FOR_DELIVERY" in sc:
+        return "in_transit"
+    if "PICKUP" in sc or "NOT_PICKED" in sc or "MANIFEST" in sc or "PENDING" in sc:
+        return "pending"
+    return "in_transit"
+
+
+async def fetch_delhivery_tracking(awb: str) -> dict:
+    """Fetch + normalise one AWB from Delhivery's public unified-tracking API.
+
+    Bigship is an aggregator; for Delhivery-carried shipments this gives the
+    real, live scan timeline. Delhivery validates the Origin header, so this
+    must be called server-side (a browser fetch would be blocked by CORS).
+
+    Returns a normalised tracking dict. Raises HTTPException on failure so the
+    on-demand endpoint surfaces a sensible code; the scheduled refresh catches
+    it per-AWB and keeps going.
+    """
+    awb = (awb or "").strip()
+    if not awb:
+        raise HTTPException(status_code=400, detail="AWB is required")
+
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/124.0 Safari/537.36",
+        "Origin": "https://www.delhivery.com",
+        "Referer": "https://www.delhivery.com/",
+    }
+
+    # Delhivery rate-limits aggressively (HTTP 429). Retry a few times with
+    # exponential backoff before giving up so a transient throttle doesn't fail
+    # the check.
+    response = None
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    "https://dlv-api.delhivery.com/v3/unified-tracking",
+                    params={"wbn": awb},
+                    headers=headers,
+                )
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502, detail=f"Could not reach Delhivery: {e}")
+
+        if response.status_code != 429:
+            break
+        if attempt < 2:
+            await asyncio.sleep(2 * (attempt + 1))  # 2s, 4s
+
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Delhivery returned HTTP {response.status_code}"
+        )
+
+    payload = response.json()
+    records = payload.get("data") or []
+    if not records:
+        raise HTTPException(status_code=404, detail="No tracking found for this AWB")
+
+    rec = records[0]
+    status = rec.get("status") or {}
+
+    # Flatten the staged trackingStates into a single newest-first scan list.
+    states = rec.get("trackingStates") or []
+    scans = []
+    for state in states:
+        for scan in (state.get("scans") or []):
+            scans.append({
+                "stage": state.get("label"),
+                "scan": scan.get("scan"),
+                "remark": scan.get("scanNslRemark"),
+                "location": scan.get("scannedLocation") or scan.get("cityLocation"),
+                "city": scan.get("cityLocation"),
+                "scan_type": scan.get("scanType"),
+                "timestamp": scan.get("scanDateTime") or scan.get("scanDate"),
+            })
+    scans.reverse()  # API lists oldest-first; show newest first
+
+    return {
+        "awb": rec.get("awb") or awb,
+        "status": status.get("status"),
+        "status_label": rec.get("deliveryPillLabel") or status.get("status"),
+        "status_type": status.get("statusType"),
+        "status_datetime": status.get("statusDateTime"),  # ISO ts of the current status
+        "state": _classify_delhivery_status(
+            status.get("statusType"), status.get("status"), rec.get("deliveryPillLabel")
+        ),
+        "instructions": status.get("instructions"),
+        "destination": rec.get("destination"),
+        "product_type": rec.get("productType"),
+        "reference_no": rec.get("referenceNo"),
+        "payment_terms": rec.get("paymentTerms") or rec.get("packageType"),
+        "promise_delivery_date": rec.get("promiseDeliveryDate"),
+        "delivery_date": rec.get("deliveryDate"),
+        "delivery_date_text": rec.get("deliveryDateText_v2") or rec.get("deliveryDateText"),
+        "current_flow": rec.get("currentFlow"),
+        "states": [
+            {
+                "label": s.get("label"),
+                "date": s.get("date"),
+                "reached": bool(s.get("scans")),
+            }
+            for s in states
+        ],
+        "scans": scans,
+    }
+
+
+@api_router.get("/courier/delhivery-track/{awb}")
+async def track_delhivery_shipment(
+    awb: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """On-demand live Delhivery tracking for a single AWB."""
+    if current_user["role"] not in ["admin", "accountant", "dispatcher"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    tracking = await fetch_delhivery_tracking(awb)
+    return {"success": True, "tracking": tracking}
+
+
+# =============================================================================
+# DELHIVERY TRACKING BOARD
+# A self-maintaining board of every active Delhivery-carried Amazon order across
+# firms. A 30-min scheduled job (scheduled_delhivery_board_refresh) polls each
+# active AWB and stores the latest status in db.delhivery_tracking. Delivered
+# parcels are flagged green and pruned 1 day after delivery.
+# =============================================================================
+
+DELHIVERY_CARRIER_CODES = ["delhivery", "Delhivery", "DELHIVERY"]
+DELHIVERY_BOARD_DELIVERED_TTL_HOURS = 24  # keep delivered parcels visible this long
+DELHIVERY_BOARD_POLL_DELAY_SECONDS = 0.6  # pace requests so we don't trip Delhivery's 429
+DELHIVERY_BOARD_MAX_FAILS = 6  # retire a persistently-unresolvable AWB after this many checks
+DELHIVERY_BOARD_FAIL_MIN_AGE_DAYS = 14  # ...but only once the order is this old (spare new parcels)
+
+
+def _order_age_days(order: dict, now: datetime) -> float:
+    """Age of an order in days from its purchase_date; 0 if unparseable."""
+    pd = order.get("purchase_date")
+    if not pd:
+        return 0.0
+    try:
+        dt = datetime.fromisoformat(str(pd).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (now - dt).total_seconds() / 86400.0
+    except (ValueError, TypeError):
+        return 0.0
+
+
+async def _delhivery_board_universe() -> list:
+    """All non-cancelled Delhivery-carried Amazon orders that have an AWB."""
+    return await db.amazon_orders.find(
+        {
+            "carrier_code": {"$in": DELHIVERY_CARRIER_CODES},
+            "tracking_number": {"$exists": True, "$nin": [None, ""]},
+            "crm_status": {"$ne": "cancelled"},
+        },
+        {
+            "_id": 0, "amazon_order_id": 1, "firm_id": 1, "tracking_number": 1,
+            "buyer_name": 1, "purchase_date": 1, "crm_status": 1,
+            "city": 1, "state": 1,
+        },
+    ).to_list(length=5000)
+
+
+async def refresh_delhivery_board() -> dict:
+    """Seed the board from current Amazon orders, poll Delhivery for each active
+    AWB, persist status, and prune parcels delivered more than the TTL ago.
+
+    Returns a small summary dict (used by the manual-refresh endpoint and logs).
+    """
+    now = datetime.now(timezone.utc)
+    firms = {f["id"]: f.get("name") async for f in db.firms.find({}, {"_id": 0, "id": 1, "name": 1})}
+    orders = await _delhivery_board_universe()
+
+    checked = 0
+    delivered = 0
+    pruned = 0
+    errors = 0
+
+    for order in orders:
+        awb = (order.get("tracking_number") or "").strip()
+        if not awb:
+            continue
+
+        existing = await db.delhivery_tracking.find_one({"awb": awb}, {"_id": 0})
+        # Skip parcels we've already retired (delivered + TTL elapsed).
+        if existing and existing.get("retired"):
+            continue
+
+        try:
+            tracking = await fetch_delhivery_tracking(awb)
+        except HTTPException:
+            errors += 1
+            # Record the failed check so the board can show "last checked" honestly.
+            fail_count = (existing or {}).get("fail_count", 0) + 1
+            update = {
+                "last_checked": now.isoformat(),
+                "last_check_failed": True,
+                "fail_count": fail_count,
+            }
+            # Stop polling AWBs that persistently never resolve (old/purged AWBs or
+            # short LR numbers Delhivery's wbn lookup rejects) — but never retire a
+            # recent order that may simply not be in Delhivery's system yet.
+            if (fail_count >= DELHIVERY_BOARD_MAX_FAILS
+                    and _order_age_days(order, now) > DELHIVERY_BOARD_FAIL_MIN_AGE_DAYS):
+                update["retired"] = True
+                pruned += 1
+            await db.delhivery_tracking.update_one({"awb": awb}, {"$set": update}, upsert=True)
+            await asyncio.sleep(DELHIVERY_BOARD_POLL_DELAY_SECONDS)
+            continue
+
+        checked += 1
+        state = tracking.get("state")
+        is_terminal = state in DELHIVERY_TERMINAL_STATES
+
+        doc = {
+            "awb": awb,
+            "amazon_order_id": order.get("amazon_order_id"),
+            "firm_id": order.get("firm_id"),
+            "firm_name": firms.get(order.get("firm_id")),
+            "buyer_name": order.get("buyer_name"),
+            "purchase_date": order.get("purchase_date"),
+            "crm_status": order.get("crm_status"),
+            "tracking": tracking,
+            "state": state,
+            "status_label": tracking.get("status_label"),
+            "destination": tracking.get("destination"),
+            "last_checked": now.isoformat(),
+            "last_check_failed": False,
+            "fail_count": 0,
+        }
+
+        if is_terminal:
+            if state == "delivered":
+                delivered += 1
+            # Stamp the moment the parcel reached its terminal state. Prefer the real
+            # time Delhivery reports (status_datetime) so a parcel finished weeks ago
+            # retires immediately rather than lingering green/red for a day. Fall back
+            # to first-observed, then now.
+            terminal_at = (
+                (existing or {}).get("terminal_at")
+                or tracking.get("status_datetime")
+                or now.isoformat()
+            )
+            doc["terminal_at"] = terminal_at
+            doc["delivered_at"] = terminal_at if state == "delivered" else None
+            # Prune once the parcel has been terminal longer than the TTL.
+            try:
+                terminal_dt = datetime.fromisoformat(terminal_at)
+                if terminal_dt.tzinfo is None:
+                    terminal_dt = terminal_dt.replace(tzinfo=timezone.utc)
+                if (now - terminal_dt) > timedelta(hours=DELHIVERY_BOARD_DELIVERED_TTL_HOURS):
+                    doc["retired"] = True
+                    pruned += 1
+            except (ValueError, TypeError):
+                pass
+        else:
+            doc["terminal_at"] = None
+            doc["delivered_at"] = None
+            doc["retired"] = False
+
+        await db.delhivery_tracking.update_one({"awb": awb}, {"$set": doc}, upsert=True)
+        await asyncio.sleep(DELHIVERY_BOARD_POLL_DELAY_SECONDS)
+
+    return {
+        "orders_in_universe": len(orders),
+        "checked": checked,
+        "delivered": delivered,
+        "pruned": pruned,
+        "errors": errors,
+        "ran_at": now.isoformat(),
+    }
+
+
+async def scheduled_delhivery_board_refresh():
+    """APScheduler entrypoint — refresh the Delhivery tracking board every 30 min."""
+    try:
+        summary = await refresh_delhivery_board()
+        logger.info(f"Delhivery board refresh: {summary}")
+    except Exception as e:
+        logger.error(f"Delhivery board refresh failed: {e}")
+
+
+@api_router.get("/courier/delhivery-board")
+async def get_delhivery_board(
+    firm_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Return the active Delhivery tracking board, firm-scoped.
+
+    Excludes retired parcels (delivered > TTL ago). Accountants see only their
+    firm; admin/dispatcher see all (optionally filtered by firm_id).
+    """
+    if current_user["role"] not in ["admin", "accountant", "dispatcher"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Only surface parcels with a known shipment status. Excludes both retired
+    # parcels (terminal + TTL elapsed) and unresolved ones (AWBs Delhivery never
+    # returned data for — those have no `state`).
+    query = {
+        "retired": {"$ne": True},
+        "state": {"$in": ["in_transit", "pending", "delivered", "returned", "cancelled"]},
+    }
+    query.update(firm_scope_filter(current_user, firm_id))
+
+    rows = await db.delhivery_tracking.find(query, {"_id": 0}).to_list(length=5000)
+
+    # Newest purchase first; undelivered ahead of delivered so live parcels lead.
+    rows.sort(key=lambda r: r.get("purchase_date") or "", reverse=True)
+    rows.sort(key=lambda r: r.get("state") == "delivered")
+
+    return {
+        "success": True,
+        "count": len(rows),
+        "shipments": rows,
+        "delivered_ttl_hours": DELHIVERY_BOARD_DELIVERED_TTL_HOURS,
+    }
+
+
+@api_router.post("/courier/delhivery-board/refresh")
+async def refresh_delhivery_board_now(
+    current_user: dict = Depends(get_current_user)
+):
+    """Manually trigger a board refresh (admin/dispatcher only)."""
+    if current_user["role"] not in ["admin", "dispatcher"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    summary = await refresh_delhivery_board()
+    return {"success": True, **summary}
 
 
 # =============================================================================

@@ -13,7 +13,7 @@ import { openAuthedFile } from '@/lib/openFile';
 import { toast } from 'sonner';
 import {
   Search, Eye, AlertTriangle, FileText, Inbox,
-  ChevronLeft, ChevronRight, Download, FilterX,
+  ChevronLeft, ChevronRight, Download, FilterX, Upload,
 } from 'lucide-react';
 
 // Obsidian status chip tones — opacity tints that read on the dark canvas.
@@ -104,6 +104,7 @@ export default function AdminTickets() {
   const savedFilters = sessionStorage.getItem(STORAGE_KEY);
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [attachingId, setAttachingId] = useState(null);
   const [filters, setFilters] = useState(savedFilters ? JSON.parse(savedFilters) : { ...EMPTY_FILTERS });
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -215,6 +216,25 @@ export default function AdminTickets() {
   const openInvoice = async (ticket) => {
     const ok = await openAuthedFile(ticket.invoice_file, token, API);
     if (!ok) toast.error('Could not open the invoice — file missing or access denied');
+  };
+
+  // Attach / replace the customer invoice on a ticket (e.g. restore a lost one).
+  const handleAttachInvoice = async (ticketId, file) => {
+    if (!file) return;
+    setAttachingId(ticketId);
+    try {
+      const formData = new FormData();
+      formData.append('invoice_file', file);
+      await axios.post(`${API}/tickets/${ticketId}/attach-invoice`, formData, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      toast.success('Invoice attached');
+      fetchTickets();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Failed to attach invoice');
+    } finally {
+      setAttachingId(null);
+    }
   };
 
   const labelCls = 'font-mono text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-foreground mb-1.5 block';
@@ -414,17 +434,26 @@ export default function AdminTickets() {
 
                     {/* Invoice */}
                     <td className="px-5 py-4 align-top text-center">
-                      {ticket.invoice_file ? (
-                        <motion.button
-                          whileHover={hover} whileTap={tap}
-                          onClick={() => openInvoice(ticket)}
-                          className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline"
-                        >
-                          <FileText className="w-3.5 h-3.5" /> View
-                        </motion.button>
-                      ) : (
-                        <span className="text-xs text-muted-foreground italic">No invoice</span>
-                      )}
+                      <div className="flex flex-col items-center gap-1">
+                        {ticket.invoice_file ? (
+                          <motion.button
+                            whileHover={hover} whileTap={tap}
+                            onClick={() => openInvoice(ticket)}
+                            className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline"
+                          >
+                            <FileText className="w-3.5 h-3.5" /> View
+                          </motion.button>
+                        ) : (
+                          <span className="text-xs text-muted-foreground italic">No invoice</span>
+                        )}
+                        <label className="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground cursor-pointer">
+                          <Upload className="w-3 h-3" />
+                          {attachingId === ticket.id ? 'Uploading…' : (ticket.invoice_file ? 'Replace' : 'Attach')}
+                          <input type="file" className="hidden" accept="image/*,.pdf"
+                            disabled={attachingId === ticket.id}
+                            onChange={(e) => handleAttachInvoice(ticket.id, e.target.files[0])} />
+                        </label>
+                      </div>
                     </td>
 
                     {/* Assigned To */}

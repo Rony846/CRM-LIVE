@@ -71,7 +71,8 @@ import {
   Bot,
   ScrollText,
   ShieldAlert,
-  Boxes
+  Boxes,
+  MapPin
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -145,6 +146,7 @@ const adminNavGroups = [
       { label: 'Amazon Orders', icon: ShoppingBag, path: '/operations/amazon-orders' },
       { label: 'File Repository', icon: FolderOpen, path: '/admin/file-repository' },
       { label: 'Courier Shipping', icon: Truck, path: '/operations/courier-shipping' },
+      { label: 'Courier Tracking', icon: MapPin, path: '/operations/courier-tracking' },
       { label: 'Incoming Queue', icon: Inbox, path: '/accountant/incoming-queue' },
       { label: 'Inventory', icon: Package, path: '/accountant/inventory' },
       { label: 'Production', icon: Factory, path: '/accountant/production' },
@@ -269,6 +271,7 @@ const accountantNavGroups = [
     items: [
       { label: 'Amazon Orders', icon: ShoppingBag, path: '/operations/amazon-orders' },
       { label: 'Courier Shipping', icon: Truck, path: '/operations/courier-shipping' },
+      { label: 'Courier Tracking', icon: MapPin, path: '/operations/courier-tracking' },
       { label: 'E-commerce Recon', icon: Scale, path: '/finance/ecommerce-reconciliation' },
       { label: 'Expenses & Tax Credits', icon: TrendingDown, path: '/accountant/expenses' },
     ]
@@ -401,6 +404,7 @@ const roleNavItems = {
     { label: 'Dashboard', icon: LayoutDashboard, path: '/dispatcher' },
     { label: 'Dispatch Queue', icon: Package, path: '/dispatcher/queue' },
     { label: 'Courier Shipping', icon: Truck, path: '/operations/courier-shipping' },
+    { label: 'Courier Tracking', icon: MapPin, path: '/operations/courier-tracking' },
     { label: 'Pending Fulfillment', icon: Clock, path: '/view/pending-fulfillment', viewOnly: true },
     { label: 'TV Mode', icon: Monitor, path: '/dispatcher/tv' },
     { label: 'My Attendance', icon: CalendarDays, path: '/my-attendance' },

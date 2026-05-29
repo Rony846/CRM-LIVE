@@ -82,6 +82,7 @@ import CronRuns from './pages/admin/CronRuns';
 import KnowledgeBase from './pages/admin/KnowledgeBase';
 import QAScorecards from './pages/supervisor/QAScorecards';
 import CourierShipping from './pages/operations/CourierShipping';
+import CourierTracking from './pages/operations/CourierTracking';
 import ProductDatasheets from './pages/admin/ProductDatasheets';
 import AmazonSettings from './pages/admin/AmazonSettings';
 
@@ -783,7 +784,14 @@ function App() {
               <CourierShipping />
             </ProtectedRoute>
           } />
-          
+
+          {/* Courier Tracking Route */}
+          <Route path="/operations/courier-tracking" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin', 'dispatcher']}>
+              <CourierTracking />
+            </ProtectedRoute>
+          } />
+
           {/* Supervisor Production Routes */}
           <Route path="/supervisor/production" element={
             <ProtectedRoute allowedRoles={['supervisor', 'admin']}>

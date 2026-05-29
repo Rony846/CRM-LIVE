@@ -226,6 +226,10 @@ export default function DispatcherDashboard() {
 
   const readyToDispatch = queue.filter(d => d.status === 'ready_for_dispatch' || d.status === 'ready_to_dispatch');
   const dispatched = queue.filter(d => d.status === 'dispatched');
+  // Items that have a tracking ID but no outward gate scan — they can't be finalised
+  // and otherwise pile up silently. staleScan = lingering 3+ days.
+  const needsScan = queue.filter(d => d.needs_gate_scan);
+  const staleScan = needsScan.filter(d => (d.queue_age_days ?? 0) >= 3);
 
   if (loading) {
     return (
@@ -298,6 +302,21 @@ export default function DispatcherDashboard() {
           </div>
         </div>
 
+        {needsScan.length > 0 && (
+          <div className={`flex items-start gap-3 border-b px-6 py-3 ${staleScan.length > 0 ? 'border-rose-500/25 bg-rose-500/5' : 'border-amber-400/25 bg-amber-400/5'}`} data-testid="needs-gate-scan-alert">
+            <Package className={`mt-0.5 h-4 w-4 flex-shrink-0 ${staleScan.length > 0 ? 'text-rose-400' : 'text-amber-400'}`} />
+            <div className="text-[12px] leading-relaxed">
+              <span className="font-semibold text-foreground">
+                {needsScan.length} dispatch{needsScan.length !== 1 ? 'es' : ''} need a gate scan
+              </span>
+              {staleScan.length > 0 && (
+                <span className="text-rose-400 font-semibold"> · {staleScan.length} stale (3+ days)</span>
+              )}
+              <span className="text-muted-foreground"> — these have a tracking ID but no outward gate scan, so they can't be finalised and won't auto-clear. Scan the package out at the gate, then finalise.</span>
+            </div>
+          </div>
+        )}
+
         <div className="p-0">
           {readyToDispatch.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -341,6 +360,11 @@ export default function DispatcherDashboard() {
                           ) : dispatch.original_ticket_info ? (
                             <SoftBadge tone="indigo">CRM</SoftBadge>
                           ) : null}
+                          {dispatch.needs_gate_scan && (
+                            <SoftBadge tone={dispatch.queue_age_days >= 3 ? 'rose' : 'amber'}>
+                              Needs Gate Scan{dispatch.queue_age_days != null ? ` · ${dispatch.queue_age_days}d` : ''}
+                            </SoftBadge>
+                          )}
                         </div>
                       </TableCell>
                       <TableCell className="text-muted-foreground capitalize text-sm">

@@ -276,8 +276,11 @@ export default function AccountantDashboard() {
       const headers = { Authorization: `Bearer ${token}` };
       const [dispatchRes, ticketsRes, firmsRes] = await Promise.all([
         axios.get(`${API}/dispatches`, { headers }),
-        // Use view_as=accountant so admin sees same data as accountant
-        axios.get(`${API}/tickets?view_as=accountant`, { headers }),
+        // Use view_as=accountant so admin sees same data as accountant.
+        // limit=1000: the hardware queue is a work backlog (100s of open tickets);
+        // the default limit=100 silently truncated the oldest, most SLA-overdue
+        // reverse-pickup tickets off the queue so the accountant never saw them.
+        axios.get(`${API}/tickets?view_as=accountant&limit=1000`, { headers }),
         axios.get(`${API}/firms`, { headers, params: { is_active: true } }).catch(() => ({ data: [] }))
       ]);
       
@@ -621,6 +624,26 @@ export default function AccountantDashboard() {
       toast.error(getErrorMessage(error, 'Failed to upload pickup label'));
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  // Attach / replace the customer invoice on a ticket (e.g. to restore a lost one)
+  const [attachingInvoiceId, setAttachingInvoiceId] = useState(null);
+  const handleAttachInvoice = async (ticketId, file) => {
+    if (!file) return;
+    setAttachingInvoiceId(ticketId);
+    try {
+      const formData = new FormData();
+      formData.append('invoice_file', file);
+      await axios.post(`${API}/tickets/${ticketId}/attach-invoice`, formData, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Invoice attached');
+      fetchData();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Failed to attach invoice'));
+    } finally {
+      setAttachingInvoiceId(null);
     }
   };
 
@@ -1137,21 +1160,39 @@ export default function AccountantDashboard() {
                             </div>
 
                             {/* Customer Invoice */}
-                            {ticket.invoice_file && (
-                              <div className="bg-sky-400/[0.07] border border-sky-400/25 p-3 rounded-lg mt-3">
-                                <p className="font-mono text-[10px] uppercase tracking-wide text-sky-400 mb-1">Customer Invoice</p>
-                                <a
-                                  href={`${API.replace('/api', '')}${ticket.invoice_file}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-2 text-sky-400 hover:text-sky-300 font-medium text-sm"
-                                  data-testid={`view-invoice-${ticket.id}`}
-                                >
-                                  <FileText className="w-4 h-4" />
-                                  View Invoice Document
-                                </a>
-                              </div>
-                            )}
+                            <div className="bg-sky-400/[0.07] border border-sky-400/25 p-3 rounded-lg mt-3">
+                              <p className="font-mono text-[10px] uppercase tracking-wide text-sky-400 mb-1">Customer Invoice</p>
+                              {ticket.invoice_file ? (
+                                <div className="flex items-center gap-3">
+                                  <a
+                                    href={`${API.replace('/api', '')}${ticket.invoice_file}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-2 text-sky-400 hover:text-sky-300 font-medium text-sm"
+                                    data-testid={`view-invoice-${ticket.id}`}
+                                  >
+                                    <FileText className="w-4 h-4" />
+                                    View Invoice Document
+                                  </a>
+                                  <label className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground cursor-pointer">
+                                    <Upload className="w-3 h-3" />
+                                    {attachingInvoiceId === ticket.id ? 'Uploading…' : 'Replace'}
+                                    <input type="file" className="hidden" accept="image/*,.pdf"
+                                      disabled={attachingInvoiceId === ticket.id}
+                                      onChange={(e) => handleAttachInvoice(ticket.id, e.target.files[0])} />
+                                  </label>
+                                </div>
+                              ) : (
+                                <label className="inline-flex items-center gap-2 text-amber-400 hover:text-amber-300 font-medium text-sm cursor-pointer"
+                                  data-testid={`attach-invoice-${ticket.id}`}>
+                                  <Upload className="w-4 h-4" />
+                                  {attachingInvoiceId === ticket.id ? 'Uploading…' : 'Attach Invoice (missing)'}
+                                  <input type="file" className="hidden" accept="image/*,.pdf"
+                                    disabled={attachingInvoiceId === ticket.id}
+                                    onChange={(e) => handleAttachInvoice(ticket.id, e.target.files[0])} />
+                                </label>
+                              )}
+                            </div>
                           </div>
 
                           {/* Action Buttons */}
