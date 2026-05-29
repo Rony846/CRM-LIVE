@@ -64116,6 +64116,8 @@ class PublicLeadCreate(BaseModel):
     phone: str
     name: Optional[str] = None
     email: Optional[str] = None
+    state: Optional[str] = None           # customer's state/region
+    requirement: Optional[str] = None     # what they want (alias for product_interest)
     product_interest: Optional[str] = None
     source: Optional[str] = "storefront"
     notes: Optional[str] = None
@@ -64165,13 +64167,18 @@ async def create_public_lead(
     if dup:
         return {"success": True, "lead_id": dup["id"], "deduped": True}
 
+    # `requirement` is the storefront's alias for product_interest; keep both working.
+    prod = (body.product_interest or body.requirement or None)
+    if prod:
+        prod = prod.strip()[:200] or None
+    state = (body.state or "").strip()[:80] or None
     notes = (body.notes or "").strip()
     if body.page_url:
         notes = f"{notes}\n[page: {body.page_url}]".strip()
     lead_id = str(uuid.uuid4())
     lead_doc = {
         "id": lead_id, "phone": clean, "name": (body.name or f"Lead-{clean[-4:]}")[:120],
-        "email": body.email, "product_interest": (body.product_interest or None),
+        "email": body.email, "product_interest": prod, "state": state,
         "source": (body.source or "storefront")[:40], "status": "new", "notes": notes or None,
         "assigned_to": None, "assigned_to_name": None, "follow_up_date": None,
         "interactions": [{"type": "web_form", "notes": notes or None, "by": "Storefront",
@@ -64182,7 +64189,7 @@ async def create_public_lead(
     await db.leads.insert_one(lead_doc)
     asyncio.create_task(create_notification(
         title="🌐 New website lead",
-        message=f"{lead_doc['name']} · {clean}" + (f" · {body.product_interest}" if body.product_interest else ""),
+        message=f"{lead_doc['name']} · {clean}" + (f" · {prod}" if prod else "") + (f" · {state}" if state else ""),
         notification_type="info", link="/leads", priority="normal",
         target_roles=["call_support", "admin"], created_by_name="Storefront",
         data={"lead_id": lead_id}))

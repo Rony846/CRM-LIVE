@@ -63,6 +63,10 @@ export default {
       name: body.name,
       phone: body.phone,
       email: body.email,
+      state: body.state,
+      // `requirement` is the storefront's preferred key; product_interest is the
+      // legacy alias. Forward both — the CRM uses whichever is present.
+      requirement: body.requirement,
       product_interest: body.product_interest,
       notes: body.notes || body.message,
       source: body.source || 'shopify',
