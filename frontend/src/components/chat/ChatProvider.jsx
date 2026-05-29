@@ -228,6 +228,23 @@ export function ChatProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
+  const scheduleMessage = useCallback(async (channelId, payload) => {
+    const r = await axios.post(`${API}/chat/channels/${channelId}/schedule`, payload, { headers });
+    return r.data.scheduled;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const fetchScheduled = useCallback(async (channelId) => {
+    try { const r = await axios.get(`${API}/chat/scheduled${channelId ? `?channel_id=${channelId}` : ''}`, { headers }); return r.data.scheduled || []; }
+    catch { return []; }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const cancelScheduled = useCallback(async (id) => {
+    await axios.delete(`${API}/chat/scheduled/${id}`, { headers });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
   // ---- SSE stream ---------------------------------------------------------
   useEffect(() => {
     if (!enabled || !token) return;
@@ -316,7 +333,7 @@ export function ChatProvider({ children }) {
     totalUnread, refreshChannels, refreshDirectory, openChannel, loadOlder, sendMessage,
     react, editMessage, deleteMessage, createChannel, openDM, uploadFile, sendTyping, markRead, setActiveId, resolveAction,
     savedIds, pinMessage, saveMessage, muteChannel, fetchSaved, fetchPins,
-    reads, fetchReads, editChannel, addMembers, removeMember, createNudge, resolveNudge, messageToTicket, requestAck, acknowledge,
+    reads, fetchReads, editChannel, addMembers, removeMember, createNudge, resolveNudge, messageToTicket, requestAck, acknowledge, scheduleMessage, fetchScheduled, cancelScheduled,
   };
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
 }
