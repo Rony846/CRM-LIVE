@@ -45899,17 +45899,54 @@ async def update_promo_request(
 
 # ----- Admin Dealer Management -----
 
+@api_router.get("/admin/dealers/summary")
+async def admin_dealers_summary(user: dict = Depends(require_roles(["admin"]))):
+    """Network-overview stat cards: active dealers, pending applications, gross
+    dealer revenue month-to-date."""
+    active_dealers = await db.dealers.count_documents({"status": {"$in": ["approved", "active"]}})
+    pending_applications = await db.dealer_applications.count_documents(
+        {"status": {"$in": ["new", "pending", "submitted"]}}
+    )
+    month_start = datetime.now(timezone.utc).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    ).isoformat()
+    agg = await db.dealer_orders.aggregate([
+        {"$match": {"status": {"$ne": "cancelled"}, "created_at": {"$gte": month_start}}},
+        {"$group": {"_id": None, "total": {"$sum": "$total_amount"}}},
+    ]).to_list(1)
+    return {
+        "active_dealers": active_dealers,
+        "pending_applications": pending_applications,
+        "gross_revenue_mtd": (agg[0]["total"] if agg else 0),
+    }
+
+
 @api_router.get("/admin/dealers")
 async def admin_get_dealers(
     status: Optional[str] = None,
     user: dict = Depends(require_roles(["admin"]))
 ):
-    """Get all dealers"""
+    """Get all dealers (enriched with ledger balance + last order date)."""
     query = {}
     if status:
         query["status"] = status
-    
+
     dealers = await db.dealers.find(query).sort("created_at", -1).to_list(500)
+
+    dealer_ids = [d.get("id") or str(d.get("_id")) for d in dealers]
+    # Batch: dealer -> outstanding balance (via its party) and -> last order date.
+    balance_by_dealer = {}
+    async for p in db.parties.find(
+        {"dealer_id": {"$in": dealer_ids}}, {"_id": 0, "dealer_id": 1, "current_balance": 1}
+    ):
+        balance_by_dealer[p["dealer_id"]] = p.get("current_balance", 0)
+    last_order_by_dealer = {}
+    async for row in db.dealer_orders.aggregate([
+        {"$match": {"dealer_id": {"$in": dealer_ids}}},
+        {"$group": {"_id": "$dealer_id", "last": {"$max": "$created_at"}}},
+    ]):
+        last_order_by_dealer[row["_id"]] = row["last"]
+
     # Convert ObjectId to string and normalize data structure
     result = []
     for d in dealers:
@@ -45925,6 +45962,8 @@ async def admin_get_dealers(
         d["security_deposit"] = d.get("security_deposit") or {}
         d["security_deposit"]["status"] = sd_status
         d["security_deposit"]["amount"] = sd_amount
+        d["ledger_balance"] = balance_by_dealer.get(d.get("id"), 0)
+        d["last_order_date"] = last_order_by_dealer.get(d.get("id"))
         result.append(d)
     return result
 

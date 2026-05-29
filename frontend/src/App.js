@@ -149,6 +149,8 @@ import DealerSpareParts from './pages/dealer/DealerSpareParts';
 import DealerSpareOrders from './pages/dealer/DealerSpareOrders';
 import DealerReorderSuggestions from './pages/dealer/DealerReorderSuggestions';
 import AdminDealerApplications from './pages/admin/AdminDealerApplications';
+import DealerManagement from './pages/admin/DealerManagement';
+import AdminDealerProfile from './pages/admin/DealerProfile';
 import AdminDealerTerms from './pages/admin/AdminDealerTerms';
 import AdminWarrantyClaims from './pages/admin/AdminWarrantyClaims';
 import AdminSpareParts from './pages/admin/AdminSpareParts';
@@ -1010,6 +1012,16 @@ function App() {
           <Route path="/verify-dealer/:token" element={<VerifyDealer />} />
           
           {/* Admin Dealer Management */}
+          <Route path="/admin/dealers" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <DealerManagement />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/dealers/:dealerId" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminDealerProfile />
+            </ProtectedRoute>
+          } />
           <Route path="/admin/dealer-applications" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <AdminDealerApplications />

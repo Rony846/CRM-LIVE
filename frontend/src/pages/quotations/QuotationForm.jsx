@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
@@ -31,6 +31,7 @@ const INDIAN_STATES = [
 export default function QuotationForm() {
   const navigate = useNavigate();
   const { id } = useParams();
+  const location = useLocation();
   const { token, user } = useAuth();
   const isEdit = Boolean(id);
   
@@ -72,6 +73,24 @@ export default function QuotationForm() {
       fetchQuotation();
     }
   }, [id, token]);
+
+  // Pre-fill the party when launched from the Dealer Profile "Create PI" action.
+  useEffect(() => {
+    const prefillId = location.state?.prefillPartyId;
+    if (!prefillId || isEdit || parties.length === 0) return;
+    const match = parties.find((p) => p.id === prefillId);
+    if (match) {
+      handleCustomerSelect(match);
+    } else if (location.state?.prefillParty) {
+      const p = location.state.prefillParty;
+      setForm((f) => ({
+        ...f, party_id: p.id, customer_name: p.name || '', customer_phone: p.phone || '',
+        customer_email: p.email || '', customer_city: p.city || '', customer_state: p.state || '',
+        customer_pincode: p.pincode || '', customer_gstin: p.gstin || '',
+      }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parties]);
 
   const fetchInitialData = async () => {
     setLoading(true);
