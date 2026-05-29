@@ -199,9 +199,9 @@ export function ChatProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
-  const createNudge = useCallback(async (messageId, assigneeId, intervalMin) => {
+  const createNudge = useCallback(async (messageId, assigneeId, intervalMin, escalateAfter) => {
     const r = await axios.post(`${API}/chat/messages/${messageId}/nudge`,
-      { assignee_id: assigneeId, interval_min: intervalMin }, { headers });
+      { assignee_id: assigneeId, interval_min: intervalMin, escalate_after: escalateAfter }, { headers });
     return r.data.nudge;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
