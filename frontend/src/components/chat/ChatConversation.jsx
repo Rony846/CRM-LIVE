@@ -126,6 +126,7 @@ export default function ChatConversation({ compact = false }) {
   const [savedList, setSavedList] = useState([]);
   const [editOpen, setEditOpen] = useState(false);
   const [editForm, setEditForm] = useState({ name: '', topic: '' });
+  const [memberQ, setMemberQ] = useState('');
   const scrollRef = useRef(null);
   const fileRef = useRef(null);
   const typingThrottle = useRef(0);
@@ -346,6 +347,44 @@ export default function ChatConversation({ compact = false }) {
           <div className="space-y-3">
             <Input placeholder="Channel name" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} />
             <Input placeholder="Topic" value={editForm.topic} onChange={(e) => setEditForm({ ...editForm, topic: e.target.value })} />
+            {channel?.is_private && (() => {
+              const memberIds = channel.members || [];
+              const nameFor = (id) => (id === user.id ? 'You' : (directory.find((u) => u.id === id)?.name || 'Member'));
+              const candidates = directory.filter((u) => !memberIds.includes(u.id)
+                && (!memberQ.trim() || u.name.toLowerCase().includes(memberQ.trim().toLowerCase())));
+              return (
+                <div className="rounded-md border border-border p-2">
+                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Members · {memberIds.length}</div>
+                  <div className="mb-2 max-h-32 space-y-0.5 overflow-y-auto">
+                    {memberIds.map((id) => (
+                      <div key={id} className="flex items-center gap-2 rounded px-1.5 py-1 text-[13px]">
+                        <ChatAvatar id={id} name={nameFor(id)} size={20} />
+                        <span className="truncate">{nameFor(id)}</span>
+                        {id !== user.id && (
+                          <button title="Remove" className="ml-auto text-muted-foreground hover:text-rose-400"
+                            onClick={async () => { try { await chat.removeMember(activeId, id); } catch (e) { toast.error(e.response?.data?.detail || 'Could not remove'); } }}>
+                            <X className="h-3.5 w-3.5" /></button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <Input value={memberQ} onChange={(e) => setMemberQ(e.target.value)} placeholder="Add people…" className="mb-1 h-8 text-[13px]" />
+                  {memberQ.trim() && (
+                    <div className="max-h-32 space-y-0.5 overflow-y-auto">
+                      {candidates.map((u) => (
+                        <button key={u.id} className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[13px] hover:bg-accent/60"
+                          onClick={async () => { try { await chat.addMembers(activeId, [u.id]); setMemberQ(''); } catch (e) { toast.error(e.response?.data?.detail || 'Could not add'); } }}>
+                          <ChatAvatar id={u.id} name={u.name} size={20} />
+                          <span className="truncate">{u.name}</span>
+                          <span className="ml-auto text-[10px] capitalize text-muted-foreground/60">{u.role?.replace('_', ' ')}</span>
+                        </button>
+                      ))}
+                      {!candidates.length && <p className="px-1.5 py-1 text-[11px] text-muted-foreground/60">No matches.</p>}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
           <DialogFooter>
             <Button onClick={async () => {

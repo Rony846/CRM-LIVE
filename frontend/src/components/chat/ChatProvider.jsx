@@ -185,6 +185,20 @@ export function ChatProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
+  const addMembers = useCallback(async (id, userIds) => {
+    const r = await axios.post(`${API}/chat/channels/${id}/members`, { user_ids: userIds }, { headers });
+    setChannels((cs) => cs.map((c) => (c.id === id ? { ...c, members: r.data.members } : c)));
+    return r.data.members;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const removeMember = useCallback(async (id, userId) => {
+    const r = await axios.delete(`${API}/chat/channels/${id}/members/${userId}`, { headers });
+    setChannels((cs) => cs.map((c) => (c.id === id ? { ...c, members: r.data.members } : c)));
+    return r.data.members;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
   // ---- SSE stream ---------------------------------------------------------
   useEffect(() => {
     if (!enabled || !token) return;
@@ -234,6 +248,15 @@ export function ChatProvider({ children }) {
         setReads((rr) => ({ ...rr, [e.channel_id]: { ...(rr[e.channel_id] || {}), [e.user.id]: { name: e.user.name, at: e.at } } }));
       } else if (e.type === 'channel_update') {
         setChannels((cs) => cs.map((c) => (c.id === e.channel_id ? { ...c, name: e.name, topic: e.topic } : c)));
+      } else if (e.type === 'channel_members') {
+        // I may have just been added to (or removed from) a private channel —
+        // resync the whole list so it appears/disappears for me.
+        if (e.members && !e.members.includes(user?.id)) {
+          setChannels((cs) => cs.filter((c) => c.id !== e.channel_id));
+          setActiveId((a) => (a === e.channel_id ? null : a));
+        } else {
+          refreshChannels();
+        }
       }
     });
     return () => { es.close(); esRef.current = null; setConnected(false); };
@@ -264,7 +287,7 @@ export function ChatProvider({ children }) {
     totalUnread, refreshChannels, refreshDirectory, openChannel, loadOlder, sendMessage,
     react, editMessage, deleteMessage, createChannel, openDM, uploadFile, sendTyping, markRead, setActiveId, resolveAction,
     savedIds, pinMessage, saveMessage, muteChannel, fetchSaved, fetchPins,
-    reads, fetchReads, editChannel,
+    reads, fetchReads, editChannel, addMembers, removeMember,
   };
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
 }

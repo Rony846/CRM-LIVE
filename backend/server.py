@@ -49635,6 +49635,72 @@ async def chat_edit_channel(channel_id: str, body: ChatChannelEdit, user: dict =
     return {"ok": True}
 
 
+class ChatMembersAdd(BaseModel):
+    user_ids: List[str]
+
+
+async def _chat_member_briefs(member_ids: list) -> list:
+    """Resolve member ids -> {id,name,role} for the roster UI (order preserved)."""
+    out = []
+    for uid in member_ids or []:
+        u = await db.users.find_one({"id": uid}, {"_id": 0, "id": 1, "first_name": 1, "last_name": 1, "role": 1})
+        if u:
+            out.append(_chat_user_brief(u))
+    return out
+
+
+def _chat_can_manage_members(ch: dict, user: dict) -> bool:
+    return user["role"] in CHAT_CHANNEL_CREATE_ROLES or ch.get("created_by") == user["id"]
+
+
+@api_router.post("/chat/channels/{channel_id}/members")
+async def chat_add_members(channel_id: str, body: ChatMembersAdd, user: dict = Depends(require_internal_chat)):
+    """Add employees to a PRIVATE channel. Admin/supervisor (or creator) only.
+    Public channels are open to everyone, so membership there is meaningless."""
+    ch = await db.chat_channels.find_one({"id": channel_id}, {"_id": 0})
+    if not ch or ch.get("type") != "channel":
+        raise HTTPException(status_code=404, detail="Channel not found")
+    if not ch.get("is_private"):
+        raise HTTPException(status_code=400, detail="Public channels are open to everyone — make it private to manage members")
+    if not _chat_can_manage_members(ch, user):
+        raise HTTPException(status_code=403, detail="Only admins/supervisors (or the creator) can manage members")
+    old = set(ch.get("members") or [])
+    valid = [u["id"] async for u in db.users.find({"id": {"$in": body.user_ids or []}}, {"_id": 0, "id": 1})]
+    added = [uid for uid in valid if uid not in old]
+    members = list(old | set(valid))
+    now = datetime.now(timezone.utc).isoformat()
+    await db.chat_channels.update_one({"id": channel_id}, {"$set": {"members": members, "updated_at": now}})
+    if added:
+        names = ", ".join((b["name"] for b in await _chat_member_briefs(added))) or f"{len(added)} member(s)"
+        await post_system_message(ch["slug"], f"{_chat_user_brief(user)['name']} added {names} to the channel")
+    # Notify both the new members (channel appears) and existing ones (roster changed).
+    await broadcast_chat(old | set(members),
+                         {"type": "channel_members", "channel_id": channel_id, "members": members})
+    return {"members": members, "roster": await _chat_member_briefs(members)}
+
+
+@api_router.delete("/chat/channels/{channel_id}/members/{member_id}")
+async def chat_remove_member(channel_id: str, member_id: str, user: dict = Depends(require_internal_chat)):
+    """Remove an employee from a private channel (admin/supervisor/creator), or
+    leave a channel yourself."""
+    ch = await db.chat_channels.find_one({"id": channel_id}, {"_id": 0})
+    if not ch or ch.get("type") != "channel":
+        raise HTTPException(status_code=404, detail="Channel not found")
+    if member_id != user["id"] and not _chat_can_manage_members(ch, user):
+        raise HTTPException(status_code=403, detail="Only admins/supervisors (or the creator) can remove members")
+    old = set(ch.get("members") or [])
+    members = [m for m in (ch.get("members") or []) if m != member_id]
+    now = datetime.now(timezone.utc).isoformat()
+    await db.chat_channels.update_one({"id": channel_id}, {"$set": {"members": members, "updated_at": now}})
+    if member_id in old:
+        who = (await _chat_member_briefs([member_id]) or [{"name": "a member"}])[0]["name"]
+        action = "left the channel" if member_id == user["id"] else f"removed {who} from the channel"
+        await post_system_message(ch["slug"], f"{_chat_user_brief(user)['name']} {action}")
+    await broadcast_chat(old,  # include the removed user so the channel disappears for them
+                         {"type": "channel_members", "channel_id": channel_id, "members": members})
+    return {"members": members, "roster": await _chat_member_briefs(members)}
+
+
 @api_router.post("/chat/channels/{channel_id}/typing")
 async def chat_typing(channel_id: str, user: dict = Depends(require_internal_chat)):
     ch = await db.chat_channels.find_one({"id": channel_id}, {"_id": 0})

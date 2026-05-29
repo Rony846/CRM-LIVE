@@ -21,7 +21,12 @@ export default function ChatChannelList({ onSelect }) {
   const { channels, directory, activeId, user } = chat;
   const [q, setQ] = useState('');
   const [showNew, setShowNew] = useState(false);
-  const [form, setForm] = useState({ name: '', topic: '', is_private: false });
+  const [form, setForm] = useState({ name: '', topic: '', is_private: false, members: [] });
+  const [memberQ, setMemberQ] = useState('');
+
+  const toggleMember = (uid) => setForm((f) => ({
+    ...f, members: f.members.includes(uid) ? f.members.filter((m) => m !== uid) : [...f.members, uid],
+  }));
 
   const open = (id) => { chat.openChannel(id); onSelect && onSelect(); };
   const startDM = async (uid) => { const c = await chat.openDM(uid); onSelect && onSelect(); return c; };
@@ -34,8 +39,12 @@ export default function ChatChannelList({ onSelect }) {
 
   const create = async () => {
     if (!form.name.trim()) return;
-    try { const c = await chat.createChannel(form); setShowNew(false); setForm({ name: '', topic: '', is_private: false }); chat.openChannel(c.id); onSelect && onSelect(); }
-    catch (e) { toast.error(e.response?.data?.detail || 'Could not create channel'); }
+    try {
+      const payload = { ...form, members: form.is_private ? form.members : [] };
+      const c = await chat.createChannel(payload);
+      setShowNew(false); setForm({ name: '', topic: '', is_private: false, members: [] }); setMemberQ('');
+      chat.openChannel(c.id); onSelect && onSelect();
+    } catch (e) { toast.error(e.response?.data?.detail || 'Could not create channel'); }
   };
 
   const Item = ({ id, icon, label, unread, active, muted }) => (
@@ -105,6 +114,27 @@ export default function ChatChannelList({ onSelect }) {
               <input type="checkbox" checked={form.is_private} onChange={(e) => setForm({ ...form, is_private: e.target.checked })} />
               Private (invite-only)
             </label>
+            {form.is_private && (
+              <div className="rounded-md border border-border p-2">
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Members</span>
+                  <span className="text-[11px] text-muted-foreground">{form.members.length} selected</span>
+                </div>
+                <Input value={memberQ} onChange={(e) => setMemberQ(e.target.value)} placeholder="Search people…" className="mb-2 h-8 text-[13px]" />
+                <div className="max-h-44 space-y-0.5 overflow-y-auto">
+                  {directory.filter((u) => !memberQ.trim() || u.name.toLowerCase().includes(memberQ.trim().toLowerCase())).map((u) => (
+                    <label key={u.id} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[13px] hover:bg-accent/60">
+                      <input type="checkbox" checked={form.members.includes(u.id)} onChange={() => toggleMember(u.id)} />
+                      <ChatAvatar id={u.id} name={u.name} size={20} />
+                      <span className="truncate">{u.name}</span>
+                      <span className="ml-auto text-[10px] capitalize text-muted-foreground/60">{u.role?.replace('_', ' ')}</span>
+                    </label>
+                  ))}
+                  {!directory.length && <p className="px-1.5 py-2 text-[11px] text-muted-foreground/60">No one else available.</p>}
+                </div>
+                <p className="mt-1 text-[10px] text-muted-foreground/70">You're added automatically. Public channels are open to everyone — make it private to pick members.</p>
+              </div>
+            )}
           </div>
           <DialogFooter><Button onClick={create}>Create</Button></DialogFooter>
         </DialogContent>
