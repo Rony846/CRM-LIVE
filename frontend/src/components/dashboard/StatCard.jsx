@@ -51,6 +51,14 @@ const TrendIcon = ({ trend, size = 12 }) => {
   return <Minus style={{ width: size, height: size }} />;
 };
 
+// Command Deck corner brackets — styled in themes-hud.css under [data-theme^="hud-"] .sc-card
+const Brackets = () => (
+  <>
+    <span className="sc-br sc-tl" /><span className="sc-br sc-tr" />
+    <span className="sc-br sc-bl" /><span className="sc-br sc-br2" />
+  </>
+);
+
 export default function StatCard({
   title,
   value,
@@ -99,11 +107,14 @@ export default function StatCard({
       transition={{ duration: 0.34, ease: [0.16, 1, 0.3, 1] }}
       whileHover={{ y: -2 }}
       className={cn(
-        'mg-card group relative flex flex-col justify-between overflow-hidden rounded-lg',
+        'mg-card sc-card group relative flex flex-col justify-between overflow-hidden rounded-lg',
         'border border-border bg-card p-5',
         className
       )}
     >
+      {/* Command Deck corner brackets (visible under hud-* themes) */}
+      <Brackets />
+
       {/* tactical corner sheen */}
       <div className="pointer-events-none absolute -right-12 -top-12 h-32 w-32 rounded-full bg-primary/[0.07] blur-2xl opacity-0 transition-opacity duration-500 group-hover:opacity-100" />
 
@@ -119,7 +130,7 @@ export default function StatCard({
       </div>
 
       <div className="relative mt-4">
-        <div className="font-mono text-[34px] font-bold leading-none tracking-tight text-foreground tabular-nums">
+        <div className="sc-value font-mono text-[34px] font-bold leading-none tracking-tight text-foreground tabular-nums">
           {animated}
         </div>
         {trendValue && (
