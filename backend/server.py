@@ -64112,6 +64112,83 @@ async def add_lead_note(
     return {"success": True, "message": "Note added"}
 
 
+class PublicLeadCreate(BaseModel):
+    phone: str
+    name: Optional[str] = None
+    email: Optional[str] = None
+    product_interest: Optional[str] = None
+    source: Optional[str] = "storefront"
+    notes: Optional[str] = None
+    page_url: Optional[str] = None
+
+
+# Public lead intake — authenticated by an API key held by a server-side proxy
+# (Cloudflare Worker), never shipped to the browser. See storefront-proxy/.
+LEAD_INTAKE_API_KEY = os.environ.get("LEAD_INTAKE_API_KEY", "")
+_public_lead_hits = {}  # ip -> [timestamps]; best-effort in-memory rate limit
+
+
+@api_router.post("/public/leads")
+async def create_public_lead(
+    body: PublicLeadCreate,
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+    x_forwarded_for: Optional[str] = Header(None, alias="x-forwarded-for"),
+):
+    """Create a Sales lead from the public storefront (Shopify) via the proxy.
+    No JWT — gated by the LEAD_INTAKE_API_KEY shared secret. Rate-limited + deduped."""
+    if not LEAD_INTAKE_API_KEY:
+        raise HTTPException(status_code=503, detail="Lead intake not configured")
+    if not x_api_key or not secrets.compare_digest(x_api_key, LEAD_INTAKE_API_KEY):
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    now = datetime.now(timezone.utc)
+    ip = (x_forwarded_for or "unknown").split(",")[0].strip()
+    window = now - timedelta(minutes=1)
+    hits = [t for t in _public_lead_hits.get(ip, []) if t > window]
+    if len(hits) >= 20:
+        raise HTTPException(status_code=429, detail="Too many requests, slow down")
+    hits.append(now)
+    _public_lead_hits[ip] = hits
+
+    clean = (body.phone or "").strip().replace(" ", "").replace("-", "")
+    if clean.startswith("+91"):
+        clean = clean[3:]
+    elif clean.startswith("91") and len(clean) > 10:
+        clean = clean[2:]
+    if len(re.sub(r"\D", "", clean)) < 10:
+        raise HTTPException(status_code=400, detail="A valid phone number is required")
+
+    # Dedupe: same phone already an open ('new') lead in the last 24h -> idempotent.
+    since = (now - timedelta(hours=24)).isoformat()
+    dup = await db.leads.find_one(
+        {"phone": clean, "status": "new", "created_at": {"$gte": since}}, {"_id": 0, "id": 1})
+    if dup:
+        return {"success": True, "lead_id": dup["id"], "deduped": True}
+
+    notes = (body.notes or "").strip()
+    if body.page_url:
+        notes = f"{notes}\n[page: {body.page_url}]".strip()
+    lead_id = str(uuid.uuid4())
+    lead_doc = {
+        "id": lead_id, "phone": clean, "name": (body.name or f"Lead-{clean[-4:]}")[:120],
+        "email": body.email, "product_interest": (body.product_interest or None),
+        "source": (body.source or "storefront")[:40], "status": "new", "notes": notes or None,
+        "assigned_to": None, "assigned_to_name": None, "follow_up_date": None,
+        "interactions": [{"type": "web_form", "notes": notes or None, "by": "Storefront",
+                          "by_id": None, "timestamp": now.isoformat()}],
+        "created_by": "storefront", "created_at": now.isoformat(),
+        "updated_at": now.isoformat(), "converted_at": None,
+    }
+    await db.leads.insert_one(lead_doc)
+    asyncio.create_task(create_notification(
+        title="🌐 New website lead",
+        message=f"{lead_doc['name']} · {clean}" + (f" · {body.product_interest}" if body.product_interest else ""),
+        notification_type="info", link="/leads", priority="normal",
+        target_roles=["call_support", "admin"], created_by_name="Storefront",
+        data={"lead_id": lead_id}))
+    return {"success": True, "lead_id": lead_id}
+
+
 @api_router.post("/leads/manual")
 async def create_manual_lead(
     phone: str = Form(...),
