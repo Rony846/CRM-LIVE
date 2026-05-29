@@ -128,6 +128,15 @@ export function ChatProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
+  const resolveAction = useCallback(async (messageId, confirm) => {
+    try {
+      await axios.post(`${API}/chat/actions/${messageId}/${confirm ? 'confirm' : 'cancel'}`, {}, { headers });
+    } catch (e) {
+      throw e;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
   // ---- SSE stream ---------------------------------------------------------
   useEffect(() => {
     if (!enabled || !token) return;
@@ -161,7 +170,7 @@ export function ChatProvider({ children }) {
         setMessages((m) => {
           const arr = m[e.channel_id]; if (!arr) return m;
           return { ...m, [e.channel_id]: arr.map((x) => x.id === e.message_id
-            ? { ...x, ...(e.deleted ? { deleted: true, body: '', attachments: [] } : { body: e.body, edited_at: e.edited_at }) } : x) };
+            ? { ...x, ...(e.deleted ? { deleted: true, body: '', attachments: [] } : { body: e.body, edited_at: e.edited_at }), ...(e.action ? { action: e.action } : {}) } : x) };
         });
       } else if (e.type === 'reaction') {
         setMessages((m) => {
@@ -201,7 +210,7 @@ export function ChatProvider({ children }) {
   const value = {
     user, channels, directory, messages, activeId, typing, connected, open, setOpen,
     totalUnread, refreshChannels, refreshDirectory, openChannel, loadOlder, sendMessage,
-    react, editMessage, deleteMessage, createChannel, openDM, uploadFile, sendTyping, markRead, setActiveId,
+    react, editMessage, deleteMessage, createChannel, openDM, uploadFile, sendTyping, markRead, setActiveId, resolveAction,
   };
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
 }

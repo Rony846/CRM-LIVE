@@ -23,7 +23,7 @@ function Reactions({ msg, onReact, meId }) {
   );
 }
 
-function MessageRow({ msg, prev, meId, onReact, onEdit, onDelete }) {
+function MessageRow({ msg, prev, meId, meRole, onReact, onEdit, onDelete, onAction }) {
   const [hover, setHover] = useState(false);
   const grouped = prev && prev.sender_id === msg.sender_id
     && (new Date(msg.created_at) - new Date(prev.created_at)) < 5 * 60 * 1000 && !prev.deleted;
@@ -60,6 +60,20 @@ function MessageRow({ msg, prev, meId, onReact, onEdit, onDelete }) {
             </div>
           ))}
           {extractRefs(msg.body).map((r) => <MGUnfurl key={r} refStr={r} />)}
+          {msg.action && msg.action.status === 'pending' && (
+            <div className="mt-1.5 flex items-center gap-2">
+              {(msg.action.allowed_roles || []).includes(meRole) ? (
+                <>
+                  <button onClick={() => onAction(msg.id, true)}
+                    className="rounded bg-[#a4d64c]/15 px-2.5 py-1 text-[12px] font-medium text-[#a4d64c] ring-1 ring-[#a4d64c]/30 hover:bg-[#a4d64c]/25 capitalize">Confirm {msg.action.verb}</button>
+                  <button onClick={() => onAction(msg.id, false)}
+                    className="rounded bg-muted/50 px-2.5 py-1 text-[12px] text-muted-foreground ring-1 ring-border hover:bg-muted">Cancel</button>
+                </>
+              ) : (
+                <span className="text-[11px] text-muted-foreground">Awaiting confirmation from: {(msg.action.allowed_roles || []).map((r) => r.replace('_', ' ')).join(', ')}</span>
+              )}
+            </div>
+          )}
           <Reactions msg={msg} onReact={onReact} meId={meId} />
         </div>
       </div>
@@ -167,6 +181,10 @@ export default function ChatConversation({ compact = false }) {
     if (e.key === 'Escape' && editing) { setEditing(null); setText(''); }
   };
   const startEdit = (m) => { setEditing(m); setText(m.body || ''); };
+  const handleAction = async (id, confirm) => {
+    try { await chat.resolveAction(id, confirm); }
+    catch (e) { toast.error(e.response?.data?.detail || 'Action failed'); }
+  };
 
   const typers = Object.values(typing[activeId] || {}).filter((t) => t.name && t.name !== chat.user?.name).map((t) => t.name);
 
@@ -196,7 +214,7 @@ export default function ChatConversation({ compact = false }) {
           return (
             <React.Fragment key={m.id}>
               {sep && <div className="my-2 flex items-center gap-2 px-3"><div className="h-px flex-1 bg-border" /><span className="text-[10px] uppercase tracking-wide text-muted-foreground">{day}</span><div className="h-px flex-1 bg-border" /></div>}
-              <MessageRow msg={m} prev={sep ? null : msgs[i - 1]} meId={user.id} onReact={chat.react} onEdit={startEdit} onDelete={chat.deleteMessage} />
+              <MessageRow msg={m} prev={sep ? null : msgs[i - 1]} meId={user.id} meRole={user.role} onReact={chat.react} onEdit={startEdit} onDelete={chat.deleteMessage} onAction={handleAction} />
             </React.Fragment>
           );
         })}

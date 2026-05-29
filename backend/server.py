@@ -49306,6 +49306,17 @@ async def crm_command_respond(channel_id: str, text: str, asker_name: str):
     try:
         q = re.sub(r"@crm", " ", text, flags=re.I).strip()
         refs = _CRM_REF_RE.findall(q)
+        # Write-action intent: a verb + a ticket ref -> propose a confirmable action.
+        verb_m = re.match(r"^(close|reopen|escalate)\b", q.lower())
+        if verb_m and refs:
+            kind = CHAT_VERB_TO_KIND[verb_m.group(1)]
+            ref = refs[0]
+            t = await db.tickets.find_one({"ticket_number": ref}, {"_id": 0})
+            if not t:
+                await _crm_assistant_post(channel_id, f"I can {verb_m.group(1)} a ticket, but {ref} isn't a ticket I can find.")
+                return
+            await _post_chat_action(channel_id, kind, t["id"], ref, t.get("customer_name", ""), asker_name)
+            return
         if refs:
             outs = [await _crm_assistant_tool("lookup_entity", {"ref": r}) for r in refs[:3]]
             await _crm_assistant_post(channel_id, "\n".join(outs))
@@ -49343,6 +49354,95 @@ async def crm_command_respond(channel_id: str, text: str, asker_name: str):
     except Exception as e:
         logger.warning(f"crm_command_respond failed: {e}")
         await _crm_assistant_post(channel_id, "Sorry, I couldn't process that — try `@crm help`.")
+
+
+# ---- @crm confirmed WRITE actions -----------------------------------------
+# An action verb (close/reopen/escalate) + a ticket ref posts a *pending* action
+# card. Nothing changes until an authorized user clicks Confirm — the assistant
+# never mutates data on its own.
+CHAT_ACTION_SPECS = {
+    "close_ticket":    {"verb": "close",    "roles": ["admin", "supervisor", "call_support"]},
+    "reopen_ticket":   {"verb": "reopen",   "roles": ["admin", "supervisor", "call_support"]},
+    "escalate_ticket": {"verb": "escalate", "roles": ["admin", "call_support", "supervisor"]},
+}
+CHAT_VERB_TO_KIND = {"close": "close_ticket", "reopen": "reopen_ticket", "escalate": "escalate_ticket"}
+
+
+async def _execute_chat_action(kind: str, target_id: str, user: dict):
+    now = datetime.now(timezone.utc).isoformat()
+    t = await db.tickets.find_one({"id": target_id}, {"_id": 0})
+    if not t:
+        return False, "ticket not found"
+    by = f"{user.get('first_name','')} {user.get('last_name','')}".strip() or user.get("email") or "user"
+    if kind == "close_ticket":
+        await db.tickets.update_one({"id": target_id}, {"$set": {"status": "closed", "closed_at": now, "closed_by": user["id"], "closed_by_name": by, "updated_at": now}})
+        await add_ticket_history(target_id, "Closed via team chat (@crm)", user, {})
+        return True, f"closed {t['ticket_number']}"
+    if kind == "reopen_ticket":
+        await db.tickets.update_one({"id": target_id}, {"$set": {"status": "in_progress", "updated_at": now}})
+        await add_ticket_history(target_id, "Reopened via team chat (@crm)", user, {})
+        return True, f"reopened {t['ticket_number']}"
+    if kind == "escalate_ticket":
+        sla_due = (datetime.now(timezone.utc) + timedelta(hours=SLA_CONFIG["supervisor"])).isoformat()
+        await db.tickets.update_one({"id": target_id}, {"$set": {"status": "escalated_to_supervisor", "escalated_by": user["id"], "escalated_by_name": by, "escalated_at": now, "sla_due": sla_due, "updated_at": now}})
+        await add_ticket_history(target_id, "Escalated to supervisor via team chat (@crm)", user, {})
+        return True, f"escalated {t['ticket_number']}"
+    return False, "unknown action"
+
+
+async def _post_chat_action(channel_id: str, kind: str, target_id: str, ref: str, label: str, asker_name: str):
+    spec = CHAT_ACTION_SPECS[kind]
+    now = datetime.now(timezone.utc).isoformat()
+    body = f"⚠️ {asker_name} wants to {spec['verb']} {ref}" + (f" ({label})" if label else "") + ". Confirm to proceed."
+    msg = {
+        "id": str(uuid.uuid4()), "channel_id": channel_id, "sender_id": "crm-assistant",
+        "sender_name": "CRM Assistant", "sender_role": "system", "body": body,
+        "attachments": [], "mentions": [], "reactions": {}, "edited_at": None, "deleted": False,
+        "is_system": True, "is_assistant": True, "created_at": now,
+        "action": {"kind": kind, "verb": spec["verb"], "target_kind": "ticket", "target_id": target_id,
+                   "ref": ref, "status": "pending", "allowed_roles": spec["roles"], "requested_by_name": asker_name},
+    }
+    await db.chat_messages.insert_one(msg)
+    msg.pop("_id", None)
+    ch = await db.chat_channels.find_one({"id": channel_id}, {"_id": 0})
+    if ch:
+        await broadcast_chat(await _chat_recipients(ch), {"type": "message", "channel_id": channel_id, "message": msg})
+
+
+@api_router.post("/chat/actions/{message_id}/confirm")
+async def chat_action_confirm(message_id: str, user: dict = Depends(require_internal_chat)):
+    m = await db.chat_messages.find_one({"id": message_id}, {"_id": 0})
+    if not m or not m.get("action"):
+        raise HTTPException(status_code=404, detail="Action not found")
+    act = m["action"]
+    if act.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Action already resolved")
+    if user["role"] not in act.get("allowed_roles", []):
+        raise HTTPException(status_code=403, detail=f"Requires role: {', '.join(act.get('allowed_roles', []))}")
+    ok, res = await _execute_chat_action(act["kind"], act["target_id"], user)
+    by = f"{user.get('first_name','')} {user.get('last_name','')}".strip() or user.get("email") or "user"
+    act2 = {**act, "status": "done" if ok else "failed", "confirmed_by": user["id"], "confirmed_by_name": by, "result": res}
+    body = (f"✅ {res} — confirmed by {by}" if ok else f"❌ Couldn't complete: {res}")
+    await db.chat_messages.update_one({"id": message_id}, {"$set": {"action": act2, "body": body}})
+    ch = await db.chat_channels.find_one({"id": m["channel_id"]}, {"_id": 0})
+    await broadcast_chat(await _chat_recipients(ch), {"type": "message_update", "channel_id": m["channel_id"], "message_id": message_id, "body": body, "action": act2})
+    return {"ok": ok, "result": res}
+
+
+@api_router.post("/chat/actions/{message_id}/cancel")
+async def chat_action_cancel(message_id: str, user: dict = Depends(require_internal_chat)):
+    m = await db.chat_messages.find_one({"id": message_id}, {"_id": 0})
+    if not m or not m.get("action"):
+        raise HTTPException(status_code=404, detail="Action not found")
+    if m["action"].get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Action already resolved")
+    by = f"{user.get('first_name','')} {user.get('last_name','')}".strip() or user.get("email") or "user"
+    act2 = {**m["action"], "status": "cancelled", "confirmed_by_name": by}
+    body = f"🚫 {m['action'].get('verb')} {m['action'].get('ref')} cancelled by {by}"
+    await db.chat_messages.update_one({"id": message_id}, {"$set": {"action": act2, "body": body}})
+    ch = await db.chat_channels.find_one({"id": m["channel_id"]}, {"_id": 0})
+    await broadcast_chat(await _chat_recipients(ch), {"type": "message_update", "channel_id": m["channel_id"], "message_id": message_id, "body": body, "action": act2})
+    return {"ok": True}
 
 
 @api_router.get("/chat/channels/{channel_id}/messages")
