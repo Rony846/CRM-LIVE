@@ -1541,6 +1541,42 @@ nav a.active,
 [data-theme="obsidian"] .bg-gray-50,
 [data-theme="obsidian"] .bg-gray-100 { background-color: hsl(var(--card)) !important; }
 
+/* ====================================================================
+   PUBLIC PRODUCT DATASHEET — keep it a printed WHITE sheet under ANY theme.
+   The CRM dark themes remap hard-coded light utilities (.text-gray-900 ->
+   --foreground, .bg-white -> --card) and repaint <table> headers/cells for
+   internal pages. That bleeds into the customer-facing datasheet and makes
+   its dark-on-white values render light/yellow on a darkened sheet — invisible.
+   Re-assert the real print colours, scoped to .datasheet-paper, with higher
+   specificity ([data-theme] + .datasheet-paper) so it wins over every theme.
+   ==================================================================== */
+[data-theme] .datasheet-paper,
+[data-theme] .datasheet-paper * { color-scheme: light; }
+[data-theme] .datasheet-paper { background-color: #ffffff !important; }
+[data-theme] .datasheet-paper .bg-white { background-color: #ffffff !important; }
+[data-theme] .datasheet-paper .bg-gray-50 { background-color: #f9fafb !important; }
+[data-theme] .datasheet-paper .bg-gray-100 { background-color: #f3f4f6 !important; }
+[data-theme] .datasheet-paper .bg-slate-50 { background-color: #f8fafc !important; }
+[data-theme] .datasheet-paper .text-black { color: #000000 !important; }
+[data-theme] .datasheet-paper .text-gray-900 { color: #111827 !important; }
+[data-theme] .datasheet-paper .text-gray-800 { color: #1f2937 !important; }
+[data-theme] .datasheet-paper .text-gray-700 { color: #374151 !important; }
+[data-theme] .datasheet-paper .text-gray-600 { color: #4b5563 !important; }
+[data-theme] .datasheet-paper .text-gray-500 { color: #6b7280 !important; }
+[data-theme] .datasheet-paper .text-gray-400 { color: #9ca3af !important; }
+[data-theme] .datasheet-paper .text-green-500,
+[data-theme] .datasheet-paper .text-green-600,
+[data-theme] .datasheet-paper .text-emerald-500 { color: #16a34a !important; }
+/* Drop the dark-theme table repaint so the sheet's own orange header +
+   gray section rows + dark values show through. */
+[data-theme] .datasheet-paper table thead { background-color: transparent !important; }
+[data-theme] .datasheet-paper table th {
+  color: inherit !important; font-family: inherit !important; font-size: inherit !important;
+  font-weight: inherit !important; letter-spacing: inherit !important; border-bottom: 0 !important;
+}
+[data-theme] .datasheet-paper table td { font-size: inherit !important; border-color: #f3f4f6 !important; }
+[data-theme] .datasheet-paper table tbody tr:hover { background-color: transparent !important; }
+
 /* ==================================================================
    LUMINA PRIME — component styling
    Light "Executive Precision": flat cards, mono uppercase labels,
