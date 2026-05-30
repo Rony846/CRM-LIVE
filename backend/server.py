@@ -35321,6 +35321,21 @@ async def _bulk_scrape_worker(firm_id: str, order_ids: List[str], user_id: str):
     job["current_order_id"] = None
     job["finished_at"] = datetime.now(timezone.utc).isoformat()
 
+    # Some jobs (e.g. the courier-board "Pull last N days") want the Delhivery
+    # board repopulated the moment scraping finishes, rather than waiting for the
+    # next 30-min poll. Gated by a job flag so other callers are unaffected.
+    if job.get("refresh_board_on_done"):
+        try:
+            summary = await refresh_delhivery_board()
+            job["board_refresh"] = {
+                "checked": summary.get("checked", 0),
+                "orders_in_universe": summary.get("orders_in_universe", 0),
+                "ran_at": summary.get("ran_at"),
+            }
+        except Exception as e:
+            logger.error(f"Post-scrape board refresh failed: {e}")
+            job["board_refresh"] = {"error": str(e)}
+
 
 @api_router.post("/amazon/bulk-scrape-mfn-pending")
 async def amazon_bulk_scrape_mfn_pending(
@@ -35491,6 +35506,100 @@ async def amazon_bulk_scrape_cancel(
         raise HTTPException(status_code=400, detail="No running scrape job for this firm")
     job["cancel_requested"] = True
     return {"success": True, "message": "Cancellation requested; will stop after current order."}
+
+
+@api_router.post("/courier/delhivery-board/pull-recent-amazon")
+async def pull_recent_amazon_tracking(
+    firm_id: str,
+    days: int = 15,
+    user: dict = Depends(require_roles(["admin"]))
+):
+    """One-click for the Courier Tracking board: scrape the last `days` of Amazon
+    orders that are still missing a tracking number (off Seller Central), write
+    their AWBs back, and auto-refresh the Delhivery board the moment the scrape
+    finishes — so freshly-shipped parcels appear on the board without waiting for
+    the 30-min poll.
+
+    Mirrors /amazon/bulk-rescan-awaiting-tracking but bounded to a recent window
+    and with the board-refresh hook. Requires the browser agent to be signed in
+    to Seller Central (the operator does that under Admin → Browser Agents)."""
+    days = max(1, min(int(days or 15), 60))
+
+    existing = _amazon_scrape_jobs.get(firm_id)
+    if existing and existing.get("state") == "running":
+        raise HTTPException(
+            status_code=409,
+            detail=f"A scrape job is already running for this firm "
+                   f"({existing.get('succeeded',0)+existing.get('failed',0)}/"
+                   f"{existing.get('total','?')})")
+
+    agent = await get_browser_agent()
+    if not agent or not agent.page:
+        raise HTTPException(
+            status_code=400,
+            detail="Browser agent not started. Open Admin → Browser Agents and sign in to Amazon first.")
+    if getattr(agent.state, "value", str(agent.state)) != "logged_in":
+        ok = await agent.check_login_status()
+        if not ok:
+            raise HTTPException(
+                status_code=400,
+                detail="Browser agent not logged in to Seller Central. "
+                       "Open Admin → Browser Agents and sign in to Amazon first.")
+
+    # Recent orders that may now carry a tracking number on their Amazon page but
+    # don't have one stored yet. Scoped to the last `days` so we only touch the
+    # window the operator asked for (not the whole historical backlog).
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    no_tracking = {"$or": [
+        {"tracking_number": {"$exists": False}},
+        {"tracking_number": None},
+        {"tracking_number": ""},
+    ]}
+    stuck = await db.amazon_orders.find(
+        {
+            "firm_id": firm_id,
+            "purchase_date": {"$gte": cutoff},
+            "$and": [
+                no_tracking,
+                {"crm_status": {"$in": ["pending", "details_captured", "amazon_shipped"]}},
+            ],
+        },
+        {"_id": 0, "amazon_order_id": 1},
+    ).to_list(5000)
+    order_ids = [o["amazon_order_id"] for o in stuck if o.get("amazon_order_id")]
+
+    if not order_ids:
+        # Nothing to scrape — still refresh the board so any already-scraped recent
+        # AWBs surface immediately.
+        summary = await refresh_delhivery_board()
+        return {
+            "success": True, "total": 0,
+            "message": f"No orders missing tracking in the last {days} days. Board refreshed "
+                       f"({summary.get('checked', 0)} parcels polled).",
+            "board_checked": summary.get("checked", 0),
+        }
+
+    _amazon_scrape_jobs[firm_id] = {
+        "state": "running",
+        "total": len(order_ids),
+        "succeeded": 0, "failed": 0, "needs_review": 0, "cancelled": 0,
+        "current_order_id": None,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "started_by": user["id"],
+        "cancel_requested": False,
+        "last_error": None,
+        "job_kind": "pull_recent_amazon",
+        "refresh_board_on_done": True,
+        "window_days": days,
+    }
+    asyncio.create_task(_bulk_scrape_worker(firm_id, order_ids, user["id"]))
+
+    return {
+        "success": True,
+        "total": len(order_ids),
+        "message": f"Scraping {len(order_ids)} orders from the last {days} days. "
+                   f"The tracking board updates automatically when the scrape finishes.",
+    }
 
 
 async def _push_tracking_to_amazon_internal(amazon_order_id: str, firm_id: str) -> dict:

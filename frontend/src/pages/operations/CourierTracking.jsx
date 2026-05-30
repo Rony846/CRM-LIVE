@@ -17,7 +17,7 @@ import {
 import { toast } from 'sonner';
 import {
   Truck, Loader2, RefreshCw, Package, MapPin, Clock,
-  CheckCircle, ExternalLink, Building2
+  CheckCircle, ExternalLink, Building2, PackagePlus
 } from 'lucide-react';
 
 // Backend refreshes the board every 30 min; the page re-reads it on the same cadence.
@@ -55,6 +55,7 @@ function timeAgo(iso) {
 export default function CourierTracking() {
   const { token, user } = useAuth();
   const canForce = ['admin', 'dispatcher'].includes(user?.role);
+  const isAdmin = user?.role === 'admin';
 
   const [shipments, setShipments] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -64,6 +65,17 @@ export default function CourierTracking() {
   const [stateFilter, setStateFilter] = useState('all');
 
   const [detail, setDetail] = useState(null); // selected shipment for dialog
+  const [firms, setFirms] = useState([]);     // {id,name} for the Amazon pull
+  const [pullOpen, setPullOpen] = useState(false);
+
+  // Firms list for the "Pull from Amazon" picker (admin only). Loaded separately
+  // from the board so the pull works even when the board is currently empty.
+  useEffect(() => {
+    if (!isAdmin) return;
+    axios.get(`${API}/firms`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => setFirms(Array.isArray(r.data) ? r.data : (r.data?.firms || [])))
+      .catch(() => {});
+  }, [isAdmin, token]);
 
   const fetchBoard = useCallback(async () => {
     setLoading(true);
@@ -164,6 +176,12 @@ export default function CourierTracking() {
               <RefreshCw className={`h-4 w-4 mr-1 ${refreshing ? 'animate-spin' : ''}`} />
               {canForce ? 'Refresh now' : 'Reload'}
             </Button>
+            {isAdmin && (
+              <Button onClick={() => setPullOpen(true)} disabled={loading}>
+                <PackagePlus className="h-4 w-4 mr-1" />
+                Pull from Amazon
+              </Button>
+            )}
           </div>
         </div>
 
@@ -268,7 +286,160 @@ export default function CourierTracking() {
       </div>
 
       <TrackingDialog detail={detail} onClose={() => setDetail(null)} />
+      <PullAmazonDialog
+        open={pullOpen}
+        firms={firms}
+        token={token}
+        onClose={() => setPullOpen(false)}
+        onDone={fetchBoard}
+      />
     </DashboardLayout>
+  );
+}
+
+// Admin one-click: scrape the last 15 days of Amazon orders missing tracking and
+// auto-refresh the board when the scrape finishes. Polls the shared bulk-scrape
+// job status so the operator sees live progress without leaving this page.
+function PullAmazonDialog({ open, onClose, firms, token, onDone }) {
+  const [firmId, setFirmId] = useState('');
+  const [starting, setStarting] = useState(false);
+  const [job, setJob] = useState(null);
+  const pollRef = React.useRef(null);
+
+  const stopPoll = () => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+  };
+
+  // Reset on close; always clear the interval on unmount.
+  useEffect(() => {
+    if (!open) { setFirmId(''); setJob(null); setStarting(false); stopPoll(); }
+  }, [open]);
+  useEffect(() => () => stopPoll(), []);
+
+  const poll = (fid) => {
+    stopPoll();
+    pollRef.current = setInterval(async () => {
+      try {
+        const r = await axios.get(
+          `${API}/amazon/bulk-scrape-status?firm_id=${encodeURIComponent(fid)}`,
+          { headers: { Authorization: `Bearer ${token}` } });
+        const j = r.data || {};
+        setJob(j);
+        if (j.state === 'done' || j.state === 'cancelled' || j.state === 'idle') {
+          stopPoll();
+          const got = j.succeeded || 0;
+          if (j.state === 'cancelled') toast.info(`Stopped · ${got} scraped before cancel`);
+          else toast.success(`Scraped ${got}/${j.total || got} · board updated`);
+          if (onDone) onDone();
+        }
+      } catch (e) { /* transient — keep polling */ }
+    }, 3000);
+  };
+
+  const start = async () => {
+    if (!firmId) { toast.error('Pick a firm first'); return; }
+    setStarting(true);
+    try {
+      const r = await axios.post(
+        `${API}/courier/delhivery-board/pull-recent-amazon?firm_id=${encodeURIComponent(firmId)}&days=15`,
+        {}, { headers: { Authorization: `Bearer ${token}` } });
+      if (r.data.total === 0) {
+        toast.info(r.data.message || 'No recent orders missing tracking.');
+        if (onDone) onDone();
+        onClose();
+      } else {
+        toast.message(r.data.message || `Scraping ${r.data.total} orders…`);
+        setJob({ state: 'running', total: r.data.total, succeeded: 0, failed: 0 });
+        poll(firmId);
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Could not start the scrape');
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const cancel = async () => {
+    try {
+      await axios.post(
+        `${API}/amazon/bulk-scrape-cancel?firm_id=${encodeURIComponent(firmId)}`,
+        {}, { headers: { Authorization: `Bearer ${token}` } });
+      toast.info('Cancelling after current order…');
+    } catch (e) { toast.error(e.response?.data?.detail || 'Cancel failed'); }
+  };
+
+  const running = job?.state === 'running';
+  const done = (job?.succeeded || 0) + (job?.failed || 0);
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o && !running) onClose(); }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <PackagePlus className="h-5 w-5 text-primary" /> Pull last 15 days from Amazon
+          </DialogTitle>
+          <DialogDescription>
+            Scrapes recent orders that are missing a tracking number off Amazon Seller
+            Central, writes their AWBs, and refreshes this board when done.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div>
+            <label className="text-sm font-medium">Firm</label>
+            <Select value={firmId} onValueChange={setFirmId} disabled={running}>
+              <SelectTrigger className="mt-1">
+                <SelectValue placeholder="Select firm" />
+              </SelectTrigger>
+              <SelectContent>
+                {firms.map((f) => (
+                  <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <p className="text-xs text-muted-foreground">
+            The browser agent must be signed in to Amazon first (Admin → Browser
+            Agents). Only orders without a stored tracking number are scraped.
+          </p>
+
+          {job && (
+            <div className="rounded-md border p-3 text-sm">
+              {running ? (
+                <div className="flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>Scraping {done}/{job.total}…</span>
+                  {job.current_order_id && (
+                    <span className="font-mono text-xs text-muted-foreground truncate">
+                      {job.current_order_id}
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <div>Done · {job.succeeded || 0} scraped, {job.failed || 0} failed</div>
+              )}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2">
+            {running ? (
+              <Button variant="outline" onClick={cancel}>Stop</Button>
+            ) : (
+              <>
+                <Button variant="outline" onClick={onClose}>Close</Button>
+                <Button onClick={start} disabled={starting || !firmId}>
+                  {starting
+                    ? <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                    : <PackagePlus className="h-4 w-4 mr-1" />}
+                  Start scrape
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
