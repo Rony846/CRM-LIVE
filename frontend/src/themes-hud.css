@@ -341,3 +341,36 @@
 [data-theme^="hud-"] .badge {
   box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.06);
 }
+
+/* ============================================================
+   Border refinement — the app's global tables/cards draw flat 1px
+   grey rules that read heavy on the dark glass. Re-tint them to the
+   active theme accent at low opacity so dividers feel like HUD
+   hairlines instead of neutral grey lines.
+   ============================================================ */
+/* table row dividers → faint accent hairline */
+[data-theme^="hud-"] table td {
+  border-bottom: 1px solid hsl(var(--primary) / 0.07) !important;
+}
+/* header underline → a touch stronger */
+[data-theme^="hud-"] table th {
+  border-bottom: 1px solid hsl(var(--primary) / 0.20) !important;
+}
+/* drop the heavy grey header fill; let it sit on the panel */
+[data-theme^="hud-"] table thead {
+  background-color: transparent !important;
+}
+/* hovered row gets a faint accent wash instead of grey */
+[data-theme^="hud-"] table tbody tr:hover {
+  background-color: hsl(var(--primary) / 0.05) !important;
+}
+/* generic borders that look grey → accent-tinted, low opacity */
+[data-theme^="hud-"] .border,
+[data-theme^="hud-"] .border-t,
+[data-theme^="hud-"] .border-b,
+[data-theme^="hud-"] .border-l,
+[data-theme^="hud-"] .border-r,
+[data-theme^="hud-"] .border-border,
+[data-theme^="hud-"] .divide-y > * + * {
+  border-color: hsl(var(--primary) / 0.12) !important;
+}
