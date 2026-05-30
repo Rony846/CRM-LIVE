@@ -59878,6 +59878,43 @@ async def _email_agent_make_lead(msg: dict, brain: dict) -> Optional[str]:
     return lead_id
 
 
+async def _crm_lookup(name: str, limit: int = 8) -> list:
+    """Search the CRM (parties = customer/party master, and leads) by name.
+    Returns real records — Pratibha never invents contact data."""
+    name = (name or "").strip()
+    if len(name) < 2:
+        return []
+    rx = {"$regex": r"\b" + re.escape(name), "$options": "i"}
+    out = []
+    async for d in db.parties.find(
+            {"name": rx}, {"_id": 0, "name": 1, "phone": 1, "email": 1, "contact_person": 1}).limit(limit):
+        out.append({"source": "customer", "name": d.get("name"), "phone": d.get("phone"),
+                    "email": d.get("email"), "contact": d.get("contact_person")})
+    async for d in db.leads.find(
+            {"name": rx}, {"_id": 0, "name": 1, "phone": 1, "email": 1}).limit(limit):
+        out.append({"source": "lead", "name": d.get("name"), "phone": d.get("phone"),
+                    "email": d.get("email")})
+    return out
+
+
+def _format_lookup_reply(name: str, results: list) -> str:
+    if not results:
+        return (f'I could not find anyone named "{name}" in the CRM (checked customers/parties '
+                f'and leads). Please double-check the spelling or share more detail.\n\n'
+                f'Pratibha, MuscleGrid')
+    lines = [f'Here is what I found for "{name}" in the CRM:', ""]
+    for r in results[:8]:
+        bits = [r.get("name") or "?"]
+        if r.get("phone"):
+            bits.append(f"phone: {r['phone']}")
+        if r.get("email"):
+            bits.append(f"email: {r['email']}")
+        bits.append(f"({r['source']})")
+        lines.append("• " + " · ".join(bits))
+    lines += ["", "Pratibha, MuscleGrid"]
+    return "\n".join(lines)
+
+
 async def process_email_agent_inbox() -> dict:
     """Observe every inbound email at the shared mailbox; ACT only when an
     authorised internal sender addresses the agent by name ("Pratibha").
@@ -59923,30 +59960,69 @@ async def process_email_agent_inbox() -> dict:
             observed += 1
             continue
 
-        # Triggered — compose the reply and figure out reply-all recipients.
+        # Triggered. Two flows: an internal DATA LOOKUP, or a CUSTOMER REPLY.
         triggered += 1
-        ans = await email_agent.answer(sender, m.get("subject", ""), m.get("body", ""))
-        to_list, cc_list = email_agent.reply_all_recipients(
-            sender, m.get("to", []), m.get("cc", []), c["email"])
         subj = m.get("subject") or ""
         if not subj.lower().startswith("re:"):
             subj = f"Re: {subj}"
-        doc.update({"triggered": True, "trigger_by": sender,
-                    "draft_reply": ans["reply"], "model_ok": ans["model_ok"],
-                    "reply_to": to_list, "reply_cc": cc_list, "reply_subject": subj})
+        to_list, cc_list = email_agent.reply_all_recipients(
+            sender, m.get("to", []), m.get("cc", []), c["email"])
+        doc.update({"triggered": True, "trigger_by": sender, "reply_subject": subj})
 
-        if c["auto_send"] and ans["model_ok"] and (ans["reply"] or "").strip() and to_list:
+        lookup = await email_agent.extract_lookup(m.get("subject", ""), m.get("body", ""))
+        if lookup["is_lookup"]:
+            # --- CRM data lookup: answer with REAL data, reply INTERNAL-ONLY so a
+            #     customer's details never go to an external thread. ---
+            results = await _crm_lookup(lookup["name"])
+            reply_text = _format_lookup_reply(lookup["name"], results)
+            internal = list(dict.fromkeys(
+                [a for a in ([sender] + to_list + cc_list)
+                 if a != c["email"] and email_agent.is_trigger_sender(a, c["trigger_senders"])]))
+            doc.update({"category": "data_lookup", "draft_reply": reply_text, "model_ok": True,
+                        "reply_to": internal, "reply_cc": [], "internal_only": True,
+                        "lookup": {"name": lookup["name"], "count": len(results)}})
+            if c["auto_send"] and internal:
+                try:
+                    await email_agent.send_reply_all(internal, [], subj, reply_text,
+                                                     m.get("message_id") or "", m.get("references", ""))
+                    doc.update({"status": "replied", "sent_reply": reply_text,
+                                "replied_by_name": "Pratibha (auto · internal lookup)",
+                                "replied_at": now.isoformat()})
+                    auto_sent += 1
+                except Exception as e:
+                    logger.error(f"Pratibha lookup reply failed: {e}")
+                    doc.update({"status": "needs_review", "send_error": str(e)})
+            else:
+                doc.update({"status": "needs_review"})
+            await db.email_agent_inbox.insert_one(doc)
+            asyncio.create_task(create_notification(
+                title="🔎 Pratibha CRM lookup", message=f"{lookup['name']}: {len(results)} match(es)",
+                notification_type="info", link="/admin/email-agent", priority="normal",
+                target_roles=["admin", "call_support"], created_by_name="Email Agent",
+                data={"email_id": doc["id"]}))
+            continue
+
+        # --- Customer reply: draft, and AUTO-SEND ONLY a simple acknowledgement;
+        #     anything substantive (specifics, promises) is held for a human. ---
+        ans = await email_agent.answer(sender, m.get("subject", ""), m.get("body", ""))
+        simple = email_agent.is_simple_ack(ans["reply"])
+        doc.update({"draft_reply": ans["reply"], "model_ok": ans["model_ok"],
+                    "reply_to": to_list, "reply_cc": cc_list,
+                    "auto_eligible": simple})
+        if c["auto_send"] and ans["model_ok"] and (ans["reply"] or "").strip() and to_list and simple:
             try:
                 await email_agent.send_reply_all(
                     to_list, cc_list, subj, ans["reply"], m.get("message_id") or "", m.get("references", ""))
                 doc.update({"status": "replied", "sent_reply": ans["reply"],
-                            "replied_by_name": "Pratibha (auto)", "replied_at": now.isoformat()})
+                            "replied_by_name": "Pratibha (auto · ack)", "replied_at": now.isoformat()})
                 auto_sent += 1
             except Exception as e:
                 logger.error(f"Pratibha auto reply-all failed: {e}")
                 doc.update({"status": "needs_review", "send_error": str(e)})
         else:
-            doc.update({"status": "needs_review"})  # draft mode, or model offline
+            # held: draft mode, model offline, or a substantive reply needing review
+            doc.update({"status": "needs_review",
+                        "hold_reason": ("complex_reply" if (c["auto_send"] and not simple) else None)})
 
         await db.email_agent_inbox.insert_one(doc)
         asyncio.create_task(create_notification(

@@ -258,6 +258,61 @@ async def answer(sender: str, subject: str, body: str) -> dict:
     return {"reply": "", "model_ok": False}
 
 
+_ACK_PHRASES = ["team is checking", "get back to you", "will update", "update you shortly",
+                "received your", "look into", "reach out", "forwarded", "shortly", "noted",
+                "thank you for reaching", "we have received"]
+_SPECIFIC_RX = re.compile(
+    r"(refund|replace|replacement|discount|approved|warranty|₹\s*\d|rs\.?\s*\d|\d{4,}|"
+    r"\d+\s*%|\d+\s*(day|business day|week))", re.IGNORECASE)
+
+
+def is_simple_ack(reply: str) -> bool:
+    """True only for a short, content-free acknowledgement (a holding reply that
+    commits to nothing). Anything substantive — specifics, numbers, promises —
+    is held for a human. This is the 'auto-send simple acks only' gate."""
+    if not reply or len(reply) > 700:
+        return False
+    if _SPECIFIC_RX.search(reply):
+        return False
+    return any(p in reply.lower() for p in _ACK_PHRASES)
+
+
+_LOOKUP_PROMPT = """A MuscleGrid staff member emailed the assistant. Decide if they are asking to \
+LOOK UP a person/customer record in the CRM (their phone, email, address, or orders). Respond with \
+ONLY compact JSON:
+{{"is_lookup": true|false, "name": "<the person's name to look up, or null>", "fields": ["phone"]}}
+fields may include phone, email, address, orders, or all. If they are asking to reply to a CUSTOMER \
+(not to look up data), is_lookup=false and name=null.
+
+SUBJECT: {subject}
+MESSAGE:
+{body}"""
+
+
+async def extract_lookup(subject: str, body: str) -> dict:
+    """Ask the local model whether a triggered email is a CRM data lookup, and
+    pull out the person's name + which fields. Safe default: not a lookup."""
+    c = cfg()
+    prompt = _LOOKUP_PROMPT.format(subject=subject or "", body=(body or "")[:3000])
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            r = await client.post(f"{c['ollama_url']}/api/generate", json={
+                "model": c["model"], "prompt": prompt, "stream": False,
+                "options": {"temperature": 0.1, "num_predict": 120}, "keep_alive": "60s"})
+        r.raise_for_status()
+        p = _safe_json(r.json().get("response", ""))
+    except Exception as e:
+        logger.error(f"extract_lookup failed: {e}")
+        return {"is_lookup": False, "name": None, "fields": []}
+    name = p.get("name")
+    if isinstance(name, str):
+        name = name.strip() or None
+    else:
+        name = None
+    fields = p.get("fields") if isinstance(p.get("fields"), list) else []
+    return {"is_lookup": bool(p.get("is_lookup")) and bool(name), "name": name, "fields": fields}
+
+
 # ---- IMAP read (blocking; run via asyncio.to_thread) ----------------------
 def _decode(s) -> str:
     try:

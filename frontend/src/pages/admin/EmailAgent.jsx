@@ -18,6 +18,7 @@ const CAT_BADGE = {
   support_complaint: 'bg-rose-100 text-rose-800',
   order_query: 'bg-blue-100 text-blue-800',
   dealer: 'bg-violet-100 text-violet-800',
+  data_lookup: 'bg-cyan-100 text-cyan-800',
   spam: 'bg-gray-200 text-gray-600',
   other: 'bg-amber-100 text-amber-800',
 };
@@ -94,7 +95,7 @@ export default function EmailAgent() {
             </span>
             <Badge variant="outline" className="text-[11px]">wake word: “{status.trigger_word}”</Badge>
             <Badge className={status.auto_send ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}>
-              {status.auto_send ? 'auto reply-all on trigger' : 'drafts wait for approval'}
+              {status.auto_send ? 'auto-sends simple acknowledgements only' : 'all drafts wait for approval'}
             </Badge>
           </div>
         )}
