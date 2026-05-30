@@ -8,6 +8,9 @@ import { Badge } from '@/components/ui/badge';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog';
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from '@/components/ui/table';
 import { toast } from 'sonner';
 import {
   Mail, Loader2, RefreshCw, Send, X, Cpu, CircleCheck, CircleAlert, Bot,
@@ -121,6 +124,9 @@ EMAIL_AGENT_AUTO_SEND=true`}</pre>
           </Card>
         )}
 
+        {/* Founder approvals log */}
+        <ApprovalsLog headers={headers} pending={status?.pending_approvals || 0} />
+
         {/* Try Pratibha — dry run with no mailbox */}
         <TryPratibha headers={headers} />
 
@@ -173,6 +179,81 @@ EMAIL_AGENT_AUTO_SEND=true`}</pre>
 
       <ReviewDialog email={active} headers={headers} onClose={() => setActive(null)} onDone={refresh} />
     </DashboardLayout>
+  );
+}
+
+const APPR_BADGE = {
+  pending: 'bg-amber-100 text-amber-800',
+  approved: 'bg-emerald-100 text-emerald-800',
+  declined: 'bg-rose-100 text-rose-800',
+};
+const TIER_LABEL = { 1: 'T1', 2: 'T2 · founder', 3: 'T3 · founder→human' };
+
+function ApprovalsLog({ headers, pending }) {
+  const [open, setOpen] = useState(false);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await axios.get(`${API}/admin/email-agent/approvals`, { headers });
+      setRows(r.data.approvals || []);
+    } catch { /* ignore */ }
+    finally { setLoading(false); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => { if (open) load(); }, [open, load]);
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center justify-between">
+          <span className="flex items-center gap-2">
+            <CircleCheck className="h-4 w-4 text-primary" /> Founder approvals
+            {pending > 0 && <Badge className="bg-amber-100 text-amber-800">{pending} pending</Badge>}
+          </span>
+          <span className="flex items-center gap-1">
+            {open && <Button variant="ghost" size="sm" onClick={load} disabled={loading}>
+              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /></Button>}
+            <Button variant="ghost" size="sm" onClick={() => setOpen((v) => !v)}>{open ? 'Hide' : 'Open'}</Button>
+          </span>
+        </CardTitle>
+      </CardHeader>
+      {open && (
+        <CardContent>
+          {rows.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-2">No approval requests yet. Pratibha emails the founder for Tier 2/3 actions; they show here with the outcome.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Ref</TableHead>
+                  <TableHead>Request</TableHead>
+                  <TableHead>Tier</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Outcome</TableHead>
+                  <TableHead>When</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((a) => (
+                  <TableRow key={a.id}>
+                    <TableCell className="font-mono text-xs">{a.ref}</TableCell>
+                    <TableCell className="text-sm max-w-[280px] truncate" title={a.summary || ''}>{a.summary || a.action}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{TIER_LABEL[a.tier] || a.tier}</TableCell>
+                    <TableCell><Badge className={APPR_BADGE[a.status] || 'bg-gray-100 text-gray-700'}>{a.status}</Badge></TableCell>
+                    <TableCell className="text-xs max-w-[240px] truncate" title={a.result || ''}>{a.result || (a.status === 'pending' ? 'awaiting founder reply' : '—')}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{a.requested_at ? new Date(a.requested_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      )}
+    </Card>
   );
 }
 

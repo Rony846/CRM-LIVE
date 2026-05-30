@@ -67048,6 +67048,21 @@ async def email_agent_messages(status: str = "needs_review", limit: int = 100,
     return {"success": True, "count": len(rows), "messages": rows}
 
 
+@api_router.get("/admin/email-agent/approvals")
+async def email_agent_approvals(status: str = "all", limit: int = 100,
+                                user: dict = Depends(require_roles(["admin"]))):
+    """Every founder-approval request Pratibha raised, with its outcome."""
+    q = {} if status == "all" else {"status": status}
+    rows = await db.pratibha_approvals.find(
+        q, {"_id": 0, "id": 1, "ref": 1, "action": 1, "tier": 1, "summary": 1, "status": 1,
+            "result": 1, "ok": 1, "requested_at": 1, "resolved_at": 1, "ctx": 1}
+    ).sort("requested_at", -1).to_list(min(limit, 300))
+    for r in rows:
+        ctx = r.pop("ctx", None) or {}
+        r["requested_by"] = ctx.get("from_addr")
+    return {"success": True, "count": len(rows), "approvals": rows}
+
+
 class EmailAgentTest(BaseModel):
     sender: Optional[str] = "test@example.com"
     subject: Optional[str] = ""
