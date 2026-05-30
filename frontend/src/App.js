@@ -78,6 +78,7 @@ import SupervisorProduction from './pages/supervisor/SupervisorProduction';
 import TechnicianProduction from './pages/technician/TechnicianProduction';
 import AmazonOrders from './pages/operations/AmazonOrders';
 import SkuWeights from './pages/admin/SkuWeights';
+import EmailAgent from './pages/admin/EmailAgent';
 import AmazonRefunds from './pages/admin/AmazonRefunds';
 import CronRuns from './pages/admin/CronRuns';
 import KnowledgeBase from './pages/admin/KnowledgeBase';
@@ -788,6 +789,11 @@ function App() {
           <Route path="/admin/sku-weights" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <SkuWeights />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/email-agent" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <EmailAgent />
             </ProtectedRoute>
           } />
 
