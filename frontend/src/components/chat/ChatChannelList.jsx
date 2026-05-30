@@ -1,15 +1,55 @@
 import React, { useState } from 'react';
 import { useChat } from './ChatProvider';
 import { ChatAvatar } from './chatUtils';
-import { Hash, Lock, Plus, Search, BellOff, BellRing } from 'lucide-react';
+import { Hash, Lock, Plus, Search, BellOff, BellRing, AtSign, Check } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 
 const CAN_CREATE = ['admin', 'supervisor'];
+
+const NOTIFY_OPTS = [
+  { key: 'all', label: 'All messages', sub: 'Every new message', Icon: BellRing },
+  { key: 'mentions', label: 'Mentions & DMs', sub: 'Only when @mentioned or DMed', Icon: AtSign },
+  { key: 'off', label: 'Nothing', sub: 'No sound or popup', Icon: BellOff },
+];
+
+function NotifyLevelControl({ level, setLevel }) {
+  const cur = NOTIFY_OPTS.find((o) => o.key === level) || NOTIFY_OPTS[0];
+  const TrigIcon = cur.Icon;
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button title={`Notifications: ${cur.label}`}
+          className={`flex-shrink-0 rounded p-1.5 transition hover:text-foreground ${level === 'off' ? 'text-muted-foreground' : 'text-primary'}`}>
+          <TrigIcon className="h-4 w-4" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-56 p-1">
+        <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Notify me about</p>
+        {NOTIFY_OPTS.map((o) => {
+          const active = o.key === level;
+          const OIcon = o.Icon;
+          return (
+            <button key={o.key} onClick={() => setLevel(o.key)}
+              className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[13px] hover:bg-accent/60 ${active ? 'text-foreground' : 'text-muted-foreground'}`}>
+              <OIcon className="h-4 w-4 flex-shrink-0" />
+              <span className="flex-1 min-w-0">
+                <span className="block font-medium leading-tight">{o.label}</span>
+                <span className="block text-[10px] text-muted-foreground/70">{o.sub}</span>
+              </span>
+              {active && <Check className="h-3.5 w-3.5 flex-shrink-0 text-primary" />}
+            </button>
+          );
+        })}
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 function Unread({ n }) {
   if (!n) return null;
@@ -63,15 +103,7 @@ export default function ChatChannelList({ onSelect }) {
             <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find people…" className="h-8 pl-8 text-[13px]" />
           </div>
-          <button
-            onClick={chat.toggleSound}
-            title={chat.soundEnabled
-              ? 'New-message sounds on — click to mute pings'
-              : 'New-message sounds off — click to enable pings'}
-            className={`flex-shrink-0 rounded p-1.5 transition hover:text-foreground ${chat.soundEnabled ? 'text-primary' : 'text-muted-foreground'}`}
-          >
-            {chat.soundEnabled ? <BellRing className="h-4 w-4" /> : <BellOff className="h-4 w-4" />}
-          </button>
+          <NotifyLevelControl level={chat.notifyLevel} setLevel={chat.setNotifyLevel} />
         </div>
       </div>
       <div className="flex-1 overflow-y-auto p-2 space-y-3">
