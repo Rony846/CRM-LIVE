@@ -29,23 +29,26 @@ export function ChatProvider({ children }) {
   const channelsRef = useRef(channels); channelsRef.current = channels;
 
   // ---- new-message sound + desktop notifications --------------------------
-  const [soundEnabled, setSoundEnabled] = useState(() => {
-    try { return localStorage.getItem('mg_chat_sound') !== '0'; } catch { return true; }
+  // Notification level: 'all' (every message) | 'mentions' (only @mentions + DMs)
+  // | 'off'. Per-channel mute still wins over this.
+  const [notifyLevel, setNotifyLevelState] = useState(() => {
+    try {
+      const v = localStorage.getItem('mg_chat_notify');
+      if (v === 'all' || v === 'mentions' || v === 'off') return v;
+      return localStorage.getItem('mg_chat_sound') === '0' ? 'off' : 'all'; // migrate old toggle
+    } catch { return 'all'; }
   });
-  const soundRef = useRef(soundEnabled); soundRef.current = soundEnabled;
+  const notifyLevelRef = useRef(notifyLevel); notifyLevelRef.current = notifyLevel;
   const audioCtxRef = useRef(null);
 
-  const toggleSound = useCallback(() => {
-    setSoundEnabled((v) => {
-      const nv = !v;
-      try { localStorage.setItem('mg_chat_sound', nv ? '1' : '0'); } catch { /* ignore */ }
-      // Turning sound on is a good moment (a user gesture) to ask for desktop
-      // notification permission.
-      if (nv && 'Notification' in window && Notification.permission === 'default') {
-        Notification.requestPermission().catch(() => {});
-      }
-      return nv;
-    });
+  const setNotifyLevel = useCallback((lvl) => {
+    setNotifyLevelState(lvl);
+    try { localStorage.setItem('mg_chat_notify', lvl); } catch { /* ignore */ }
+    // Picking a level that pings is a user gesture — a good moment to ask for
+    // desktop-notification permission.
+    if (lvl !== 'off' && 'Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {});
+    }
   }, []);
 
   // Soft two-tone chime via Web Audio — no asset file, respects autoplay (only
@@ -319,7 +322,7 @@ export function ChatProvider({ children }) {
     if (!enabled || !token) return;
     refreshChannels(); refreshDirectory(); fetchSaved();
     // Ask for desktop-notification permission once the user is in the app.
-    if (soundRef.current && 'Notification' in window && Notification.permission === 'default') {
+    if (notifyLevelRef.current !== 'off' && 'Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission().catch(() => {});
     }
     const es = new EventSource(`${API}/chat/stream?token=${encodeURIComponent(token)}`);
@@ -346,11 +349,17 @@ export function ChatProvider({ children }) {
             refreshChannels();
           } else {
             setChannels((cs) => cs.map((c) => (c.id === channel_id ? { ...c, unread: (c.unread || 0) + 1 } : c)));
-            // Ping for unread, group or DM — unless this channel is muted.
+            // Ping for unread (group or DM) per the chosen level — unless muted.
             if (!ch.muted) {
-              if (soundRef.current) playChime();
-              const where = ch.type === 'dm' ? '' : ` · #${ch.slug || ch.name}`;
-              notifyDesktop(`${message.sender_name || 'New message'}${where}`, message.body, channel_id);
+              const lvl = notifyLevelRef.current;
+              const mentioned = Array.isArray(message.mentions) && message.mentions.includes(user.id);
+              const isDM = ch.type === 'dm';
+              const shouldPing = lvl === 'all' || (lvl === 'mentions' && (mentioned || isDM));
+              if (shouldPing) {
+                playChime();
+                const where = isDM ? '' : ` · #${ch.slug || ch.name}`;
+                notifyDesktop(`${message.sender_name || 'New message'}${where}`, message.body, channel_id);
+              }
             }
           }
         }
@@ -415,7 +424,7 @@ export function ChatProvider({ children }) {
     totalUnread, refreshChannels, refreshDirectory, openChannel, loadOlder, sendMessage,
     react, editMessage, deleteMessage, createChannel, openDM, uploadFile, sendTyping, markRead, setActiveId, resolveAction,
     savedIds, pinMessage, saveMessage, muteChannel, fetchSaved, fetchPins,
-    soundEnabled, toggleSound,
+    notifyLevel, setNotifyLevel,
     reads, fetchReads, editChannel, addMembers, removeMember, createNudge, resolveNudge, messageToTicket, requestAck, acknowledge, scheduleMessage, fetchScheduled, cancelScheduled, createPoll, votePoll, closePoll,
   };
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
