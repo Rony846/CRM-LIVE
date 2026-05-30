@@ -49758,11 +49758,18 @@ async def chat_channel_reads(channel_id: str, user: dict = Depends(require_inter
 class ChatChannelEdit(BaseModel):
     name: Optional[str] = None
     topic: Optional[str] = None
+    is_private: Optional[bool] = None
 
 
 @api_router.patch("/chat/channels/{channel_id}")
 async def chat_edit_channel(channel_id: str, body: ChatChannelEdit, user: dict = Depends(require_internal_chat)):
-    """Rename / re-topic a channel. Admin/supervisor (or creator) only; not DMs."""
+    """Rename / re-topic a channel, or flip its privacy. Admin/supervisor (or
+    creator) only; not DMs.
+
+    Flipping a public #hashtag to private is how an admin starts managing who's in
+    it: going private seeds the member roster (current joiners + the creator + the
+    admin doing it) so it doesn't vanish for the managers, and non-members lose
+    access. Going public re-opens it to everyone."""
     ch = await db.chat_channels.find_one({"id": channel_id}, {"_id": 0})
     if not ch or ch.get("type") != "channel":
         raise HTTPException(status_code=404, detail="Channel not found")
@@ -49773,11 +49780,40 @@ async def chat_edit_channel(channel_id: str, body: ChatChannelEdit, user: dict =
         updates["name"] = body.name.strip()
     if body.topic is not None:
         updates["topic"] = body.topic.strip()
+
+    privacy_changed = body.is_private is not None and bool(body.is_private) != bool(ch.get("is_private"))
+    new_members = list(ch.get("members") or [])
+    if privacy_changed:
+        updates["is_private"] = bool(body.is_private)
+        if body.is_private:
+            # Going private: make sure the channel stays visible to its managers.
+            keep = set(ch.get("members") or [])
+            keep.add(user["id"])
+            if ch.get("created_by"):
+                keep.add(ch["created_by"])
+            new_members = list(keep)
+            updates["members"] = new_members
+
     await db.chat_channels.update_one({"id": channel_id}, {"$set": updates})
-    await broadcast_chat(await _chat_recipients(ch),
+    merged = {**ch, **updates}
+
+    await broadcast_chat(await _chat_recipients(merged),
                          {"type": "channel_update", "channel_id": channel_id,
-                          "name": updates.get("name", ch.get("name")), "topic": updates.get("topic", ch.get("topic"))})
-    return {"ok": True}
+                          "name": updates.get("name", ch.get("name")),
+                          "topic": updates.get("topic", ch.get("topic")),
+                          "is_private": updates.get("is_private", ch.get("is_private"))})
+
+    if privacy_changed:
+        # Privacy flips change WHO can see the channel — tell a broad audience so
+        # clients add/drop it. The channel_members handler removes it for anyone
+        # not in the list and resyncs for those who are.
+        audience = set(_chat_online_ids()) | set(new_members) | set(ch.get("members") or [])
+        await broadcast_chat(audience,
+                             {"type": "channel_members", "channel_id": channel_id, "members": new_members})
+        verb = "made this channel private" if body.is_private else "made this channel public"
+        await post_system_message(ch["slug"], f"{_chat_user_brief(user)['name']} {verb}")
+
+    return {"ok": True, "is_private": updates.get("is_private", ch.get("is_private")), "members": new_members}
 
 
 class ChatMembersAdd(BaseModel):

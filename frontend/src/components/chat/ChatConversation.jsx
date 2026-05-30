@@ -479,7 +479,7 @@ export default function ChatConversation({ compact = false }) {
             {channel.muted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
           </button>
           {channel.type !== 'dm' && CAN_EDIT_CHANNEL.includes(user.role) && (
-            <button onClick={() => { setEditForm({ name: channel.name, topic: channel.topic || '' }); setEditOpen(true); }}
+            <button onClick={() => { setEditForm({ name: channel.name, topic: channel.topic || '', is_private: !!channel.is_private }); setEditOpen(true); }}
               className="rounded p-1.5 text-muted-foreground hover:text-foreground" title="Edit channel"><Settings2 className="h-4 w-4" /></button>
           )}
         </div>
@@ -584,6 +584,30 @@ export default function ChatConversation({ compact = false }) {
           <div className="space-y-3">
             <Input placeholder="Channel name" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} />
             <Input placeholder="Topic" value={editForm.topic} onChange={(e) => setEditForm({ ...editForm, topic: e.target.value })} />
+
+            <label className="flex items-center justify-between gap-2 rounded-md border border-border px-2.5 py-2">
+              <span className="flex items-center gap-2">
+                {editForm.is_private ? <Lock className="h-4 w-4 text-amber-400" /> : <Hash className="h-4 w-4 text-muted-foreground" />}
+                <span>
+                  <span className="text-sm font-medium">{editForm.is_private ? 'Private channel' : 'Public channel'}</span>
+                  <span className="block text-[11px] text-muted-foreground">
+                    {editForm.is_private ? 'Only added members can see it' : 'Everyone on the team can see and join'}
+                  </span>
+                </span>
+              </span>
+              <input type="checkbox" checked={!!editForm.is_private}
+                onChange={(e) => setEditForm({ ...editForm, is_private: e.target.checked })}
+                className="h-4 w-4 accent-primary" />
+            </label>
+
+            {channel?.type !== 'dm' && !channel?.is_private && (
+              <p className="text-[11px] text-muted-foreground">
+                {editForm.is_private
+                  ? 'Save to make this channel private, then add or remove members below.'
+                  : 'Make this channel private to control exactly who’s a member.'}
+              </p>
+            )}
+
             {channel?.is_private && (() => {
               const memberIds = channel.members || [];
               const nameFor = (id) => (id === user.id ? 'You' : (directory.find((u) => u.id === id)?.name || 'Member'));
@@ -625,8 +649,14 @@ export default function ChatConversation({ compact = false }) {
           </div>
           <DialogFooter>
             <Button onClick={async () => {
-              try { await chat.editChannel(activeId, { name: editForm.name, topic: editForm.topic }); setEditOpen(false); }
-              catch (e) { toast.error(e.response?.data?.detail || 'Could not edit channel'); }
+              try {
+                const wasPrivate = !!channel?.is_private;
+                await chat.editChannel(activeId, { name: editForm.name, topic: editForm.topic, is_private: editForm.is_private });
+                // If they just turned it private, keep the dialog open so the member
+                // roster appears and they can add people right away.
+                if (editForm.is_private && !wasPrivate) toast.success('Channel is now private — add members below');
+                else setEditOpen(false);
+              } catch (e) { toast.error(e.response?.data?.detail || 'Could not edit channel'); }
             }}>Save</Button>
           </DialogFooter>
         </DialogContent>
