@@ -77,6 +77,7 @@ import SerialNumbersManagement from './pages/inventory/SerialNumbersManagement';
 import SupervisorProduction from './pages/supervisor/SupervisorProduction';
 import TechnicianProduction from './pages/technician/TechnicianProduction';
 import AmazonOrders from './pages/operations/AmazonOrders';
+import SkuWeights from './pages/admin/SkuWeights';
 import AmazonRefunds from './pages/admin/AmazonRefunds';
 import CronRuns from './pages/admin/CronRuns';
 import KnowledgeBase from './pages/admin/KnowledgeBase';
@@ -784,7 +785,12 @@ function App() {
               <AmazonOrders />
             </ProtectedRoute>
           } />
-          
+          <Route path="/admin/sku-weights" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <SkuWeights />
+            </ProtectedRoute>
+          } />
+
           {/* Courier Shipping Route */}
           <Route path="/operations/courier-shipping" element={
             <ProtectedRoute allowedRoles={['accountant', 'admin', 'dispatcher']}>

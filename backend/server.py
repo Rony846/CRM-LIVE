@@ -66463,6 +66463,108 @@ async def create_repository_folder(
 
 # ==================== AMAZON ORDER PROCESSING RECORDS ====================
 
+# ====================================================================
+# SKU shipping-weight manager — fills the gaps that make the order bot
+# skip an order ("missing weight for SKU X"). Writes to the sku_dimensions
+# override layer, which lookup_sku_dimensions checks FIRST, so a saved
+# weight unblocks that SKU immediately.
+# ====================================================================
+class SkuWeightUpsert(BaseModel):
+    sku: str
+    weight_kg: float
+    length_cm: Optional[int] = 30
+    width_cm: Optional[int] = 25
+    height_cm: Optional[int] = 20
+    note: Optional[str] = None
+
+
+@api_router.get("/admin/sku-weights/gaps")
+async def sku_weight_gaps(user: dict = Depends(require_roles(["admin"]))):
+    """Every SKU that needs a shipping weight, merged from three sources:
+      • orders the bot shipped at the 2kg default (total_weight_kg == 2)
+      • SKUs the bot flagged when it skipped (sku_weight_gaps)
+      • master_skus rows with no weight_kg
+    Each row says whether a sku_dimensions override now exists (resolved)."""
+    rows: Dict[str, Dict[str, Any]] = {}
+
+    def touch(sku, **kw):
+        s = (sku or "").strip()
+        if not s or s == "(no SKU)":
+            return
+        r = rows.setdefault(s, {"sku": s, "orders": 0, "title": None,
+                                "value": 0, "sources": []})
+        for k, v in kw.items():
+            if k == "orders":
+                r["orders"] += v
+            elif k == "source":
+                if v not in r["sources"]:
+                    r["sources"].append(v)
+            elif v and not r.get(k):
+                r[k] = v
+
+    # 1. shipped-at-default (historical, highest signal)
+    async for d in db.amazon_order_processing.aggregate([
+        {"$match": {"status": {"$ne": "cancelled"}, "total_weight_kg": 2}},
+        {"$group": {"_id": "$product_sku", "orders": {"$sum": 1},
+                    "title": {"$first": "$product_title"}, "value": {"$max": "$order_value"}}},
+    ]):
+        touch(d["_id"], orders=d["orders"], title=d.get("title"),
+              value=d.get("value") or 0, source="order")
+
+    # 2. live flags raised by the bot when it skipped
+    async for g in db.sku_weight_gaps.find({}, {"_id": 0, "sku": 1, "last_order_id": 1}):
+        touch(g.get("sku"), source="flagged")
+
+    # 3. master rows with no weight
+    async for m in db.master_skus.find(
+        {"$or": [{"weight_kg": {"$in": [None, 0]}}, {"weight_kg": {"$exists": False}}]},
+        {"_id": 0, "sku_code": 1, "name": 1, "product_name": 1},
+    ):
+        touch(m.get("sku_code"), title=(m.get("name") or m.get("product_name")), source="master")
+
+    # annotate resolved (an override exists with a real weight)
+    out = []
+    for s, r in rows.items():
+        ov = await db.sku_dimensions.find_one(
+            {"sku": {"$regex": f"^{re.escape(s)}$", "$options": "i"}},
+            {"_id": 0, "weight_kg": 1, "length_cm": 1, "width_cm": 1, "height_cm": 1})
+        r["resolved"] = bool(ov and ov.get("weight_kg"))
+        r["override"] = ov or None
+        out.append(r)
+    out.sort(key=lambda x: (x["resolved"], -x["orders"], x["sku"]))
+    return {"success": True, "count": len(out),
+            "unresolved": sum(1 for r in out if not r["resolved"]), "gaps": out}
+
+
+@api_router.post("/admin/sku-weights")
+async def sku_weight_upsert(body: SkuWeightUpsert, user: dict = Depends(require_roles(["admin"]))):
+    """Save a shipping weight + box for a SKU into the sku_dimensions override.
+    Takes effect on the next order — the bot reads this layer first."""
+    sku = (body.sku or "").strip()
+    if not sku:
+        raise HTTPException(status_code=400, detail="SKU is required")
+    if not body.weight_kg or body.weight_kg <= 0:
+        raise HTTPException(status_code=400, detail="A positive weight (kg) is required")
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "sku": sku,
+        "weight_kg": round(float(body.weight_kg), 3),
+        "length_cm": int(body.length_cm or 30),
+        "width_cm": int(body.width_cm or 25),
+        "height_cm": int(body.height_cm or 20),
+        "note": (body.note or None),
+        "updated_at": now,
+        "updated_by": user.get("id"),
+        "updated_by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip() or user.get("email"),
+    }
+    await db.sku_dimensions.update_one(
+        {"sku": {"$regex": f"^{re.escape(sku)}$", "$options": "i"}},
+        {"$set": doc, "$setOnInsert": {"created_at": now}}, upsert=True)
+    # clear the live gap flag now that it's resolved
+    await db.sku_weight_gaps.delete_many({"sku": {"$regex": f"^{re.escape(sku)}$", "$options": "i"}})
+    return {"success": True, "sku": sku, "saved": doc}
+
+
 @api_router.get("/amazon/processed-orders")
 async def get_processed_amazon_orders(
     skip: int = 0,
