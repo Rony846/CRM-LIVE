@@ -114,6 +114,9 @@ EMAIL_AGENT_AUTO_SEND=true`}</pre>
           </Card>
         )}
 
+        {/* Try Pratibha — dry run with no mailbox */}
+        <TryPratibha headers={headers} />
+
         {/* tabs */}
         <div className="flex gap-2">
           {[['needs_review', 'Needs review'], ['replied', 'Replied'], ['observed', 'Observed'], ['all', 'All']].map(([k, l]) => (
@@ -163,6 +166,56 @@ EMAIL_AGENT_AUTO_SEND=true`}</pre>
 
       <ReviewDialog email={active} headers={headers} onClose={() => setActive(null)} onDone={refresh} />
     </DashboardLayout>
+  );
+}
+
+function TryPratibha({ headers }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState('Hi Pratibha, please reply to this customer.\n\n----- Original -----\nFrom: ramesh@gmail.com\nI bought a MuscleGrid 5kVA stabilizer last month. It keeps making a humming noise — is this normal or should I worry?');
+  const [busy, setBusy] = useState(false);
+  const [reply, setReply] = useState(null);
+
+  const run = async () => {
+    setBusy(true); setReply(null);
+    try {
+      const r = await axios.post(`${API}/admin/email-agent/test`, { subject: 'Test', body: text }, { headers });
+      setReply(r.data);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Test failed');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center justify-between">
+          <span className="flex items-center gap-2"><Cpu className="h-4 w-4 text-primary" /> Try Pratibha (dry run — nothing is sent)</span>
+          <Button variant="ghost" size="sm" onClick={() => setOpen((v) => !v)}>{open ? 'Hide' : 'Open'}</Button>
+        </CardTitle>
+      </CardHeader>
+      {open && (
+        <CardContent className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            Paste a sample email (as if a teammate forwarded it to Pratibha) and see the reply she’d draft.
+            Works with no mailbox — runs the local model only.
+          </p>
+          <textarea value={text} onChange={(e) => setText(e.target.value)} rows={5}
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
+          <Button onClick={run} disabled={busy || !text.trim()}>
+            {busy ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Bot className="h-4 w-4 mr-1" />}
+            Draft a reply
+          </Button>
+          {reply && (
+            <div className="rounded-md border border-border bg-muted/30 p-3 text-sm whitespace-pre-line">
+              <div className="text-[11px] text-muted-foreground mb-1">
+                tag: {reply.category} · {reply.model_ok ? 'model ok' : 'model offline'}
+              </div>
+              {reply.reply || '(no reply — model offline; check Ollama)'}
+            </div>
+          )}
+        </CardContent>
+      )}
+    </Card>
   );
 }
 

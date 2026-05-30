@@ -66737,9 +66737,15 @@ class EmailAgentTest(BaseModel):
 
 @api_router.post("/admin/email-agent/test")
 async def email_agent_test(body: EmailAgentTest, user: dict = Depends(require_roles(["admin"]))):
-    """Run the local-LLM brain on pasted text — lets you try it with no mailbox."""
-    brain = await email_agent.classify(body.sender or "test@example.com", body.subject or "", body.body or "")
-    return {"success": True, "result": brain}
+    """Dry-run Pratibha on pasted text — drafts the reply she would send, with NO
+    mailbox and NO email actually going out. Lets you test/tune before going live."""
+    ans = await email_agent.answer(body.sender or "customer@example.com",
+                                   body.subject or "", body.body or "")
+    return {
+        "success": True,
+        "category": email_agent.quick_category(body.subject or "", body.body or ""),
+        "reply": ans["reply"], "model_ok": ans["model_ok"],
+    }
 
 
 class EmailAgentSend(BaseModel):
