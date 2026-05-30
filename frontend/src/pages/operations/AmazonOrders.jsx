@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
@@ -87,7 +88,9 @@ const INDIAN_STATES = [
 ];
 
 export default function AmazonOrders() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
+  const navigate = useNavigate();
+  const [skuGaps, setSkuGaps] = useState(0); // SKUs missing a shipping weight (admin)
   const [loading, setLoading] = useState(false);
   const [fetchingOrders, setFetchingOrders] = useState(false);
   const [firms, setFirms] = useState([]);
@@ -162,6 +165,15 @@ export default function AmazonOrders() {
   useEffect(() => {
     fetchFirms();
   }, []);
+
+  // Count of SKUs missing a shipping weight (these orders get held by the bot).
+  useEffect(() => {
+    if (user?.role !== 'admin') return;
+    axios.get(`${API}/admin/sku-weights/gaps`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => setSkuGaps(r.data?.unresolved || 0))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, user]);
 
   useEffect(() => {
     if (selectedFirm) {
@@ -804,6 +816,16 @@ export default function AmazonOrders() {
           <div className="shrink-0">
             <h1 className="text-2xl font-bold text-white">Amazon Orders</h1>
             <p className="text-slate-400">Sync and process orders from Amazon Seller Central</p>
+            {user?.role === 'admin' && skuGaps > 0 && (
+              <button
+                onClick={() => navigate('/admin/sku-weights')}
+                title="These SKUs have no shipping weight, so the bot holds their orders. Click to fill them."
+                className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-1 text-xs font-medium text-amber-300 hover:bg-amber-500/20 transition"
+              >
+                <AlertTriangle className="h-3.5 w-3.5" />
+                {skuGaps} SKU{skuGaps === 1 ? '' : 's'} need a weight — orders held
+              </button>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-3 lg:justify-end">
             <Select value={selectedFirm} onValueChange={setSelectedFirm}>

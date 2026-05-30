@@ -145,6 +145,7 @@ const adminNavGroups = [
     icon: Factory,
     items: [
       { label: 'Amazon Orders', icon: ShoppingBag, path: '/operations/amazon-orders' },
+      { label: 'SKU Weights', icon: Scale, path: '/admin/sku-weights' },
       { label: 'File Repository', icon: FolderOpen, path: '/admin/file-repository' },
       { label: 'Courier Shipping', icon: Truck, path: '/operations/courier-shipping' },
       { label: 'Courier Tracking', icon: MapPin, path: '/operations/courier-tracking' },
