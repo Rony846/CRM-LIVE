@@ -2689,22 +2689,57 @@ class AmazonBrowserAgent:
             await self._notify_status(f"📍 Location: {order.city}, {order.state} - {order.pincode}")
             await self._notify_status(f"💰 Amount: ₹{order.total_amount}")
             
-            # Step 2: Calculate weight + dimensions from SKU database
+            # Step 2: Calculate weight + dimensions from SKU database.
+            # (A) SUM across all line items — the old code overwrote total_weight
+            #     each iteration, so multi-item orders shipped at only the last
+            #     line's weight and mis-routed.
+            # (B) Never ship on a GUESSED weight. If any line item's weight isn't
+            #     on file, skip the order and flag the SKU rather than defaulting
+            #     to 2kg (which mis-routes B2B/B2C and mis-charges freight).
             await self.ai_processor.think("Looking up product weight from SKU database...")
-            total_weight = 2.0  # Default weight
+            total_weight = 0.0
             sku_dims = None
+            missing_weight_skus = []
             for item in order.items:
-                dims = await self.lookup_sku_dimensions(item.get('sku', ''))
+                qty = item.get('quantity', 1) or 1
+                sku = (item.get('sku') or '').strip()
+                dims = await self.lookup_sku_dimensions(sku)
                 if dims:
-                    sku_dims = dims  # remember for passing into the Bigship payload
-                    total_weight = dims.weight_kg * item.get('quantity', 1)
+                    sku_dims = sku_dims or dims  # first resolved dims drive the box size
+                    total_weight += dims.weight_kg * qty
                     await self.ai_processor.think(
-                        f"📦 Found SKU {item.get('sku')}: {dims.weight_kg}kg, "
-                        f"{dims.length_cm}x{dims.width_cm}x{dims.height_cm} cm"
+                        f"📦 {sku} ×{qty}: {dims.weight_kg}kg ea "
+                        f"({dims.length_cm}x{dims.width_cm}x{dims.height_cm} cm)"
                     )
-                    await self._notify_status(f"📦 SKU {item.get('sku')}: {dims.weight_kg}kg")
+                    await self._notify_status(f"📦 {sku} ×{qty}: {dims.weight_kg}kg ea")
                 else:
-                    await self.ai_processor.think(f"⚠️ SKU {item.get('sku')} not in database. Using default weight: 2kg")
+                    missing_weight_skus.append(sku or "(no SKU)")
+                    await self.ai_processor.think(f"⚠️ No shipping weight on file for SKU '{sku}'.")
+
+            if missing_weight_skus:
+                skus = ", ".join(dict.fromkeys(missing_weight_skus))
+                msg = (f"Missing shipping weight for SKU(s): {skus}. Skipped to avoid "
+                       f"shipping on a guessed weight — add the weight in master_skus / "
+                       f"sku_dimensions, then re-run this order.")
+                await self.ai_processor.think(f"🛑 {msg}")
+                await self._notify_status(f"🛑 {order_id}: {msg}")
+                # Record the gap so ops gets a clean, deduped to-fix list.
+                try:
+                    now_iso = datetime.now(timezone.utc).isoformat()
+                    for s in dict.fromkeys(missing_weight_skus):
+                        await self.db.sku_weight_gaps.update_one(
+                            {"sku": s},
+                            {"$setOnInsert": {"sku": s, "first_seen": now_iso},
+                             "$set": {"last_seen": now_iso, "last_order_id": order_id,
+                                      "firm_id": self.firm_id}},
+                            upsert=True,
+                        )
+                except Exception as _e:
+                    logger.warning(f"sku_weight_gaps log failed: {_e}")
+                return ProcessingResult(
+                    order_id=order_id, success=False, error=msg,
+                    thinking_log=self.ai_processor.get_thinking_log(),
+                )
 
             total_weight = max(0.5, total_weight)
 
