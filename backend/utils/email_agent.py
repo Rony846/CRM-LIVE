@@ -60,6 +60,13 @@ def cfg() -> dict:
         # When triggered: True = reply-all to the thread automatically; False = park
         # the answer in the queue for a human to send.
         "auto_send": (os.environ.get("EMAIL_AGENT_AUTO_SEND", "true").lower() == "true"),
+        # CRM actions: off by default. When on, Pratibha can do Tier-1 writes herself
+        # and emails the founder for approval on Tier-2/3 (critical) ones.
+        "allow_actions": (os.environ.get("EMAIL_AGENT_ALLOW_ACTIONS", "false").lower() == "true"),
+        "founder_email": os.environ.get("EMAIL_AGENT_FOUNDER_EMAIL", "founder@musclegrid.in").strip().lower(),
+        "approvers": [w.strip().lower() for w in os.environ.get(
+            "EMAIL_AGENT_APPROVERS",
+            os.environ.get("EMAIL_AGENT_FOUNDER_EMAIL", "founder@musclegrid.in")).split(",") if w.strip()],
         "ollama_url": os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/"),
         "model": os.environ.get("OLLAMA_MODEL", "qwen2.5:3b"),
     }
@@ -311,6 +318,60 @@ async def extract_lookup(subject: str, body: str) -> dict:
         name = None
     fields = p.get("fields") if isinstance(p.get("fields"), list) else []
     return {"is_lookup": bool(p.get("is_lookup")) and bool(name), "name": name, "fields": fields}
+
+
+_ACTION_PROMPT = """A MuscleGrid staff member emailed the assistant asking it to DO something in the \
+CRM. Pick the SINGLE best action and extract parameters. Respond with ONLY compact JSON:
+{{"action":"create_lead|create_ticket|add_note|update_ticket|edit_customer|financial|other",
+"params":{{"name":"","phone":"","email":"","details":"","ticket_number":"","status":"","assignee":""}}}}
+- create_lead: add a new sales lead.
+- create_ticket: open a support/complaint ticket for a customer.
+- add_note: add a note/comment about a customer.
+- update_ticket: change a ticket's status/assignee, or close/escalate it.
+- edit_customer: change a customer's saved details.
+- financial: ANYTHING about money, refunds, payments, invoices, pricing changes, shipping/dispatch, or deleting records.
+- other: just a question, a customer reply, or unclear.
+Only fill params you can find in the email; leave the rest as "".
+
+SUBJECT: {subject}
+MESSAGE:
+{body}"""
+
+_ACTIONS = {"create_lead", "create_ticket", "add_note", "update_ticket", "edit_customer", "financial", "other"}
+
+
+async def extract_action(subject: str, body: str) -> dict:
+    """Ask the local model which CRM action a triggered email is requesting.
+    Returns {action, params}; action validated against the known set."""
+    c = cfg()
+    prompt = _ACTION_PROMPT.format(subject=subject or "", body=(body or "")[:3000])
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            r = await client.post(f"{c['ollama_url']}/api/generate", json={
+                "model": c["model"], "prompt": prompt, "stream": False,
+                "options": {"temperature": 0.1, "num_predict": 160}, "keep_alive": "60s"})
+        r.raise_for_status()
+        p = _safe_json(r.json().get("response", ""))
+    except Exception as e:
+        logger.error(f"extract_action failed: {e}")
+        return {"action": "other", "params": {}}
+    action = (p.get("action") or "other").strip().lower()
+    if action not in _ACTIONS:
+        action = "other"
+    params = p.get("params") if isinstance(p.get("params"), dict) else {}
+    return {"action": action, "params": params}
+
+
+def parse_decision(body: str) -> str:
+    """Read an approval reply: 'yes' | 'no' | 'unclear'."""
+    t = (body or "").strip().lower()
+    # look only at the first ~200 chars (the reply, above the quoted thread)
+    head = t[:200]
+    if re.search(r"\b(yes|approved?|go ahead|proceed|do it|ok(ay)?|confirmed?|sure)\b", head):
+        return "yes"
+    if re.search(r"\b(no|don'?t|do not|reject|decline|stop|cancel|hold)\b", head):
+        return "no"
+    return "unclear"
 
 
 # ---- IMAP read (blocking; run via asyncio.to_thread) ----------------------

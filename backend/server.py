@@ -59915,6 +59915,207 @@ def _format_lookup_reply(name: str, results: list) -> str:
     return "\n".join(lines)
 
 
+# ---- Pratibha CRM actions: tiers, executors, founder-approval loop ----------
+PRATIBHA_TIER1 = {"create_lead", "create_ticket", "add_note"}   # she does these herself
+PRATIBHA_TIER2 = {"update_ticket", "edit_customer"}             # founder approves, then she does it
+PRATIBHA_TIER3 = {"financial"}                                  # founder approves, then a HUMAN does it
+
+
+def _pratibha_tier(action: str) -> int:
+    if action in PRATIBHA_TIER1: return 1
+    if action in PRATIBHA_TIER2: return 2
+    if action in PRATIBHA_TIER3: return 3
+    return 0
+
+
+def _norm_phone(p):
+    d = re.sub(r"\D", "", p or "")
+    return d[-10:] if len(d) >= 10 else None
+
+
+def _pratibha_action_summary(action: str, params: dict) -> str:
+    p = params or {}
+    who = p.get("name") or p.get("phone") or p.get("ticket_number") or ""
+    base = {"create_lead": "create a lead for", "create_ticket": "open a ticket for",
+            "add_note": "add a note about", "update_ticket": "update ticket",
+            "edit_customer": "edit customer", "financial": "a financial/shipping action for"}.get(action, action)
+    det = p.get("details") or p.get("status") or ""
+    return f"{base} {who}{(' — ' + det) if det else ''}".strip()
+
+
+async def _pratibha_audit(action, params, result, by, ok):
+    await db.pratibha_actions.insert_one({
+        "id": str(uuid.uuid4()), "action": action, "params": params, "result": result,
+        "ok": ok, "by": by, "at": datetime.now(timezone.utc).isoformat()})
+
+
+async def _exec_create_lead(params, ctx):
+    name = (params.get("name") or ctx.get("from_name") or "Email lead")[:120]
+    phone = _norm_phone(params.get("phone"))
+    now = datetime.now(timezone.utc).isoformat()
+    await db.leads.insert_one({
+        "id": str(uuid.uuid4()), "phone": phone or "", "name": name,
+        "email": params.get("email") or None, "product_interest": params.get("details"),
+        "source": "pratibha_email", "status": "new", "notes": params.get("details"),
+        "created_by": "pratibha", "created_at": now, "updated_at": now})
+    return True, f"Created lead '{name}'" + (f" ({phone})" if phone else "") + "."
+
+
+async def _exec_add_note(params, ctx):
+    note = (params.get("details") or "").strip()
+    if not note:
+        return False, "No note text found in the request."
+    phone = _norm_phone(params.get("phone"))
+    name = params.get("name")
+    now = datetime.now(timezone.utc).isoformat()
+    entry = {"text": note[:2000], "by": "Pratibha (email)", "at": now}
+    for coll in ("parties", "leads"):
+        q = ({"phone": {"$regex": phone}} if phone
+             else ({"name": {"$regex": r"\b" + re.escape(name), "$options": "i"}} if name else None))
+        if not q:
+            break
+        doc = await db[coll].find_one(q, {"_id": 0, "id": 1, "name": 1})
+        if doc:
+            await db[coll].update_one({"id": doc["id"]},
+                                      {"$push": {"notes_log": entry}, "$set": {"updated_at": now}})
+            return True, f"Added a note to {doc.get('name')} ({coll[:-1]})."
+    return False, f"Couldn't find a customer matching '{name or phone}' to note."
+
+
+async def _exec_create_ticket(params, ctx):
+    tn = await generate_ticket_number()
+    now = datetime.now(timezone.utc).isoformat()
+    issue = (params.get("details") or ctx.get("subject") or "Reported via email").strip()[:2000]
+    cust = params.get("name") or ctx.get("from_name")
+    await db.tickets.insert_one({
+        "id": str(uuid.uuid4()), "ticket_number": tn,
+        "device_type": (params.get("device_type") or "inverter"), "issue_description": issue,
+        "customer_name": cust, "customer_phone": _norm_phone(params.get("phone")), "customer_id": None,
+        "status": "new_request", "priority": "medium", "source": "pratibha_email",
+        "created_by": "pratibha", "created_at": now, "updated_at": now,
+        "status_history": [{"status": "new_request", "at": now, "by": "Pratibha"}]})
+    return True, f"Opened ticket {tn} for {cust or 'the customer'}."
+
+
+async def _exec_update_ticket(params, ctx):
+    tnum = (params.get("ticket_number") or "").strip()
+    if not tnum:
+        return False, "No ticket number given."
+    t = await db.tickets.find_one(
+        {"ticket_number": {"$regex": f"^{re.escape(tnum)}$", "$options": "i"}}, {"_id": 0, "id": 1})
+    if not t:
+        return False, f"Ticket {tnum} not found."
+    upd, msg = {"updated_at": datetime.now(timezone.utc).isoformat()}, []
+    if params.get("status"):
+        upd["status"] = params["status"]; msg.append(f"status→{params['status']}")
+    if params.get("assignee"):
+        upd["assigned_to_name"] = params["assignee"]; msg.append(f"assigned→{params['assignee']}")
+    if not msg:
+        return False, "Nothing to change (no status/assignee)."
+    await db.tickets.update_one({"id": t["id"]}, {"$set": upd})
+    return True, f"Updated {tnum}: {', '.join(msg)}."
+
+
+async def _exec_edit_customer(params, ctx):
+    name, phone = params.get("name"), _norm_phone(params.get("phone"))
+    q = ({"phone": {"$regex": phone}} if phone
+         else ({"name": {"$regex": r"\b" + re.escape(name), "$options": "i"}} if name else None))
+    if not q:
+        return False, "No customer identified to edit."
+    doc = await db.parties.find_one(q, {"_id": 0, "id": 1, "name": 1})
+    if not doc:
+        return False, f"Customer '{name or phone}' not found."
+    upd = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    if params.get("email"):
+        upd["email"] = params["email"]
+    if params.get("new_phone"):
+        upd["phone"] = _norm_phone(params["new_phone"])
+    if len(upd) == 1:
+        return False, "No new details to set."
+    await db.parties.update_one({"id": doc["id"]}, {"$set": upd})
+    return True, f"Updated {doc.get('name')}."
+
+
+PRATIBHA_EXECUTORS = {
+    "create_lead": _exec_create_lead, "add_note": _exec_add_note, "create_ticket": _exec_create_ticket,
+    "update_ticket": _exec_update_ticket, "edit_customer": _exec_edit_customer,
+}
+
+
+async def _pratibha_request_approval(action, params, ctx, tier):
+    """Email the founder for approval of a critical (Tier 2/3) action."""
+    c = email_agent.cfg()
+    ref = uuid.uuid4().hex[:8].upper()
+    summary = _pratibha_action_summary(action, params)
+    subj = f"[Pratibha approval {ref}] {summary[:80]}"
+    body = (f"Sir,\n\nA request came in and I'd like your approval before acting:\n\n"
+            f"  Request : {summary}\n"
+            f"  From    : {ctx.get('from_addr')}\n"
+            + ("  NOTE: this is a financial/shipping action — if you approve, the team will action it "
+               "manually (I won't execute it myself).\n" if tier == 3 else "")
+            + "\nReply YES to approve or NO to decline.\n\nPratibha, MuscleGrid")
+    appr = {"id": str(uuid.uuid4()), "ref": ref, "action": action, "params": params,
+            "tier": tier, "ctx": ctx, "summary": summary, "status": "pending",
+            "requested_at": datetime.now(timezone.utc).isoformat()}
+    try:
+        await email_agent.send_reply_all([c["founder_email"]], [], subj, body)
+    except Exception as e:
+        appr["send_error"] = str(e)
+        logger.error(f"Pratibha approval email failed: {e}")
+    await db.pratibha_approvals.insert_one(appr)
+    return appr
+
+
+async def _pratibha_handle_approval_reply(m) -> bool:
+    """If this email is the founder answering a pending approval, resolve it."""
+    c = email_agent.cfg()
+    if m.get("from_addr", "") not in c["approvers"]:
+        return False
+    mref = re.search(r"\[Pratibha approval ([A-Z0-9]{6,10})\]", m.get("subject", "") or "")
+    if not mref:
+        return False
+    appr = await db.pratibha_approvals.find_one({"ref": mref.group(1), "status": "pending"}, {"_id": 0})
+    if not appr:
+        return False
+    decision = email_agent.parse_decision(m.get("body", ""))
+    now = datetime.now(timezone.utc).isoformat()
+    if decision == "unclear":
+        return False  # leave pending; founder can reply more clearly
+    if decision == "no":
+        await db.pratibha_approvals.update_one({"id": appr["id"]}, {"$set": {"status": "declined", "resolved_at": now}})
+        try:
+            await email_agent.send_reply_all([m["from_addr"]], [], f"Re: {m.get('subject')}",
+                                             "Understood, sir — I won't proceed.\n\nPratibha", m.get("message_id") or "")
+        except Exception:
+            pass
+        return True
+    # decision == yes
+    if appr["tier"] == 3:
+        await create_notification(
+            title="✅ Founder approved a critical action",
+            message=f"{appr.get('summary')} — please action manually.",
+            notification_type="warning", link="/admin/email-agent", priority="high",
+            target_roles=["admin", "dispatcher", "accountant"], created_by_name="Pratibha", data={})
+        ok, result = True, "Approved — routed to the team to action manually (financial/shipping/critical)."
+    else:
+        ex = PRATIBHA_EXECUTORS.get(appr["action"])
+        ok, result = (await ex(appr["params"], appr.get("ctx") or {})) if ex else (False, "No executor for this action.")
+    await db.pratibha_approvals.update_one({"id": appr["id"]},
+                                           {"$set": {"status": "approved", "ok": ok, "result": result, "resolved_at": now}})
+    await _pratibha_audit(appr["action"], appr["params"], result, "founder-approved", ok)
+    try:
+        await email_agent.send_reply_all([m["from_addr"]], [], f"Re: {m.get('subject')}",
+                                         f"Done, sir. {result}\n\nPratibha", m.get("message_id") or "")
+        ctx = appr.get("ctx") or {}
+        if ctx.get("reply_to"):
+            await email_agent.send_reply_all(ctx["reply_to"], ctx.get("reply_cc") or [],
+                                             ctx.get("reply_subject") or "Update",
+                                             f"Update: {result}\n\nPratibha, MuscleGrid", ctx.get("message_id") or "")
+    except Exception as e:
+        logger.error(f"Pratibha approval result send failed: {e}")
+    return True
+
+
 async def process_email_agent_inbox() -> dict:
     """Observe every inbound email at the shared mailbox; ACT only when an
     authorised internal sender addresses the agent by name ("Pratibha").
@@ -59940,6 +60141,10 @@ async def process_email_agent_inbox() -> dict:
             continue  # ignore our own outgoing
         if m.get("message_id") and await db.email_agent_inbox.find_one(
                 {"message_id": m["message_id"]}, {"_id": 1}):
+            continue
+
+        # Is this the founder answering a pending approval? Resolve and move on.
+        if c["allow_actions"] and await _pratibha_handle_approval_reply(m):
             continue
 
         is_trigger = (email_agent.has_trigger(m.get("subject", ""), m.get("body", ""), c["trigger_word"])
@@ -60001,6 +60206,42 @@ async def process_email_agent_inbox() -> dict:
                 target_roles=["admin", "call_support"], created_by_name="Email Agent",
                 data={"email_id": doc["id"]}))
             continue
+
+        # --- CRM action request? (only when actions are enabled) ---
+        if c["allow_actions"]:
+            act = await email_agent.extract_action(m.get("subject", ""), m.get("body", ""))
+            tier = _pratibha_tier(act["action"])
+            if tier in (1, 2, 3):
+                actx = {"from_name": m.get("from_name"), "from_addr": sender, "subject": subj,
+                        "message_id": m.get("message_id"), "references": m.get("references", ""),
+                        "reply_to": to_list, "reply_cc": cc_list, "reply_subject": subj}
+                if tier == 1:
+                    ex = PRATIBHA_EXECUTORS.get(act["action"])
+                    ok, result = (await ex(act["params"], actx)) if ex else (False, "No executor.")
+                    await _pratibha_audit(act["action"], act["params"], result, sender, ok)
+                    doc.update({"category": "action", "action": act["action"], "action_result": result,
+                                "draft_reply": result, "model_ok": True,
+                                "reply_to": [sender], "reply_cc": [], "internal_only": True})
+                    if c["auto_send"]:
+                        try:
+                            await email_agent.send_reply_all([sender], [], subj, f"{result}\n\nPratibha",
+                                                             m.get("message_id") or "", m.get("references", ""))
+                            doc.update({"status": "replied", "sent_reply": result,
+                                        "replied_by_name": "Pratibha (auto · action)", "replied_at": now.isoformat()})
+                            auto_sent += 1
+                        except Exception as e:
+                            doc.update({"status": "needs_review", "send_error": str(e)})
+                    else:
+                        doc.update({"status": "needs_review"})
+                else:  # tier 2 or 3 — ask the founder first
+                    appr = await _pratibha_request_approval(act["action"], act["params"], actx, tier)
+                    doc.update({"category": "action", "action": act["action"], "status": "awaiting_approval",
+                                "approval_ref": appr["ref"], "model_ok": True,
+                                "draft_reply": f"Asked the founder for approval (ref {appr['ref']}): "
+                                               f"{_pratibha_action_summary(act['action'], act['params'])}"})
+                await db.email_agent_inbox.insert_one(doc)
+                continue
+            # action == 'other' -> fall through to the customer-reply flow
 
         # --- Customer reply: draft, and AUTO-SEND ONLY a simple acknowledgement;
         #     anything substantive (specifics, promises) is held for a human. ---
@@ -66790,6 +67031,8 @@ async def email_agent_status(user: dict = Depends(require_roles(["admin"]))):
         "trigger_word": c["trigger_word"],
         "trigger_senders": c["trigger_senders"], "trigger_senders_count": len(c["trigger_senders"]),
         "auto_send": c["auto_send"],
+        "allow_actions": c["allow_actions"], "founder_email": c["founder_email"],
+        "pending_approvals": await db.pratibha_approvals.count_documents({"status": "pending"}),
         "model": c["model"], "model_ok": model_ok,
         "observed": await db.email_agent_inbox.count_documents({"status": "observed"}),
         "needs_review": await db.email_agent_inbox.count_documents({"status": "needs_review"}),
@@ -66809,6 +67052,25 @@ class EmailAgentTest(BaseModel):
     sender: Optional[str] = "test@example.com"
     subject: Optional[str] = ""
     body: str
+
+
+@api_router.post("/admin/email-agent/test-action")
+async def email_agent_test_action(body: EmailAgentTest, execute: bool = False,
+                                  user: dict = Depends(require_roles(["admin"]))):
+    """Dry-run Pratibha's action routing on pasted text: what would she do, and
+    which tier? With execute=true, a Tier-1 action is actually performed (admin)."""
+    act = await email_agent.extract_action(body.subject or "", body.body or "")
+    tier = _pratibha_tier(act["action"])
+    labels = {0: "other → customer-reply flow", 1: "Tier 1 — Pratibha does it herself",
+              2: "Tier 2 — founder approval, then she does it",
+              3: "Tier 3 — founder approval, then a human does it"}
+    out = {"action": act["action"], "params": act["params"], "tier": tier,
+           "tier_label": labels[tier], "summary": _pratibha_action_summary(act["action"], act["params"])}
+    if execute and tier == 1:
+        ex = PRATIBHA_EXECUTORS.get(act["action"])
+        ok, result = (await ex(act["params"], {"from_name": "Test", "subject": body.subject})) if ex else (False, "no executor")
+        out.update({"executed": True, "ok": ok, "result": result})
+    return {"success": True, "result": out}
 
 
 @api_router.post("/admin/email-agent/test")

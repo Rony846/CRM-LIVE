@@ -19,6 +19,7 @@ const CAT_BADGE = {
   order_query: 'bg-blue-100 text-blue-800',
   dealer: 'bg-violet-100 text-violet-800',
   data_lookup: 'bg-cyan-100 text-cyan-800',
+  action: 'bg-indigo-100 text-indigo-800',
   spam: 'bg-gray-200 text-gray-600',
   other: 'bg-amber-100 text-amber-800',
 };
@@ -97,6 +98,11 @@ export default function EmailAgent() {
             <Badge className={status.auto_send ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}>
               {status.auto_send ? 'auto-sends simple acknowledgements only' : 'all drafts wait for approval'}
             </Badge>
+            {status.allow_actions
+              ? <Badge className="bg-indigo-100 text-indigo-800">
+                  CRM actions ON · founder {status.founder_email}{status.pending_approvals ? ` · ${status.pending_approvals} awaiting` : ''}
+                </Badge>
+              : <Badge variant="outline" className="text-[11px]">CRM actions off</Badge>}
           </div>
         )}
 
@@ -120,7 +126,7 @@ EMAIL_AGENT_AUTO_SEND=true`}</pre>
 
         {/* tabs */}
         <div className="flex gap-2">
-          {[['needs_review', 'Needs review'], ['replied', 'Replied'], ['observed', 'Observed'], ['all', 'All']].map(([k, l]) => (
+          {[['needs_review', 'Needs review'], ['awaiting_approval', 'Awaiting approval'], ['replied', 'Replied'], ['observed', 'Observed'], ['all', 'All']].map(([k, l]) => (
             <button key={k} onClick={() => setTab(k)}
               className={`px-3 py-1.5 rounded-full text-sm border transition ${
                 tab === k ? 'bg-primary text-primary-foreground border-primary'
