@@ -59879,9 +59879,13 @@ async def _email_agent_make_lead(msg: dict, brain: dict) -> Optional[str]:
 
 
 async def process_email_agent_inbox() -> dict:
-    """Fetch unseen mail at the agent mailbox, run each whitelisted message through
-    the local-LLM brain, auto-create a lead for sales enquiries, and park the email
-    + a DRAFT reply in email_agent_inbox for human approval. Never sends anything."""
+    """Observe every inbound email at the shared mailbox; ACT only when an
+    authorised internal sender addresses the agent by name ("Pratibha").
+
+    - Not triggered  -> log it as 'observed' (light rule-based tag, no LLM, no reply).
+    - Triggered      -> the local LLM composes a customer-facing reply; then either
+                         reply-all to the whole thread (auto_send) or park it as a
+                         draft for a human to send."""
     if not email_agent.is_configured():
         return {"skipped": "not configured"}
     c = email_agent.cfg()
@@ -59891,53 +59895,67 @@ async def process_email_agent_inbox() -> dict:
         logger.error(f"Email agent IMAP fetch failed: {e}")
         return {"error": str(e)}
 
-    processed, skipped, leads = 0, 0, 0
+    observed, triggered, auto_sent = 0, 0, 0
     now = datetime.now(timezone.utc)
     for m in msgs:
         sender = m.get("from_addr", "")
-        if not email_agent.is_whitelisted(sender, c["whitelist"]):
-            skipped += 1
-            continue
-        # idempotent on Message-ID
+        if not sender or sender == c["email"]:
+            continue  # ignore our own outgoing
         if m.get("message_id") and await db.email_agent_inbox.find_one(
                 {"message_id": m["message_id"]}, {"_id": 1}):
             continue
-        brain = await email_agent.classify(sender, m.get("subject", ""), m.get("body", ""))
-        lead_id = None
-        if brain["category"] == "sales_lead":
-            try:
-                lead_id = await _email_agent_make_lead(m, brain)
-                if lead_id:
-                    leads += 1
-            except Exception as e:
-                logger.error(f"Email agent lead create failed: {e}")
+
+        is_trigger = (email_agent.has_trigger(m.get("subject", ""), m.get("body", ""), c["trigger_word"])
+                      and email_agent.is_trigger_sender(sender, c["trigger_senders"]))
+
         doc = {
-            "id": str(uuid.uuid4()),
-            "message_id": m.get("message_id"), "from_name": m.get("from_name"),
-            "from_addr": sender, "subject": m.get("subject"), "received_date": m.get("date"),
-            "body": m.get("body"),
-            "category": brain["category"], "urgency": brain["urgency"],
-            "order_number": brain.get("order_number"), "phone": brain.get("phone"),
-            "summary": brain.get("summary"), "draft_reply": brain.get("suggested_reply"),
-            "model_ok": brain.get("model_ok", False),
-            "lead_id": lead_id, "status": "needs_review",
+            "id": str(uuid.uuid4()), "message_id": m.get("message_id"),
+            "from_name": m.get("from_name"), "from_addr": sender,
+            "to": m.get("to", []), "cc": m.get("cc", []), "references": m.get("references", ""),
+            "subject": m.get("subject"), "received_date": m.get("date"), "body": m.get("body"),
+            "category": email_agent.quick_category(m.get("subject", ""), m.get("body", "")),
             "created_at": now.isoformat(), "updated_at": now.isoformat(),
         }
+
+        if not is_trigger:
+            doc.update({"triggered": False, "status": "observed", "draft_reply": "", "model_ok": None})
+            await db.email_agent_inbox.insert_one(doc)
+            observed += 1
+            continue
+
+        # Triggered — compose the reply and figure out reply-all recipients.
+        triggered += 1
+        ans = await email_agent.answer(sender, m.get("subject", ""), m.get("body", ""))
+        to_list, cc_list = email_agent.reply_all_recipients(
+            sender, m.get("to", []), m.get("cc", []), c["email"])
+        subj = m.get("subject") or ""
+        if not subj.lower().startswith("re:"):
+            subj = f"Re: {subj}"
+        doc.update({"triggered": True, "trigger_by": sender,
+                    "draft_reply": ans["reply"], "model_ok": ans["model_ok"],
+                    "reply_to": to_list, "reply_cc": cc_list, "reply_subject": subj})
+
+        if c["auto_send"] and ans["model_ok"] and (ans["reply"] or "").strip() and to_list:
+            try:
+                await email_agent.send_reply_all(
+                    to_list, cc_list, subj, ans["reply"], m.get("message_id") or "", m.get("references", ""))
+                doc.update({"status": "replied", "sent_reply": ans["reply"],
+                            "replied_by_name": "Pratibha (auto)", "replied_at": now.isoformat()})
+                auto_sent += 1
+            except Exception as e:
+                logger.error(f"Pratibha auto reply-all failed: {e}")
+                doc.update({"status": "needs_review", "send_error": str(e)})
+        else:
+            doc.update({"status": "needs_review"})  # draft mode, or model offline
+
         await db.email_agent_inbox.insert_one(doc)
-        processed += 1
-        # notify the right team
-        roles = {"sales_lead": ["call_support", "admin"],
-                 "support_complaint": ["call_support", "admin"],
-                 "order_query": ["call_support", "admin"],
-                 "dealer": ["admin"]}.get(brain["category"], ["admin"])
-        if brain["category"] != "spam":
-            asyncio.create_task(create_notification(
-                title=f"📧 New email · {brain['category'].replace('_', ' ')}",
-                message=f"{m.get('from_name') or sender}: {brain.get('summary') or m.get('subject')}",
-                notification_type=("warning" if brain["urgency"] == "high" else "info"),
-                link="/admin/email-agent", priority=("high" if brain["urgency"] == "high" else "normal"),
-                target_roles=roles, created_by_name="Email Agent", data={"email_id": doc["id"]}))
-    return {"fetched": len(msgs), "processed": processed, "skipped_not_whitelisted": skipped, "leads_created": leads}
+        asyncio.create_task(create_notification(
+            title=("🤖 Pratibha replied" if doc["status"] == "replied" else "🤖 Pratibha drafted a reply"),
+            message=f"{m.get('subject') or '(no subject)'} → {', '.join(to_list)[:80]}",
+            notification_type="info", link="/admin/email-agent", priority="normal",
+            target_roles=["admin", "call_support"], created_by_name="Email Agent",
+            data={"email_id": doc["id"]}))
+    return {"fetched": len(msgs), "observed": observed, "triggered": triggered, "auto_sent": auto_sent}
 
 
 async def scheduled_email_agent_poll():
@@ -66693,7 +66711,11 @@ async def email_agent_status(user: dict = Depends(require_roles(["admin"]))):
     return {
         "configured": email_agent.is_configured(),
         "enabled": c["enabled"], "mailbox": c["email"] or None,
-        "whitelist_count": len(c["whitelist"]), "model": c["model"], "model_ok": model_ok,
+        "trigger_word": c["trigger_word"],
+        "trigger_senders": c["trigger_senders"], "trigger_senders_count": len(c["trigger_senders"]),
+        "auto_send": c["auto_send"],
+        "model": c["model"], "model_ok": model_ok,
+        "observed": await db.email_agent_inbox.count_documents({"status": "observed"}),
         "needs_review": await db.email_agent_inbox.count_documents({"status": "needs_review"}),
         "replied": await db.email_agent_inbox.count_documents({"status": "replied"}),
     }
@@ -66735,11 +66757,14 @@ async def email_agent_send(msg_id: str, payload: EmailAgentSend,
         raise HTTPException(status_code=400, detail="Mailbox not configured — set EMAIL_AGENT_* in .env")
     if not (payload.body or "").strip():
         raise HTTPException(status_code=400, detail="Reply body is empty")
-    subj = m.get("subject") or ""
+    subj = m.get("reply_subject") or m.get("subject") or ""
     if not subj.lower().startswith("re:"):
         subj = f"Re: {subj}"
+    to_list = m.get("reply_to") or ([m.get("from_addr")] if m.get("from_addr") else [])
+    cc_list = m.get("reply_cc") or []
     try:
-        await email_agent.send_reply(m["from_addr"], subj, payload.body.strip(), m.get("message_id") or "")
+        await email_agent.send_reply_all(to_list, cc_list, subj, payload.body.strip(),
+                                         m.get("message_id") or "", m.get("references", ""))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Send failed: {e}")
     now = datetime.now(timezone.utc).isoformat()

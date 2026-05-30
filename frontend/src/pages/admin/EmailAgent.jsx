@@ -65,11 +65,12 @@ export default function EmailAgent() {
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
             <h1 className="text-2xl font-bold flex items-center gap-2">
-              <Bot className="h-6 w-6 text-primary" /> Email Agent
+              <Bot className="h-6 w-6 text-primary" /> Email Agent · Pratibha
             </h1>
             <p className="text-muted-foreground">
-              Inbound mail read &amp; drafted by a local AI (no external API). Replies wait here
-              for your approval — nothing is sent automatically.
+              Pratibha watches the shared mailbox and stays quiet on customer mail until a teammate
+              writes “{status?.trigger_word || 'Pratibha'}, handle this” on the thread (cc the mailbox) —
+              then she answers the whole thread. Local AI, no external API.
             </p>
           </div>
           <Button variant="outline" onClick={refresh} disabled={loading}>
@@ -88,9 +89,13 @@ export default function EmailAgent() {
             </span>
             <span className="inline-flex items-center gap-1.5">
               {status.configured
-                ? <><CircleCheck className="h-4 w-4 text-emerald-500" /> Mailbox {status.mailbox} · {status.whitelist_count} whitelisted</>
+                ? <><CircleCheck className="h-4 w-4 text-emerald-500" /> {status.mailbox} · {status.trigger_senders_count} can trigger</>
                 : <><CircleAlert className="h-4 w-4 text-amber-500" /> Mailbox not configured</>}
             </span>
+            <Badge variant="outline" className="text-[11px]">wake word: “{status.trigger_word}”</Badge>
+            <Badge className={status.auto_send ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}>
+              {status.auto_send ? 'auto reply-all on trigger' : 'drafts wait for approval'}
+            </Badge>
           </div>
         )}
 
@@ -99,22 +104,25 @@ export default function EmailAgent() {
             <CardContent className="pt-4 text-sm text-muted-foreground space-y-1">
               <p className="font-medium text-foreground">To go live, add these to <code>backend/.env</code> and restart:</p>
               <pre className="text-[11px] bg-muted/40 rounded p-2 overflow-x-auto">{`EMAIL_AGENT_ENABLED=true
-EMAIL_AGENT_EMAIL=ai@musclegrid.in
+EMAIL_AGENT_EMAIL=service@musclegrid.in
 EMAIL_AGENT_PASSWORD=<zoho app password>
-EMAIL_AGENT_WHITELIST=@musclegrid.in,someone@gmail.com`}</pre>
-              <p>The brain already works — open any email below (or it’ll populate once the mailbox is live).</p>
+EMAIL_AGENT_TRIGGER=Pratibha
+EMAIL_AGENT_TRIGGER_SENDERS=@musclegrid.in
+EMAIL_AGENT_AUTO_SEND=true`}</pre>
+              <p>The brain already works — try it on the “Test” below; the queue fills once the mailbox is live.</p>
             </CardContent>
           </Card>
         )}
 
         {/* tabs */}
         <div className="flex gap-2">
-          {[['needs_review', 'Needs review'], ['replied', 'Replied'], ['all', 'All']].map(([k, l]) => (
+          {[['needs_review', 'Needs review'], ['replied', 'Replied'], ['observed', 'Observed'], ['all', 'All']].map(([k, l]) => (
             <button key={k} onClick={() => setTab(k)}
               className={`px-3 py-1.5 rounded-full text-sm border transition ${
                 tab === k ? 'bg-primary text-primary-foreground border-primary'
                           : 'bg-muted/40 text-muted-foreground border-border hover:text-foreground'}`}>
               {l}{k === 'needs_review' && status?.needs_review ? ` (${status.needs_review})` : ''}
+              {k === 'observed' && status?.observed ? ` (${status.observed})` : ''}
             </button>
           ))}
         </div>
@@ -201,8 +209,17 @@ function ReviewDialog({ email, headers, onClose, onDone }) {
             <div className="rounded-md border border-border bg-muted/30 p-3 text-sm max-h-48 overflow-y-auto whitespace-pre-line">
               {email.body || '(empty)'}
             </div>
+            {(email.reply_to?.length > 0) && (
+              <p className="text-xs text-muted-foreground">
+                Reply-all to <span className="text-foreground">{(email.reply_to || []).join(', ')}</span>
+                {email.reply_cc?.length ? <> · cc {email.reply_cc.join(', ')}</> : null}
+              </p>
+            )}
+            {email.status === 'replied' && (
+              <p className="text-xs text-emerald-500">Sent {email.replied_by_name ? `by ${email.replied_by_name}` : ''}.</p>
+            )}
             <div>
-              <label className="text-sm font-medium">Draft reply (edit before sending)</label>
+              <label className="text-sm font-medium">{email.status === 'replied' ? 'Sent reply' : 'Draft reply (edit before sending)'}</label>
               <textarea
                 value={draft} onChange={(e) => setDraft(e.target.value)} rows={6}
                 className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
