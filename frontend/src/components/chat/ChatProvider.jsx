@@ -26,6 +26,59 @@ export function ChatProvider({ children }) {
   const activeRef = useRef(activeId); activeRef.current = activeId;
   const openRef = useRef(open); openRef.current = open;
   const esRef = useRef(null);
+  const channelsRef = useRef(channels); channelsRef.current = channels;
+
+  // ---- new-message sound + desktop notifications --------------------------
+  const [soundEnabled, setSoundEnabled] = useState(() => {
+    try { return localStorage.getItem('mg_chat_sound') !== '0'; } catch { return true; }
+  });
+  const soundRef = useRef(soundEnabled); soundRef.current = soundEnabled;
+  const audioCtxRef = useRef(null);
+
+  const toggleSound = useCallback(() => {
+    setSoundEnabled((v) => {
+      const nv = !v;
+      try { localStorage.setItem('mg_chat_sound', nv ? '1' : '0'); } catch { /* ignore */ }
+      // Turning sound on is a good moment (a user gesture) to ask for desktop
+      // notification permission.
+      if (nv && 'Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission().catch(() => {});
+      }
+      return nv;
+    });
+  }, []);
+
+  // Soft two-tone chime via Web Audio — no asset file, respects autoplay (only
+  // ever fires after the user has interacted with the app).
+  const playChime = useCallback(() => {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      let ctx = audioCtxRef.current;
+      if (!ctx) { ctx = new Ctx(); audioCtxRef.current = ctx; }
+      if (ctx.state === 'suspended') ctx.resume();
+      const t0 = ctx.currentTime;
+      [[880, 0], [1320, 0.11]].forEach(([freq, dt]) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, t0 + dt);
+        gain.gain.exponentialRampToValueAtTime(0.13, t0 + dt + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dt + 0.22);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(t0 + dt); osc.stop(t0 + dt + 0.26);
+      });
+    } catch { /* ignore */ }
+  }, []);
+
+  const notifyDesktop = useCallback((title, bodyText, channelId) => {
+    try {
+      if (!('Notification' in window) || Notification.permission !== 'granted') return;
+      const n = new Notification(title, { body: (bodyText || '').slice(0, 140), tag: channelId, silent: true });
+      n.onclick = () => { try { window.focus(); } catch { /* ignore */ } setOpen(true); setActiveId(channelId); n.close(); };
+    } catch { /* ignore */ }
+  }, []);
 
   // ---- data loaders -------------------------------------------------------
   const refreshChannels = useCallback(async () => {
@@ -265,6 +318,10 @@ export function ChatProvider({ children }) {
   useEffect(() => {
     if (!enabled || !token) return;
     refreshChannels(); refreshDirectory(); fetchSaved();
+    // Ask for desktop-notification permission once the user is in the app.
+    if (soundRef.current && 'Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {});
+    }
     const es = new EventSource(`${API}/chat/stream?token=${encodeURIComponent(token)}`);
     esRef.current = es;
     es.onopen = () => setConnected(true);
@@ -284,11 +341,18 @@ export function ChatProvider({ children }) {
         if (isActiveOpen) {
           markRead(channel_id);
         } else if (message.sender_id !== user.id) {
-          setChannels((cs) => {
-            const found = cs.find((c) => c.id === channel_id);
-            if (!found) { refreshChannels(); return cs; }
-            return cs.map((c) => (c.id === channel_id ? { ...c, unread: (c.unread || 0) + 1 } : c));
-          });
+          const ch = channelsRef.current.find((c) => c.id === channel_id);
+          if (!ch) {
+            refreshChannels();
+          } else {
+            setChannels((cs) => cs.map((c) => (c.id === channel_id ? { ...c, unread: (c.unread || 0) + 1 } : c)));
+            // Ping for unread, group or DM — unless this channel is muted.
+            if (!ch.muted) {
+              if (soundRef.current) playChime();
+              const where = ch.type === 'dm' ? '' : ` · #${ch.slug || ch.name}`;
+              notifyDesktop(`${message.sender_name || 'New message'}${where}`, message.body, channel_id);
+            }
+          }
         }
       } else if (e.type === 'message_update') {
         setMessages((m) => {
@@ -309,7 +373,9 @@ export function ChatProvider({ children }) {
       } else if (e.type === 'read') {
         setReads((rr) => ({ ...rr, [e.channel_id]: { ...(rr[e.channel_id] || {}), [e.user.id]: { name: e.user.name, at: e.at } } }));
       } else if (e.type === 'channel_update') {
-        setChannels((cs) => cs.map((c) => (c.id === e.channel_id ? { ...c, name: e.name, topic: e.topic } : c)));
+        setChannels((cs) => cs.map((c) => (c.id === e.channel_id
+          ? { ...c, name: e.name, topic: e.topic, ...(e.is_private !== undefined ? { is_private: e.is_private } : {}) }
+          : c)));
       } else if (e.type === 'channel_members') {
         // I may have just been added to (or removed from) a private channel —
         // resync the whole list so it appears/disappears for me.
@@ -349,6 +415,7 @@ export function ChatProvider({ children }) {
     totalUnread, refreshChannels, refreshDirectory, openChannel, loadOlder, sendMessage,
     react, editMessage, deleteMessage, createChannel, openDM, uploadFile, sendTyping, markRead, setActiveId, resolveAction,
     savedIds, pinMessage, saveMessage, muteChannel, fetchSaved, fetchPins,
+    soundEnabled, toggleSound,
     reads, fetchReads, editChannel, addMembers, removeMember, createNudge, resolveNudge, messageToTicket, requestAck, acknowledge, scheduleMessage, fetchScheduled, cancelScheduled, createPoll, votePoll, closePoll,
   };
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;

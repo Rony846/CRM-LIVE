@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useChat } from './ChatProvider';
 import { ChatAvatar } from './chatUtils';
-import { Hash, Lock, Plus, Search, BellOff } from 'lucide-react';
+import { Hash, Lock, Plus, Search, BellOff, BellRing } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog';
@@ -58,9 +58,20 @@ export default function ChatChannelList({ onSelect }) {
   return (
     <div className="flex h-full flex-col">
       <div className="border-b border-border p-2">
-        <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find people…" className="h-8 pl-8 text-[13px]" />
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find people…" className="h-8 pl-8 text-[13px]" />
+          </div>
+          <button
+            onClick={chat.toggleSound}
+            title={chat.soundEnabled
+              ? 'New-message sounds on — click to mute pings'
+              : 'New-message sounds off — click to enable pings'}
+            className={`flex-shrink-0 rounded p-1.5 transition hover:text-foreground ${chat.soundEnabled ? 'text-primary' : 'text-muted-foreground'}`}
+          >
+            {chat.soundEnabled ? <BellRing className="h-4 w-4" /> : <BellOff className="h-4 w-4" />}
+          </button>
         </div>
       </div>
       <div className="flex-1 overflow-y-auto p-2 space-y-3">
