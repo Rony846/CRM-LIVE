@@ -2648,12 +2648,38 @@ class AmazonBrowserAgent:
             if order.order_type != "self_ship":
                 await self.ai_processor.think(f"⚠️ Order type is '{order.order_type}', not self-ship. Skipping.")
                 return ProcessingResult(
-                    order_id=order_id, 
-                    success=False, 
+                    order_id=order_id,
+                    success=False,
                     error="Order is not self-ship",
                     thinking_log=self.ai_processor.get_thinking_log()
                 )
-            
+
+            # ── DUPLICATE-SHIPMENT GUARD (Layer 1) ───────────────────────────
+            # Booking a Bigship/Delhivery shipment is NOT naturally idempotent —
+            # calling process_order twice for the same order books it twice. A
+            # repeated "process orders" pass once created 6-7 shipments per order.
+            # Refuse to re-book an order that already has an active (non-cancelled)
+            # shipment; surface the existing AWB instead.
+            existing = await self.db.amazon_order_processing.find_one(
+                {"order_id": order_id, "firm_id": self.firm_id,
+                 "status": {"$ne": "cancelled"}},
+                {"_id": 0, "awb_number": 1, "tracking_id": 1, "processed_at": 1},
+            )
+            if existing:
+                awb = existing.get("awb_number") or existing.get("tracking_id") or "?"
+                when = (existing.get("processed_at") or "")[:10]
+                msg = (f"Already shipped{f' on {when}' if when else ''} "
+                       f"(AWB {awb}) — skipped to avoid a duplicate shipment.")
+                await self.ai_processor.think(f"🛑 {msg}")
+                await self._notify_status(f"🛑 {order_id}: {msg}")
+                return ProcessingResult(
+                    order_id=order_id,
+                    success=False,
+                    error=msg,
+                    tracking_id=awb,
+                    thinking_log=self.ai_processor.get_thinking_log(),
+                )
+
             await self.ai_processor.think(f"📋 Customer: {order.buyer_name}")
             await self.ai_processor.think(f"📍 Location: {order.city}, {order.state} - {order.pincode}")
             await self.ai_processor.think(f"📱 Phone: {order.phone}")
