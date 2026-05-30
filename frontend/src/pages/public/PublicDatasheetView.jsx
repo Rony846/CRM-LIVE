@@ -386,10 +386,10 @@ export default function PublicDatasheetView() {
         <section className={`transition-all duration-500 ${showDatasheet ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden'}`}>
           <div className="pb-16 px-2">
             <div className="overflow-x-auto">
-              <div 
-                ref={datasheetRef} 
-                data-datasheet-content 
-                className="bg-white shadow-2xl mx-auto w-full"
+              <div
+                ref={datasheetRef}
+                data-datasheet-content
+                className="datasheet-paper bg-white shadow-2xl mx-auto w-full"
               >
                 <AccessoriesDatasheet data={datasheet} />
               </div>
@@ -670,10 +670,10 @@ export default function PublicDatasheetView() {
         <div className="pb-16 px-2">
           {/* Responsive container - horizontal scroll on small screens */}
           <div className="overflow-x-auto">
-            <div 
-              ref={datasheetRef} 
-              data-datasheet-content 
-              className="bg-white shadow-2xl mx-auto"
+            <div
+              ref={datasheetRef}
+              data-datasheet-content
+              className="datasheet-paper bg-white shadow-2xl mx-auto"
               style={{ minWidth: '380px', maxWidth: '794px', width: '100%' }}
             >
               {datasheet.category === 'battery' && <BatteryDatasheet data={datasheet} />}
