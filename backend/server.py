@@ -419,6 +419,15 @@ async def create_indexes():
         ("pending_fulfillment.order_id", "pending_fulfillment", "order_id", {"unique": True, "sparse": True}),
         ("pending_fulfillment.tracking_id (partial)", "pending_fulfillment", "tracking_id",
          {"unique": True, "partialFilterExpression": {"tracking_id": {"$type": "string", "$gt": ""}}}),
+        # Duplicate-shipment backstop (Layer 2): at most ONE active (completed)
+        # shipment per Amazon order per firm. Cancelled records are excluded so a
+        # corrected re-ship is allowed. Builds automatically once any existing
+        # duplicates are marked cancelled; until then this one index logs & skips
+        # (the per-index try below) while every other index still builds.
+        ("amazon_order_processing.(firm,order) UNIQUE active", "amazon_order_processing",
+         [("firm_id", 1), ("order_id", 1)],
+         {"unique": True, "name": "uniq_firm_order_active",
+          "partialFilterExpression": {"status": "completed"}}),
         ("dispatches.marketplace_order_id", "dispatches", "marketplace_order_id", {"sparse": True}),
         ("dealer_orders.dealer_id", "dealer_orders", "dealer_id", {}),
         ("dealer_orders.status", "dealer_orders", "status", {}),
@@ -595,6 +604,18 @@ async def create_indexes():
             name="Dispatch Auto-Finalize (gate-scanned, finalize missed)",
             replace_existing=True,
             misfire_grace_time=1800,
+            max_instances=1,
+        )
+
+        # Duplicate-shipment watch (Layer 5) — every 15 min, flag any Amazon order
+        # that just got more than one active shipment so it's caught before pickup.
+        scheduler.add_job(
+            scheduled_duplicate_shipment_watch,
+            IntervalTrigger(minutes=15),
+            id="duplicate_shipment_watch",
+            name="Duplicate Shipment Watch (catch dup bookings within minutes)",
+            replace_existing=True,
+            misfire_grace_time=300,
             max_instances=1,
         )
 
@@ -59822,6 +59843,51 @@ async def scheduled_delhivery_board_refresh():
         logger.error(f"Delhivery board refresh failed: {e}")
 
 
+async def scheduled_duplicate_shipment_watch():
+    """Layer 5 — catch a developing duplicate-shipment incident within minutes.
+
+    Flags any Amazon order that has more than one active (non-cancelled) shipment
+    where the latest was booked in the last ~35 min, and alerts admin + dispatcher
+    so the extras can be cancelled before the courier picks them up. Scoped to a
+    recent window so it only fires on *developing* incidents, never nags about old
+    duplicates already being handled."""
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=35)).isoformat()
+        dups = await db.amazon_order_processing.aggregate([
+            {"$match": {"status": {"$ne": "cancelled"}}},
+            {"$group": {
+                "_id": {"order_id": "$order_id", "firm_id": "$firm_id"},
+                "n": {"$sum": 1},
+                "last": {"$max": "$processed_at"},
+                "name": {"$first": "$customer_name"},
+                "value": {"$max": "$order_value"},
+                "awbs": {"$addToSet": "$awb_number"},
+            }},
+            {"$match": {"n": {"$gt": 1}, "last": {"$gte": cutoff}}},
+        ]).to_list(100)
+        for d in dups:
+            oid = d["_id"]["order_id"]
+            n = d["n"]
+            extra_value = (len(d.get("awbs", [])) - 1) * (d.get("value") or 0)
+            await create_notification(
+                title="🚨 DUPLICATE shipment detected",
+                message=(f"Order {oid} ({d.get('name','')}) now has {n} active shipments "
+                         f"({len(d.get('awbs', []))} AWBs, ~₹{extra_value:,.0f} extra goods). "
+                         f"Cancel the extras before courier pickup."),
+                notification_type="error",
+                link="/operations/amazon-orders",
+                priority="high",
+                target_roles=["admin", "dispatcher"],
+                created_by_name="Duplicate Watch",
+                data={"order_id": oid, "count": n, "firm_id": d["_id"]["firm_id"]},
+            )
+        if dups:
+            logger.warning(f"Duplicate-shipment watch flagged {len(dups)} order(s): "
+                           f"{[d['_id']['order_id'] for d in dups]}")
+    except Exception as e:
+        logger.error(f"Duplicate-shipment watch failed: {e}")
+
+
 @api_router.get("/courier/delhivery-board")
 async def get_delhivery_board(
     firm_id: Optional[str] = None,
@@ -66102,16 +66168,45 @@ async def _fetch_bigship_label_pdf(system_order_id: str) -> Optional[bytes]:
         return None
 
 
+async def _active_shipments_for_order(order_id: str, scope_firm: Optional[str] = None) -> list:
+    """All non-cancelled processing records for an order. >1 == a duplicate
+    booking, which the print/dispatch guard (Layer 3) must block before a second
+    carton is ever packed."""
+    q: Dict[str, Any] = {
+        "$or": [{"order_id": order_id}, {"amazon_order_id": order_id}],
+        "status": {"$ne": "cancelled"},
+    }
+    if scope_firm:
+        q["firm_id"] = scope_firm
+    return await db.amazon_order_processing.find(
+        q, {"_id": 0, "awb_number": 1, "tracking_id": 1, "system_order_id": 1, "processed_at": 1}
+    ).to_list(50)
+
+
 @api_router.get("/order-folders/order/{order_id}/label.pdf")
 async def order_folders_label(
     order_id: str,
+    override: bool = False,
     user: dict = Depends(require_roles(["admin", "accountant"])),
 ):
     """Stream the Bigship shipping label for `order_id`. Re-fetched from
     Bigship on demand via the stored system_order_id — bypasses storage so
-    it works even for orders where the storage upload silently failed."""
+    it works even for orders where the storage upload silently failed.
+
+    DUPLICATE GUARD (Layer 3): if this order has more than one active shipment,
+    block the label so the floor can't pack a duplicate carton. An admin can
+    force one specific label with ?override=true after picking which AWB is real."""
     from fastapi.responses import Response
     scope_firm = get_user_firm_scope(user)
+    active = await _active_shipments_for_order(order_id, scope_firm)
+    if len(active) > 1 and not (override and user.get("role") == "admin"):
+        awbs = ", ".join(a.get("awb_number") or a.get("tracking_id") or "?" for a in active)
+        raise HTTPException(
+            status_code=409,
+            detail=(f"DUPLICATE SHIPMENT: order {order_id} has {len(active)} active shipments "
+                    f"(AWBs: {awbs}). Label printing is blocked so a duplicate parcel can't go "
+                    f"out. Cancel the extra shipments first; an admin may force one label with "
+                    f"?override=true."))
     q: Dict[str, Any] = {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]}
     if scope_firm:
         q["firm_id"] = scope_firm
@@ -66192,6 +66287,16 @@ async def order_folders_mark_printed(
     timestamp so the accounts team can see which orders have already been
     printed and packed."""
     scope_firm = get_user_firm_scope(user)
+    # DUPLICATE GUARD (Layer 3): don't let a duplicated order be marked printed
+    # (i.e. packed) until the extra shipments are cancelled.
+    if data.printed:
+        active = await _active_shipments_for_order(order_id, scope_firm)
+        if len(active) > 1 and user.get("role") != "admin":
+            awbs = ", ".join(a.get("awb_number") or a.get("tracking_id") or "?" for a in active)
+            raise HTTPException(
+                status_code=409,
+                detail=(f"DUPLICATE SHIPMENT: order {order_id} has {len(active)} active shipments "
+                        f"(AWBs: {awbs}). Cancel the extras before marking it printed/packed."))
     q: Dict[str, Any] = {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]}
     if scope_firm:
         q["firm_id"] = scope_firm
