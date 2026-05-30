@@ -33,6 +33,7 @@ import {
   Clock,
   History,
   Inbox,
+  Mail,
   FileSpreadsheet,
   Box,
   Factory,
@@ -208,6 +209,7 @@ const adminNavGroups = [
     label: 'Agents',
     icon: Bot,
     items: [
+      { label: 'Email Agent', icon: Mail, path: '/admin/email-agent' },
       { label: 'Finance Agent', icon: IndianRupee, path: '/agents/finance' },
       { label: 'Watch Live', icon: Monitor, path: '/agents/finance/watch' },
       { label: 'Data Inbox', icon: Inbox, path: '/agents/finance/inbox' },

@@ -52,6 +52,7 @@ from utils.storage import (
     StorageError,
     validate_folder
 )
+from utils import email_agent  # local-LLM inbound email assistant (API-free)
 
 # Jobcard generator import
 from utils.jobcard import create_and_upload_jobcard
@@ -616,6 +617,19 @@ async def create_indexes():
             name="Duplicate Shipment Watch (catch dup bookings within minutes)",
             replace_existing=True,
             misfire_grace_time=300,
+            max_instances=1,
+        )
+
+        # Email Agent — poll the AI mailbox every 2 min (no-op until configured in
+        # .env). Reads inbound mail, classifies/drafts with the local LLM, parks
+        # drafts for approval.
+        scheduler.add_job(
+            scheduled_email_agent_poll,
+            IntervalTrigger(minutes=2),
+            id="email_agent_poll",
+            name="Email Agent Poll (inbound mail -> draft queue)",
+            replace_existing=True,
+            misfire_grace_time=120,
             max_instances=1,
         )
 
@@ -59843,6 +59857,101 @@ async def scheduled_delhivery_board_refresh():
         logger.error(f"Delhivery board refresh failed: {e}")
 
 
+async def _email_agent_make_lead(msg: dict, brain: dict) -> Optional[str]:
+    """Auto-create a Sales Lead from an inbound email classified as a sales lead.
+    Cheap + safe (mirrors the storefront intake); other categories are left for a
+    one-click human action in the review queue."""
+    now = datetime.now(timezone.utc)
+    phone = (brain.get("phone") or "").strip() or None
+    if phone:
+        dup = await db.leads.find_one({"phone": phone, "status": "new"}, {"_id": 0, "id": 1})
+        if dup:
+            return dup["id"]
+    lead_id = str(uuid.uuid4())
+    await db.leads.insert_one({
+        "id": lead_id, "phone": phone or "", "name": (msg.get("from_name") or msg.get("from_addr") or "Email lead")[:120],
+        "email": msg.get("from_addr"), "product_interest": brain.get("summary"),
+        "source": "email_agent", "status": "new", "notes": (msg.get("body") or "")[:2000],
+        "assigned_to": None, "assigned_to_name": None, "follow_up_date": None,
+        "created_by": "email_agent", "created_at": now.isoformat(), "updated_at": now.isoformat(),
+    })
+    return lead_id
+
+
+async def process_email_agent_inbox() -> dict:
+    """Fetch unseen mail at the agent mailbox, run each whitelisted message through
+    the local-LLM brain, auto-create a lead for sales enquiries, and park the email
+    + a DRAFT reply in email_agent_inbox for human approval. Never sends anything."""
+    if not email_agent.is_configured():
+        return {"skipped": "not configured"}
+    c = email_agent.cfg()
+    try:
+        msgs = await email_agent.fetch_unseen(limit=20)
+    except Exception as e:
+        logger.error(f"Email agent IMAP fetch failed: {e}")
+        return {"error": str(e)}
+
+    processed, skipped, leads = 0, 0, 0
+    now = datetime.now(timezone.utc)
+    for m in msgs:
+        sender = m.get("from_addr", "")
+        if not email_agent.is_whitelisted(sender, c["whitelist"]):
+            skipped += 1
+            continue
+        # idempotent on Message-ID
+        if m.get("message_id") and await db.email_agent_inbox.find_one(
+                {"message_id": m["message_id"]}, {"_id": 1}):
+            continue
+        brain = await email_agent.classify(sender, m.get("subject", ""), m.get("body", ""))
+        lead_id = None
+        if brain["category"] == "sales_lead":
+            try:
+                lead_id = await _email_agent_make_lead(m, brain)
+                if lead_id:
+                    leads += 1
+            except Exception as e:
+                logger.error(f"Email agent lead create failed: {e}")
+        doc = {
+            "id": str(uuid.uuid4()),
+            "message_id": m.get("message_id"), "from_name": m.get("from_name"),
+            "from_addr": sender, "subject": m.get("subject"), "received_date": m.get("date"),
+            "body": m.get("body"),
+            "category": brain["category"], "urgency": brain["urgency"],
+            "order_number": brain.get("order_number"), "phone": brain.get("phone"),
+            "summary": brain.get("summary"), "draft_reply": brain.get("suggested_reply"),
+            "model_ok": brain.get("model_ok", False),
+            "lead_id": lead_id, "status": "needs_review",
+            "created_at": now.isoformat(), "updated_at": now.isoformat(),
+        }
+        await db.email_agent_inbox.insert_one(doc)
+        processed += 1
+        # notify the right team
+        roles = {"sales_lead": ["call_support", "admin"],
+                 "support_complaint": ["call_support", "admin"],
+                 "order_query": ["call_support", "admin"],
+                 "dealer": ["admin"]}.get(brain["category"], ["admin"])
+        if brain["category"] != "spam":
+            asyncio.create_task(create_notification(
+                title=f"📧 New email · {brain['category'].replace('_', ' ')}",
+                message=f"{m.get('from_name') or sender}: {brain.get('summary') or m.get('subject')}",
+                notification_type=("warning" if brain["urgency"] == "high" else "info"),
+                link="/admin/email-agent", priority=("high" if brain["urgency"] == "high" else "normal"),
+                target_roles=roles, created_by_name="Email Agent", data={"email_id": doc["id"]}))
+    return {"fetched": len(msgs), "processed": processed, "skipped_not_whitelisted": skipped, "leads_created": leads}
+
+
+async def scheduled_email_agent_poll():
+    """APScheduler entrypoint — poll the agent mailbox every few minutes."""
+    if not email_agent.is_configured():
+        return
+    try:
+        summary = await process_email_agent_inbox()
+        if summary.get("processed"):
+            logger.info(f"Email agent: {summary}")
+    except Exception as e:
+        logger.error(f"Email agent poll failed: {e}")
+
+
 async def scheduled_duplicate_shipment_watch():
     """Layer 5 — catch a developing duplicate-shipment incident within minutes.
 
@@ -66563,6 +66672,92 @@ async def sku_weight_upsert(body: SkuWeightUpsert, user: dict = Depends(require_
     # clear the live gap flag now that it's resolved
     await db.sku_weight_gaps.delete_many({"sku": {"$regex": f"^{re.escape(sku)}$", "$options": "i"}})
     return {"success": True, "sku": sku, "saved": doc}
+
+
+# ====================================================================
+# Email Agent — inbound-email assistant (local LLM, no external API).
+# ====================================================================
+@api_router.get("/admin/email-agent/status")
+async def email_agent_status(user: dict = Depends(require_roles(["admin"]))):
+    """Config + queue + model health, for the review screen header."""
+    c = email_agent.cfg()
+    model_ok = False
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            rr = await client.get(f"{c['ollama_url']}/api/tags")
+            model_ok = rr.status_code == 200 and any(
+                (m.get("name") or "").startswith(c["model"].split(":")[0])
+                for m in rr.json().get("models", []))
+    except Exception:
+        model_ok = False
+    return {
+        "configured": email_agent.is_configured(),
+        "enabled": c["enabled"], "mailbox": c["email"] or None,
+        "whitelist_count": len(c["whitelist"]), "model": c["model"], "model_ok": model_ok,
+        "needs_review": await db.email_agent_inbox.count_documents({"status": "needs_review"}),
+        "replied": await db.email_agent_inbox.count_documents({"status": "replied"}),
+    }
+
+
+@api_router.get("/admin/email-agent/messages")
+async def email_agent_messages(status: str = "needs_review", limit: int = 100,
+                               user: dict = Depends(require_roles(["admin"]))):
+    q = {} if status == "all" else {"status": status}
+    rows = await db.email_agent_inbox.find(q, {"_id": 0}).sort("created_at", -1).to_list(min(limit, 300))
+    return {"success": True, "count": len(rows), "messages": rows}
+
+
+class EmailAgentTest(BaseModel):
+    sender: Optional[str] = "test@example.com"
+    subject: Optional[str] = ""
+    body: str
+
+
+@api_router.post("/admin/email-agent/test")
+async def email_agent_test(body: EmailAgentTest, user: dict = Depends(require_roles(["admin"]))):
+    """Run the local-LLM brain on pasted text — lets you try it with no mailbox."""
+    brain = await email_agent.classify(body.sender or "test@example.com", body.subject or "", body.body or "")
+    return {"success": True, "result": brain}
+
+
+class EmailAgentSend(BaseModel):
+    body: str  # the (possibly edited) reply to send
+
+
+@api_router.post("/admin/email-agent/messages/{msg_id}/send")
+async def email_agent_send(msg_id: str, payload: EmailAgentSend,
+                           user: dict = Depends(require_roles(["admin"]))):
+    """Send the approved (edited) draft via the agent mailbox SMTP, mark replied."""
+    m = await db.email_agent_inbox.find_one({"id": msg_id}, {"_id": 0})
+    if not m:
+        raise HTTPException(status_code=404, detail="Email not found")
+    if not email_agent.is_configured():
+        raise HTTPException(status_code=400, detail="Mailbox not configured — set EMAIL_AGENT_* in .env")
+    if not (payload.body or "").strip():
+        raise HTTPException(status_code=400, detail="Reply body is empty")
+    subj = m.get("subject") or ""
+    if not subj.lower().startswith("re:"):
+        subj = f"Re: {subj}"
+    try:
+        await email_agent.send_reply(m["from_addr"], subj, payload.body.strip(), m.get("message_id") or "")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Send failed: {e}")
+    now = datetime.now(timezone.utc).isoformat()
+    await db.email_agent_inbox.update_one({"id": msg_id}, {"$set": {
+        "status": "replied", "sent_reply": payload.body.strip(),
+        "replied_by": user.get("id"),
+        "replied_by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip() or user.get("email"),
+        "replied_at": now, "updated_at": now}})
+    return {"success": True, "status": "replied"}
+
+
+@api_router.post("/admin/email-agent/messages/{msg_id}/dismiss")
+async def email_agent_dismiss(msg_id: str, user: dict = Depends(require_roles(["admin"]))):
+    r = await db.email_agent_inbox.update_one(
+        {"id": msg_id}, {"$set": {"status": "dismissed", "updated_at": datetime.now(timezone.utc).isoformat()}})
+    if not r.matched_count:
+        raise HTTPException(status_code=404, detail="Email not found")
+    return {"success": True, "status": "dismissed"}
 
 
 @api_router.get("/amazon/processed-orders")
