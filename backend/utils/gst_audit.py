@@ -132,7 +132,29 @@ async def run_firm_audit(db, firm: dict, period_key: str = None) -> dict:
         # like-for-like — otherwise all-period CRM sales get compared to one month's filed return.
         inv_q["invoice_date"] = {"$regex": f"^{re.escape(period_key)}"}
 
-    invoices = await db.sales_invoices.find(inv_q, {"_id": 0}).to_list(20000)
+    # Books side: PREFER imported Vyapar vouchers where present — that Tally/Vyapar export is the
+    # authoritative accounting and far more complete than partial CRM sales_invoices for the
+    # proprietorship firms. Map Vyapar fields onto the names the checks expect so the whole audit
+    # (sales recon, sequence gaps, dup numbers, tax anomalies, invoice-level match) works unchanged.
+    vq = {"firm_id": fid, "voucher_type": "Sales"}
+    if period_key:
+        vq["period_key"] = period_key
+    vv = await db.vyapar_vouchers.find(vq, {"_id": 0}).to_list(50000)
+    if vv:
+        findings["books_source"] = "vyapar_vouchers"
+        invoices = [{
+            "invoice_number": r.get("voucher_number"),
+            "invoice_date": r.get("date"),
+            "grand_total": r.get("total_value"),
+            "taxable_value": r.get("taxable_value"),
+            "subtotal": r.get("taxable_value"),
+            "cgst": r.get("cgst"), "sgst": r.get("sgst"), "igst": r.get("igst"),
+            "gstin": r.get("party_gstin"), "party_name": r.get("party_name"),
+            "section": "b2b" if r.get("party_gstin") else "b2cs",
+        } for r in vv]
+    else:
+        findings["books_source"] = "sales_invoices"
+        invoices = await db.sales_invoices.find(inv_q, {"_id": 0}).to_list(20000)
     report = await db.gst_report_data.find(rep_q, {"_id": 0}).to_list(50000)
     # Portal-imported returns are authoritative — where they exist for a period, ignore other sources
     # (e.g. vyapar) so filed totals aren't double-counted.

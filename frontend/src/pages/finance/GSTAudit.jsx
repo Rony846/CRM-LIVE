@@ -44,6 +44,9 @@ function FirmCard({ r }) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {r.books_source === 'vyapar_vouchers' && (
+            <Badge variant="outline" className="font-normal gap-1"><Wallet className="h-3 w-3" /> Vyapar books</Badge>
+          )}
           {s.high > 0 && <Badge className={SEV.high}>{s.high} high</Badge>}
           {s.medium > 0 && <Badge className={SEV.medium}>{s.medium} medium</Badge>}
           {s.high === 0 && s.medium === 0 && <Badge className={SEV.ok}>clean</Badge>}
@@ -54,7 +57,7 @@ function FirmCard({ r }) {
       {open && (
         <CardContent className="border-t border-border space-y-3 pt-4">
           <p className="text-xs text-muted-foreground">
-            {s.invoices} CRM invoices · {s.filed_outward_rows} filed outward rows
+            {s.invoices} {r.books_source === 'vyapar_vouchers' ? 'Vyapar invoices (books)' : 'CRM invoices'} · {s.filed_outward_rows} filed outward rows
           </p>
 
           {/* Input Tax Credit — Electronic Credit Ledger balances imported from the GST portal */}
