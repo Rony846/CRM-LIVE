@@ -24791,6 +24791,31 @@ async def export_gstr3b(
 
 # ==================== BANK STATEMENT RECONCILIATION ====================
 
+def _normalize_bank_date(val) -> str:
+    """Normalize a bank-statement date cell to ISO 'YYYY-MM-DD'.
+
+    Handles pandas Timestamps, Excel serials, 'DD-Mon-YYYY' and 'DD/MM/YY' strings.
+    Critically, this avoids the old `str(val)[:10]` bug which silently chopped the
+    last year digit off 11-char IDFC dates ('01-Apr-2025' -> '01-Apr-202').
+    Falls back to the first 10 chars only if the value cannot be parsed as a date.
+    """
+    import pandas as pd
+    if val is None:
+        return ""
+    s = str(val).strip()
+    if not s or s.lower() == "nan":
+        return ""
+    # ISO-like (e.g. pandas Timestamp str '2025-04-01 00:00:00') must NOT use dayfirst,
+    # which would flip month/day. Indian DD/MM/YY and DD-Mon-YYYY do need dayfirst.
+    if re.match(r"\d{4}-\d{2}-\d{2}", s):
+        ts = pd.to_datetime(s, errors="coerce")
+    else:
+        ts = pd.to_datetime(s, dayfirst=True, errors="coerce")
+    if pd.isna(ts) or not (2000 <= ts.year <= 2099):
+        return s[:10]
+    return ts.strftime("%Y-%m-%d")
+
+
 def parse_idfc_statement(file_content: bytes) -> list:
     """Parse IDFC Bank statement Excel format"""
     import pandas as pd
@@ -24837,8 +24862,8 @@ def parse_idfc_statement(file_content: bytes) -> list:
         
         transactions.append({
             "row_number": idx + 1,
-            "transaction_date": str(txn_date)[:10],
-            "value_date": str(row.get(value_date_col, ''))[:10] if value_date_col and pd.notna(row.get(value_date_col)) else None,
+            "transaction_date": _normalize_bank_date(txn_date),
+            "value_date": _normalize_bank_date(row.get(value_date_col)) if value_date_col and pd.notna(row.get(value_date_col)) else None,
             "description": str(row.get(particulars_col, '')) if particulars_col else '',
             "reference": str(row.get(ref_col, '')) if ref_col and pd.notna(row.get(ref_col)) else None,
             "debit": debit,
@@ -24920,8 +24945,8 @@ def parse_hdfc_statement(file_content: bytes) -> list:
         
         transactions.append({
             "row_number": idx + 1,
-            "transaction_date": str(txn_date)[:10],
-            "value_date": str(row.get(value_date_col, ''))[:10] if value_date_col and pd.notna(row.get(value_date_col)) else None,
+            "transaction_date": _normalize_bank_date(txn_date),
+            "value_date": _normalize_bank_date(row.get(value_date_col)) if value_date_col and pd.notna(row.get(value_date_col)) else None,
             "description": str(row.get(narration_col, '')) if narration_col else '',
             "reference": str(row.get(ref_col, '')) if ref_col and pd.notna(row.get(ref_col)) else None,
             "debit": debit,
@@ -68448,7 +68473,7 @@ async def upload_bank_statement(
                 "id": str(uuid.uuid4()),
                 "firm_id": firm_id,
                 "bank_account": bank_account,
-                "transaction_date": str(row.get("date", ""))[:10],
+                "transaction_date": _normalize_bank_date(row.get("date", "")),
                 "description": str(row.get("description", "")),
                 "debit": float(row.get("debit", 0) or 0),
                 "credit": float(row.get("credit", 0) or 0),
