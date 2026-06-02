@@ -70,6 +70,8 @@ import ComplianceDashboard from './pages/admin/ComplianceDashboard';
 import PartyLedger from './pages/accountant/PartyLedger';
 import Payments from './pages/accountant/Payments';
 import AccountingReports from './pages/accountant/AccountingReports';
+import GSTAudit from './pages/finance/GSTAudit';
+import ReconciliationMatch from './pages/finance/ReconciliationMatch';
 import CreditNotes from './pages/accountant/CreditNotes';
 import ReconciliationReports from './pages/accountant/ReconciliationReports';
 import ExpensesDashboard from './pages/accountant/ExpensesDashboard';
@@ -587,6 +589,16 @@ function App() {
           <Route path="/finance/gst-hsn" element={
             <ProtectedRoute allowedRoles={['admin', 'accountant']}>
               <GSTHSNDashboard />
+            </ProtectedRoute>
+          } />
+          <Route path="/finance/gst-audit" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <GSTAudit />
+            </ProtectedRoute>
+          } />
+          <Route path="/finance/reconciliation" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <ReconciliationMatch />
             </ProtectedRoute>
           } />
           <Route path="/finance/ecommerce-reconciliation" element={

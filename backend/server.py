@@ -716,6 +716,19 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Nightly bank-line reconciliation — re-classify & re-link every bank txn to its CRM record.
+        from apscheduler.triggers.cron import CronTrigger as _CronTrigger
+        scheduler.add_job(
+            scheduled_bank_reconciliation,
+            _CronTrigger(hour=int(os.environ.get("RECON_CRON_HOUR_UTC", "19")),
+                         minute=int(os.environ.get("RECON_CRON_MIN_UTC", "30"))),
+            id="bank_reconciliation",
+            name="Bank-line reconciliation (classify + link bank txns to CRM records)",
+            replace_existing=True,
+            misfire_grace_time=1800,
+            max_instances=1,
+        )
+
         # Ticket SLA-breach spotlight — headline + freshly-breached tickets to the group.
         scheduler.add_job(
             scheduled_pratibha_sla_watch,
@@ -25502,6 +25515,79 @@ async def auto_match_transactions(
         "total_created": created,
         "total_unmatched": unmatched
     }
+
+
+# ---- Bank-line reconciliation engine (classify + link every bank txn to a CRM record) ----
+@api_router.post("/finance/reconciliation/run")
+async def run_bank_reconciliation(
+    firm_id: str = None,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Run the bank-line reconciliation: classify every bank transaction and link it to an
+    intercompany transfer / Amazon-or-gateway settlement / sales invoice / Vyapar voucher / PI /
+    purchase, persisting recon_* onto each txn. Accountants are firm-scoped."""
+    from utils import reconciliation as _rec
+    scope = get_user_firm_scope(user)
+    fid = scope or firm_id
+    result = await _rec.reconcile_all(db, scope_firm_id=fid)
+    return {"success": True, **result}
+
+
+@api_router.get("/finance/reconciliation/summary")
+async def bank_reconciliation_summary(user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Latest reconciliation run summary (matched / classified / unmatched per firm)."""
+    last = await db.reconciliation_runs.find_one({}, {"_id": 0}, sort=[("run_at", -1)])
+    return {"success": True, "run": last}
+
+
+@api_router.get("/finance/reconciliation/bank")
+async def bank_reconciliation_lines(
+    firm_id: str = None, status: str = None, recon_type: str = None,
+    period_key: str = None, limit: int = 500,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Bank transactions with their reconciliation status, filterable by firm / status
+    (matched|classified|unmatched) / type / month. The matched-to-invoice/order view."""
+    scope = get_user_firm_scope(user)
+    q = {}
+    if scope:
+        q["firm_id"] = scope
+    elif firm_id:
+        q["firm_id"] = firm_id
+    out, counts = [], collections.Counter()
+    async for st in db.bank_statements.find(q, {"_id": 0, "transactions": 1, "firm_name": 1, "bank_name": 1}):
+        for t in (st.get("transactions") or []):
+            rs = t.get("recon_status")
+            if not rs:
+                continue
+            counts[rs] += 1
+            counts[f"type:{t.get('recon_type')}"] += 1
+            if status and rs != status:
+                continue
+            if recon_type and t.get("recon_type") != recon_type:
+                continue
+            if period_key and not (t.get("transaction_date") or "").startswith(period_key):
+                continue
+            if len(out) < limit:
+                out.append({
+                    "firm": st.get("firm_name"), "bank": st.get("bank_name"),
+                    "date": t.get("transaction_date"), "debit": t.get("debit"), "credit": t.get("credit"),
+                    "description": (t.get("description") or "")[:120],
+                    "recon_status": rs, "recon_type": t.get("recon_type"),
+                    "recon_ref_type": t.get("recon_ref_type"), "recon_ref": t.get("recon_ref"),
+                })
+    return {"success": True, "counts": dict(counts), "lines": out, "shown": len(out)}
+
+
+async def scheduled_bank_reconciliation():
+    """Nightly: re-run the bank-line reconciliation across all firms (idempotent re-derive)."""
+    try:
+        from utils import reconciliation as _rec
+        res = await _rec.reconcile_all(db)
+        logger.info(f"[SCHEDULED] Bank reconciliation: matched={res['matched']} "
+                    f"classified={res['classified']} unmatched={res['unmatched']}")
+    except Exception as e:
+        logger.error(f"Scheduled bank reconciliation failed: {e}")
 
 
 # Update finance dashboard to include purchase ITC
