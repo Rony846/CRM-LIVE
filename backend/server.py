@@ -52,7 +52,10 @@ from utils.storage import (
     StorageError,
     validate_folder
 )
-from utils import email_agent  # local-LLM inbound email assistant (API-free)
+from utils import email_agent  # inbound email assistant (IMAP/SMTP transport)
+from utils import pratibha_brain  # Claude brain + CRM query tools for the email agent
+from utils import ca_agent  # accounting brain (top-CA classification of documents → draft entries)
+from utils import shopify_service  # Shopify Admin API client + webhook HMAC verify + order normaliser
 
 # Jobcard generator import
 from utils.jobcard import create_and_upload_jobcard
@@ -633,6 +636,162 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Bigship shipment tracking — poll only ACTIVE Bigship AWBs (paced, terminal-aware).
+        # Pratibha reads the cached status via track_shipment; she never calls Bigship live.
+        scheduler.add_job(
+            scheduled_bigship_tracking,
+            IntervalTrigger(minutes=BIGSHIP_TRACK_INTERVAL_MIN),
+            id="bigship_tracking",
+            name="Bigship Shipment Tracking (active AWBs only, paced)",
+            replace_existing=True,
+            misfire_grace_time=300,
+            max_instances=1,
+        )
+
+        # Pratibha follow-up reminders — every 30 min, check open sent-email threads and
+        # nudge internal recipients past the cadence, escalating to the founder after the cap.
+        scheduler.add_job(
+            scheduled_pratibha_followups,
+            IntervalTrigger(minutes=30),
+            id="pratibha_followups",
+            name="Pratibha Follow-up Reminders (chase internal staff until resolved)",
+            replace_existing=True,
+            misfire_grace_time=300,
+            max_instances=1,
+        )
+
+        # NOT-PICKED courier chase — consolidated reminder to Aman every 2h until parcels
+        # are collected (auto-resolves as each leaves NOT PICKED status).
+        scheduler.add_job(
+            scheduled_pratibha_pickup_chase,
+            IntervalTrigger(minutes=int(os.environ.get("PICKUP_CHASE_INTERVAL_MIN", "120"))),
+            id="pratibha_pickup_chase",
+            name="Pratibha Pickup Chase (remind Aman of not-picked parcels)",
+            replace_existing=True,
+            misfire_grace_time=600,
+            max_instances=1,
+        )
+
+        # Re-nudge the founder about provisional payments awaiting his bank-confirmation.
+        scheduler.add_job(
+            scheduled_pratibha_payment_nudge,
+            IntervalTrigger(minutes=int(os.environ.get("PRATIBHA_PAYMENT_NUDGE_INTERVAL_MIN", "60"))),
+            id="pratibha_payment_nudge",
+            name="Pratibha Payment Nudge (chase founder to confirm provisional payments)",
+            replace_existing=True,
+            misfire_grace_time=600,
+            max_instances=1,
+        )
+
+        # "Payment received but material not dispatched" watch — reminds every 2 days until shipped.
+        scheduler.add_job(
+            scheduled_pratibha_dispatch_watch,
+            IntervalTrigger(hours=int(os.environ.get("PRATIBHA_DISPATCH_WATCH_INTERVAL_HOURS", "12"))),
+            id="pratibha_dispatch_watch",
+            name="Pratibha Dispatch Watch (money in, goods not shipped — remind every 2 days)",
+            replace_existing=True,
+            misfire_grace_time=600,
+            max_instances=1,
+        )
+
+        # "PI approved but no payment" chase — nudge sales to close fresh approved-unpaid PIs.
+        scheduler.add_job(
+            scheduled_pratibha_pi_payment_chase,
+            IntervalTrigger(hours=int(os.environ.get("PRATIBHA_PI_CHASE_INTERVAL_HOURS", "24"))),
+            id="pratibha_pi_payment_chase",
+            name="Pratibha PI Payment Chase (approved PI, no payment — follow up to close)",
+            replace_existing=True,
+            misfire_grace_time=600,
+            max_instances=1,
+        )
+
+        # "Dispatched but stuck in transit / undelivered" watch — follow up with courier every 2 days.
+        scheduler.add_job(
+            scheduled_pratibha_transit_watch,
+            IntervalTrigger(hours=int(os.environ.get("PRATIBHA_TRANSIT_INTERVAL_HOURS", "24"))),
+            id="pratibha_transit_watch",
+            name="Pratibha Transit Watch (stuck in-transit / undelivered — follow up courier)",
+            replace_existing=True,
+            misfire_grace_time=600,
+            max_instances=1,
+        )
+
+        # Ticket SLA-breach spotlight — headline + freshly-breached tickets to the group.
+        scheduler.add_job(
+            scheduled_pratibha_sla_watch,
+            IntervalTrigger(hours=int(os.environ.get("PRATIBHA_SLA_INTERVAL_HOURS", "24"))),
+            id="pratibha_sla_watch",
+            name="Pratibha SLA Watch (ticket SLA breaches — spotlight fresh ones to the group)",
+            replace_existing=True,
+            misfire_grace_time=600,
+            max_instances=1,
+        )
+
+        # Pratibha proactive daily digest — once a day (UTC schedule from env; default
+        # 03:30 UTC ≈ 09:00 IST). Emails the founder an ops-health summary.
+        from apscheduler.triggers.cron import CronTrigger as _CronTrigger
+        scheduler.add_job(
+            scheduled_pratibha_daily_digest,
+            _CronTrigger(hour=int(os.environ.get("EMAIL_AGENT_DIGEST_UTC_HOUR", "3")),
+                         minute=int(os.environ.get("EMAIL_AGENT_DIGEST_UTC_MIN", "30"))),
+            id="pratibha_daily_digest",
+            name="Pratibha Daily Digest (proactive ops summary)",
+            replace_existing=True,
+            misfire_grace_time=3600,
+            max_instances=1,
+        )
+
+        # Monthly GST audit alert — high-severity findings to the group.
+        scheduler.add_job(
+            scheduled_pratibha_gst_audit_alert,
+            _CronTrigger(day=int(os.environ.get("PRATIBHA_GST_AUDIT_DAY", "3")),
+                         hour=int(os.environ.get("PRATIBHA_GST_AUDIT_UTC_HOUR", "4")), minute=0),
+            id="pratibha_gst_audit_alert",
+            name="Pratibha GST Audit Alert (monthly high-severity findings)",
+            replace_existing=True,
+            misfire_grace_time=3600,
+            max_instances=1,
+        )
+
+        # Pratibha weekly business review — Monday 04:00 UTC (~09:30 IST): KPIs + trends +
+        # team scorecard + risk radar + recommendations, to the founder.
+        scheduler.add_job(
+            scheduled_pratibha_weekly_review,
+            _CronTrigger(day_of_week="mon",
+                         hour=int(os.environ.get("EMAIL_AGENT_REVIEW_UTC_HOUR", "4")),
+                         minute=int(os.environ.get("EMAIL_AGENT_REVIEW_UTC_MIN", "0"))),
+            id="pratibha_weekly_review",
+            name="Pratibha Weekly Business Review (VP report)",
+            replace_existing=True,
+            misfire_grace_time=3600,
+            max_instances=1,
+        )
+
+        # Pratibha end-of-day report — sales + purchases + dispatches + returns of the day,
+        # to the founder (~21:30 IST = 16:00 UTC; reports the day just ending).
+        scheduler.add_job(
+            scheduled_pratibha_daily_report,
+            _CronTrigger(hour=int(os.environ.get("EMAIL_AGENT_REPORT_UTC_HOUR", "16")),
+                         minute=int(os.environ.get("EMAIL_AGENT_REPORT_UTC_MIN", "0"))),
+            id="pratibha_daily_report",
+            name="Pratibha Daily Report (sales/purchases/dispatches/returns)",
+            replace_existing=True,
+            misfire_grace_time=3600,
+            max_instances=1,
+        )
+
+        # Pratibha heartbeat — low-volume proof-of-life to the founder, daytime IST
+        # (~09:00/13:00/17:00/21:00 IST = 03:30/07:30/11:30/15:30 UTC).
+        scheduler.add_job(
+            scheduled_pratibha_heartbeat,
+            _CronTrigger(hour=os.environ.get("EMAIL_AGENT_HEARTBEAT_UTC_HOURS", "3,7,11,15"), minute=30),
+            id="pratibha_heartbeat",
+            name="Pratibha Heartbeat (proof-of-life to founder)",
+            replace_existing=True,
+            misfire_grace_time=1800,
+            max_instances=1,
+        )
+
         # Chat nudge loops — every minute, ping the assignee of each due follow-up
         # until it's marked done.
         scheduler.add_job(
@@ -653,6 +812,31 @@ async def create_indexes():
             name="Chat Scheduled Messages (deliver due)",
             replace_existing=True,
             misfire_grace_time=300,
+            max_instances=1,
+        )
+
+        # Pratibha task reminders — every 30 min, nudge on time-bound actionable items that are
+        # due soon or overdue, until someone replies "done".
+        scheduler.add_job(
+            scheduled_pratibha_task_reminders,
+            IntervalTrigger(minutes=30),
+            id="pratibha_task_reminders",
+            name="Pratibha Task Reminders (chase time-bound items until done)",
+            replace_existing=True,
+            misfire_grace_time=300,
+            max_instances=1,
+        )
+
+        # Shopify nightly reconcile — catch any order webhooks that were missed (default
+        # 20:30 UTC ≈ 02:00 IST). No-op until SHOPIFY_STORE + SHOPIFY_ADMIN_TOKEN are set.
+        scheduler.add_job(
+            scheduled_shopify_reconcile,
+            _CronTrigger(hour=int(os.environ.get("SHOPIFY_RECONCILE_UTC_HOUR", "20")),
+                         minute=int(os.environ.get("SHOPIFY_RECONCILE_UTC_MIN", "30"))),
+            id="shopify_reconcile",
+            name="Shopify Nightly Reconcile (catch missed webhooks)",
+            replace_existing=True,
+            misfire_grace_time=3600,
             max_instances=1,
         )
 
@@ -27182,14 +27366,12 @@ async def get_payment(
     return payment
 
 
-@api_router.post("/payments", response_model=PaymentResponse)
-async def create_payment(
-    payment_data: PaymentCreate,
-    user: dict = Depends(require_roles(["admin", "accountant"]))
-):
-    """Record a payment received or made"""
+async def _create_payment_core(payment_data: "PaymentCreate", user: dict) -> dict:
+    """Core payment creation: validation, numbering, atomic party-ledger posting, and
+    linked-invoice status update. Shared by the POST /payments endpoint and Pratibha's
+    confirm-first financial executor, so both post IDENTICALLY to the books."""
     now = datetime.now(timezone.utc)
-    
+
     if payment_data.payment_type not in PAYMENT_TYPES:
         raise HTTPException(status_code=400, detail=f"Invalid payment type. Must be: {PAYMENT_TYPES}")
     
@@ -59534,6 +59716,121 @@ async def track_courier_shipment(
         }
 
 
+# ---- Bigship shipment tracking poller (mirrors the Delhivery board) ----------
+# Pratibha NEVER calls Bigship live; this single paced job refreshes status into the
+# cache (courier_shipments + dispatches) that her track_shipment tool reads.
+BIGSHIP_TRACKING_ENABLED = os.environ.get("BIGSHIP_TRACKING_ENABLED", "true").lower() == "true"
+BIGSHIP_TRACK_INTERVAL_MIN = int(os.environ.get("BIGSHIP_TRACK_INTERVAL_MIN", "60"))
+BIGSHIP_TRACK_MAX = int(os.environ.get("BIGSHIP_TRACK_MAX", "500"))       # hard cap per cycle
+BIGSHIP_POLL_DELAY = float(os.environ.get("BIGSHIP_POLL_DELAY", "0.6"))    # pace, avoid 429
+BIGSHIP_MAX_FAILS = int(os.environ.get("BIGSHIP_MAX_FAILS", "5"))
+_BIGSHIP_TERMINAL = ("delivered", "rto", "return", "cancel", "lost")
+
+
+def _bigship_status_str(data) -> str:
+    """Bigship tracking puts the live status at order_detail.current_tracking_status
+    (e.g. DELIVERED, IN TRANSIT); fall back to the latest scan_histories entry."""
+    if not isinstance(data, dict):
+        return ""
+    od = data.get("order_detail")
+    if isinstance(od, dict):
+        s = od.get("current_tracking_status")
+        if isinstance(s, str) and s.strip():
+            return s.strip()
+    sh = data.get("scan_histories")
+    if isinstance(sh, list) and sh and isinstance(sh[0], dict):  # [0] is the most recent scan
+        s = sh[0].get("scan_status")
+        if isinstance(s, str) and s.strip():
+            return s.strip()
+    for k in ("current_status", "status", "shipment_status"):  # legacy fallbacks
+        v = data.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
+def _bigship_status_detail(data) -> dict:
+    """Extra context for a richer reply: last update time + latest scan remark/location."""
+    out = {}
+    od = (data or {}).get("order_detail") if isinstance(data, dict) else None
+    if isinstance(od, dict):
+        out["as_of"] = od.get("current_tracking_datetime")
+    sh = (data or {}).get("scan_histories") if isinstance(data, dict) else None
+    if isinstance(sh, list) and sh and isinstance(sh[0], dict):
+        out["last_remark"] = sh[0].get("scan_remarks")
+        out["last_location"] = sh[0].get("scan_location")
+    return out
+
+
+def _bigship_is_terminal(s: str) -> bool:
+    s = (s or "").lower()
+    return any(t in s for t in _BIGSHIP_TERMINAL)
+
+
+async def _bigship_track_one(awb: str):
+    token = await get_bigship_token()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(f"{BIGSHIP_API_URL}/tracking",
+                             params={"tracking_type": "awb", "tracking_id": awb},
+                             headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
+        if r.status_code == 429:
+            raise RuntimeError("rate_limited")
+        if r.status_code != 200:
+            return None
+        d = r.json()
+        return d.get("data") if d.get("success") else None
+
+
+async def scheduled_bigship_tracking():
+    """Poll ONLY active (non-retired) Bigship AWBs, paced + terminal-aware, writing status
+    into courier_shipments and the matching dispatch. Delivered/RTO/cancelled shipments are
+    retired so they're never polled again — keeps API usage proportional to live shipments."""
+    if not (BIGSHIP_TRACKING_ENABLED and BIGSHIP_USER_ID):
+        return
+    q = {"awb_number": {"$nin": [None, ""]}, "tracking_retired": {"$ne": True}}
+    docs = await db.courier_shipments.find(
+        q, {"_id": 0, "id": 1, "awb_number": 1, "fail_count": 1}).limit(BIGSHIP_TRACK_MAX).to_list(BIGSHIP_TRACK_MAX)
+    polled = updated = terminal = failed = 0
+    for d in docs:
+        awb = d.get("awb_number")
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            data = await _bigship_track_one(awb)
+        except RuntimeError:
+            logger.warning("Bigship tracking hit 429 — backing off; will resume next interval")
+            break  # stop the whole cycle on rate-limit
+        except Exception:
+            data = None
+        polled += 1
+        if data is None:
+            fc = (d.get("fail_count") or 0) + 1
+            upd = {"fail_count": fc, "last_check_failed": now}
+            if fc >= BIGSHIP_MAX_FAILS:
+                upd["tracking_retired"] = True  # give up on a hopeless AWB
+            await db.courier_shipments.update_one({"id": d["id"]}, {"$set": upd})
+            failed += 1
+            await asyncio.sleep(BIGSHIP_POLL_DELAY)
+            continue
+        st = _bigship_status_str(data)
+        detail = _bigship_status_detail(data)
+        upd = {"last_tracked": now, "updated_at": now, "fail_count": 0, "status_detail": detail}
+        if st:
+            upd["status"] = st
+        if _bigship_is_terminal(st):
+            upd["tracking_retired"] = True
+            terminal += 1
+        await db.courier_shipments.update_one({"id": d["id"]}, {"$set": upd})
+        if st:
+            await db.dispatches.update_one({"tracking_id": awb}, {"$set": {
+                "courier_status": st, "courier_status_at": detail.get("as_of") or now,
+                "courier_status_detail": detail.get("last_remark")}})
+        updated += 1
+        await asyncio.sleep(BIGSHIP_POLL_DELAY)
+    if polled:
+        logger.info(f"Bigship tracking: polled={polled} updated={updated} terminal={terminal} "
+                    f"failed={failed} of {len(docs)} active")
+
+
 # States that will never progress further — used to retire parcels off the board.
 DELHIVERY_TERMINAL_STATES = {"delivered", "cancelled", "returned"}
 
@@ -59940,6 +60237,531 @@ def _format_lookup_reply(name: str, results: list) -> str:
     return "\n".join(lines)
 
 
+# ---- Pratibha CRM query tools (read-only) for her Claude brain --------------
+# Indian state abbreviations -> canonical full name, plus GST state codes, so a
+# question like "customers named Amit in UP" resolves against the messily-stored
+# `state` field ("Uttar Pradesh"/"UTTAR PRADESH") OR the `state_code` ("09").
+_PRATIBHA_STATE_ABBR = {
+    "up": "uttar pradesh", "uk": "uttarakhand", "ua": "uttarakhand", "mp": "madhya pradesh",
+    "ap": "andhra pradesh", "ar": "arunachal pradesh", "as": "assam", "br": "bihar",
+    "cg": "chhattisgarh", "ch": "chandigarh", "dl": "delhi", "ga": "goa", "gj": "gujarat",
+    "hr": "haryana", "hp": "himachal pradesh", "jh": "jharkhand", "jk": "jammu & kashmir",
+    "ka": "karnataka", "kl": "kerala", "la": "ladakh", "mh": "maharashtra", "ml": "meghalaya",
+    "mn": "manipur", "mz": "mizoram", "nl": "nagaland", "od": "odisha", "or": "odisha",
+    "pb": "punjab", "py": "puducherry", "rj": "rajasthan", "sk": "sikkim", "tn": "tamil nadu",
+    "tg": "telangana", "ts": "telangana", "tr": "tripura", "wb": "west bengal",
+}
+_PRATIBHA_STATE_GST = {
+    "jammu & kashmir": "01", "himachal pradesh": "02", "punjab": "03", "chandigarh": "04",
+    "uttarakhand": "05", "haryana": "06", "delhi": "07", "rajasthan": "08", "uttar pradesh": "09",
+    "bihar": "10", "sikkim": "11", "arunachal pradesh": "12", "nagaland": "13", "manipur": "14",
+    "mizoram": "15", "tripura": "16", "meghalaya": "17", "assam": "18", "west bengal": "19",
+    "jharkhand": "20", "odisha": "21", "chhattisgarh": "22", "madhya pradesh": "23", "gujarat": "24",
+    "maharashtra": "27", "karnataka": "29", "goa": "30", "kerala": "32", "tamil nadu": "33",
+    "telangana": "36", "andhra pradesh": "37",
+}
+
+
+def _pratibha_state_filter(state: str):
+    s = (state or "").strip().lower()
+    if not s:
+        return None
+    full = _PRATIBHA_STATE_ABBR.get(s, s)
+    core = re.escape(full).replace(r"\ ", " ").replace(" ", r"\s*")  # spacing-variant tolerant
+    ors = [{"state": {"$regex": core, "$options": "i"}}]
+    code = _PRATIBHA_STATE_GST.get(full)
+    if code:
+        ors.append({"state_code": code})
+    return {"$or": ors}
+
+
+def _pratibha_party_query(name=None, state=None, city=None, phone=None, email=None):
+    ands = []
+    if name:
+        ands.append({"name": {"$regex": re.escape(name.strip()), "$options": "i"}})
+    sf = _pratibha_state_filter(state)
+    if sf:
+        ands.append(sf)
+    if city:
+        ands.append({"city": {"$regex": re.escape(city.strip()), "$options": "i"}})
+    if phone:
+        ands.append({"phone": {"$regex": re.escape(phone.strip())}})
+    if email:
+        ands.append({"email": {"$regex": re.escape(email.strip()), "$options": "i"}})
+    return {"$and": ands} if ands else {}
+
+
+def _pratibha_lead_query(name=None, phone=None, email=None):
+    ands = []
+    if name:
+        ands.append({"name": {"$regex": re.escape(name.strip()), "$options": "i"}})
+    if phone:
+        ands.append({"phone": {"$regex": re.escape(phone.strip())}})
+    if email:
+        ands.append({"email": {"$regex": re.escape(email.strip()), "$options": "i"}})
+    return {"$and": ands} if ands else {}
+
+
+def _pr_daterange(field, dfrom, dto, iso=False):
+    """Inclusive date filter. iso=True for created_at-style timestamps; else YYYY-MM-DD fields."""
+    r = {}
+    if dfrom:
+        r["$gte"] = dfrom.strip()
+    if dto:
+        r["$lte"] = (dto.strip() + "T23:59:59Z") if iso else dto.strip()
+    return {field: r} if r else None
+
+
+def _pr_firm(firm):
+    if not firm:
+        return None
+    f = firm.strip()
+    if re.fullmatch(r"[0-9a-fA-F-]{36}", f):
+        return {"firm_id": f}
+    return {"firm_name": {"$regex": re.escape(f), "$options": "i"}}
+
+
+def _pr_and(*clauses):
+    cl = [c for c in clauses if c]
+    return {"$and": cl} if cl else {}
+
+
+async def _pr_sum(coll, match, fields):
+    """Aggregate count + summed numeric fields over a collection (read-only)."""
+    grp = {"_id": None, "count": {"$sum": 1}}
+    for f in fields:
+        grp[f] = {"$sum": f"${f}"}
+    docs = await db[coll].aggregate([{"$match": match}, {"$group": grp}]).to_list(1)
+    if not docs:
+        return {"count": 0, **{f: 0 for f in fields}}
+    d = docs[0]
+    d.pop("_id", None)
+    for f in fields:
+        d[f] = round(d.get(f) or 0, 2)
+    return d
+
+
+_PR_OPEN_TICKETS = {"$nin": ["closed", "closed_by_agent", "resolved", "resolved_on_call", "dispatched"]}
+
+
+def _pr_digits(s):
+    return re.sub(r"\D", "", s or "")
+
+
+async def _pratibha_customer_360(query: str, allow_finance: bool = False) -> dict:
+    """Consolidated 360 view of one customer across tickets, orders, dispatches, warranties,
+    quotations and calls (matched by phone where possible). Finance only if allow_finance."""
+    q = (query or "").strip()
+    if not q:
+        return {"found": False}
+    rx = {"$regex": re.escape(q), "$options": "i"}
+    party = await db.parties.find_one({"$or": [{"name": rx}, {"phone": rx}, {"email": rx}]},
+                                      {"_id": 0, "name": 1, "phone": 1, "email": 1, "city": 1, "state": 1})
+    lead = None if party else await db.leads.find_one(
+        {"$or": [{"name": rx}, {"phone": rx}, {"email": rx}]},
+        {"_id": 0, "name": 1, "phone": 1, "email": 1, "status": 1, "product_interest": 1})
+    who = party or lead
+    phone = _pr_digits(q) if len(_pr_digits(q)) >= 7 else _pr_digits((who or {}).get("phone", ""))
+    name = (who or {}).get("name")
+    prx = ({"$regex": re.escape(phone) + "$"} if phone else None)
+    out = {"found": bool(who or phone), "type": ("customer" if party else "lead" if lead else "unknown"),
+           "profile": who or {"note": "no master record; matched by phone"}, "matched_phone": phone}
+
+    tq = {"customer_phone": prx} if phone else {"customer_name": rx}
+    out["tickets"] = {"count": await db.tickets.count_documents(tq), "recent": []}
+    async for t in db.tickets.find(tq, {"_id": 0, "ticket_number": 1, "status": 1, "issue_description": 1,
+                                        "sla_breached": 1}).sort("created_at", -1).limit(4):
+        out["tickets"]["recent"].append({"ticket": t.get("ticket_number"), "status": t.get("status"),
+                                         "sla_breached": t.get("sla_breached"), "issue": (t.get("issue_description") or "")[:60]})
+    oq = {"phone": prx} if phone else {"customer_name": rx}
+    out["orders"] = {"count": await db.sales_orders.count_documents(oq), "recent": []}
+    async for o in db.sales_orders.find(oq, {"_id": 0, "order_number": 1, "sku": 1, "dispatch_status": 1,
+                                             "tracking_id": 1}).sort("created_at", -1).limit(4):
+        out["orders"]["recent"].append(o)
+    dq = {"phone": prx} if phone else {"customer_name": rx}
+    out["dispatches"] = []
+    async for d in db.dispatches.find(dq, {"_id": 0, "dispatch_number": 1, "status": 1, "courier": 1,
+                                           "tracking_id": 1}).sort("created_at", -1).limit(3):
+        out["dispatches"].append(d)
+    if phone:
+        out["warranties"] = []
+        async for w in db.warranties.find({"phone": prx}, {"_id": 0, "warranty_number": 1, "product_name": 1,
+                                                           "status": 1, "warranty_end_date": 1}).limit(3):
+            out["warranties"].append(w)
+        out["calls"] = {"count": await db.smartflo_calls.count_documents({"caller_phone": prx})}
+    qq = {"customer_phone": prx} if phone else {"customer_name": rx}
+    out["quotations"] = []
+    async for qd in db.quotations.find(qq, {"_id": 0, "quotation_number": 1, "status": 1,
+                                            "grand_total": 1}).sort("created_at", -1).limit(3):
+        out["quotations"].append(qd)
+    if allow_finance and name:
+        s = await _pr_sum("sales_invoices", {"$and": [{"party_name": {"$regex": re.escape(name), "$options": "i"}},
+                                                      {"balance_due": {"$gt": 0}}]}, ["balance_due"])
+        out["finance"] = {"outstanding": s["balance_due"], "open_invoices": s["count"]}
+    return out
+
+
+async def _pratibha_knowledge(query: str) -> dict:
+    """Keyword search of the product knowledge base (datasheets + catalog). Grounded facts only."""
+    q = (query or "").strip()
+    if not q:
+        return {"results": []}
+    toks = [t for t in re.split(r"\s+", q) if len(t) > 2][:6]
+    ors = []
+    for t in toks:
+        trx = {"$regex": re.escape(t), "$options": "i"}
+        ors += [{"model_name": trx}, {"category": trx}, {"subtitle": trx}]
+    ds = []
+    async for d in db.product_datasheets.find({"$or": ors} if ors else {},
+            {"_id": 0, "model_name": 1, "category": 1, "specifications": 1, "features": 1,
+             "warranty": 1, "certifications": 1}).limit(4):
+        ds.append({"model": d.get("model_name"), "category": d.get("category"), "warranty": d.get("warranty"),
+                   "specifications": d.get("specifications"), "features": (d.get("features") or [])[:8],
+                   "certifications": d.get("certifications")})
+    sk = []
+    qrx = {"$regex": re.escape(q), "$options": "i"}
+    async for s in db.master_skus.find({"$or": [{"name": qrx}, {"description": qrx}]},
+            {"_id": 0, "name": 1, "category": 1, "description": 1, "gst_rate": 1, "selling_price": 1, "mrp": 1}).limit(3):
+        sk.append(s)
+    kb_ors = []
+    for t in toks:
+        trx = {"$regex": re.escape(t), "$options": "i"}
+        kb_ors += [{"question": trx}, {"answer": trx}, {"keywords": trx}, {"category": trx}]
+    kb = []
+    async for k in db.kb_articles.find({"$or": kb_ors} if kb_ors else {},
+                                       {"_id": 0, "question": 1, "answer": 1, "category": 1}).limit(4):
+        kb.append(k)
+    return {"datasheets": ds, "catalog": sk, "kb_articles": kb,
+            "note": "Grounded in product_datasheets + catalog. State only these facts; if empty, say you don't have it."}
+
+
+# Finance/accounts tools — only an authorised sender (founder by default) may run these.
+_PR_FINANCE_TOOLS = {"sales_summary", "search_invoices", "outstanding_receivables",
+                     "payments_summary", "expenses_summary", "party_balance", "business_metrics",
+                     "pnl_summary", "cash_flow", "daily_report", "api_cost"}
+
+
+async def _pratibha_tool_exec(name: str, params: dict, allow_finance: bool = False) -> dict:
+    """Read-only CRM query executor injected into Pratibha's Claude brain. Never writes.
+    Finance tools are hard-blocked unless allow_finance (founder-only by default)."""
+    p = params or {}
+    if name in _PR_FINANCE_TOOLS and not allow_finance:
+        return {"error": "restricted", "message": "Finance and accounts data is restricted to the founder."}
+    def rx(v):
+        return {"$regex": re.escape(v.strip()), "$options": "i"}
+
+    # --- customers / leads ---
+    if name == "count_customers":
+        rec = (p.get("record") or "customers").lower()
+        out = {"filters": {k: p.get(k) for k in ("name", "state", "city") if p.get(k)}}
+        if rec in ("customers", "both"):
+            out["customers"] = await db.parties.count_documents(
+                _pratibha_party_query(p.get("name"), p.get("state"), p.get("city")))
+        if rec in ("leads", "both"):
+            if p.get("state") or p.get("city"):
+                out["leads_note"] = "leads have no state/city; lead count is by name only"
+            out["leads"] = await db.leads.count_documents(_pratibha_lead_query(p.get("name")))
+        return out
+    if name == "search_customers":
+        rec = (p.get("record") or "customers").lower()
+        limit = max(1, min(int(p.get("limit") or 10), 25))
+        rows = []
+        if rec in ("customers", "both"):
+            async for d in db.parties.find(
+                    _pratibha_party_query(p.get("name"), p.get("state"), p.get("city"),
+                                          p.get("phone"), p.get("email")),
+                    {"_id": 0, "name": 1, "phone": 1, "email": 1, "city": 1, "state": 1}).limit(limit):
+                rows.append({"source": "customer", **d})
+        if rec in ("leads", "both"):
+            async for d in db.leads.find(
+                    _pratibha_lead_query(p.get("name"), p.get("phone"), p.get("email")),
+                    {"_id": 0, "name": 1, "phone": 1, "email": 1, "status": 1}).limit(limit):
+                rows.append({"source": "lead", **d})
+        return {"count": len(rows), "results": rows}
+
+    # --- products (catalog / pricing) ---
+    if name == "search_products":
+        limit = max(1, min(int(p.get("limit") or 15), 25))
+        ands = []
+        if p.get("name"):
+            ands.append({"$or": [{"name": rx(p["name"])}, {"sku_code": rx(p["name"])}]})
+        if p.get("category"):
+            ands.append({"category": rx(p["category"])})
+        if p.get("active_only", True):
+            ands.append({"is_active": True})
+        q = {"$and": ands} if ands else {}
+        rows = []
+        async for d in db.master_skus.find(q, {"_id": 0, "name": 1, "sku_code": 1, "category": 1, "mrp": 1,
+                "selling_price": 1, "cost_price": 1, "gst_rate": 1, "hsn_code": 1}).limit(limit):
+            rows.append(d)
+        return {"count": len(rows), "results": rows}
+
+    # --- service tickets ---
+    if name in ("count_tickets", "search_tickets"):
+        ands = []
+        if p.get("ticket_number"):
+            ands.append({"ticket_number": rx(p["ticket_number"])})
+        if p.get("status"):
+            ands.append({"status": p["status"].strip()})
+        if p.get("open_only"):
+            ands.append({"status": _PR_OPEN_TICKETS})
+        if p.get("support_type"):
+            ands.append({"support_type": rx(p["support_type"])})
+        if isinstance(p.get("sla_breached"), bool):
+            ands.append({"sla_breached": p["sla_breached"]})
+        if p.get("customer"):
+            ands.append({"$or": [{"customer_name": rx(p["customer"])}, {"customer_phone": rx(p["customer"])}]})
+        dr = _pr_daterange("created_at", p.get("date_from"), p.get("date_to"), iso=True)
+        if dr:
+            ands.append(dr)
+        q = {"$and": ands} if ands else {}
+        if name == "count_tickets":
+            return {"count": await db.tickets.count_documents(q),
+                    "filters": {k: p.get(k) for k in ("status", "open_only", "support_type", "sla_breached",
+                                                       "customer", "date_from", "date_to") if p.get(k) is not None}}
+        limit = max(1, min(int(p.get("limit") or 10), 25))
+        rows = []
+        async for d in db.tickets.find(q, {"_id": 0, "ticket_number": 1, "status": 1, "customer_name": 1,
+                "customer_phone": 1, "customer_city": 1, "product_name": 1, "issue_description": 1,
+                "support_type": 1, "sla_breached": 1, "assigned_to_name": 1, "created_at": 1}
+                ).sort("created_at", -1).limit(limit):
+            if d.get("issue_description"):
+                d["issue_description"] = d["issue_description"][:140]
+            rows.append(d)
+        return {"count": len(rows), "results": rows}
+
+    # --- finance: firms ---
+    if name == "list_firms":
+        rows = []
+        async for d in db.firms.find({}, {"_id": 0, "id": 1, "name": 1, "gstin": 1, "state": 1}):
+            rows.append(d)
+        return {"count": len(rows), "firms": rows}
+
+    # --- finance: sales invoices ---
+    if name == "sales_summary":
+        match = _pr_and(_pr_firm(p.get("firm")),
+                        ({"party_name": rx(p["party"])} if p.get("party") else None),
+                        _pr_daterange("invoice_date", p.get("date_from"), p.get("date_to")))
+        s = await _pr_sum("sales_invoices", match, ["grand_total", "taxable_value", "total_gst", "balance_due"])
+        return {"invoices": s["count"], "grand_total": s["grand_total"], "taxable_value": s["taxable_value"],
+                "total_gst": s["total_gst"], "balance_due_total": s["balance_due"], "currency": "INR",
+                "scope": {k: p.get(k) for k in ("firm", "party", "date_from", "date_to") if p.get(k)} or "all firms / all dates"}
+    if name == "search_invoices":
+        ands = []
+        if p.get("invoice_number"):
+            ands.append({"invoice_number": rx(p["invoice_number"])})
+        if p.get("party"):
+            ands.append({"party_name": rx(p["party"])})
+        fc = _pr_firm(p.get("firm"))
+        if fc:
+            ands.append(fc)
+        if p.get("unpaid_only"):
+            ands.append({"balance_due": {"$gt": 0}})
+        dr = _pr_daterange("invoice_date", p.get("date_from"), p.get("date_to"))
+        if dr:
+            ands.append(dr)
+        q = {"$and": ands} if ands else {}
+        limit = max(1, min(int(p.get("limit") or 10), 25))
+        rows = []
+        async for d in db.sales_invoices.find(q, {"_id": 0, "invoice_number": 1, "party_name": 1, "firm_name": 1,
+                "invoice_date": 1, "grand_total": 1, "balance_due": 1, "amount_paid": 1}
+                ).sort("invoice_date", -1).limit(limit):
+            rows.append(d)
+        return {"count": len(rows), "results": rows}
+    if name == "outstanding_receivables":
+        match = _pr_and({"balance_due": {"$gt": 0}}, _pr_firm(p.get("firm")),
+                        ({"party_name": rx(p["party"])} if p.get("party") else None))
+        s = await _pr_sum("sales_invoices", match, ["balance_due"])
+        top = []
+        async for d in db.sales_invoices.aggregate([{"$match": match},
+                {"$group": {"_id": "$party_name", "due": {"$sum": "$balance_due"}, "invoices": {"$sum": 1}}},
+                {"$sort": {"due": -1}}, {"$limit": 10}]):
+            top.append({"party": d["_id"], "balance_due": round(d["due"] or 0, 2), "invoices": d["invoices"]})
+        return {"invoices_with_dues": s["count"], "total_balance_due": s["balance_due"], "currency": "INR",
+                "top_parties": top, "scope": {k: p.get(k) for k in ("firm", "party") if p.get(k)} or "all firms"}
+
+    # --- finance: payments ---
+    if name == "payments_summary":
+        t = (p.get("type") or "both").lower()
+        ands = [_pr_firm(p.get("firm")), ({"party_name": rx(p["party"])} if p.get("party") else None),
+                _pr_daterange("payment_date", p.get("date_from"), p.get("date_to"))]
+        if t in ("received", "made"):
+            ands.append({"payment_type": t})
+        s = await _pr_sum("payments", _pr_and(*ands), ["amount"])
+        return {"payments": s["count"], "total_amount": s["amount"], "type": t, "currency": "INR",
+                "scope": {k: p.get(k) for k in ("firm", "party", "date_from", "date_to") if p.get(k)} or "all"}
+
+    # --- finance: expenses ---
+    if name == "expenses_summary":
+        ands = [_pr_firm(p.get("firm")),
+                ({"expense_type": rx(p["expense_type"])} if p.get("expense_type") else None),
+                _pr_daterange("expense_date", p.get("date_from"), p.get("date_to"))]
+        s = await _pr_sum("expenses", _pr_and(*ands), ["gross_amount", "net_payable"])
+        return {"expenses": s["count"], "gross_amount": s["gross_amount"], "net_payable": s["net_payable"],
+                "currency": "INR", "scope": {k: p.get(k) for k in ("firm", "expense_type", "date_from", "date_to") if p.get(k)} or "all"}
+
+    # --- finance: party ledger balance ---
+    if name == "party_balance":
+        if not p.get("party"):
+            return {"error": "party name is required"}
+        q = _pr_and({"party_name": rx(p["party"])}, _pr_firm(p.get("firm")))
+        latest = await db.party_ledger.find(q, {"_id": 0, "party_name": 1, "firm_name": 1, "running_balance": 1,
+                "created_at": 1}).sort("created_at", -1).to_list(1)
+        if not latest:
+            return {"found": False, "note": f"no ledger entries for a party matching '{p['party']}'"}
+        recent = []
+        async for d in db.party_ledger.find(q, {"_id": 0, "created_at": 1, "debit": 1, "credit": 1,
+                "narration": 1, "running_balance": 1, "entry_type": 1}).sort("created_at", -1).limit(8):
+            recent.append(d)
+        return {"found": True, "party_name": latest[0].get("party_name"), "firm_name": latest[0].get("firm_name"),
+                "running_balance": latest[0].get("running_balance"), "currency": "INR", "recent_entries": recent}
+
+    # --- operations: shipping / warranty / quotation / dealer / stock ---
+    if name == "track_shipment":
+        ands = []
+        if p.get("tracking_id"):
+            ands.append({"tracking_id": rx(p["tracking_id"])})
+        if p.get("dispatch_number"):
+            ands.append({"dispatch_number": rx(p["dispatch_number"])})
+        if p.get("ticket_number"):
+            ands.append({"ticket_number": rx(p["ticket_number"])})
+        if p.get("customer"):
+            cv = p["customer"]
+            ands.append({"$or": [{"customer_name": rx(cv)}, {"phone": {"$regex": _pr_digits(cv) + "$"}}]} if _pr_digits(cv)
+                        else {"customer_name": rx(cv)})
+        if not ands:
+            return {"error": "provide tracking_id, dispatch_number, ticket_number, or customer"}
+        limit = max(1, min(int(p.get("limit") or 5), 15))
+        rows = []
+        async for d in db.dispatches.find({"$and": ands}, {"_id": 0, "dispatch_number": 1, "status": 1, "courier": 1,
+                "tracking_id": 1, "customer_name": 1, "dispatched_at": 1, "ticket_number": 1,
+                "courier_status": 1, "courier_status_at": 1}).sort("created_at", -1).limit(limit):
+            rows.append(d)
+        # Also search the Bigship shipment records (imported history + live-tracked).
+        bs = []
+        if p.get("tracking_id") or p.get("customer"):
+            bsa = []
+            if p.get("tracking_id"):
+                bsa.append({"awb_number": rx(p["tracking_id"])})
+            if p.get("customer"):
+                cv = p["customer"]
+                bsa.append({"$or": [{"customer_name": rx(cv)}, {"phone": {"$regex": _pr_digits(cv) + "$"}}]}
+                           if _pr_digits(cv) else {"customer_name": rx(cv)})
+            async for b in db.courier_shipments.find({"$and": bsa}, {"_id": 0, "awb_number": 1, "status": 1,
+                    "customer_name": 1, "product_name": 1, "courier_name": 1, "consignee_city": 1,
+                    "shipment_category": 1, "status_detail": 1}).limit(limit):
+                bs.append(b)
+        return {"count": len(rows), "results": rows, "bigship": bs}
+    if name == "warranty_lookup":
+        ands = []
+        if p.get("serial_number"):
+            ands.append({"serial_number": rx(p["serial_number"])})
+        if p.get("warranty_number"):
+            ands.append({"warranty_number": rx(p["warranty_number"])})
+        if p.get("order_id"):
+            ands.append({"order_id": rx(p["order_id"])})
+        if p.get("phone"):
+            ands.append({"phone": {"$regex": _pr_digits(p["phone"]) + "$"}})
+        if not ands:
+            return {"error": "provide serial_number, warranty_number, order_id, or phone"}
+        rows = []
+        async for w in db.warranties.find({"$and": ands}, {"_id": 0, "warranty_number": 1, "product_name": 1,
+                "serial_number": 1, "status": 1, "warranty_end_date": 1, "first_name": 1, "last_name": 1, "phone": 1}).limit(8):
+            rows.append(w)
+        return {"count": len(rows), "results": rows}
+    if name == "quotation_lookup":
+        ands = []
+        if p.get("quotation_number"):
+            ands.append({"quotation_number": rx(p["quotation_number"])})
+        if p.get("customer"):
+            cv = p["customer"]
+            ands.append({"$or": [{"customer_name": rx(cv)}, {"customer_phone": {"$regex": _pr_digits(cv) + "$"}}]} if _pr_digits(cv)
+                        else {"customer_name": rx(cv)})
+        fc = _pr_firm(p.get("firm"))
+        if fc:
+            ands.append(fc)
+        q = {"$and": ands} if ands else {}
+        limit = max(1, min(int(p.get("limit") or 5), 15))
+        rows = []
+        async for d in db.quotations.find(q, {"_id": 0, "quotation_number": 1, "status": 1, "grand_total": 1,
+                "validity_date": 1, "customer_name": 1, "items": 1}).sort("created_at", -1).limit(limit):
+            d["items"] = len(d.get("items") or [])
+            rows.append(d)
+        return {"count": len(rows), "results": rows}
+    if name == "dealer_lookup":
+        ands = []
+        if p.get("name"):
+            ands.append({"$or": [{"firm_name": rx(p["name"])}, {"contact_person": rx(p["name"])}]})
+        if p.get("phone"):
+            ands.append({"phone": {"$regex": _pr_digits(p["phone"]) + "$"}})
+        if p.get("city"):
+            ands.append({"city": rx(p["city"])})
+        sf = _pratibha_state_filter(p.get("state"))
+        if sf:
+            ands.append(sf)
+        q = {"$and": ands} if ands else {}
+        limit = max(1, min(int(p.get("limit") or 8), 20))
+        rows = []
+        async for d in db.dealers.find(q, {"_id": 0, "firm_name": 1, "contact_person": 1, "phone": 1, "city": 1,
+                "state": 1, "status": 1, "security_deposit_status": 1}).limit(limit):
+            rows.append(d)
+        return {"count": len(rows), "results": rows}
+    if name == "stock_level":
+        prod = p.get("product")
+        if not prod:
+            return {"error": "product required"}
+        prx = {"$regex": re.escape(prod), "$options": "i"}
+        skus = []
+        async for s in db.master_skus.find({"$or": [{"name": prx}, {"sku_code": prx}]},
+                                            {"_id": 0, "id": 1, "name": 1, "sku_code": 1}).limit(10):
+            skus.append(s)
+        if not skus:
+            return {"found": False, "note": f"no catalog SKU matches '{prod}'"}
+        out = []
+        for s in skus:
+            agg = await db.stock_tracker.aggregate([{"$match": {"item_id": s["id"]}},
+                                                    {"$group": {"_id": None, "qty": {"$sum": "$qty"}}}]).to_list(1)
+            out.append({"name": s["name"], "sku_code": s.get("sku_code"), "stock_qty": (agg[0]["qty"] if agg else 0)})
+        return {"results": out}
+
+    # --- 360 customer view + knowledge base ---
+    if name == "customer_360":
+        return await _pratibha_customer_360(p.get("query"), allow_finance)
+    if name == "knowledge_lookup":
+        return await _pratibha_knowledge(p.get("query"))
+
+    # --- executive / VP view ---
+    if name == "business_metrics":
+        return await _pratibha_business_metrics(p.get("period", "this_week"))
+    if name == "staff_performance":
+        return await _pratibha_team_perf(p.get("name"))
+
+    # --- co-founder: financials, margins, growth, memory ---
+    if name == "pnl_summary":
+        return await _pratibha_pnl(p.get("period", "this_month"))
+    if name == "cash_flow":
+        return await _pratibha_cashflow(int(p.get("days") or 30))
+    if name == "product_margins":
+        return await _pratibha_product_margins(p.get("name"), p.get("category"),
+                                               bool(p.get("loss_only")), int(p.get("limit") or 15))
+    if name == "channel_performance":
+        return await _pratibha_channel(p.get("period", "this_month"))
+    if name == "stuck_shipments":
+        return await _pratibha_stuck_shipments(int(p.get("days") or 3))
+    if name == "daily_movement":
+        return await _pratibha_daily_movement(p.get("date"))
+    if name == "daily_report":
+        return await _pratibha_daily_report(p.get("date"))
+    if name == "gate_activity":
+        return await _pratibha_gate_scans(p.get("date"))
+    if name == "recall_decisions":
+        return await _pratibha_recall(p.get("topic"))
+    if name == "api_cost":
+        return await _api_cost_summary(p.get("month"))
+
+    return {"error": f"unknown tool {name}"}
+
+
 # ---- Pratibha CRM actions: tiers, executors, founder-approval loop ----------
 PRATIBHA_TIER1 = {"create_lead", "create_ticket", "add_note"}   # she does these herself
 PRATIBHA_TIER2 = {"update_ticket", "edit_customer"}             # founder approves, then she does it
@@ -60072,7 +60894,7 @@ async def _pratibha_request_approval(action, params, ctx, tier):
     c = email_agent.cfg()
     ref = uuid.uuid4().hex[:8].upper()
     summary = _pratibha_action_summary(action, params)
-    subj = f"[Pratibha approval {ref}] {summary[:80]}"
+    subj = _pr_thread_subject(ctx.get("subject"), ref)
     body = (f"Sir,\n\nA request came in and I'd like your approval before acting:\n\n"
             f"  Request : {summary}\n"
             f"  From    : {ctx.get('from_addr')}\n"
@@ -60083,7 +60905,9 @@ async def _pratibha_request_approval(action, params, ctx, tier):
             "tier": tier, "ctx": ctx, "summary": summary, "status": "pending",
             "requested_at": datetime.now(timezone.utc).isoformat()}
     try:
-        await email_agent.send_reply_all([c["founder_email"]], [], subj, body)
+        await email_agent.send_reply_all([c["founder_email"]], [], subj, body,
+                                         ctx.get("message_id") or "", ctx.get("references", "") or "",
+                                         add_standing=False)
     except Exception as e:
         appr["send_error"] = str(e)
         logger.error(f"Pratibha approval email failed: {e}")
@@ -60092,14 +60916,19 @@ async def _pratibha_request_approval(action, params, ctx, tier):
 
 
 async def _pratibha_handle_approval_reply(m) -> bool:
-    """If this email is the founder answering a pending approval, resolve it."""
+    """If this email answers a pending approval, resolve it. Approvers (founder) may confirm anything;
+    for a SHIPPING approval, the original requester may also confirm their own request."""
     c = email_agent.cfg()
-    if m.get("from_addr", "") not in c["approvers"]:
-        return False
+    sender = m.get("from_addr", "")
     mref = re.search(r"\[Pratibha approval ([A-Z0-9]{6,10})\]", m.get("subject", "") or "")
     if not mref:
         return False
     appr = await db.pratibha_approvals.find_one({"ref": mref.group(1), "status": "pending"}, {"_id": 0})
+    if appr:
+        is_approver = sender in c["approvers"]
+        is_ship_requester = bool(appr.get("ship_fields")) and sender and sender == (appr.get("ctx") or {}).get("from_addr")
+        if not (is_approver or is_ship_requester):
+            return False
     if not appr:
         return False
     decision = email_agent.parse_decision(m.get("body", ""))
@@ -60110,12 +60939,38 @@ async def _pratibha_handle_approval_reply(m) -> bool:
         await db.pratibha_approvals.update_one({"id": appr["id"]}, {"$set": {"status": "declined", "resolved_at": now}})
         try:
             await email_agent.send_reply_all([m["from_addr"]], [], f"Re: {m.get('subject')}",
-                                             "Understood, sir — I won't proceed.\n\nPratibha", m.get("message_id") or "")
+                                             "Understood, sir — I won't proceed.\n\nPratibha", m.get("message_id") or "",
+                                             add_standing=False)
         except Exception:
             pass
         return True
     # decision == yes
-    if appr["tier"] == 3:
+    reply_attachments = None  # the shipping-label PDF, attached to the confirmation when booked
+    if appr.get("ship_fields"):
+        # Founder-confirmed courier booking → book via Bigship.
+        try:
+            resp = await _pratibha_book_shipment(appr["ship_fields"], appr.get("ctx") or {})
+            if getattr(resp, "success", False) and getattr(resp, "awb_number", None):
+                _cost = getattr(resp, "shipping_cost", None)
+                ok, result = True, (f"Booked ✓  Tracking ID (AWB): {resp.awb_number} ({getattr(resp, 'courier_name', None) or 'courier'})."
+                                    + (f" Bigship label cost: ₹{_cost:,.0f}." if _cost else ""))
+                # Attach the actual label PDF to the confirmation.
+                lbl = await _pratibha_fetch_label(getattr(resp, "system_order_id", None),
+                                                  appr["ship_fields"].get("shipment_type", "b2c"))
+                if lbl:
+                    reply_attachments = [lbl]
+                    result += " Label attached."
+                elif getattr(resp, "label_url", None):
+                    result += f" Label: {resp.label_url}"
+            else:
+                ok, result = False, f"Booking did not complete: {getattr(resp, 'message', 'unknown error')}."
+        except Exception as e:
+            logger.error(f"Pratibha confirmed shipment booking failed: {e}")
+            ok, result = False, f"I hit an error booking it: {e}. Nothing booked from my side."
+    elif appr.get("fin_action"):
+        # Founder-confirmed financial write: payments post to the books, purchase/sales become drafts.
+        ok, result = await _pratibha_execute_financial(appr)
+    elif appr["tier"] == 3:
         await create_notification(
             title="✅ Founder approved a critical action",
             message=f"{appr.get('summary')} — please action manually.",
@@ -60127,10 +60982,13 @@ async def _pratibha_handle_approval_reply(m) -> bool:
         ok, result = (await ex(appr["params"], appr.get("ctx") or {})) if ex else (False, "No executor for this action.")
     await db.pratibha_approvals.update_one({"id": appr["id"]},
                                            {"$set": {"status": "approved", "ok": ok, "result": result, "resolved_at": now}})
-    await _pratibha_audit(appr["action"], appr["params"], result, "founder-approved", ok)
+    await _pratibha_audit(appr.get("action", "approval"), appr.get("params") or appr.get("fin_params") or {}, result, "founder-approved", ok)
     try:
-        await email_agent.send_reply_all([m["from_addr"]], [], f"Re: {m.get('subject')}",
-                                         f"Done, sir. {result}\n\nPratibha", m.get("message_id") or "")
+        # Reply-all on the thread so everyone who was in To/CC stays in the loop.
+        to_a, cc_a = email_agent.reply_all_recipients(m.get("from_addr"), m.get("to", []), m.get("cc", []), c["from_email"])
+        await email_agent.send_reply_all(to_a, cc_a, f"Re: {m.get('subject')}",
+                                         f"Done, sir. {result}\n\nPratibha", m.get("message_id") or "",
+                                         add_standing=False, attachments=reply_attachments)
         ctx = appr.get("ctx") or {}
         if ctx.get("reply_to"):
             await email_agent.send_reply_all(ctx["reply_to"], ctx.get("reply_cc") or [],
@@ -60139,6 +60997,3231 @@ async def _pratibha_handle_approval_reply(m) -> bool:
     except Exception as e:
         logger.error(f"Pratibha approval result send failed: {e}")
     return True
+
+
+# ---- Pratibha financial writes (founder-only, confirm-first) ----------------
+# Synthetic actor for entries Pratibha posts after the founder confirms. Admin role
+# so firm-scope checks pass; the name makes the audit trail honest.
+_PRATIBHA_AGENT_USER = {"id": "pratibha-email-agent", "first_name": "Pratibha",
+                        "last_name": "(founder-approved)", "role": "admin"}
+
+
+async def _pratibha_resolve_party(name: str):
+    """Resolve a party name to a single active party. Returns (party|None, candidates)."""
+    if not name or len(name.strip()) < 2:
+        return None, []
+    q = {"name": {"$regex": re.escape(name.strip()), "$options": "i"}, "is_active": True}
+    rows = await db.parties.find(q, {"_id": 0, "id": 1, "name": 1, "state": 1, "opening_balance": 1}).limit(6).to_list(6)
+    if len(rows) == 1:
+        return rows[0], rows
+    exact = [r for r in rows if (r.get("name") or "").strip().lower() == name.strip().lower()]
+    if len(exact) == 1:
+        return exact[0], rows
+    return None, rows
+
+
+async def _pratibha_resolve_firm(firm: str):
+    """Resolve firm name/id; fall back to the default firm. Returns (firm_id, firm_name)."""
+    if firm and firm.strip():
+        f = firm.strip()
+        doc = (await db.firms.find_one({"id": f}) if re.fullmatch(r"[0-9a-fA-F-]{36}", f)
+               else await db.firms.find_one({"name": {"$regex": re.escape(f), "$options": "i"}}))
+        if doc:
+            return doc["id"], doc["name"]
+    fid = await get_default_firm_id()
+    fdoc = await db.firms.find_one({"id": fid}) if fid else None
+    return (fid, fdoc["name"] if fdoc else None)
+
+
+def _inr(x):
+    try:
+        return f"₹{float(x):,.2f}"
+    except Exception:
+        return str(x)
+
+
+async def _pratibha_prepare_financial(fin: dict, sender: str) -> dict:
+    """Validate + enrich extracted financial params and build the confirmation text the
+    founder must approve. Returns {ok, params, confirm_text} or {ok: False, error}."""
+    action = fin.get("action")
+    p = dict(fin.get("params") or {})
+    # Low-confidence flag: when the model isn't sure it read the email/screenshot
+    # correctly, prepend a loud double-check warning to the confirmation.
+    conf = fin.get("confidence")
+    warn = ("⚠️ LOW CONFIDENCE — I'm not certain I read this correctly (likely from the "
+            "screenshot). Please DOUBLE-CHECK every field below before approving.\n\n"
+            if isinstance(conf, (int, float)) and conf < 0.85 else "")
+
+    if action == "payment":
+        req = [k for k in ("payment_type", "amount", "payment_date", "payment_mode", "party_name") if not p.get(k)]
+        if req:
+            return {"ok": False, "error": f"I couldn't read these required fields from your email/screenshot: "
+                                          f"{', '.join(req)}. Please add them and resend."}
+        if p.get("payment_mode") not in PAYMENT_MODES:
+            return {"ok": False, "error": f"'{p.get('payment_mode')}' isn't a valid payment mode "
+                                          f"({', '.join(PAYMENT_MODES)}). Please clarify."}
+        party, cands = await _pratibha_resolve_party(p.get("party_name"))
+        if not party:
+            if cands:
+                names = ", ".join(c.get("name") for c in cands[:5])
+                return {"ok": False, "error": f"Multiple parties match '{p['party_name']}': {names}. "
+                                              f"Reply with the exact party name."}
+            return {"ok": False, "error": f"No active party matches '{p['party_name']}'. "
+                                          f"Create the party first, or check the spelling."}
+        firm_id, firm_name = await _pratibha_resolve_firm(p.get("firm"))
+        params = {"party_id": party["id"], "party_name": party["name"], "payment_type": p["payment_type"],
+                  "amount": float(p["amount"]), "payment_date": p["payment_date"], "payment_mode": p["payment_mode"],
+                  "reference_number": p.get("reference_number"), "bank_name": p.get("bank_name"),
+                  "firm_id": firm_id, "firm_name": firm_name,
+                  "notes": (p.get("notes") or "Recorded by Pratibha from founder email")}
+        direction = "received (money IN)" if p["payment_type"] == "received" else "made (money OUT)"
+        confirm = (warn + "Please confirm — I'll post this PAYMENT to the ledger:\n\n"
+                   f"  • Type      : {direction}\n"
+                   f"  • Amount    : {_inr(params['amount'])}\n"
+                   f"  • Date      : {params['payment_date']}\n"
+                   f"  • Mode      : {params['payment_mode'].upper()}\n"
+                   f"  • Party     : {params['party_name']}\n"
+                   f"  • Firm      : {firm_name or '(default)'}\n"
+                   + (f"  • Reference : {params['reference_number']}\n" if params.get("reference_number") else "")
+                   + "\nReply YES to post it, or NO to cancel.")
+        return {"ok": True, "params": params, "confirm_text": confirm}
+
+    if action in ("purchase", "sales_invoice"):
+        # Draft-for-review: NOT posted to the books. Sales invoices need a dispatch link +
+        # GST/compliance; purchases need each line matched to a real SKU/raw-material — both
+        # are finalised by a human in the CRM. We just capture what Pratibha parsed.
+        if action == "purchase":
+            req = [k for k in ("supplier_name", "invoice_number", "invoice_date") if not p.get(k)]
+            label = f"PURCHASE bill {p.get('invoice_number', '')} from {p.get('supplier_name', '?')}"
+        else:
+            req = [k for k in ("party_name", "invoice_date") if not p.get(k)]
+            label = f"SALES invoice for {p.get('party_name', '?')}"
+        if not p.get("items"):
+            req.append("items")
+        if req:
+            return {"ok": False, "error": f"For this {action.replace('_', ' ')} I still need: {', '.join(req)}. "
+                                          f"Please add and resend."}
+        firm_id, firm_name = await _pratibha_resolve_firm(p.get("firm"))
+        p["firm_id"], p["firm_name"] = firm_id, firm_name
+        confirm = (warn + f"Please confirm — I'll save a DRAFT {action.replace('_', ' ')} for review (it will NOT post to "
+                   f"the books; you'll finalise it in the CRM):\n\n  • {label}\n  • Firm: {firm_name or '(default)'}\n"
+                   f"  • Date: {p.get('invoice_date')}\n  • Line items: {len(p.get('items') or [])}\n\n"
+                   f"Reply YES to save the draft, or NO to cancel.")
+        return {"ok": True, "params": p, "confirm_text": confirm}
+
+    return {"ok": False, "error": "Not a recognised financial action."}
+
+
+async def _pratibha_request_fin_approval(fin_action: str, prepared: dict, ctx: dict) -> dict:
+    """Confirm-first: email the founder the exact entry and store it pending their YES."""
+    ref = uuid.uuid4().hex[:8].upper()
+    subj = _pr_thread_subject(ctx.get("subject"), ref)
+    appr = {"id": str(uuid.uuid4()), "ref": ref, "fin_action": fin_action,
+            "action": f"finance:{fin_action}", "fin_params": prepared.get("params"),
+            "tier": 3, "ctx": ctx, "summary": prepared.get("confirm_text", "")[:300],
+            "status": "pending", "requested_at": datetime.now(timezone.utc).isoformat()}
+    try:
+        await email_agent.send_reply_all([ctx["from_addr"]], [], subj,
+                                         f"Sir,\n\n{prepared.get('confirm_text')}\n\nPratibha, MuscleGrid",
+                                         ctx.get("message_id") or "", ctx.get("references", ""), add_standing=False)
+    except Exception as e:
+        appr["send_error"] = str(e)
+        logger.error(f"Pratibha finance approval email failed: {e}")
+    await db.pratibha_approvals.insert_one(appr)
+    return appr
+
+
+async def _pratibha_execute_financial(appr: dict):
+    """Run on the founder's YES. Payments post to the books; purchase/sales become drafts."""
+    fa = appr.get("fin_action")
+    p = appr.get("fin_params") or {}
+    try:
+        if fa == "payment":
+            pc = PaymentCreate(party_id=p["party_id"], payment_type=p["payment_type"], amount=p["amount"],
+                               payment_date=p["payment_date"], payment_mode=p["payment_mode"],
+                               reference_number=p.get("reference_number"), firm_id=p.get("firm_id"),
+                               bank_name=p.get("bank_name"), notes=p.get("notes"))
+            payment = await _create_payment_core(pc, _PRATIBHA_AGENT_USER)
+            return True, (f"Posted {payment['payment_number']}: {_inr(p['amount'])} {p['payment_type']} "
+                          f"for {p['party_name']} ({p.get('firm_name') or 'default firm'}). Ledger updated.")
+        if fa in ("purchase", "sales_invoice"):
+            draft = {"id": str(uuid.uuid4()), "kind": fa, "params": p, "status": "pending_review",
+                     "created_by": "pratibha-email-agent", "approval_ref": appr.get("ref"),
+                     "created_at": datetime.now(timezone.utc).isoformat()}
+            await db.pratibha_finance_drafts.insert_one(draft)
+            await create_notification(
+                title=f"📝 Pratibha drafted a {fa.replace('_', ' ')}",
+                message=(appr.get("summary") or "")[:120], notification_type="info",
+                link="/admin/email-agent", priority="high", target_roles=["admin", "accountant"],
+                created_by_name="Pratibha", data={"draft_id": draft["id"]})
+            return True, (f"Saved a draft {fa.replace('_', ' ')} for review (not yet posted) — finalise it in the "
+                          f"CRM. Ref {appr.get('ref')}.")
+    except Exception as e:
+        logger.error(f"Pratibha financial execute failed ({fa}): {e}")
+        return False, f"I hit an error and saved nothing: {e}"
+    return False, "Unknown financial action."
+
+
+# ---- Pratibha follow-up reminders (chase internal staff until resolved) -----
+_PR_RESOLVE_RX = re.compile(r"\b(resolved|resolve|done|closed|close|sorted|complete|completed|no further)\b", re.I)
+
+
+def _pr_norm_subject(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = re.sub(r"\s+", " ", s)  # collapse folded-header newlines/whitespace ("solar\r\n inverter" == "solar inverter")
+    while re.match(r"^\s*(re|fwd|fw)\s*:\s*", s):
+        s = re.sub(r"^\s*(re|fwd|fw)\s*:\s*", "", s)
+    return s.strip()
+
+
+async def _pratibha_track_followup(sent_msgid, subject, to_list, cc_list, references, context):
+    """Record an outbound email so Pratibha can chase a response. Only tracks when an
+    INTERNAL (@musclegrid.in) person is a direct (To) recipient — i.e. the expected actor —
+    so customer acknowledgements don't spawn nags. Reminders only ever go to internal staff."""
+    c = email_agent.cfg()
+    if not c.get("followup_enabled", True):
+        return
+    def internal(addrs):
+        return [a for a in (addrs or []) if email_agent.is_trigger_sender(a, ["@musclegrid.in"])
+                and a not in (c["from_email"], c["email"])]
+    internal_to = internal(to_list)
+    if not internal_to:
+        return  # no internal actor on the To line → nothing to chase
+    recips = list(dict.fromkeys(internal_to + internal(cc_list)))
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    nsubj = _pr_norm_subject(subject or "")
+    recent_resolved_cut = (now_dt - timedelta(hours=24)).isoformat()
+    # Avoid spawning parallel trackers for the same thread (normalized subject). Otherwise
+    # resolving one leaves its siblings nagging — exactly what bit the IndiaMART thread.
+    existing_open = None
+    async for f in db.pratibha_followups.find(
+            {"status": {"$in": ["open", "resolved"]}},
+            {"_id": 0, "id": 1, "subject": 1, "internal_recipients": 1, "status": 1, "resolved_at": 1}):
+        if _pr_norm_subject(f.get("subject", "")) != nsubj:
+            continue
+        # Thread was marked resolved very recently → the human considers it handled; don't
+        # restart a chase on it just because another reply went out on the same thread.
+        if f.get("status") == "resolved" and (f.get("resolved_at") or "") >= recent_resolved_cut:
+            return
+        # Fold this outbound into the existing OPEN tracker for the same thread + recipients.
+        if f.get("status") == "open" and set(f.get("internal_recipients") or []) == set(recips):
+            existing_open = f
+    if existing_open:
+        upd = {"$set": {"last_outbound_at": now}}
+        if sent_msgid:
+            upd["$set"]["sent_message_id"] = sent_msgid
+            upd["$addToSet"] = {"message_ids": sent_msgid}
+        await db.pratibha_followups.update_one({"id": existing_open["id"]}, upd)
+        return
+    await db.pratibha_followups.insert_one({
+        "id": str(uuid.uuid4()), "sent_message_id": sent_msgid or "",
+        "message_ids": [sent_msgid] if sent_msgid else [], "subject": (subject or "").strip(),
+        "to": list(to_list or []), "cc": list(cc_list or []), "internal_recipients": recips,
+        "references": references or "", "context": context or "", "created_at": now,
+        "last_outbound_at": now, "last_reply_at": None, "reminder_count": 0, "status": "open",
+    })
+
+
+async def _pratibha_followup_on_inbound(m: dict, sender: str):
+    """If an inbound email is a reply on a tracked thread, record the reply (resets the
+    reminder timer) and mark the follow-up resolved when the body says resolved/done/closed."""
+    refs = f"{m.get('references') or ''} {m.get('message_id') or ''}"
+    subj = _pr_norm_subject(m.get("subject", ""))
+    match = None
+    async for f in db.pratibha_followups.find({"status": "open"}, {"_id": 0}):
+        ids = f.get("message_ids") or ([f["sent_message_id"]] if f.get("sent_message_id") else [])
+        if any(mid and mid in refs for mid in ids):
+            match = f; break
+        if subj and _pr_norm_subject(f.get("subject", "")) == subj and (
+                sender in (f.get("internal_recipients") or []) or sender in (f.get("to") or [])
+                or sender in (f.get("cc") or [])):
+            match = f; break
+    if not match:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    # Ticket follow-up requested via WhatsApp: when the chased staff member replies, relay it to the
+    # requester (Shweta) on WhatsApp, ask what to do next, and STOP chasing.
+    if match.get("relay_wa") and sender in (match.get("internal_recipients") or []):
+        snippet = (m.get("body") or "").strip()
+        # trim quoted history
+        snippet = re.split(r"(?:\r?\n)\s*-{2,}\s*On .+?wrote|(?:\r?\n)\s*On .+?wrote:|(?:\r?\n)From:\s", snippet, 1, flags=re.I | re.S)[0].strip()[:600]
+        who = sender.split("@")[0].capitalize()
+        try:
+            await send_whatsapp_message(
+                match["relay_wa"],
+                f"Mam, *{who}* ne reply kiya — ticket *{match.get('wa_ticket') or ''}* ke baare me:\n\n"
+                f"\"{snippet}\"\n\nAb iska kya karu? (follow-up band karu / aur chase karu / kuch aur?)")
+        except Exception as e:
+            logger.error(f"Pratibha follow-up relay to WA failed: {e}")
+        await db.pratibha_followups.update_one(
+            {"id": match["id"]}, {"$set": {"status": "replied_relayed", "last_reply_at": now, "last_reply_by": sender}})
+        return
+    if _PR_RESOLVE_RX.search(m.get("body", "") or ""):
+        # Resolve EVERY open follow-up on this thread (same normalized subject), not only the
+        # one whose message-id was referenced — the human means the whole thread is handled.
+        nsubj = _pr_norm_subject(m.get("subject", ""))
+        ids = {match["id"]}
+        async for f in db.pratibha_followups.find({"status": "open"}, {"_id": 0, "id": 1, "subject": 1}):
+            if _pr_norm_subject(f.get("subject", "")) == nsubj:
+                ids.add(f["id"])
+        await db.pratibha_followups.update_many(
+            {"id": {"$in": list(ids)}},
+            {"$set": {"status": "resolved", "resolved_at": now, "resolved_by": sender,
+                      "last_reply_at": now, "last_reply_by": sender}})
+    else:
+        await db.pratibha_followups.update_one(
+            {"id": match["id"]}, {"$set": {"last_reply_at": now, "last_reply_by": sender}})
+
+
+# ---- Internal staff handoff coordination (e.g. Jaspreet → Angad) -------------
+def _pratibha_assignee_name(email: str) -> str:
+    """Human first-name for an assignee mailbox so e.g. lithium@ reads as 'Angad', not 'Lithium'."""
+    el = (email or "").lower()
+    for k, v in _pratibha_assignees().items():
+        if (v or "").lower() == el:
+            return k.capitalize()
+    return (email or "").split("@")[0].capitalize()
+
+
+async def _pratibha_chase_internal(owner: str, subject: str, mid: str, references: str, context: str):
+    """Open a rigorous 30-min follow-up chasing an internal owner until they reply 'done'."""
+    now = datetime.now(timezone.utc).isoformat()
+    await db.pratibha_followups.insert_one({
+        "id": str(uuid.uuid4()), "sent_message_id": mid or "", "message_ids": [mid] if mid else [],
+        "subject": subject, "to": [owner], "cc": [], "internal_recipients": [owner],
+        "references": references or "", "context": context or "", "created_at": now,
+        "last_outbound_at": now, "last_reply_at": None, "reminder_count": 0, "status": "open",
+        "cadence_minutes": 30})
+
+
+async def _pratibha_internal_handoff(m: dict, sender: str) -> bool:
+    """A staff member emailed another staff member about a customer. If it's an actionable handoff,
+    Pratibha either tops-up the owner to call the customer immediately (clear) or asks the sender what
+    they want (unclear) — then chases the owner every 30 min."""
+    c = email_agent.cfg()
+    assignee_emails = set(_pratibha_assignees().values())
+    recips = [a.lower() for a in (m.get("to", []) + m.get("cc", []))]
+    owner = next((e for e in recips if e in assignee_emails and e != sender.lower()), None)
+    if not owner:
+        return False  # not a staff-to-staff handoff
+    # Don't re-handle the same email, and one active handoff per thread+owner (loop guard).
+    if await db.pratibha_handoffs.find_one({"orig_message_id": m.get("message_id")}, {"_id": 1}):
+        return False
+    nsubj = _pr_norm_subject(m.get("subject", ""))
+    if await db.pratibha_handoffs.find_one(
+            {"subject_key": nsubj, "owner": owner, "status": {"$in": ["awaiting_sender", "topped_up", "briefed_owner"]}}, {"_id": 1}):
+        return False
+    h = await pratibha_brain.extract_internal_handoff(
+        m.get("subject", ""), m.get("body", ""), m.get("from_name") or sender, owner.split("@")[0])
+    if not h.get("is_handoff"):
+        return False
+    now = datetime.now(timezone.utc).isoformat()
+    owner_name = _pratibha_assignee_name(owner)
+    sender_first = (m.get("from_name") or sender.split("@")[0]).split()[0]
+    subj = (m.get("subject") or "").strip()
+    re_subj = subj if subj.lower().startswith("re:") else f"Re: {subj}"
+    if h.get("clear"):
+        body = (f"Hi {owner_name},\n\n{sender_first} has handed this over to you — please CALL THE CUSTOMER BACK "
+                f"IMMEDIATELY and action it:\n\n• {h.get('action')}\n\n--- original message ---\n"
+                f"{(m.get('body') or '')[:600]}\n\nReply 'done' once it's handled — I'll keep following up till then.\n\nPratibha, MuscleGrid")
+        mid = None
+        try:
+            mid = await email_agent.send_reply_all([owner], [sender], re_subj, body,
+                                                   m.get("message_id") or "", m.get("references", "") or "", add_standing=False)
+        except Exception as e:
+            logger.error(f"Pratibha handoff top-up failed: {e}")
+        await _pratibha_chase_internal(owner, re_subj, mid, m.get("references", ""), h.get("action"))
+        await db.pratibha_handoffs.insert_one({
+            "id": str(uuid.uuid4()), "orig_message_id": m.get("message_id"), "subject_key": nsubj,
+            "sender": sender, "owner": owner, "owner_name": owner_name, "status": "topped_up", "created_at": now})
+        return True
+    # unclear → ask the sender what they want the owner to do
+    ref = uuid.uuid4().hex[:8].upper()
+    q = h.get("clarify_question") or (f"What would you like {owner_name} to do — an immediate callback to the "
+                                      f"customer, or do you have a specific note for {owner_name}?")
+    body = (f"Hi {sender_first},\n\n{q}\n\nJust reply and I'll brief {owner_name} right away and follow up with "
+            f"him every 30 minutes till it's done.\n\nPratibha, MuscleGrid")
+    amid = None
+    asksubj = f"[Pratibha handoff {ref}] {subj[:50]}"
+    try:
+        amid = await email_agent.send_reply_all([sender], [], asksubj, body,
+                                                m.get("message_id") or "", m.get("references", "") or "", add_standing=False)
+    except Exception as e:
+        logger.error(f"Pratibha handoff clarify-ask failed: {e}")
+    await db.pratibha_handoffs.insert_one({
+        "id": str(uuid.uuid4()), "ref": ref, "orig_message_id": m.get("message_id"), "subject_key": nsubj,
+        "sender": sender, "owner": owner, "owner_name": owner_name, "subject": subj,
+        "context": (m.get("body") or "")[:600], "ask_message_id": amid or "", "status": "awaiting_sender",
+        "created_at": now})
+    return True
+
+
+async def _pratibha_handoff_on_reply(m: dict) -> bool:
+    """The sender replied to Pratibha's clarify-ask ('[Pratibha handoff REF]') → brief the owner with the
+    clarified instruction and start a 30-min chase."""
+    mref = re.search(r"\[Pratibha handoff ([A-Z0-9]{6,10})\]", m.get("subject", "") or "")
+    if not mref:
+        return False
+    h = await db.pratibha_handoffs.find_one({"ref": mref.group(1), "status": "awaiting_sender"}, {"_id": 0})
+    if not h:
+        return False
+    instr = re.split(r"(?:\r?\n)\s*-{2,}\s*On .+?wrote|(?:\r?\n)\s*On .+?wrote:|(?:\r?\n)From:\s",
+                     (m.get("body") or ""), 1, flags=re.I | re.S)[0].strip()[:600]
+    owner, owner_name = h["owner"], _pratibha_assignee_name(h["owner"])
+    now = datetime.now(timezone.utc).isoformat()
+    subj = h.get("subject") or ""
+    re_subj = subj if subj.lower().startswith("re:") else f"Re: {subj}"
+    body = (f"Hi {owner_name},\n\n{h['sender'].split('@')[0].capitalize()} has asked:\n\n\"{instr}\"\n\n"
+            f"Please action this — call the customer back if required — and reply 'done' once handled.\n\nPratibha, MuscleGrid")
+    mid = None
+    try:
+        mid = await email_agent.send_reply_all([owner], [h["sender"]], re_subj, body, add_standing=False)
+    except Exception as e:
+        logger.error(f"Pratibha handoff brief-owner failed: {e}")
+    await _pratibha_chase_internal(owner, re_subj, mid, "", instr)
+    await db.pratibha_handoffs.update_one({"ref": h["ref"]}, {"$set": {"status": "briefed_owner", "briefed_at": now}})
+    try:
+        await email_agent.send_reply_all([m["from_addr"]], [], f"Re: {m.get('subject')}",
+            f"Thanks — I've briefed {owner_name} and will follow up with him every 30 min till it's done.\n\nPratibha, MuscleGrid",
+            m.get("message_id") or "", add_standing=False)
+    except Exception:
+        pass
+    return True
+
+
+# ---- NOT-PICKED courier chase (Aman) ----------------------------------------
+PICKUP_CHASE_OWNER = os.environ.get("PICKUP_CHASE_OWNER", "aman@musclegrid.in")
+
+
+def _pickup_chase_subject(p: dict) -> str:
+    return f"Pickup pending: {p.get('courier_name') or 'courier'} · Order {p.get('order_id') or '—'} · AWB {p.get('awb_number') or '—'}"
+
+
+async def _pratibha_pickup_chase_send_one(p: dict) -> str:
+    """Email Aman about ONE not-picked parcel. kind='chase' pushes for pickup;
+    kind='flag' asks for a decision (cancelled / unshipped / duplicate) instead of a pickup push.
+    Returns the sent Message-ID (for thread tracking)."""
+    courier = p.get("courier_name") or "the courier"
+    oid = p.get("order_id") or "—"
+    awb = p.get("awb_number") or "—"
+    cust = p.get("customer_name") or ""
+    amz = p.get("amazon_status")
+    subj = _pickup_chase_subject(p)
+    if p.get("kind") == "flag":
+        body = (f"Hi Aman,\n\nThis parcel shows NOT PICKED on Bigship but needs a DECISION, not a pickup push:\n\n"
+                f"• Order: {oid}\n• AWB: {awb}\n• Courier: {courier}\n• Customer: {cust}\n"
+                f"• Amazon status: {amz or '—'}\n\n"
+                f"⚠️ {p.get('flag_reason','')}\n\n"
+                f"Please confirm how to handle this — do NOT auto-cancel the Amazon order. "
+                f"Reply with the action and I'll track it.\n\nPratibha, MuscleGrid")
+    else:
+        extra = f"\n• Amazon status: {amz}" if amz else ""
+        body = (f"Hi Aman,\n\nThis parcel is booked but {courier} hasn't picked it up yet "
+                f"({p.get('age_days','?')} days waiting). Please check WHY it hasn't been collected and get it picked up:\n\n"
+                f"• Order: {oid}\n• AWB: {awb}\n• Courier: {courier}\n• Customer: {cust}{extra}\n\n"
+                f"Please reply with the reason + next step. I'll keep following up till it's picked.\n\nPratibha, MuscleGrid")
+    try:
+        return await email_agent.send_reply_all([PICKUP_CHASE_OWNER], [], subj, body, "", "", add_standing=False) or ""
+    except Exception as e:
+        logger.error(f"pickup chase send failed for {awb}: {e}")
+        return ""
+
+
+async def scheduled_pratibha_pickup_chase():
+    """Every 2h: auto-resolve any chase whose parcel left NOT PICKED (got collected / closed),
+    then send Aman ONE consolidated reminder listing the parcels still not picked up."""
+    if not email_agent.is_configured():
+        return
+    now = datetime.now(timezone.utc)
+    open_p = [d async for d in db.pratibha_pickup_chase.find({"status": "open"}, {"_id": 0})]
+    if not open_p:
+        return
+    still = []
+    for p in open_p:
+        cur = await db.courier_shipments.find_one({"awb_number": p.get("awb_number")}, {"_id": 0, "status": 1})
+        if not cur or (cur.get("status") or "").upper() != "NOT PICKED":
+            await db.pratibha_pickup_chase.update_one(
+                {"awb_number": p.get("awb_number"), "status": "open"},
+                {"$set": {"status": "resolved", "resolved_at": now.isoformat(), "resolved_by": "status-change"}})
+        else:
+            still.append(p)
+    if not still:
+        logger.info("Pratibha pickup chase: all parcels resolved")
+        return
+    chase = [p for p in still if p.get("kind") != "flag"]
+    flags = [p for p in still if p.get("kind") == "flag"]
+    lines = [f"• {p.get('order_id')} · AWB {p.get('awb_number')} · {p.get('courier_name')} · {p.get('customer_name') or ''}"
+             for p in chase]
+    parts = ["Hi Aman,\n\nReminder — these parcels are STILL showing NOT PICKED on Bigship. "
+             "Please get the courier to collect them (or tell me the blocker):\n"]
+    if lines:
+        parts.append("\n".join(lines))
+    if flags:
+        parts.append("\nAwaiting your DECISION (do not push pickup):")
+        parts.append("\n".join(
+            f"• {p.get('order_id')} · AWB {p.get('awb_number')} — {p.get('flag_reason','')}" for p in flags))
+    parts.append(f"\n{len(still)} pending in total. I'll keep reminding every 2 hours till they're cleared.\n\nPratibha, MuscleGrid")
+    try:
+        await email_agent.send_reply_all(
+            [PICKUP_CHASE_OWNER], [], f"Pickup pending — {len(still)} parcels still not collected",
+            "\n".join(parts), "", "", add_standing=False)
+        await db.pratibha_pickup_chase.update_many(
+            {"status": "open"}, {"$set": {"last_reminded_at": now.isoformat()}, "$inc": {"reminders": 1}})
+        logger.info(f"Pratibha pickup chase: reminded Aman of {len(still)} pending")
+    except Exception as e:
+        logger.error(f"Pratibha pickup chase digest failed: {e}")
+
+
+async def scheduled_pratibha_followups():
+    """Periodic: nudge internal recipients on open threads that have gone quiet past the
+    cadence, until resolved; after the cap, escalate to the founder and stop."""
+    c = email_agent.cfg()
+    if not (c.get("followup_enabled", True) and email_agent.is_configured()):
+        return
+    now_dt = datetime.now(timezone.utc)
+    cadence_h = c.get("followup_hours", 4) or 4
+    maxr = c.get("followup_max", 6) or 6
+    now = now_dt.isoformat()
+
+    # Fire due personal WhatsApp reminders (set via the WhatsApp `remind_me` tool).
+    async for r in db.pratibha_wa_reminders.find({"status": "open", "due_at": {"$lte": now}}, {"_id": 0}):
+        try:
+            await send_whatsapp_message(await _pr_wa_target(r["to"]), f"⏰ Reminder mam: {r.get('note')}")
+        except Exception as e:
+            logger.error(f"WA reminder fire failed: {e}")
+        await db.pratibha_wa_reminders.update_one({"id": r["id"]}, {"$set": {"status": "sent", "sent_at": now}})
+
+    async for f in db.pratibha_followups.find({"status": "open"}, {"_id": 0}):
+        # Per-record cadence: ticket follow-ups chase every 30 min; default threads use followup_hours.
+        cad_min = f.get("cadence_minutes") or (cadence_h * 60)
+        cutoff = (now_dt - timedelta(minutes=cad_min)).isoformat()
+        last_act = max(f.get("last_outbound_at") or f.get("created_at") or "", f.get("last_reply_at") or "")
+        if last_act > cutoff:
+            continue  # still within the quiet window
+        recips = f.get("internal_recipients") or []
+        if not recips:
+            await db.pratibha_followups.update_one({"id": f["id"]}, {"$set": {"status": "closed_no_recipients"}})
+            continue
+        if f.get("reminder_count", 0) >= maxr:
+            try:
+                await email_agent.send_reply_all(
+                    [c["founder_email"]], [], f"[Pratibha escalation] {f.get('subject')}",
+                    (f"Sir, I've sent {f.get('reminder_count')} reminders to {', '.join(recips)} on "
+                     f"\"{f.get('subject')}\" with no resolution. Escalating to you.\n\n{f.get('context','')}\n\n"
+                     f"Pratibha, MuscleGrid"), add_standing=False)
+            except Exception as e:
+                logger.error(f"Pratibha follow-up escalation failed: {e}")
+            await db.pratibha_followups.update_one({"id": f["id"]}, {"$set": {"status": "escalated", "escalated_at": now}})
+            continue
+        n = f.get("reminder_count", 0) + 1
+        body = (f"Gentle reminder ({n}/{maxr}) — still awaiting a response on \"{f.get('subject')}\".\n\n"
+                + (f"{f.get('context')}\n\n" if f.get("context") else "")
+                + "Please reply when you can. Reply with \"resolved\" once it's handled and I'll stop chasing.\n\n"
+                  "Pratibha, MuscleGrid")
+        try:
+            mid = await email_agent.send_reply_all(recips, [], f"Re: {f.get('subject')}", body,
+                                                   f.get("sent_message_id") or "", f.get("references", "") or "",
+                                                   add_standing=False)
+            push_id = {"message_ids": mid} if mid else {}
+            await db.pratibha_followups.update_one({"id": f["id"]}, {
+                "$set": {"reminder_count": n, "last_outbound_at": now, "last_reminder_at": now,
+                         **({"sent_message_id": mid} if mid else {})},
+                **({"$addToSet": push_id} if push_id else {})})
+        except Exception as e:
+            logger.error(f"Pratibha follow-up reminder failed: {e}")
+
+
+# ---- Pratibha actionable-item reminders: memorize time-bound tasks + chase until done ----
+# Cheap pre-filter so we only spend an LLM call on emails that plausibly contain a deadline.
+_PR_DEADLINE_RX = re.compile(
+    r"\b(today|tomorrow|tonight|asap|urgent|eod|deadline|by\s+\d|by\s+(mon|tue|wed|thu|fri|sat|sun)|"
+    r"\bin\s+\d+\s*(hour|hr|day|min)|before\s+\d|within\s+\d|"
+    r"\b(mon|tues|wednes|thurs|fri|satur|sun)day\b|\bnext\s+(week|day))\b", re.I)
+
+
+async def _pratibha_save_tasks(m: dict, sender: str):
+    """Extract time-bound actionable items from an email and memorize them so Pratibha can remind."""
+    if not pratibha_brain.available():
+        return
+    try:
+        res = await pratibha_brain.extract_tasks(m.get("subject", ""), m.get("body", ""),
+                                                 datetime.now(timezone.utc).isoformat())
+    except Exception:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    for t in (res.get("tasks") or [])[:5]:
+        due = (t.get("due_at") or "").strip()
+        desc = (t.get("task") or "").strip()[:300]
+        if not (due and desc):
+            continue
+        if await db.pratibha_tasks.find_one({"task": desc, "orig_message_id": m.get("message_id")}, {"_id": 1}):
+            continue
+        await db.pratibha_tasks.insert_one({
+            "id": str(uuid.uuid4()), "ref": uuid.uuid4().hex[:8].upper(), "task": desc, "due_at": due,
+            "owner_hint": t.get("owner_hint") or "", "urgency": t.get("urgency") or "medium",
+            "from_addr": sender, "subject": m.get("subject"), "orig_message_id": m.get("message_id"),
+            "orig_references": m.get("references", ""), "status": "open", "remind_count": 0,
+            "created_at": now, "last_reminded_at": None})
+        logger.info(f"Pratibha memorized task (due {due}): {desc[:60]}")
+
+
+async def _pratibha_handle_task_reply(m) -> bool:
+    """Close a task when someone replies 'done/resolved'. Prefers the '[Pratibha task REF]' subject tag,
+    but if that's lost (fresh mail / client stripped it) falls back to the open task most recently
+    reminded TO this sender — so a plain 'done' from the owner still stops the reminders."""
+    if not _PR_RESOLVE_RX.search(m.get("body", "") or ""):
+        return False
+    sender = (m.get("from_addr") or "").strip().lower()
+    task = None
+    mref = re.search(r"\[Pratibha task ([A-Z0-9]{6,10})\]", m.get("subject", "") or "")
+    if mref:
+        task = await db.pratibha_tasks.find_one({"ref": mref.group(1), "status": "open"})
+    # Fallback 1: subject tag lost → the open task most recently reminded to this sender.
+    if not task and sender:
+        task = await db.pratibha_tasks.find_one(
+            {"status": "open", "last_reminded_to": sender}, sort=[("last_reminded_at", -1)])
+    # Fallback 2: map the sender's email to an owner name and match a reminded task's owner_hint.
+    if not task and sender:
+        names = [nm for nm, em in _pratibha_assignees().items() if (em or "").strip().lower() == sender]
+        if names:
+            rx = "|".join(re.escape(n) for n in names if n)
+            if rx:
+                task = await db.pratibha_tasks.find_one(
+                    {"status": "open", "owner_hint": {"$regex": rx, "$options": "i"},
+                     "last_reminded_at": {"$ne": None}}, sort=[("last_reminded_at", -1)])
+    if not task:
+        return False
+    r = await db.pratibha_tasks.update_one(
+        {"id": task["id"], "status": "open"},
+        {"$set": {"status": "done", "done_at": datetime.now(timezone.utc).isoformat(), "done_by": sender}})
+    if r.modified_count:
+        try:
+            await email_agent.send_reply_all([m["from_addr"]], [], f"Re: {m.get('subject')}",
+                "Noted — marked done, I'll stop reminding.\n\nPratibha, MuscleGrid",
+                m.get("message_id") or "", add_standing=False)
+        except Exception:
+            pass
+        return True
+    return False
+
+
+async def scheduled_pratibha_task_reminders():
+    """Periodic: remind on open tasks that are due soon (≤6h) or overdue, until marked done.
+    Reminds the named owner if recognisable, else the founder; BCCs the founder for visibility."""
+    c = email_agent.cfg()
+    if not (email_agent.is_configured() and c.get("followup_enabled", True)):
+        return
+    now_dt = datetime.now(timezone.utc)
+    now, soon = now_dt.isoformat(), (now_dt + timedelta(hours=6)).isoformat()
+    cooldown = (now_dt - timedelta(hours=3)).isoformat()
+    founder = c.get("founder_email")
+    directory = _pratibha_assignees()
+    async for tk in db.pratibha_tasks.find({"status": "open"}, {"_id": 0}):
+        due = tk.get("due_at") or ""
+        if due > soon:  # not near yet
+            continue
+        if (tk.get("last_reminded_at") or "") > cooldown:  # reminded recently
+            continue
+        if tk.get("remind_count", 0) >= 8:  # stop after many tries; mark stale
+            await db.pratibha_tasks.update_one({"id": tk["id"]}, {"$set": {"status": "stale"}})
+            continue
+        overdue = bool(due) and due < now
+        recip = founder
+        oh = (tk.get("owner_hint") or "").lower()
+        for nm, em in directory.items():
+            if nm and nm in oh:
+                recip = em
+                break
+        n = tk.get("remind_count", 0) + 1
+        subj = f"[Pratibha task {tk['ref']}] {'OVERDUE: ' if overdue else 'Reminder: '}{(tk.get('task') or '')[:55]}"
+        body = (f"{'⚠️ OVERDUE — ' if overdue else ''}Reminder ({n}): {tk.get('task')}\n"
+                f"Due: {due} UTC\nFrom: {tk.get('from_addr')} · {tk.get('subject')}\n\n"
+                f"Reply \"done\" once it's handled and I'll stop reminding.\n\nPratibha, MuscleGrid")
+        try:
+            await email_agent.send_reply_all([recip], [], subj, body, add_standing=False,
+                                             bcc=[founder] if recip != founder else None)
+        except Exception as e:
+            logger.error(f"Pratibha task reminder failed: {e}")
+        await db.pratibha_tasks.update_one({"id": tk["id"]}, {"$set": {"remind_count": n, "last_reminded_at": now, "last_reminded_to": (recip or "").strip().lower()}})
+
+
+# ---- Pratibha proactive daily digest ----------------------------------------
+def _pr_parse_iso(s):
+    try:
+        return datetime.fromisoformat(s)
+    except Exception:
+        return datetime.now(timezone.utc)
+
+
+async def _pratibha_build_digest(include_finance: bool) -> str:
+    """Compose the proactive ops digest: ticket backlog, stuck dispatches, receivables
+    (founder only), and Pratibha's own queue. All read-only."""
+    now = datetime.now(timezone.utc)
+    wk = (now - timedelta(days=7)).isoformat()
+    twod = (now - timedelta(days=2)).isoformat()
+    OPEN = _PR_OPEN_TICKETS
+    esc_q = {"status": {"$in": ["escalated_to_supervisor", "customer_escalated"]}}
+    open_n = await db.tickets.count_documents({"status": OPEN})
+    sla_n = await db.tickets.count_documents({"status": OPEN, "sla_breached": True})
+    esc_n = await db.tickets.count_documents(esc_q)
+    aged_n = await db.tickets.count_documents({"status": OPEN, "created_at": {"$lt": wk}})
+    L = [f"Good morning, sir. MuscleGrid status as of {now.strftime('%d %b %Y')}:", ""]
+    L += ["SERVICE TICKETS",
+          f"  Open: {open_n}   SLA-breached: {sla_n}   Escalated: {esc_n}   Open >7 days: {aged_n}"]
+    top = []
+    async for t in db.tickets.find(esc_q, {"_id": 0, "ticket_number": 1, "customer_name": 1,
+            "issue_description": 1, "created_at": 1}).sort("created_at", 1).limit(5):
+        age = (now - _pr_parse_iso(t.get("created_at"))).days
+        top.append(f"   - {t.get('ticket_number')} ({age}d) {t.get('customer_name') or ''} — "
+                   f"{(t.get('issue_description') or '')[:45]}")
+    if top:
+        L += ["  Oldest escalations:"] + top
+
+    stuck_q = {"dispatched_at": None, "status": {"$ne": "cancelled"}, "created_at": {"$lt": twod}}
+    stuck = await db.dispatches.count_documents(stuck_q)
+    L += ["", "DISPATCH", f"  Not dispatched after 2+ days: {stuck}"]
+    async for d in db.dispatches.find(stuck_q, {"_id": 0, "dispatch_number": 1, "customer_name": 1,
+            "created_at": 1}).sort("created_at", 1).limit(5):
+        age = (now - _pr_parse_iso(d.get("created_at"))).days
+        L.append(f"   - {d.get('dispatch_number')} ({age}d) {d.get('customer_name') or ''}")
+    # Stuck Bigship shipments (NOT PICKED / not delivered after 3+ days), grouped by hub
+    bstuck = await _pratibha_stuck_shipments(days=3, limit=5)
+    L.append(f"  Bigship shipments stuck (>3d, not delivered): {bstuck['count']}")
+    for h in bstuck["by_hub"]:
+        L.append(f"   - {h['hub']}: {h['count']} stuck (oldest {h['oldest_days']}d)")
+
+    if include_finance:
+        s = await _pr_sum("sales_invoices", {"balance_due": {"$gt": 0}}, ["balance_due"])
+        L += ["", "FINANCE", f"  Outstanding receivables: {_inr(s['balance_due'])} across {s['count']} invoices"]
+        deb = []
+        async for r in db.sales_invoices.aggregate([{"$match": {"balance_due": {"$gt": 0}}},
+                {"$group": {"_id": "$party_name", "due": {"$sum": "$balance_due"}}},
+                {"$sort": {"due": -1}}, {"$limit": 3}]):
+            deb.append(f"   - {r['_id']}: {_inr(r['due'])}")
+        if deb:
+            L += ["  Top debtors:"] + deb
+
+    # Coming & going (yesterday's complete day)
+    yday = (now.date() - timedelta(days=1)).isoformat()
+    mv = await _pratibha_daily_movement(yday)
+    inc, outg = mv["incoming"], mv["outgoing"]
+    ch = inc.get("orders_by_channel", {})
+    L += ["", f"MOVEMENT (yesterday {yday})",
+          f"  In : {inc['orders_placed']} orders ({ch.get('amazon', 0)} Amazon / {ch.get('dealer', 0)} dealer / "
+          f"{ch.get('direct_offline', 0)} direct) · {inc['purchases_received']} purchases · {inc['returns']} returns · "
+          f"{inc['new_tickets']} new tickets",
+          f"  Out: {outg['dispatched']} dispatched · {outg['delivered']} delivered"]
+
+    fo = await db.pratibha_followups.count_documents({"status": "open"})
+    aw = await db.pratibha_assignments.count_documents({"status": "awaiting_assignment"})
+    ap = await db.pratibha_approvals.count_documents({"status": "pending"})
+    L += ["", "MY QUEUE",
+          f"  Threads I'm chasing: {fo}   Awaiting assignment: {aw}   Approvals pending: {ap}"]
+    if include_finance:
+        cost = await _api_cost_summary()
+        L += ["", f"MY API SPEND ({cost['month']}): {_inr(cost['total_inr'])} over {cost['calls']} calls"]
+    L += ["", "Pratibha, MuscleGrid"]
+    return "\n".join(L)
+
+
+async def scheduled_pratibha_heartbeat():
+    """Low-volume proof-of-life note to the founder: a one-glance summary of recent activity
+    and the open queue, so it's always visible that Pratibha is running."""
+    c = email_agent.cfg()
+    if not (c.get("heartbeat_enabled", True) and email_agent.is_configured()):
+        return
+    to = c.get("digest_to") or [c.get("founder_email")]
+    now = datetime.now(timezone.utc)
+    cut = (now - timedelta(hours=c.get("heartbeat_hours", 4) or 4)).isoformat()
+    inbox = db.email_agent_inbox
+    observed = await inbox.count_documents({"created_at": {"$gte": cut}, "status": "observed"})
+    triaged = await inbox.count_documents({"created_at": {"$gte": cut}, "status": "triaged"})
+    replied = await inbox.count_documents({"created_at": {"$gte": cut}, "status": "replied"})
+    fu = await db.pratibha_followups.count_documents({"status": "open"})
+    aw = await db.pratibha_assignments.count_documents({"status": "awaiting_assignment"})
+    ap = await db.pratibha_approvals.count_documents({"status": "pending"})
+    stuck = (await _pratibha_stuck_shipments(days=3, limit=1)).get("count", 0)
+    body = (f"All running — heartbeat at {now.strftime('%H:%M UTC')}.\n\n"
+            f"Recent activity: {observed} emails watched, {triaged} triaged to Shweta, {replied} replied.\n"
+            f"Open queue: {fu} follow-ups chasing · {aw} awaiting Shweta's assignment · {ap} approvals pending · "
+            f"{stuck} stuck shipments.\n\nNothing needs you unless flagged above.\n\nPratibha, MuscleGrid")
+    try:
+        await email_agent.send_reply_all(to, [], f"Pratibha heartbeat — {now.strftime('%d %b, %H:%M UTC')}",
+                                         body, add_standing=False)
+        logger.info("Pratibha heartbeat sent")
+    except Exception as e:
+        logger.error(f"Pratibha heartbeat failed: {e}")
+
+
+async def scheduled_pratibha_daily_digest():
+    """Send the proactive daily digest to the configured recipients (founder by default)."""
+    c = email_agent.cfg()
+    if not (c.get("digest_enabled", True) and email_agent.is_configured()):
+        return
+    to = c.get("digest_to") or [c.get("founder_email")]
+    include_fin = all(email_agent.is_finance_sender(a, c.get("finance_senders", [])) for a in to)
+    try:
+        body = await _pratibha_build_digest(include_fin)
+        await email_agent.send_reply_all(
+            to, [], f"Pratibha daily digest — {datetime.now(timezone.utc).strftime('%d %b %Y')}",
+            body, add_standing=False)
+        logger.info(f"Pratibha daily digest sent to {to} (finance={include_fin})")
+    except Exception as e:
+        logger.error(f"Pratibha daily digest failed: {e}")
+
+
+# ---- Pratibha VP layer: KPIs, team scorecards, risk radar, weekly review -----
+def _pratibha_period_range(period: str):
+    """(from, to, prev_from, prev_to) as YYYY-MM-DD for a named period."""
+    today = datetime.now(timezone.utc).date()
+    s = lambda d: d.isoformat()
+    p = (period or "this_week").lower()
+    if p == "today":
+        y = today - timedelta(days=1)
+        return s(today), s(today), s(y), s(y)
+    if p == "last_week":
+        end = today - timedelta(days=today.weekday() + 1)
+        start = end - timedelta(days=6)
+        return s(start), s(end), s(start - timedelta(days=7)), s(end - timedelta(days=7))
+    if p == "this_month":
+        start = today.replace(day=1)
+        pend = start - timedelta(days=1)
+        return s(start), s(today), s(pend.replace(day=1)), s(pend)
+    if p == "last_month":
+        end = today.replace(day=1) - timedelta(days=1)
+        start = end.replace(day=1)
+        pend = start - timedelta(days=1)
+        return s(start), s(end), s(pend.replace(day=1)), s(pend)
+    start = today - timedelta(days=today.weekday())
+    return s(start), s(today), s(start - timedelta(days=7)), s(start - timedelta(days=1))
+
+
+async def _pratibha_metrics(d_from, d_to):
+    inv = await _pr_sum("sales_invoices", {"invoice_date": {"$gte": d_from, "$lte": d_to}}, ["grand_total"])
+    pay = await _pr_sum("payments", {"payment_type": "received", "payment_date": {"$gte": d_from, "$lte": d_to}}, ["amount"])
+    lo, hi = d_from, d_to + "T23:59:59Z"
+    return {"sales": inv["grand_total"], "sales_invoices": inv["count"], "collections": pay["amount"],
+            "payments": pay["count"],
+            "tickets_created": await db.tickets.count_documents({"created_at": {"$gte": lo, "$lte": hi}}),
+            "tickets_closed": await db.tickets.count_documents({"closed_at": {"$gte": lo, "$lte": hi}}),
+            "dispatches": await db.dispatches.count_documents({"dispatched_at": {"$gte": lo, "$lte": hi}})}
+
+
+async def _pratibha_daily_movement(date_str=None):
+    """What's coming IN and going OUT on a given day: orders placed, purchases received,
+    returns, new tickets (in); dispatched, delivered (out)."""
+    d = date_str or datetime.now(timezone.utc).date().isoformat()
+    lo, hi = f"{d}T00:00:00", f"{d}T23:59:59Z"
+    # Orders arrive via Amazon (the bulk), dealer, and direct/offline — count each intake
+    # collection (amazon_orders is the live marketplace feed; sales_orders lags). Exclude
+    # amazon-sourced sales_orders to avoid double-counting the Amazon channel.
+    amz = await db.amazon_orders.count_documents({"created_at": {"$gte": lo, "$lte": hi}})
+    dlr = await db.dealer_orders.count_documents({"created_at": {"$gte": lo, "$lte": hi}})
+    drt = await db.sales_orders.count_documents({"created_at": {"$gte": lo, "$lte": hi},
+                                                 "order_source": {"$nin": ["amazon"]}})
+    return {
+        "date": d,
+        "incoming": {
+            "orders_placed": amz + dlr + drt,
+            "orders_by_channel": {"amazon": amz, "dealer": dlr, "direct_offline": drt},
+            "purchases_received": await db.purchases.count_documents({"created_at": {"$gte": lo, "$lte": hi}}),
+            "returns": await db.credit_notes.count_documents({"credit_note_date": d}),
+            "inward_gate_scans": await db.gate_logs.count_documents({"scan_type": "inward", "scanned_at": {"$gte": lo, "$lte": hi}}),
+            "new_tickets": await db.tickets.count_documents({"created_at": {"$gte": lo, "$lte": hi}}),
+        },
+        "outgoing": {
+            # Gate outward scans are the real "shipped today" signal (dispatched_at often unset).
+            "dispatched": await db.gate_logs.count_documents({"scan_type": "outward", "scanned_at": {"$gte": lo, "$lte": hi}}),
+            "delivered": await db.sales_orders.count_documents({"delivered_at": {"$gte": lo, "$lte": hi}}),
+        },
+    }
+
+
+async def _pratibha_enrich_gate(scans):
+    """Fill blank customer names on gate scans by joining the tracking id back to an order
+    record (dispatches/sales_orders/courier_shipments/amazon_orders). Batched ($in), so it's
+    a few queries total. Self-ship marketplace AWBs with no CRM order link stay blank."""
+    need = [s for s in scans if not (s.get("customer_name") or "").strip() and s.get("tracking_id")]
+    tids = list({s["tracking_id"] for s in need})
+    if not tids:
+        return scans
+    name = {}
+    async for x in db.dispatches.find({"tracking_id": {"$in": tids}}, {"_id": 0, "tracking_id": 1, "customer_name": 1}):
+        if x.get("customer_name"):
+            name.setdefault(x["tracking_id"], x["customer_name"])
+    async for x in db.sales_orders.find({"tracking_id": {"$in": tids}}, {"_id": 0, "tracking_id": 1, "customer_name": 1}):
+        if x.get("customer_name"):
+            name.setdefault(x["tracking_id"], x["customer_name"])
+    async for x in db.courier_shipments.find({"awb_number": {"$in": tids}}, {"_id": 0, "awb_number": 1, "customer_name": 1}):
+        if x.get("customer_name"):
+            name.setdefault(x["awb_number"], x["customer_name"])
+    async for x in db.amazon_orders.find({"tracking_number": {"$in": tids}},
+                                         {"_id": 0, "tracking_number": 1, "buyer_name": 1, "customer_name_manual": 1}):
+        nm = x.get("buyer_name") or x.get("customer_name_manual")
+        if nm:
+            name.setdefault(x["tracking_number"], nm)
+    for s in scans:
+        if not (s.get("customer_name") or "").strip() and name.get(s.get("tracking_id")):
+            s["customer_name"] = name[s["tracking_id"]]
+    return scans
+
+
+async def _pratibha_gate_scans(date_str=None):
+    """The day's PHYSICAL movement from the gate: outward scans = shipments leaving, inward
+    scans = parcels/returns arriving. This is the real signal (dispatched_at often isn't set).
+    Customer names are enriched from order records where the tracking id links to one."""
+    d = date_str or datetime.now(timezone.utc).date().isoformat()
+    rng = {"$gte": f"{d}T00:00:00", "$lte": f"{d}T23:59:59Z"}
+    proj = {"_id": 0, "dispatch_number": 1, "customer_name": 1, "courier": 1, "tracking_id": 1,
+            "ticket_number": 1, "scanned_at": 1}
+    out_l = await _pratibha_enrich_gate([x async for x in db.gate_logs.find({"scan_type": "outward", "scanned_at": rng}, proj).limit(25)])
+    in_l = await _pratibha_enrich_gate([x async for x in db.gate_logs.find({"scan_type": "inward", "scanned_at": rng}, proj).limit(25)])
+    return {"date": d,
+            "outward": {"count": await db.gate_logs.count_documents({"scan_type": "outward", "scanned_at": rng}), "list": out_l},
+            "inward": {"count": await db.gate_logs.count_documents({"scan_type": "inward", "scanned_at": rng}), "list": in_l}}
+
+
+async def _pratibha_daily_report(date_str=None):
+    """Full transactional report for a day: sales (invoices), purchases, dispatches done,
+    and returns received — counts, ₹ totals, and a short line-list each. Recorded-today basis."""
+    d = date_str or datetime.now(timezone.utc).date().isoformat()
+    rng = {"$gte": f"{d}T00:00:00", "$lte": f"{d}T23:59:59Z"}
+    sales = await _pr_sum("sales_invoices", {"created_at": rng}, ["grand_total", "taxable_value", "total_gst"])
+    sales_list = [s async for s in db.sales_invoices.find({"created_at": rng},
+        {"_id": 0, "invoice_number": 1, "party_name": 1, "grand_total": 1, "firm_name": 1}).sort("grand_total", -1).limit(10)]
+    pur = await _pr_sum("purchases", {"created_at": rng}, ["total_amount", "total_taxable", "total_gst"])
+    pur_list = [p async for p in db.purchases.find({"created_at": rng},
+        {"_id": 0, "purchase_number": 1, "supplier_name": 1, "total_amount": 1}).sort("total_amount", -1).limit(10)]
+    gate = await _pratibha_gate_scans(d)  # physical movement (outward = shipped, inward = received)
+    ret = await _pr_sum("credit_notes", {"created_at": rng}, ["grand_total"])
+    ret_list = [r async for r in db.credit_notes.find({"created_at": rng},
+        {"_id": 0, "credit_note_number": 1, "party_name": 1, "grand_total": 1, "reason": 1}).sort("grand_total", -1).limit(10)]
+    return {"date": d,
+            "sales": {"count": sales["count"], "grand_total": sales["grand_total"],
+                      "taxable": sales["taxable_value"], "gst": sales["total_gst"], "invoices": sales_list},
+            "purchases": {"count": pur["count"], "total_amount": pur["total_amount"],
+                          "taxable": pur["total_taxable"], "gst": pur["total_gst"], "list": pur_list},
+            "dispatches": {"count": gate["outward"]["count"], "list": gate["outward"]["list"], "basis": "gate outward scans"},
+            "returns": {"count": ret["count"], "grand_total": ret["grand_total"], "list": ret_list,
+                        "gate_inward": gate["inward"]}}
+
+
+def _pratibha_format_daily_report(rep) -> str:
+    s, p, dsp, r = rep["sales"], rep["purchases"], rep["dispatches"], rep["returns"]
+    L = [f"Daily report — {rep['date']}", ""]
+    L.append(f"SALES: {s['count']} invoices · {_inr(s['grand_total'])} (taxable {_inr(s['taxable'])}, GST {_inr(s['gst'])})")
+    for x in s["invoices"][:8]:
+        L.append(f"   • {x.get('invoice_number')} · {x.get('party_name') or ''} · {_inr(x.get('grand_total'))}"
+                 f"{(' [' + x['firm_name'] + ']') if x.get('firm_name') else ''}")
+    L.append(f"\nPURCHASES: {p['count']} · {_inr(p['total_amount'])} (taxable {_inr(p['taxable'])}, GST {_inr(p['gst'])})")
+    for x in p["list"][:8]:
+        L.append(f"   • {x.get('purchase_number')} · {x.get('supplier_name') or ''} · {_inr(x.get('total_amount'))}")
+    L.append(f"\nDISPATCHES DONE (gate-out scans): {dsp['count']}")
+    for x in dsp["list"][:12]:
+        L.append(f"   • {x.get('dispatch_number') or x.get('ticket_number') or '(no ref)'} · "
+                 f"{x.get('customer_name') or ''} · {x.get('courier') or ''}"
+                 f"{(' · ' + x['tracking_id']) if x.get('tracking_id') else ''}")
+    gin = r.get("gate_inward") or {"count": 0, "list": []}
+    L.append(f"\nRETURNS / INWARD: {r['count']} credit notes ({_inr(r['grand_total'])}) · "
+             f"{gin['count']} parcels scanned in at gate")
+    for x in r["list"][:6]:
+        L.append(f"   • CN {x.get('credit_note_number')} · {x.get('party_name') or ''} · {_inr(x.get('grand_total'))}"
+                 f"{(' · ' + x['reason']) if x.get('reason') else ''}")
+    for x in gin["list"][:8]:
+        L.append(f"   • inward · {x.get('customer_name') or ''} · {x.get('courier') or ''}"
+                 f"{(' · ' + x['tracking_id']) if x.get('tracking_id') else ''}")
+    L += ["", "Pratibha, MuscleGrid"]
+    return "\n".join(L)
+
+
+async def scheduled_pratibha_daily_report():
+    """End-of-day: email the founder the day's sales, purchases, dispatches, and returns."""
+    c = email_agent.cfg()
+    if not (c.get("daily_report_enabled", True) and email_agent.is_configured()):
+        return
+    to = c.get("digest_to") or [c.get("founder_email")]
+    try:
+        rep = await _pratibha_daily_report(datetime.now(timezone.utc).date().isoformat())
+        await email_agent.send_reply_all(to, [], f"Pratibha daily report — {rep['date']}",
+                                         _pratibha_format_daily_report(rep), add_standing=False)
+        logger.info("Pratibha daily report sent")
+    except Exception as e:
+        logger.error(f"Pratibha daily report failed: {e}")
+
+
+def _pr_delta(cur, prev):
+    if not prev:
+        return ("new" if cur else "—")
+    pct = round((cur - prev) / prev * 100)
+    return f"{'+' if pct >= 0 else ''}{pct}% WoW"
+
+
+async def _pratibha_business_metrics(period: str):
+    d_from, d_to, p_from, p_to = _pratibha_period_range(period)
+    cur = await _pratibha_metrics(d_from, d_to)
+    prev = await _pratibha_metrics(p_from, p_to)
+    trend = {k: _pr_delta(cur.get(k, 0), prev.get(k, 0))
+             for k in ("sales", "collections", "tickets_created", "tickets_closed", "dispatches")}
+    return {"period": period or "this_week", "from": d_from, "to": d_to, "currency": "INR",
+            "current": cur, "previous": prev, "vs_previous": trend}
+
+
+async def _pratibha_team_perf(name=None):
+    match = {"status": _PR_OPEN_TICKETS, "assigned_to_name": {"$ne": None}}
+    if name:
+        match["assigned_to_name"] = {"$regex": re.escape(name), "$options": "i"}
+    rows = []
+    async for r in db.tickets.aggregate([{"$match": match},
+            {"$group": {"_id": "$assigned_to_name", "open": {"$sum": 1},
+                        "breached": {"$sum": {"$cond": ["$sla_breached", 1, 0]}}}},
+            {"$sort": {"open": -1}}, {"$limit": 15}]):
+        rows.append({"staff": r["_id"], "open_tickets": r["open"], "sla_breached": r["breached"]})
+    return {"staff": rows,
+            "unassigned_open": await db.tickets.count_documents({"status": _PR_OPEN_TICKETS, "assigned_to_name": None})}
+
+
+async def _pratibha_stuck_shipments(days: int = 3, limit: int = 8):
+    """Active Bigship shipments not delivered after `days` days (NOT PICKED / stuck in transit),
+    grouped by hub so a systemic pickup failure reads as one line. Cached, no live API call."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    q = {"awb_number": {"$nin": [None, ""]}, "tracking_retired": {"$ne": True}, "created_at": {"$lt": cutoff}}
+    total = await db.courier_shipments.count_documents(q)
+    by_hub = []
+    async for r in db.courier_shipments.aggregate([{"$match": q},
+            {"$group": {"_id": "$status_detail.last_location", "n": {"$sum": 1},
+                        "oldest_days": {"$min": "$created_at"}}},
+            {"$sort": {"n": -1}}, {"$limit": 8}]):
+        by_hub.append({"hub": r["_id"] or "unknown", "count": r["n"],
+                       "oldest_days": (datetime.now(timezone.utc) - _pr_parse_iso(r.get("oldest_days"))).days})
+    rows = []
+    async for d in db.courier_shipments.find(q, {"_id": 0, "awb_number": 1, "customer_name": 1, "status": 1,
+            "status_detail": 1, "created_at": 1}).sort("created_at", 1).limit(limit):
+        sd = d.get("status_detail") or {}
+        days_old = (datetime.now(timezone.utc) - _pr_parse_iso(d.get("created_at"))).days
+        rows.append({"awb": d.get("awb_number"), "customer": d.get("customer_name"),
+                     "status": d.get("status"), "age_days": days_old, "last_location": sd.get("last_location")})
+    return {"count": total, "days": days, "by_hub": by_hub, "shipments": rows}
+
+
+async def _pratibha_risks(allow_finance=True):
+    now = datetime.now(timezone.utc)
+    risks = []
+    stuck = await _pratibha_stuck_shipments(days=3, limit=5)
+    if stuck["count"]:
+        top = stuck["by_hub"][0] if stuck["by_hub"] else {}
+        hub_txt = (f" — {top.get('count')} at {top.get('hub')} (oldest {top.get('oldest_days')}d)"
+                   if top else "")
+        risks.append(f"{stuck['count']} Bigship shipments stuck (not delivered after 3+ days){hub_txt}.")
+    unassigned = await db.tickets.count_documents({"status": _PR_OPEN_TICKETS, "assigned_to_name": None})
+    if unassigned:
+        risks.append(f"{unassigned} open tickets are UNASSIGNED (no owner).")
+    wk, prev_wk = (now - timedelta(days=7)).isoformat(), (now - timedelta(days=14)).isoformat()
+    new_t = await db.tickets.count_documents({"created_at": {"$gte": wk}})
+    prev_t = await db.tickets.count_documents({"created_at": {"$gte": prev_wk, "$lt": wk}})
+    if prev_t and new_t > prev_t * 1.3:
+        risks.append(f"Complaint inflow rising: {new_t} new tickets this week vs {prev_t} last (+{round((new_t-prev_t)/prev_t*100)}%).")
+    dep = await db.dealers.count_documents({"security_deposit_status": {"$in": ["not_paid", "pending"]}})
+    if dep:
+        risks.append(f"{dep} dealers have unpaid/pending security deposits.")
+    dgroups = 0
+    async for r in db.sales_orders.aggregate([{"$match": {"tracking_id": {"$nin": [None, ""]}}},
+            {"$group": {"_id": "$tracking_id", "n": {"$sum": 1}}}, {"$match": {"n": {"$gt": 1}}}, {"$count": "d"}]):
+        dgroups = r["d"]
+    if dgroups:
+        risks.append(f"{dgroups} tracking IDs shared by multiple orders — review for duplicate shipments.")
+    if allow_finance:
+        old = (now.date() - timedelta(days=60)).isoformat()
+        s = await _pr_sum("sales_invoices", {"balance_due": {"$gt": 0}, "invoice_date": {"$lt": old}}, ["balance_due"])
+        if s["count"]:
+            risks.append(f"Aged receivables: {_inr(s['balance_due'])} across {s['count']} invoices older than 60 days.")
+    return risks
+
+
+async def scheduled_pratibha_weekly_review():
+    """Weekly executive review to the founder: KPIs + trend + team + risks, with a
+    Claude-written narrative and recommended actions over the real numbers."""
+    c = email_agent.cfg()
+    if not (c.get("review_enabled", True) and email_agent.is_configured()):
+        return
+    to = c.get("digest_to") or [c.get("founder_email")]
+    include_fin = all(email_agent.is_finance_sender(a, c.get("finance_senders", [])) for a in to)
+    try:
+        bm = await _pratibha_business_metrics("this_week")
+        team = await _pratibha_team_perf()
+        risks = await _pratibha_risks(include_fin)
+        facts = json.dumps({"metrics": bm, "team": team, "risks": risks}, default=str)[:6000]
+        client = pratibha_brain._client_or_none()
+        body = None
+        if client:
+            sysp = ("You are Pratibha, MuscleGrid's VP-style chief of staff, writing the founder's WEEKLY BUSINESS "
+                    "REVIEW from the JSON facts. Executive and concise: (1) 2-3 lines on the week — sales, collections, "
+                    "tickets, with the WoW trend; (2) 'Watch-outs:' the key risks; (3) 'Recommended actions:' concrete, "
+                    "prioritised, each tied to a number. Use ONLY the given facts. Money in ₹. Plain text, no markdown "
+                    "tables. End 'Pratibha, MuscleGrid'.")
+            r = await client.messages.create(model=pratibha_brain.model_reply(), max_tokens=900,
+                                             system=pratibha_brain._sys(sysp),
+                                             messages=[{"role": "user", "content": facts}])
+            body = "".join(b.text for b in r.content if getattr(b, "type", "") == "text").strip()
+        await email_agent.send_reply_all(to, [], f"Pratibha weekly review — week of {bm['from']}",
+                                         body or f"Weekly metrics:\n{facts}", add_standing=False)
+        logger.info(f"Pratibha weekly review sent to {to}")
+    except Exception as e:
+        logger.error(f"Pratibha weekly review failed: {e}")
+
+
+# ---- Pratibha co-founder layer: P&L, margins, cash flow, channel, memory -----
+async def _pratibha_product_margins(name=None, category=None, loss_only=False, limit=15):
+    q = {"selling_price": {"$gt": 0}, "cost_price": {"$gt": 0}}
+    if name:
+        q["$or"] = [{"name": {"$regex": re.escape(name), "$options": "i"}},
+                    {"sku_code": {"$regex": re.escape(name), "$options": "i"}}]
+    if category:
+        q["category"] = {"$regex": re.escape(category), "$options": "i"}
+    if loss_only:
+        q["$expr"] = {"$lt": ["$selling_price", "$cost_price"]}
+    rows = []
+    async for s in db.master_skus.find(q, {"_id": 0, "name": 1, "sku_code": 1, "category": 1, "cost_price": 1,
+                                           "selling_price": 1, "mrp": 1, "gst_rate": 1}):
+        cost, sell = s.get("cost_price") or 0, s.get("selling_price") or 0
+        margin = round(sell - cost, 2)
+        rows.append({**s, "margin": margin, "margin_pct": (round(margin / sell * 100, 1) if sell else None)})
+    rows.sort(key=lambda r: (r["margin_pct"] if r["margin_pct"] is not None else 0))  # worst first
+    loss = [r for r in rows if r["margin"] < 0]
+    return {"count": len(rows), "loss_making": len(loss), "results": rows[:limit]}
+
+
+async def _pratibha_pnl(period):
+    d_from, d_to, _, _ = _pratibha_period_range(period)
+    lo, hi = d_from, d_to + "T23:59:59Z"
+    rev = await _pr_sum("sales_invoices", {"invoice_date": {"$gte": d_from, "$lte": d_to}}, ["taxable_value", "grand_total"])
+    cogs_doc = await db.journal_entries.aggregate([{"$match": {"journal_type": "cogs_posting", "created_at": {"$gte": lo, "$lte": hi}}},
+                {"$group": {"_id": None, "a": {"$sum": "$amount"}}}]).to_list(1)
+    fee_doc = await db.journal_entries.aggregate([{"$match": {"journal_type": "marketplace_fee_posting", "created_at": {"$gte": lo, "$lte": hi}}},
+                {"$group": {"_id": None, "a": {"$sum": "$amount"}}}]).to_list(1)
+    exp = await _pr_sum("expenses", {"expense_date": {"$gte": d_from, "$lte": d_to}}, ["net_payable"])
+    cogs = round(cogs_doc[0]["a"], 2) if cogs_doc else 0
+    fees = round(fee_doc[0]["a"], 2) if fee_doc else 0
+    revenue = rev["taxable_value"]
+    gross = round(revenue - cogs - fees, 2)
+    net = round(gross - exp["net_payable"], 2)
+    out = {"period": period, "from": d_from, "to": d_to, "currency": "INR", "revenue_ex_gst": revenue,
+           "cogs": cogs, "marketplace_fees": fees, "gross_profit": gross,
+           "gross_margin_pct": (round(gross / revenue * 100, 1) if revenue else None),
+           "expenses": exp["net_payable"], "net_profit": net, "invoices": rev["count"]}
+    if revenue and not cogs:
+        out["caveat"] = ("COGS not posted for this period's basis, so gross/net profit are OVERSTATED "
+                         "(this is revenue minus expenses only, not true profit). Do not quote the margin %.")
+    return out
+
+
+async def _pratibha_cashflow(days=30):
+    recv = await _pr_sum("sales_invoices", {"balance_due": {"$gt": 0}}, ["balance_due"])
+    since = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
+    exp = await _pr_sum("expenses", {"expense_date": {"$gte": since}}, ["net_payable"])
+    run_rate = round(exp["net_payable"] / max(days, 1) * 30, 2)  # ~monthly expense run-rate
+    return {"currency": "INR", "receivables_due_in": recv["balance_due"], "open_invoices": recv["count"],
+            "expense_last_{}d".format(days): exp["net_payable"], "monthly_expense_run_rate": run_rate,
+            "note": "Indicative: receivables = potential inflow if collected; run-rate from recent expenses. Not a full payables ledger."}
+
+
+async def _pratibha_channel(period):
+    d_from, d_to, _, _ = _pratibha_period_range(period)
+    lo, hi = d_from, d_to + "T23:59:59Z"
+    chan = []
+    async for r in db.sales_orders.aggregate([{"$match": {"created_at": {"$gte": lo, "$lte": hi}}},
+            {"$group": {"_id": "$order_source", "orders": {"$sum": 1}, "value": {"$sum": "$total_amount"}}},
+            {"$sort": {"orders": -1}}]):
+        chan.append({"channel": r["_id"] or "unknown", "orders": r["orders"], "value": round(r["value"] or 0, 2)})
+    leads_total = await db.leads.count_documents({"created_at": {"$gte": lo, "$lte": hi}})
+    leads_conv = await db.leads.count_documents({"created_at": {"$gte": lo, "$lte": hi}, "status": "converted"})
+    quo_total = await db.quotations.count_documents({"created_at": {"$gte": lo, "$lte": hi}})
+    quo_conv = await db.quotations.count_documents({"created_at": {"$gte": lo, "$lte": hi}, "status": "converted"})
+    return {"period": period, "from": d_from, "to": d_to, "currency": "INR", "by_channel": chan,
+            "funnel": {"leads": leads_total, "leads_converted": leads_conv, "quotations": quo_total,
+                       "quotations_converted": quo_conv},
+            "caveat": "Channel ORDER COUNTS are reliable; channel VALUE is understated (many orders carry no amount)."}
+
+
+async def _api_cost_summary(month=None):
+    """Monthly AI API spend (₹ + calls), broken down by model — Pratibha + CA agent."""
+    month = month or datetime.now(timezone.utc).strftime("%Y-%m")
+    agg = await db.api_usage_log.aggregate([
+        {"$match": {"at": {"$gte": month + "-01", "$lte": month + "-31T23:59:59Z"}}},
+        {"$group": {"_id": "$model", "calls": {"$sum": 1}, "in": {"$sum": "$input_tokens"},
+                    "out": {"$sum": "$output_tokens"}, "inr": {"$sum": "$cost_inr"}}}]).to_list(20)
+    by_model = [{"model": a["_id"], "calls": a["calls"], "input_tokens": a["in"],
+                 "output_tokens": a["out"], "cost_inr": round(a["inr"] or 0, 2)} for a in agg]
+    return {"month": month, "total_inr": round(sum(a["inr"] or 0 for a in agg), 2),
+            "calls": sum(a["calls"] for a in agg), "by_model": by_model}
+
+
+async def _pratibha_recall(topic=None):
+    """Strategic memory: founder decisions/policies/initiatives Pratibha was told to remember."""
+    q = {}
+    if topic:
+        trx = {"$regex": re.escape(topic), "$options": "i"}
+        q = {"$or": [{"note": trx}, {"keywords": trx}, {"topic": trx}]}
+    rows = []
+    async for d in db.pratibha_memory.find(q, {"_id": 0, "note": 1, "topic": 1, "created_at": 1}
+                                           ).sort("created_at", -1).limit(10):
+        rows.append(d)
+    return {"count": len(rows), "memories": rows}
+
+
+_PR_MEMORY_RX = re.compile(r"\b(remember|note to self|for the record|going forward|policy|we decided|decision)\b", re.I)
+
+# Manager/founder approving that Pratibha may send the draft reply she prepared to the customer.
+_PR_APPROVE_RX = re.compile(
+    r"\b(send it|send the (draft|reply)|send to (the )?customer|you (can|may) (reply|send)|reply yourself|"
+    r"reply to (the )?customer|go ahead|approved?|yes,?\s*send|ok(ay)?,?\s*send|please send|"
+    r"bhej do|bhej dijiye|bhej dena)\b", re.I)
+
+
+async def _pratibha_handle_memory(m: dict, sender: str) -> bool:
+    """Founder teaching Pratibha a decision/policy ('Pratibha, going forward we never discount
+    above 10%') → store it in strategic memory and acknowledge. Founder-only."""
+    c = email_agent.cfg()
+    if not email_agent.is_finance_sender(sender, c.get("finance_senders", [])):
+        return False
+    body = m.get("body", "") or ""
+    if not (_PR_MEMORY_RX.search(body) and
+            email_agent.has_trigger(m.get("subject", ""), body, c["trigger_word"])):
+        return False
+    await db.pratibha_memory.insert_one({
+        "id": str(uuid.uuid4()), "note": body.strip()[:1500], "topic": (m.get("subject") or "")[:80],
+        "keywords": [w for w in re.findall(r"[a-z]{4,}", body.lower())][:12], "by": sender,
+        "created_at": datetime.now(timezone.utc).isoformat()})
+    try:
+        await email_agent.send_reply_all([sender], [], f"Re: {m.get('subject')}",
+            "Noted, sir — I'll remember this and apply it going forward.\n\nPratibha, MuscleGrid",
+            m.get("message_id") or "", add_standing=False)
+    except Exception:
+        pass
+    return True
+
+
+# ---- Pratibha learning: corrections loop + history mining --------------------
+async def _pratibha_record_correction(m: dict, original: str, corrected: str, user: dict):
+    """When a human meaningfully edits Pratibha's draft before sending, distill a general
+    lesson (via Claude) and store it so future drafts apply it."""
+    import difflib
+    o = (original or "").strip()
+    cval = (corrected or "").strip()
+    if not o or not cval or difflib.SequenceMatcher(None, o, cval).ratio() > 0.92:
+        return  # no draft, or essentially unchanged
+    les = await pratibha_brain.extract_lesson(m.get("category", "other"), o, cval)
+    if les.get("skip") or not les.get("lesson"):
+        return
+    await db.pratibha_lessons.insert_one({
+        "id": str(uuid.uuid4()), "category": m.get("category", "other"),
+        "keywords": les.get("keywords") or [], "lesson": les["lesson"], "source": "correction",
+        "original": o[:1500], "corrected": cval[:1500],
+        "by": (user or {}).get("id"), "created_at": datetime.now(timezone.utc).isoformat()})
+    logger.info(f"Pratibha learned a lesson: {les['lesson'][:80]}")
+
+
+async def _pratibha_guidance(subject: str, body: str, category: str) -> str:
+    """Build guidance text (house style + relevant past-correction lessons) to steer a draft."""
+    parts = []
+    style = await db.pratibha_style.find_one({"id": "style"}, {"_id": 0, "note": 1})
+    if style and style.get("note"):
+        parts.append("House style: " + style["note"])
+    toks = set(re.findall(r"[a-z]{4,}", f"{subject} {body}".lower()))
+    lessons = []
+    async for l in db.pratibha_lessons.find({}, {"_id": 0, "lesson": 1, "keywords": 1, "category": 1}
+                                            ).sort("created_at", -1).limit(60):
+        if (category and l.get("category") == category) or (set(l.get("keywords") or []) & toks):
+            lessons.append(l["lesson"])
+        if len(lessons) >= 5:
+            break
+    if lessons:
+        parts.append("Lessons from past corrections (follow these):\n- " + "\n- ".join(lessons))
+    # Founder decisions/policies relevant to this email (apply them).
+    mems = []
+    async for mem in db.pratibha_memory.find({}, {"_id": 0, "note": 1, "keywords": 1}).sort("created_at", -1).limit(40):
+        if set(mem.get("keywords") or []) & toks:
+            mems.append(mem["note"])
+        if len(mems) >= 3:
+            break
+    if mems:
+        parts.append("Founder policies/decisions to honor:\n- " + "\n- ".join(mems))
+    return "\n\n".join(parts)
+
+
+async def pratibha_learn_from_history(n: int = 300, chunk: int = 60) -> dict:
+    """Mine recent INBOX (paired with Sent replies) into reusable FAQs (kb_articles) + a
+    house-style note. HARDENED: fetches by UID and CHECKPOINTS after every chunk, so a dropped
+    connection or crash never loses prior progress — re-running resumes from where it stopped
+    (already-done UIDs are skipped WITHOUT re-fetching). Reads via PEEK (nothing marked seen)."""
+    stats = {"inbox_uids": 0, "to_process": 0, "processed": 0, "pairs": 0, "batches": 0,
+             "faqs_added": 0, "chunks_done": 0, "chunks_failed": 0}
+    seen = set()
+    async for d in db.pratibha_learn_seen.find({}, {"_id": 0, "key": 1}):
+        if d.get("key"):
+            seen.add(d["key"])
+
+    # Sent index for Q&A pairing (best-effort, capped, per-chunk error-tolerant).
+    sent_by = {}
+    for folder in ("Sent", "Sent Items", "INBOX.Sent"):
+        try:
+            suids = await email_agent.fetch_uids(folder, min(n, 3000))
+        except Exception:
+            suids = []
+        if not suids:
+            continue
+        for i in range(0, len(suids), 120):
+            try:
+                for sm in await email_agent.fetch_bodies(folder, suids[i:i + 120]):
+                    sent_by.setdefault(_pr_norm_subject(sm.get("subject", "")), []).append(sm.get("body", ""))
+            except Exception as e:
+                logger.warning(f"Pratibha learn: sent chunk failed: {e}")
+        break
+
+    uids = await email_agent.fetch_uids("INBOX", n)
+    stats["inbox_uids"] = len(uids)
+    todo = [u for u in uids if f"INBOX:{u}" not in seen]
+    stats["to_process"] = len(todo)
+    style_acc = []
+    for ci in range(0, len(todo), chunk):
+        cu = todo[ci:ci + chunk]
+        try:
+            msgs = await email_agent.fetch_bodies("INBOX", cu)
+        except Exception as e:
+            stats["chunks_failed"] += 1
+            logger.warning(f"Pratibha learn: inbox chunk fetch failed (will retry next run): {e}")
+            continue  # NOT checkpointed → retried on the next run
+        items = []
+        for im in msgs:
+            fa = im.get("from_addr", "")
+            if not fa or _pratibha_is_automated(fa) or email_agent.is_trigger_sender(fa, ["@musclegrid.in"]):
+                continue
+            reply = ""
+            for r in sent_by.get(_pr_norm_subject(im.get("subject", "")), []):
+                reply = r
+                break
+            if reply:
+                stats["pairs"] += 1
+            items.append(f"CUSTOMER ({im.get('subject', '')}): {im.get('body', '')[:600]}"
+                         + (f"\nTEAM REPLY: {reply[:600]}" if reply else ""))
+        for i in range(0, len(items), 15):
+            res = await pratibha_brain.extract_faqs("\n\n---\n\n".join(items[i:i + 15]))
+            stats["batches"] += 1
+            if res.get("style"):
+                style_acc.append(res["style"])
+            for f in res.get("faqs", []):
+                q = (f.get("question") or "").strip()
+                if not q:
+                    continue
+                if await db.kb_articles.find_one({"question": {"$regex": re.escape(q[:40]), "$options": "i"}}, {"_id": 1}):
+                    continue
+                await db.kb_articles.insert_one({
+                    "id": str(uuid.uuid4()), "question": q, "answer": (f.get("answer") or "").strip(),
+                    "keywords": [str(k).lower() for k in (f.get("keywords") or [])], "category": f.get("category", "other"),
+                    "model_name": q[:60], "source": "history", "created_at": datetime.now(timezone.utc).isoformat()})
+                stats["faqs_added"] += 1
+        # CHECKPOINT this chunk's UIDs (commit progress every ~chunk emails).
+        await db.pratibha_learn_seen.insert_many([{"key": f"INBOX:{u}"} for u in cu], ordered=False)
+        stats["processed"] += len(cu)
+        stats["chunks_done"] += 1
+        if style_acc and stats["chunks_done"] % 5 == 0:
+            await db.pratibha_style.update_one({"id": "style"}, {"$set": {
+                "id": "style", "note": " ".join(style_acc[-6:])[:800],
+                "updated_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    if style_acc:
+        await db.pratibha_style.update_one({"id": "style"}, {"$set": {
+            "id": "style", "note": " ".join(style_acc[-6:])[:800],
+            "updated_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    logger.info(f"Pratibha history learn done: {stats}")
+    return stats
+
+
+# ---- Pratibha triage: ask Shweta who should own an unowned email -------------
+_PR_AUTOMATED_RX = re.compile(
+    r"(no[-_.]?reply|do[-_.]?not[-_.]?reply|donotreply|mailer-daemon|postmaster|notification|"
+    r"newsletter|bounce|noreply|@.*\.gov\.in|registration@|alerts?@)", re.I)
+
+
+def _pratibha_is_automated(sender: str) -> bool:
+    return bool(_PR_AUTOMATED_RX.search(sender or ""))
+
+
+def _pratibha_assignees() -> dict:
+    """name -> email for the candidate owners. Prefers the explicit assignee_map (handles real
+    mailbox aliases like angad → lithium@musclegrid.in); else derives the name from the local-part."""
+    c = email_agent.cfg()
+    amap = c.get("assignee_map") or {}
+    if amap:
+        return amap
+    return {e.split("@")[0].lower(): e for e in (c.get("assignees") or [])}
+
+
+def _pratibha_extract_refs(text: str):
+    """Pull explicit ticket numbers and order/ticket ids mentioned in an email."""
+    text = text or ""
+    tickets = re.findall(r"MG-[RW]-\d{8}-\d+", text, re.I)
+    ids = []
+    for mm in re.finditer(
+            r"\b(?:order|ticket|tckt|tkt|complaint|ref(?:erence)?|case)\s*(?:id|no\.?|number|#)?"
+            r"\s*(?:is|are|was|=|:|#|-|no\.?)?\s*(\d{3,12})\b",
+            text, re.I):
+        ids.append(mm.group(1))
+    # de-dupe, preserve order
+    return list(dict.fromkeys(tickets)), list(dict.fromkeys(ids))
+
+
+async def _pratibha_email_history(address: str, max_lines: int = 12) -> str:
+    """Observe the FULL email history with this customer: what we've already ingested (DB) PLUS a
+    whole-mailbox search by their address (IMAP FROM/TO). Returns a short, most-recent-first brief."""
+    address = (address or "").strip().lower()
+    if not address:
+        return ""
+    rows = []  # (date_str, direction, subject, snippet)
+    try:
+        async for d in db.email_agent_inbox.find(
+                {"$or": [{"from_addr": address}, {"to": address}, {"cc": address}]},
+                {"_id": 0, "subject": 1, "created_at": 1, "from_addr": 1}).sort("created_at", -1).limit(10):
+            rows.append((str(d.get("created_at", ""))[:10],
+                         "in" if d.get("from_addr") == address else "out", d.get("subject") or "", ""))
+    except Exception:
+        pass
+    try:
+        for h in await email_agent.search_history(address, 15):
+            rows.append((str(h.get("date", ""))[:16], h.get("direction") or "in",
+                         h.get("subject") or "", (h.get("snippet") or "")[:140]))
+    except Exception as e:
+        logger.warning(f"Pratibha mailbox history search failed for {address}: {e}")
+    if not rows:
+        return "Email history: no prior emails found with this customer."
+    lines, seen = [], set()
+    for dt, dirn, subj, snip in rows:
+        key = _pr_norm_subject(subj)
+        if key in seen:
+            continue
+        seen.add(key)
+        arrow = "← from customer" if dirn == "in" else "→ our reply"
+        lines.append(f"  {dt} {arrow}: {subj}" + (f"  — {snip}" if snip else ""))
+        if len(lines) >= max_lines:
+            break
+    return "Email history with this customer (most recent first):\n" + "\n".join(lines)
+
+
+def _pr_email_phones(text: str):
+    """Indian mobile numbers written in the email text (subject/body), normalized to 10 digits.
+    Lets Pratibha identify a customer who emails from a different address than their phone record.
+    Handles +91/0 prefixes and the common '98765 43210' (5+5, space or hyphen) grouping, while the
+    leading (?<!\\d) guard keeps it from pulling 10 digits out of a long order/ticket number."""
+    out = []
+    for mm in re.finditer(r"(?<!\d)(?:\+?91[\s-]?|0)?([6-9]\d{4}[\s-]?\d{5})(?!\d)", text or ""):
+        d = re.sub(r"\D", "", mm.group(1))
+        if len(d) == 10 and d[0] in "6789" and d not in out:
+            out.append(d)
+    return out[:5]
+
+
+async def _pratibha_crm_brief(sender: str, body: str, subject: str = "", from_name: str = "") -> str:
+    """Best-effort CRM context: match the customer by EMAIL, by NAME, and by any TICKET/ORDER id
+    mentioned in the email — plus their recent tickets."""
+    lines = []
+    rx = {"$regex": re.escape(sender), "$options": "i"}
+    party = await db.parties.find_one({"email": rx}, {"_id": 0, "name": 1, "phone": 1, "city": 1, "state": 1})
+    lead = None if party else await db.leads.find_one({"email": rx},
+                                                      {"_id": 0, "name": 1, "phone": 1, "status": 1, "product_interest": 1})
+    who = party or lead
+    matched_by = "email"
+    # Phone numbers written in the email body/subject — a strong extra key, since customers
+    # often email from a different address than their phone-based CRM record.
+    email_phones = _pr_email_phones(f"{subject}\n{body}")
+    # Fallback 1: match by a PHONE mentioned in the email.
+    if not who and email_phones:
+        prx = [{"phone": {"$regex": re.escape(p) + "$"}} for p in email_phones]
+        party = await db.parties.find_one({"$or": prx}, {"_id": 0, "name": 1, "phone": 1, "city": 1, "state": 1})
+        if not party:
+            lead = await db.leads.find_one({"$or": prx}, {"_id": 0, "name": 1, "phone": 1, "status": 1, "product_interest": 1})
+        who = party or lead
+        if who:
+            matched_by = "phone-in-email"
+    # Fallback 2: match by the sender's NAME when their email isn't on file
+    if not who and from_name and len(from_name.strip()) >= 3:
+        nrx = {"$regex": re.escape(from_name.strip()), "$options": "i"}
+        party = await db.parties.find_one({"name": nrx}, {"_id": 0, "name": 1, "phone": 1, "city": 1, "state": 1})
+        who, matched_by = party, "name"
+    if who:
+        tag = "customer" if party else "lead"
+        suffix = ""
+        if matched_by == "name":
+            suffix = " (matched by NAME, not email — please verify it's the same person)"
+        elif matched_by == "phone-in-email":
+            suffix = " (matched by PHONE found in the email body)"
+        lines.append(f"CRM match ({tag}{suffix}): {who.get('name')} | "
+                     f"{who.get('phone', '')} | {who.get('city') or who.get('status') or ''}"
+                     + (f" | interest: {who.get('product_interest')}" if who.get("product_interest") else ""))
+        tq = {"$or": [{"customer_email": rx}]}
+        if who.get("phone"):
+            tq["$or"].append({"customer_phone": who["phone"]})
+        if who.get("name"):
+            tq["$or"].append({"customer_name": {"$regex": re.escape(who["name"]), "$options": "i"}})
+        tix = []
+        async for t in db.tickets.find(tq, {"_id": 0, "ticket_number": 1, "status": 1, "issue_description": 1}
+                                       ).sort("created_at", -1).limit(3):
+            tix.append(f"{t.get('ticket_number')} [{t.get('status')}] {(t.get('issue_description') or '')[:50]}")
+        if tix:
+            lines.append("Recent tickets: " + " ; ".join(tix))
+        # Warranties registered on this customer's phone (so replies know warranty status).
+        if who.get("phone"):
+            wts = []
+            async for w in db.warranties.find({"phone": who["phone"]},
+                    {"_id": 0, "warranty_number": 1, "product_name": 1, "status": 1, "warranty_end_date": 1}
+                    ).sort("created_at", -1).limit(3):
+                wts.append(f"{w.get('warranty_number')} {(w.get('product_name') or '')[:30]} [{w.get('status')}]"
+                           + (f" till {w.get('warranty_end_date')}" if w.get('warranty_end_date') else ""))
+            if wts:
+                lines.append("Warranties: " + " ; ".join(wts))
+    else:
+        if email_phones:
+            lines.append(f"No CRM customer/lead master match. Phone(s) in the email: {', '.join(email_phones)}.")
+            for p in email_phones[:2]:
+                prx = {"$regex": re.escape(p) + "$"}
+                async for t in db.tickets.find({"customer_phone": prx},
+                        {"_id": 0, "ticket_number": 1, "status": 1, "issue_description": 1}
+                        ).sort("created_at", -1).limit(2):
+                    lines.append(f"  ↳ ticket for {p}: {t.get('ticket_number')} [{t.get('status')}] "
+                                 f"{(t.get('issue_description') or '')[:50]}")
+        else:
+            lines.append("No CRM customer/lead match for this sender's email or name.")
+    if who and email_phones:
+        lines.append("Phone(s) mentioned in the email body: " + ", ".join(email_phones))
+
+    # Resolve any ticket numbers / order ids the customer referenced in the email itself
+    tickets, ids = _pratibha_extract_refs(f"{subject}\n{body}")
+    for tn in tickets[:3]:
+        t = await db.tickets.find_one(
+            {"ticket_number": {"$regex": f"^{re.escape(tn)}$", "$options": "i"}},
+            {"_id": 0, "ticket_number": 1, "status": 1, "customer_name": 1, "customer_phone": 1, "issue_description": 1})
+        if t:
+            lines.append(f"Referenced ticket {t.get('ticket_number')} [{t.get('status')}] — "
+                         f"{t.get('customer_name') or ''} {t.get('customer_phone') or ''}: "
+                         f"{(t.get('issue_description') or '')[:70]}")
+    for oid in ids[:3]:
+        hit = None
+        t = await db.tickets.find_one({"ticket_number": {"$regex": re.escape(oid), "$options": "i"}},
+                                      {"_id": 0, "ticket_number": 1, "status": 1, "customer_name": 1})
+        if t:
+            hit = f"Ticket {t.get('ticket_number')} [{t.get('status')}] — {t.get('customer_name') or ''}"
+        if not hit:
+            o = await db.sales_orders.find_one({"$or": [{"order_number": oid}, {"id": oid}]},
+                                               {"_id": 0, "order_number": 1, "status": 1, "customer_name": 1, "total_amount": 1})
+            if o:
+                hit = f"Order {o.get('order_number') or oid} [{o.get('status')}] — {o.get('customer_name') or ''} ₹{o.get('total_amount') or 0}"
+        if not hit:
+            d = await db.dispatches.find_one({"$or": [{"dispatch_number": oid}, {"order_id": oid}]},
+                                             {"_id": 0, "dispatch_number": 1, "status": 1, "customer_name": 1, "tracking_number": 1})
+            if d:
+                hit = f"Dispatch {d.get('dispatch_number') or oid} [{d.get('status')}] — {d.get('customer_name') or ''} AWB {d.get('tracking_number') or '-'}"
+        if hit:
+            lines.append(f"Referenced #{oid}: {hit}")
+    # Observe the full email history with this customer before drafting.
+    hist = await _pratibha_email_history(sender)
+    if hist:
+        lines.append(hist)
+    return "\n".join(lines)
+
+
+async def _pratibha_triage_to_shweta(m: dict, sender: str, summary: str):
+    """Email the manager (Shweta) asking who should own this, with a CRM brief. Dedups per sender."""
+    c = email_agent.cfg()
+    if await db.pratibha_assignments.find_one({"sender": sender, "status": {"$in": ["awaiting_assignment", "assigned"]}}, {"_id": 1}):
+        return None  # already in flight for this sender
+    ref = uuid.uuid4().hex[:8].upper()
+    brief = await _pratibha_crm_brief(sender, m.get("body", ""), m.get("subject", ""), m.get("from_name", ""))
+    names = ", ".join(n.capitalize() for n in _pratibha_assignees().keys()) or "the team"
+    chain = (m.get("body") or "")[:1200]
+    # Pre-draft the reply I'd send the customer, grounded in the CRM context, so the manager
+    # can just approve it ("send") instead of writing one — or assign it to a person instead.
+    proposed = ""
+    if pratibha_brain.available():
+        try:
+            # Honor house style + past-correction lessons + founder policies (e.g. the no-field-
+            # technician service policy) in the pre-draft too — same as the main customer-reply path.
+            guide = await _pratibha_guidance(m.get("subject", ""), m.get("body", ""), "")
+            ctx = "\n\n".join([p for p in [guide, ("CRM context:\n" + brief if brief else "")] if p])[:4800]
+            d = await pratibha_brain.draft_customer(sender, m.get("subject", ""), m.get("body", ""), context=ctx)
+            proposed = (d.get("reply") or "").strip()
+        except Exception as e:
+            logger.warning(f"Pratibha triage pre-draft failed: {e}")
+    body = (f"Mam,\n\nAn email came to service@ and I'm not sure who should own the follow-up. Could you tell me "
+            f"whom to assign it to — {names}, or someone else?\n\n"
+            f"From    : {m.get('from_name') or ''} <{sender}>\n"
+            f"Subject : {m.get('subject')}\n"
+            f"What they want: {summary or '(see below)'}\n\n"
+            f"--- CRM context ---\n{brief}\n\n"
+            f"--- their email ---\n{chain}\n\n")
+    html_body = None
+    if proposed:
+        body += (f"--- Draft reply I've prepared for the customer ---\n{proposed}\n\n"
+                 f"If this looks right, just reply \"send\" (or \"send it\") and I'll reply to the customer myself "
+                 f"and watch the thread. Otherwise reply with a name to assign — {names}.\n\nPratibha, MuscleGrid")
+        # HTML twin for Shweta — the DRAFT is highlighted and placed up top so she reads/approves it
+        # first. (The customer never sees this; on approval she's sent the plain, clean draft.)
+        def _esc(s):
+            return (str(s or "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        draft_html = _esc(proposed).replace("\n", "<br>")
+        brief_html = _esc(brief).replace("\n", "<br>") or "—"
+        chain_html = _esc(chain).replace("\n", "<br>")
+        html_body = (
+            '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">'
+            '<p>Mam, a draft reply is ready for your approval — please review it first:</p>'
+            '<div style="background:#fff3cd;border:1px solid #ffe08a;border-left:5px solid #f0ad4e;'
+            'border-radius:6px;padding:14px 16px;margin:10px 0;">'
+            '<div style="font-weight:bold;color:#8a6d3b;margin-bottom:8px;text-transform:uppercase;'
+            'font-size:12px;letter-spacing:.5px;">Draft reply to the customer — review &amp; approve</div>'
+            f'<div style="color:#222;line-height:1.55;">{draft_html}</div></div>'
+            f'<p><b>If this looks right, just reply &ldquo;send&rdquo;</b> and I\'ll reply to the customer '
+            f'myself and watch the thread. Otherwise reply with a name to assign — {_esc(names)}.</p>'
+            '<hr style="border:none;border-top:1px solid #eee;margin:16px 0;">'
+            '<div style="color:#666;font-size:13px;">'
+            f'<p><b>From:</b> {_esc(m.get("from_name") or "")} &lt;{_esc(sender)}&gt;<br>'
+            f'<b>Subject:</b> {_esc(m.get("subject"))}<br>'
+            f'<b>What they want:</b> {_esc(summary or "(see below)")}</p>'
+            f'<p><b>CRM context</b><br>{brief_html}</p>'
+            f'<p><b>Their email</b><br>{chain_html}</p>'
+            '</div>'
+            '<p style="color:#888;font-size:12px;">Pratibha, MuscleGrid</p></div>'
+        )
+    else:
+        body += (f"Just reply with a name and I'll take it forward and chase it to resolution.\n\n"
+                 f"Pratibha, MuscleGrid")
+    subj = f"[Pratibha assign {ref}] Whom to assign: {(m.get('subject') or '')[:50]}"
+    mid = None
+    try:
+        # Ask Shweta directly; BCC the founder for visibility (Shweta doesn't see the founder).
+        mid = await email_agent.send_reply_all([c["triage_manager"]], [], subj, body,
+                                               add_standing=False, bcc=[c.get("founder_email")],
+                                               html_body=html_body)
+    except Exception as e:
+        logger.error(f"Pratibha triage email failed: {e}")
+    await db.pratibha_assignments.insert_one({
+        "id": str(uuid.uuid4()), "ref": ref, "sender": sender, "from_name": m.get("from_name"),
+        "subject": m.get("subject"), "customer_subject": m.get("subject"),
+        "orig_message_id": m.get("message_id"), "orig_references": m.get("references", ""),
+        # Remember the whole thread's recipients so any reply keeps everyone who was in To/CC.
+        "orig_to": m.get("to", []), "orig_cc": m.get("cc", []),
+        "summary": summary, "crm_brief": brief, "body_excerpt": chain, "ask_message_id": mid or "",
+        "proposed_reply": proposed,
+        "status": "awaiting_assignment", "created_at": datetime.now(timezone.utc).isoformat()})
+    return ref
+
+
+# ---- WhatsApp draft-approval loop with Shweta (Hinglish) ---------------------
+async def _pratibha_wa_asks_today() -> int:
+    """How many WhatsApp draft-asks Pratibha has sent Shweta today (for the daily cap)."""
+    cut = datetime.now(timezone.utc).date().isoformat()
+    return await db.pratibha_wa_drafts.count_documents({"created_at": {"$gte": cut}})
+
+
+async def _pratibha_wa_ask_shweta(m: dict, draft: str, brief: str, email_id: str,
+                                  backlog: bool = False, age: str = ""):
+    """WhatsApp Shweta (in Hinglish) a drafted customer reply for approval, and remember the thread
+    so her WhatsApp reply can drive send / revise / skip."""
+    c = email_agent.cfg()
+    wa = c.get("wa_manager")
+    if not (wa and draft):
+        return None
+    # One in-flight draft per customer thread.
+    if await db.pratibha_wa_drafts.find_one({"customer_email": m.get("from_addr"), "status": "awaiting_shweta"}, {"_id": 1}):
+        return None
+    ref = uuid.uuid4().hex[:8].upper()
+    await db.pratibha_wa_drafts.insert_one({
+        "id": str(uuid.uuid4()), "ref": ref, "email_id": email_id,
+        "customer_email": m.get("from_addr"), "customer_name": m.get("from_name"),
+        "subject": m.get("subject"), "orig_message_id": m.get("message_id"),
+        "orig_references": m.get("references", ""), "orig_to": m.get("to", []), "orig_cc": m.get("cc", []),
+        "draft": draft, "brief": (brief or "")[:3000], "status": "awaiting_shweta", "round": 1,
+        "source": "backlog" if backlog else "live", "created_at": datetime.now(timezone.utc).isoformat()})
+    name = m.get("from_name") or m.get("from_addr")
+    if backlog:
+        intro = (f"Hello mam 🙏 ye email abhi tak *unanswered* pada hai ({age or 'kuch din purana'}).\n\n"
+                 f"*From:* {name}\n*Subject:* {m.get('subject')}\n\n"
+                 f"Maine customer ki saari history (purane emails + CRM ticket/warranty) dekh kar draft banaya hai:\n"
+                 f"———\n{draft}\n———\n\n"
+                 f"Iska ye reply kar du? Agar nahi to *\"rehne do\"* likh dijiye, main agla dekh lungi.")
+    else:
+        intro = (f"Hello mam 🙏 ek naya email aaya hai service@ pe.\n\n"
+                 f"*From:* {name}\n*Subject:* {m.get('subject')}\n\n"
+                 f"Mera draft reply ye hai:\n———\n{draft}\n———\n\n"
+                 f"Send kar du? Ya kuch different likhu?")
+    try:
+        await send_whatsapp_message(await _pr_wa_target(f"{wa}@c.us"), intro)
+    except Exception as e:
+        logger.error(f"Pratibha WA ask-Shweta failed: {e}")
+    return ref
+
+
+async def _pratibha_backlog_next(days: int = 15):
+    """Find the next unanswered customer email (last `days`), read the customer's full history
+    (mailbox + CRM tickets/warranties), draft a reply, and WhatsApp Shweta one-by-one."""
+    c = email_agent.cfg()
+    if not (c.get("wa_approval") and c.get("wa_manager")):
+        return {"error": "WhatsApp approval not configured"}
+    # Don't pile up — only one backlog item in flight at a time.
+    if await db.pratibha_wa_drafts.find_one({"status": "awaiting_shweta"}, {"_id": 1}):
+        return {"pending": True}
+    try:
+        items = await email_agent.fetch_unanswered(days, 40)
+    except Exception as e:
+        logger.error(f"Pratibha backlog scan failed: {e}")
+        return {"error": str(e)}
+    for it in items:
+        fa = (it.get("from_addr") or "").lower()
+        if not fa or _pratibha_is_automated(fa) or email_agent.is_trigger_sender(fa, ["@musclegrid.in"]):
+            continue
+        # already asked / sent / skipped for this sender? don't repeat.
+        if await db.pratibha_wa_drafts.find_one(
+                {"customer_email": fa, "status": {"$in": ["sent", "skipped", "awaiting_shweta"]}}, {"_id": 1}):
+            continue
+        # Only genuine business emails — skip newsletters/promos/spam (triage classifier decides).
+        tr = await pratibha_brain.triage_inbound(it.get("subject", ""), it.get("body", ""), fa)
+        if not tr.get("needs_owner"):
+            continue
+        brief = await _pratibha_crm_brief(fa, it.get("body", ""), it.get("subject", ""), it.get("from_name", ""))
+        guide = await _pratibha_guidance(it.get("subject", ""), it.get("body", ""), "")
+        ctx = "\n\n".join([p for p in [guide, ("CRM context:\n" + brief if brief else "")] if p])[:4800]
+        dr = await pratibha_brain.draft_customer(fa, it.get("subject", ""), it.get("body", ""), context=ctx)
+        draft = (dr.get("reply") or "").strip()
+        if not draft:
+            continue
+        m = {"from_addr": fa, "from_name": it.get("from_name"), "subject": it.get("subject"),
+             "message_id": it.get("message_id"), "references": it.get("references", ""), "to": [c["email"]], "cc": []}
+        ref = await _pratibha_wa_ask_shweta(m, draft, brief, it.get("message_id"), backlog=True, age=it.get("date", ""))
+        return {"asked": ref, "customer": fa, "subject": it.get("subject")}
+    return {"done": True}  # nothing left to ask
+
+
+async def _wa_remember_turn(user_number: str, user_text: str, assistant_text: str):
+    """Append a (user, assistant) turn to the SHARED WhatsApp conversation memory.
+
+    The draft-approval / shipping / attachment handlers return early and never reach the general
+    brain, which is the only thing that normally persists history — so those exchanges were invisible
+    to the brain and it 'forgot the topic'. Recording them here keeps ONE continuous thread, keyed by
+    the same user_number the brain uses, so context carries across handlers."""
+    import ast as _ast
+    now = datetime.now(timezone.utc).isoformat()
+    doc = await db.whatsapp_conversations.find_one({"user_number": user_number}, {"_id": 0, "messages": 1})
+    msgs = (doc or {}).get("messages")
+    if isinstance(msgs, str):
+        try:
+            msgs = _ast.literal_eval(msgs)
+        except Exception:
+            msgs = []
+    if not isinstance(msgs, list):
+        msgs = []
+    if user_text:
+        msgs.append({"role": "user", "content": user_text, "timestamp": now})
+    if assistant_text:
+        msgs.append({"role": "assistant", "content": assistant_text, "timestamp": now})
+    msgs = msgs[-50:]  # mirror the brain's 50-message window
+    await db.whatsapp_conversations.update_one(
+        {"user_number": user_number},
+        {"$set": {"messages": msgs, "last_activity": now, "is_authenticated": True}},
+        upsert=True)
+    # The brain caches context in memory and only reloads on a cache miss — evict this user so the
+    # next general-brain message reloads the full thread (incl. these handler turns) instead of stale state.
+    try:
+        ai = await get_whatsapp_ai()
+        ai.conversations.pop(user_number, None)
+    except Exception:
+        pass
+
+
+async def _pratibha_wa_store_attachment(from_number: str, filename: str, mimetype: str, b64: str):
+    """Shweta/Pawan sent a DOCUMENT on WhatsApp (e.g. a BIS certificate) to be forwarded to a customer.
+    Park it as a pending attachment for this sender; it gets attached to the next customer email they approve."""
+    fd = re.sub(r"\D", "", from_number or "")
+    if not (fd and b64):
+        return
+    await db.pratibha_wa_attachments.insert_one({
+        "id": str(uuid.uuid4()), "from_digits": fd, "filename": filename or "attachment.pdf",
+        "media_type": mimetype or "application/pdf", "content": b64, "used": False,
+        "created_at": datetime.now(timezone.utc).isoformat()})
+
+
+async def _pratibha_wa_take_attachments(from_number: str, max_age_min: int = 180) -> list:
+    """Pop recent unused pending attachments for this sender (consumes them so they attach exactly once)."""
+    fd = re.sub(r"\D", "", from_number or "")
+    if not fd:
+        return []
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=max_age_min)).isoformat()
+    atts, ids = [], []
+    async for a in db.pratibha_wa_attachments.find(
+            {"from_digits": fd, "used": False, "created_at": {"$gte": cutoff}}).sort("created_at", 1):
+        atts.append({"content": a["content"], "media_type": a.get("media_type"), "filename": a.get("filename")})
+        ids.append(a["id"])
+    if ids:
+        await db.pratibha_wa_attachments.update_many(
+            {"id": {"$in": ids}}, {"$set": {"used": True, "used_at": datetime.now(timezone.utc).isoformat()}})
+    return atts
+
+
+# ---- Payment updates relayed by Shweta on WhatsApp (provisional → founder-confirmed → ledger) ----
+def _pr_founder_wa_digits() -> set:
+    """Digits we accept as 'the founder' on WhatsApp (Pawan's real number + his @lid form)."""
+    raw = os.environ.get("PRATIBHA_FOUNDER_WA", "33165771059423,9560377363,919560377363")
+    return {re.sub(r"\D", "", x) for x in raw.split(",") if x.strip()}
+
+
+def _pr_founder_wa_target() -> str:
+    """Chat id to message the founder on (his @lid form, which the bridge can deliver to)."""
+    return os.environ.get("PRATIBHA_FOUNDER_WA_TARGET", "33165771059423@lid")
+
+
+# ---- "Main group": one WhatsApp group (Pawan + Shweta) Pratibha routes everything to ----
+_PR_MAIN_GROUP = {"jid": None, "loaded": False}
+
+
+async def _pr_get_main_group() -> str:
+    """The designated main-group JID Pratibha sends to (or '' if none set)."""
+    if not _PR_MAIN_GROUP["loaded"]:
+        doc = await db.pratibha_settings.find_one({"key": "wa_main_group"}, {"_id": 0, "value": 1})
+        _PR_MAIN_GROUP["jid"] = (doc or {}).get("value") or ""
+        _PR_MAIN_GROUP["loaded"] = True
+    return _PR_MAIN_GROUP["jid"]
+
+
+async def _pr_set_main_group(jid: str):
+    await db.pratibha_settings.update_one(
+        {"key": "wa_main_group"},
+        {"$set": {"value": jid, "updated_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    _PR_MAIN_GROUP["jid"] = jid
+    _PR_MAIN_GROUP["loaded"] = True
+
+
+async def _pr_wa_target(fallback: str) -> str:
+    """Where a PROACTIVE WhatsApp goes: the main group if one is set, else the given DM fallback."""
+    return (await _pr_get_main_group()) or fallback
+
+
+_PR_DISPATCH_REPLY_RX = re.compile(r"\bdispatch(?:ed|\s*(?:ho|kar))\b", re.I)
+
+
+async def _pratibha_wa_dispatch_reply(message):
+    """An allowlisted member says 'dispatched <REF>' (or 'dispatch ho gaya') → close the dispatch
+    watch so the every-2-days 'money in, goods not shipped' reminder stops."""
+    if getattr(message, "has_media", False) or not _wa_reply_allowed(getattr(message, "from_number", "")):
+        return None
+    text = getattr(message, "text", "") or ""
+    if not _PR_DISPATCH_REPLY_RX.search(text):
+        return None
+    now = datetime.now(timezone.utc).isoformat()
+    # Prefer an explicit REF token; else if exactly one watch is open, resolve that.
+    w = None
+    mref = re.search(r"\b([A-Z0-9]{6})\b", text.upper())
+    if mref:
+        w = await db.pratibha_dispatch_watch.find_one({"ref": mref.group(1), "status": "open"})
+    if not w:
+        open_w = await db.pratibha_dispatch_watch.find({"status": "open"}, {"_id": 0}).to_list(3)
+        if len(open_w) == 1:
+            w = open_w[0]
+        elif len(open_w) > 1:
+            return ("Mam, kis party ka dispatch hua? Reference ke saath bata dijiye — "
+                    "*'dispatched <REF>'* (REF reminder me diya hua hai).")
+    if not w:
+        return None
+    await db.pratibha_dispatch_watch.update_one({"id": w["id"]},
+        {"$set": {"status": "dispatched", "dispatched_at": now, "resolved_by": "manual"}})
+    return (f"Theek hai 🙏 *{w['party_name']}* ka material dispatch mark kar diya (ref {w['ref']}) — "
+            f"ab is payment ka reminder band ✅")
+
+
+_PR_SET_GROUP_RX = re.compile(r"\b(main|primary|default|mukhya)\s+group\b", re.I)
+
+
+async def _pratibha_wa_group_admin(message):
+    """An allowlisted member (Pawan/Shweta) inside a group says 'make this the main group' → save it."""
+    if not getattr(message, "is_group", False) or not getattr(message, "chat_id", None):
+        return None
+    if not _wa_reply_allowed(getattr(message, "from_number", "")):
+        return None
+    low = (getattr(message, "text", "") or "").lower()
+    if _PR_SET_GROUP_RX.search(low) and re.search(r"\b(set|make|mark|use|bana|banao|bna|isko|ise|ye|this)\b", low):
+        await _pr_set_main_group(message.chat_id)
+        return ("Ji 🙏 ab se ye mera *main group* hai — saari conversations, drafts, payment confirmations "
+                "aur reminders main yahin bhejungi. Pawan sir ya Shweta mam, dono me se koi bhi reply kar sakte hain ✅")
+    return None
+
+
+# ---- Tool-based orchestration: an LLM router picks the skill; the ordered chain is the fallback ----
+async def _pratibha_wa_context_summary(message) -> str:
+    """Summarize live pending state so the router can decide intelligently (not by keyword/order)."""
+    digits = re.sub(r"\D", "", getattr(message, "from_number", ""))
+    bits = []
+    pend = await db.pratibha_payments.find_one(
+        {"from_digits": digits, "status": "awaiting_party_confirm"}, {"_id": 0, "amount": 1, "proposed": 1})
+    if pend:
+        bits.append(f"A payment of ₹{float(pend.get('amount') or 0):,.0f} is AWAITING which-party/PI answer "
+                    f"(proposed: {pend.get('proposed') or 'unknown'}).")
+    prov = await db.pratibha_payments.find_one({"status": "provisional"}, {"_id": 0, "ref": 1, "matched_name": 1})
+    if prov:
+        bits.append(f"Provisional payment {prov.get('ref')} ({prov.get('matched_name')}) awaiting founder bank-confirm.")
+    draft = await db.pratibha_wa_drafts.find_one({"status": "awaiting_shweta"}, {"_id": 0, "customer_email": 1})
+    if draft:
+        bits.append(f"A drafted customer reply to {draft.get('customer_email')} is AWAITING send/revise/skip.")
+    if await db.pratibha_dispatch_watch.count_documents({"status": "open"}):
+        bits.append("There are open dispatch watches ('dispatched <REF>' would close one).")
+    if getattr(message, "has_media", False):
+        bits.append(f"This message carries a {getattr(message, 'media_type', None) or 'media'} attachment.")
+    if getattr(message, "is_group", False):
+        bits.append("Sent in the main group.")
+    return " ".join(bits) or "No pending items."
+
+
+async def _pratibha_wa_orchestrate(message):
+    """LLM front-door: route the message to the right skill, given live context. Returns the handler's
+    reply, or None to fall through to the ordered chain (the safety net). Feature-flagged."""
+    if os.environ.get("PRATIBHA_WA_ORCHESTRATE", "true").lower() not in ("1", "true", "yes"):
+        return None
+    if not _wa_reply_allowed(getattr(message, "from_number", "")):
+        return None  # non-allowlisted → let the chain/general brain handle (it silent-drops)
+    try:
+        ctx = await _pratibha_wa_context_summary(message)
+        skill = await pratibha_brain.route_whatsapp(
+            getattr(message, "text", "") or "", ctx, bool(getattr(message, "has_media", False)))
+    except Exception as e:
+        logger.error(f"WA orchestrate routing failed: {e}")
+        return None
+    handlers = {
+        "payment": lambda: _pratibha_wa_payment(message),
+        "dispatch_done": lambda: _pratibha_wa_dispatch_reply(message),
+        "main_group": lambda: _pratibha_wa_group_admin(message),
+        "draft_approval": lambda: _pratibha_wa_draft_reply(message.from_number, message.text),
+        "shipping": lambda: _pratibha_wa_shipping(message),
+    }
+    h = handlers.get(skill)
+    if not h:
+        return None  # "general" → fall through to the general tool-using brain
+    try:
+        logger.info(f"WA orchestrate routed to '{skill}' for {message.from_number}")
+        return await h()
+    except Exception as e:
+        logger.error(f"WA orchestrate skill '{skill}' failed: {e}")
+        return None
+
+
+def _pr_balance_phrase(bal: float) -> str:
+    """Human phrasing of a party balance for Shweta (positive = owed to us)."""
+    bal = float(bal or 0)
+    if bal > 0:
+        return f"unke ledger me outstanding ₹{bal:,.0f} hai"
+    if bal < 0:
+        return f"unke ledger me ₹{abs(bal):,.0f} advance/credit hai"
+    return "unka ledger clear hai (₹0)"
+
+
+async def _pratibha_payment_find_party(query: str) -> list:
+    """Find customer/dealer parties by PHONE (≥10 digits → match last 10) or NAME, with their
+    current ledger balance. Marketplace buyers are excluded (one-time consignees, never on a ledger)."""
+    query = (query or "").strip()
+    digits = re.sub(r"\D", "", query)
+    base = [
+        {"party_type": {"$ne": "marketplace_buyer"}}, {"party_types": {"$ne": "marketplace_buyer"}},
+        {"is_active": {"$ne": False}},
+        {"$or": [{"party_types": {"$in": ["customer", "dealer"]}}, {"party_type": {"$in": ["customer", "dealer"]}}]},
+    ]
+    is_phone = len(digits) >= 10
+    if is_phone:
+        # Phone lookup — match the last 10 digits so +91 / 0 / spaced formats all hit.
+        base.append({"phone": {"$regex": f"{digits[-10:]}$"}})
+    elif len(query) >= 2:
+        base.append({"name": {"$regex": re.escape(query), "$options": "i"}})
+    else:
+        return []
+    out = []
+    async for p in db.parties.find({"$and": base}, {"_id": 0, "id": 1, "name": 1, "party_types": 1,
+                                                    "party_type": 1, "phone": 1, "city": 1}).limit(6):
+        bal = await db.party_balance_tracker.find_one({"party_id": p["id"]}, {"_id": 0, "running_balance": 1})
+        p["balance"] = float((bal or {}).get("running_balance", 0) or 0)
+        kinds = p.get("party_types") or ([p.get("party_type")] if p.get("party_type") else [])
+        p["kind"] = "dealer" if "dealer" in kinds else "customer"
+        out.append(p)
+    if not is_phone:
+        out.sort(key=lambda x: x["name"].lower() != query.lower())  # exact-name match first
+    return out
+
+
+async def _pratibha_party_pis(party: dict, amount: float = 0) -> list:
+    """Open PIs (quotations awaiting payment) for a party — matched by party_id OR customer_phone
+    (PIs are only ~sparsely linked by party_id, but carry the phone). Flags any whose total matches."""
+    pid = party.get("id") or party.get("party_id")
+    phone = re.sub(r"\D", "", party.get("phone") or "")
+    ors = []
+    if pid:
+        ors.append({"party_id": pid})
+    if len(phone) >= 10:
+        ors.append({"customer_phone": {"$regex": f"{phone[-10:]}$"}})
+    if not ors:
+        return []
+    out = []
+    async for pi in db.quotations.find(
+            {"$and": [{"$or": ors}, {"status": {"$in": ["sent", "viewed", "approved"]}}]},
+            {"_id": 0, "quotation_number": 1, "grand_total": 1, "status": 1, "created_at": 1}
+            ).sort("created_at", -1).limit(8):
+        tot = float(pi.get("grand_total") or 0)
+        out.append({"number": pi.get("quotation_number"), "total": tot,
+                    "status": pi.get("status"), "match": abs(tot - amount) < 1})
+    return out
+
+
+def _pr_pi_clause(pis: list, amount: float):
+    """Build the PI section of the confirm message and flag partial/over payments.
+    Returns (clause_text, auto_linked_pi_number|None, flag) where flag is
+    'exact' | 'partial' | 'over' | 'choose' | 'none'."""
+    if not pis:
+        return ("\n\n⚠️ Is party ke against koi *open PI* nahi mila — phir bhi ledger me daal du?", None, "none")
+    lines = "\n".join(f"• {p['number']} — ₹{p['total']:,.0f} ({p['status']})" + (" ✅" if p["match"] else "")
+                      for p in pis[:5])
+    exact = [p for p in pis if p["match"]]
+    if len(exact) == 1:
+        return (f"\n\nPI mil gaya — amount *exactly match* karta hai:\n{lines}", exact[0]["number"], "exact")
+    if len(pis) == 1:
+        p = pis[0]; tot = p["total"]
+        if amount < tot:
+            return (f"\n\n⚠️ *Partial payment* lag raha hai:\n{lines}\nPI ₹{tot:,.0f} ka hai, payment ₹{amount:,.0f} — "
+                    f"baaki *₹{tot - amount:,.0f}* pending rahega. Isi PI ke against daal du?", p["number"], "partial")
+        return (f"\n\n⚠️ *Overpayment* lag raha hai:\n{lines}\nPI ₹{tot:,.0f} ka hai par payment ₹{amount:,.0f} — "
+                f"*₹{amount - tot:,.0f} extra/advance*. Isi PI ke against daal du?", p["number"], "over")
+    return (f"\n\nIs party ke open PIs (kisi ka amount exactly match nahi karta):\n{lines}\n\n"
+            f"Kis PI ke against hai? PI number bata dijiye.", None, "choose")
+
+
+_PR_PI_RX = re.compile(r"\bPI-[A-Z]{2,4}-\d{8}-\d{3,6}\b", re.I)
+
+
+async def _pratibha_payment_begin(digits: str, pay: dict, source: str) -> str:
+    """Open a new payment from extracted details (text note OR screenshot): match the party and ask
+    Shweta to confirm, or — if no party is identifiable (common for screenshots that show only the
+    payee) — ask her whose payment it is. Returns the Hinglish reply."""
+    now = datetime.now(timezone.utc).isoformat()
+    amt = float(pay.get("amount") or 0)
+    pname = (pay.get("party_name") or "").strip()
+    if "musclegrid" in pname.lower():  # that's US (the payee), not the customer/dealer who paid
+        pname = ""
+    rec = {"id": str(uuid.uuid4()), "ref": uuid.uuid4().hex[:6].upper(), "from_digits": digits,
+           "party_name": pname, "party_kind": pay.get("party_kind", "unknown"), "amount": amt,
+           "mode": pay.get("mode", "unknown"), "reference": pay.get("reference", ""),
+           "source": source, "status": "awaiting_party_confirm", "created_at": now}
+    matches = await _pratibha_payment_find_party(pname) if pname else []
+    if matches:
+        top = matches[0]; tname = top["name"].strip()
+        pis = await _pratibha_party_pis(top, amt)
+        pi_clause, auto_pi, pi_flag = _pr_pi_clause(pis, amt)
+        rec.update({"party_id": top["id"], "matched_name": tname, "matched_balance": top["balance"],
+                    "party_kind": top["kind"], "proposed": f"{tname} (balance ₹{top['balance']:,.0f})",
+                    "pis": pis, "pi_number": auto_pi, "pi_flag": pi_flag})
+        await db.pratibha_payments.insert_one(rec)
+        return (f"Mam, *{tname}* ({top['kind']}) ka ₹{amt:,.0f} payment? Ledger me match mil gaya — "
+                f"{_pr_balance_phrase(top['balance'])}.{pi_clause}\n\nUpdate kar du?")
+    rec["proposed"] = pname
+    await db.pratibha_payments.insert_one(rec)
+    refp = f", ref {rec['reference']}" if rec.get("reference") else ""
+    if source == "screenshot":
+        return (f"Mam, screenshot me ₹{amt:,.0f} ka {rec['mode']} payment dikh raha hai 🧾{refp} — "
+                f"ye kis customer/dealer ka hai? *Naam ya phone number* bata dijiye, main ledger me match karke update kar dungi 🙏")
+    return (f"Mam, ₹{amt:,.0f} ka payment *{pname or '(naam?)'}* se? Ye naam CRM me exactly nahi mila — "
+            f"*naam ya phone number* bata dijiye, main match karke update kar dungi 🙏")
+
+
+async def _pratibha_payment_remind_founder(rec: dict, nudge_n: int = 0):
+    """Reminder to Pawan (WhatsApp + email) to confirm the money actually hit the bank.
+    nudge_n>0 marks it as a repeat re-nudge so the wording signals a follow-up."""
+    c = email_agent.cfg()
+    amt = float(rec.get("amount") or 0)
+    party = rec.get("matched_name") or rec.get("party_name") or "(party?)"
+    ref = rec.get("ref")
+    head = f"Reminder ({nudge_n}) — abhi tak confirm nahi hua 🙏" if nudge_n else "Sir, ek payment confirm karni hai 🙏"
+    line = (f"{head}\n\n*{party}* — ₹{amt:,.0f} ({rec.get('mode', 'unknown')})"
+            + (f", ref {rec['reference']}" if rec.get("reference") else "")
+            + (f"\nPI: {rec['pi_number']}" if rec.get("pi_number") else "\nPI: (not linked)")
+            + {"partial": "  ⚠️ PARTIAL (PI total isse bada hai)",
+               "over": "  ⚠️ OVERPAYMENT (PI total isse chhota hai)",
+               "none": "  ⚠️ no open PI matched"}.get(rec.get("pi_flag"), "")
+            + "\nShweta ne WhatsApp pe bataya. Maine CRM me *provisional* daal diya hai.\n\n"
+            f"Account me receive ho gaya ho to *'confirm {ref}'* reply kar dijiye — main ledger me final post kar dungi.")
+    try:
+        await send_whatsapp_message(await _pr_wa_target(_pr_founder_wa_target()), line)
+    except Exception as e:
+        logger.error(f"payment founder WA reminder failed: {e}")
+    try:
+        if c.get("founder_email"):
+            await email_agent.send_reply_all(
+                [c["founder_email"]], [], f"[Payment confirm {ref}] {party} ₹{amt:,.0f}",
+                line.replace("*", "").replace("🙏", ""), add_standing=False)
+    except Exception as e:
+        logger.error(f"payment founder email reminder failed: {e}")
+    await db.pratibha_payments.update_one(
+        {"id": rec["id"]}, {"$set": {"founder_reminded_at": datetime.now(timezone.utc).isoformat()}})
+
+
+async def _pratibha_payment_finalize(rec: dict, by: str = "founder") -> bool:
+    """Founder confirmed the money is in the bank → post the real CREDIT to the party ledger."""
+    if rec.get("status") == "final":
+        return True
+    now = datetime.now(timezone.utc).isoformat()
+    party_id = rec.get("party_id")
+    if not party_id:
+        await db.pratibha_payments.update_one({"id": rec["id"]},
+            {"$set": {"status": "final_unmatched", "finalized_at": now, "finalized_by": by}})
+        return False
+    # Post against the firm the party last transacted with (keeps firm-scoped books consistent).
+    last = await db.party_ledger.find_one({"party_id": party_id}, {"_id": 0, "firm_id": 1}, sort=[("created_at", -1)])
+    firm_id = (last or {}).get("firm_id")
+    amount = float(rec.get("amount") or 0)
+    pi_no = rec.get("pi_number")
+    narration = (f"Payment received via {rec.get('mode', 'unknown')}"
+                 + (f", ref {rec['reference']}" if rec.get("reference") else "")
+                 + (f", against {pi_no}" if pi_no else "")
+                 + ({"partial": " [PARTIAL]", "over": " [OVERPAYMENT]"}.get(rec.get("pi_flag"), ""))
+                 + " — reported by Shweta on WhatsApp, confirmed by founder").strip()
+    try:
+        await create_party_ledger_entry_atomic(
+            party_id=party_id, party_name=rec.get("matched_name") or rec.get("party_name"),
+            entry_type="payment", debit=0, credit=amount, narration=narration,
+            reference_type="pratibha_payment", reference_id=rec["id"], firm_id=firm_id,
+            user_id="pratibha", user_name="Pratibha (WhatsApp, founder-confirmed)")
+    except Exception as e:
+        logger.error(f"payment finalize ledger post failed: {e}")
+        return False
+    # Record the payment against the PI (no status change — just a reconciliation stamp).
+    if pi_no:
+        try:
+            await db.quotations.update_one({"quotation_number": pi_no}, {"$push": {"payments_logged": {
+                "amount": amount, "mode": rec.get("mode"), "reference": rec.get("reference"),
+                "payment_id": rec["id"], "at": now}}})
+        except Exception as e:
+            logger.error(f"PI payment stamp failed: {e}")
+    await db.pratibha_payments.update_one({"id": rec["id"]},
+        {"$set": {"status": "final", "finalized_at": now, "finalized_by": by, "firm_id": firm_id}})
+    # Money is IN — now watch that the goods actually ship. Open a dispatch watch (reminds every 2 days
+    # until a dispatch/shipment for this party is detected, or someone says 'dispatched <REF>').
+    try:
+        party = await db.parties.find_one({"id": party_id}, {"_id": 0, "phone": 1})
+        await db.pratibha_dispatch_watch.insert_one({
+            "id": str(uuid.uuid4()), "ref": rec.get("ref"), "payment_id": rec["id"],
+            "party_id": party_id, "party_name": rec.get("matched_name") or rec.get("party_name"),
+            "party_phone": (party or {}).get("phone", ""), "pi_number": pi_no, "amount": amount,
+            "status": "open", "remind_count": 0, "last_reminded_at": None, "created_at": now})
+    except Exception as e:
+        logger.error(f"dispatch watch create failed: {e}")
+    return True
+
+
+async def _pratibha_dispatch_done(watch: dict) -> bool:
+    """Best-effort: has the material for this paid party shipped? True if a dispatch OR courier
+    shipment exists for the party's phone on/after the payment date."""
+    phone = re.sub(r"\D", "", watch.get("party_phone") or "")
+    if len(phone) < 10:
+        return False
+    last10 = phone[-10:]
+    since = (watch.get("created_at") or "")[:10]  # payment date (YYYY-MM-DD)
+    d = await db.dispatches.find_one(
+        {"phone": {"$regex": f"{last10}$"},
+         "$or": [{"dispatched_at": {"$gte": since}}, {"created_at": {"$gte": since}}]}, {"_id": 1})
+    if d:
+        return True
+    c = await db.courier_shipments.find_one(
+        {"phone": {"$regex": f"{last10}$"}, "created_at": {"$gte": since}}, {"_id": 1})
+    return bool(c)
+
+
+async def scheduled_pratibha_dispatch_watch():
+    """Every run: auto-close watches whose goods have shipped; otherwise remind the group every 2 days
+    that money was received but material isn't dispatched yet."""
+    if not email_agent.is_configured():
+        return
+    now = datetime.now(timezone.utc)
+    cooldown = (now - timedelta(hours=int(os.environ.get("PRATIBHA_DISPATCH_COOLDOWN_HOURS", "48")))).isoformat()
+    async for w in db.pratibha_dispatch_watch.find({"status": "open"}, {"_id": 0}):
+        if await _pratibha_dispatch_done(w):
+            await db.pratibha_dispatch_watch.update_one({"id": w["id"]},
+                {"$set": {"status": "dispatched", "dispatched_at": now.isoformat(), "resolved_by": "auto-detected"}})
+            continue
+        if (w.get("last_reminded_at") or "") > cooldown:
+            continue
+        try:
+            days = (now - datetime.fromisoformat(w["created_at"])).days
+        except Exception:
+            days = 0
+        msg = (f"⏰ Reminder: *{w['party_name']}* se ₹{float(w['amount']):,.0f} payment *RECEIVED* ho chuka hai"
+               + (f" (PI {w['pi_number']})" if w.get("pi_number") else "")
+               + f", par material *abhi tak dispatch nahi* hua — {days} din ho gaye. "
+               f"Dispatch ho gaya ho to *'dispatched {w['ref']}'* reply kar dijiye. 🙏")
+        try:
+            await send_whatsapp_message(await _pr_wa_target(_pr_founder_wa_target()), msg)
+            await db.pratibha_dispatch_watch.update_one({"id": w["id"]},
+                {"$set": {"last_reminded_at": now.isoformat()}, "$inc": {"remind_count": 1}})
+        except Exception as e:
+            logger.error(f"dispatch watch reminder failed: {e}")
+
+
+async def _pi_has_payment(pi: dict) -> bool:
+    """Has this PI been paid? True if Pratibha stamped a payment on it, OR (when the PI is linked to a
+    party) the party ledger shows a credit since the PI was approved (covers accountant-posted payments)."""
+    if pi.get("payments_logged"):
+        return True
+    pid = pi.get("party_id")
+    if pid:
+        appr = (pi.get("approved_at") or pi.get("created_at") or "")[:10]
+        led = await db.party_ledger.find_one(
+            {"party_id": pid, "credit": {"$gt": 0}, "created_at": {"$gte": appr}}, {"_id": 1})
+        if led:
+            return True
+    return False
+
+
+async def scheduled_pratibha_pi_payment_chase():
+    """Chase APPROVED PIs that have no payment yet — the customer committed but hasn't paid. Targets
+    FRESH approvals (3–14 days), checks the ledger so paid ones drop off, and sends ONE consolidated
+    digest to the group every ~2 days. Self-limits per PI (cap) so it never nags forever."""
+    if not email_agent.is_configured():
+        return
+    now = datetime.now(timezone.utc)
+    mn = int(os.environ.get("PRATIBHA_PI_CHASE_MIN_DAYS", "3"))
+    mx = int(os.environ.get("PRATIBHA_PI_CHASE_MAX_DAYS", "14"))
+    cap = int(os.environ.get("PRATIBHA_PI_CHASE_MAX", "4"))
+    batch = int(os.environ.get("PRATIBHA_PI_CHASE_BATCH", "10"))
+    cooldown = (now - timedelta(hours=int(os.environ.get("PRATIBHA_PI_CHASE_COOLDOWN_HOURS", "48")))).isoformat()
+    lo = (now - timedelta(days=mx)).isoformat()
+    hi = (now - timedelta(days=mn)).isoformat()
+    due = []
+    async for pi in db.quotations.find(
+            {"status": "approved", "approved_at": {"$gte": lo, "$lte": hi}},
+            {"_id": 0, "quotation_number": 1, "customer_name": 1, "grand_total": 1, "approved_at": 1,
+             "party_id": 1, "payments_logged": 1, "pi_chase_reminded_at": 1, "pi_chase_count": 1}
+            ).sort("approved_at", 1):
+        if pi.get("pi_chase_count", 0) >= cap:
+            continue
+        if (pi.get("pi_chase_reminded_at") or "") > cooldown:
+            continue
+        if await _pi_has_payment(pi):
+            await db.quotations.update_one({"quotation_number": pi["quotation_number"]},
+                {"$set": {"pi_chase_count": cap, "pi_chase_status": "paid"}})  # stop chasing — it's paid
+            continue
+        due.append(pi)
+        if len(due) >= batch:
+            break
+    if not due:
+        return
+    lines = "\n".join(
+        f"• {p['quotation_number']} — {p.get('customer_name', '')} ₹{float(p.get('grand_total') or 0):,.0f} "
+        f"({(now - _pr_parse_iso(p['approved_at'])).days}d)" for p in due)
+    msg = ("💰 *Approved PIs — payment pending* (customer ne PI approve kiya par payment nahi aaya, "
+           "follow up karke close karein):\n" + lines +
+           "\n\nKisi ka payment aa gaya ho to mujhe bata dijiye — main ledger me update kar dungi.")
+    try:
+        await send_whatsapp_message(await _pr_wa_target(_pr_founder_wa_target()), msg)
+        for p in due:
+            await db.quotations.update_one({"quotation_number": p["quotation_number"]},
+                {"$set": {"pi_chase_reminded_at": now.isoformat()}, "$inc": {"pi_chase_count": 1}})
+        logger.info(f"Pratibha PI-payment chase: nudged {len(due)} approved-unpaid PIs")
+    except Exception as e:
+        logger.error(f"PI-payment chase failed: {e}")
+
+
+_PR_OPEN_TICKET_STATUSES = [
+    "new_request", "call_support_followup", "escalated_to_supervisor", "supervisor_followup",
+    "hardware_service", "awaiting_label", "label_uploaded", "pickup_scheduled", "received_at_factory",
+    "in_repair", "repair_completed", "service_invoice_added", "ready_for_dispatch",
+    "assigned_to_technician", "in_progress", "pending_parts",
+]
+
+
+async def scheduled_pratibha_sla_watch():
+    """Surface SLA-breached tickets to the group — a headline count plus a spotlight on the
+    FRESHLY-breached ones (crossed SLA recently = still recoverable), consolidated and self-limiting
+    so the old backlog doesn't get re-spammed daily."""
+    if not email_agent.is_configured():
+        return
+    now = datetime.now(timezone.utc)
+    fresh_days = int(os.environ.get("PRATIBHA_SLA_FRESH_DAYS", "7"))
+    cap = int(os.environ.get("PRATIBHA_SLA_CHASE_MAX", "3"))
+    batch = int(os.environ.get("PRATIBHA_SLA_BATCH", "10"))
+    cooldown = (now - timedelta(hours=int(os.environ.get("PRATIBHA_SLA_COOLDOWN_HOURS", "48")))).isoformat()
+    base = {"status": {"$in": _PR_OPEN_TICKET_STATUSES}, "sla_breached": True}
+    total = await db.tickets.count_documents(base)
+    if not total:
+        return
+    unassigned = await db.tickets.count_documents({**base, "assigned_to": None})
+    # Spotlight only RECENT breaches (sla_due within fresh_days) — those are still worth chasing.
+    recent_cut = (now - timedelta(days=fresh_days)).isoformat()
+    q = {**base, "sla_due": {"$gte": recent_cut}, "sla_chase_count": {"$not": {"$gte": cap}}}
+    due = []
+    async for t in db.tickets.find(
+            q, {"_id": 0, "ticket_number": 1, "status": 1, "customer_name": 1, "sla_due": 1,
+                "assigned_to_name": 1, "sla_chase_reminded_at": 1}).sort("sla_due", 1):
+        if (t.get("sla_chase_reminded_at") or "") > cooldown:
+            continue
+        due.append(t)
+        if len(due) >= batch:
+            break
+    if not due:
+        return  # nothing freshly breached to spotlight; don't re-nag the old backlog
+
+    def _od(t):
+        try:
+            return max(0, (now - _pr_parse_iso(t["sla_due"])).days)
+        except Exception:
+            return 0
+    lines = "\n".join(
+        f"• {t['ticket_number']} — {t.get('status')} — {t.get('customer_name', '')} — "
+        f"{_od(t)}d overdue — {t.get('assigned_to_name') or '⚠️ UNASSIGNED'}" for t in due)
+    msg = (f"⚠️ *Ticket SLA breaches* — {total} open tickets SLA paar kar chuke hain "
+           f"({unassigned} unassigned). Recent breaches jinhe abhi action chahiye:\n{lines}\n\n"
+           "Team ko push karein ya assign kar dijiye.")
+    try:
+        await send_whatsapp_message(await _pr_wa_target(_pr_founder_wa_target()), msg)
+        for t in due:
+            await db.tickets.update_one({"ticket_number": t["ticket_number"]},
+                {"$set": {"sla_chase_reminded_at": now.isoformat()}, "$inc": {"sla_chase_count": 1}})
+        logger.info(f"Pratibha SLA watch: {total} breached, spotlighted {len(due)}")
+    except Exception as e:
+        logger.error(f"SLA watch failed: {e}")
+
+
+async def scheduled_pratibha_gst_audit_alert():
+    """Monthly: run the GST firm audit and surface HIGH-severity findings to the group, so tax/
+    reconciliation issues (output-tax gaps, invalid GSTINs, duplicates) don't go unnoticed."""
+    if not email_agent.is_configured():
+        return
+    from utils import gst_audit as _ga
+    firms = await db.firms.find({}, {"_id": 0}).to_list(50)
+    high = []
+    for f in firms:
+        try:
+            rep = await _ga.run_firm_audit(db, f)
+        except Exception as e:
+            logger.error(f"GST audit (alert) failed for {f.get('name')}: {e}")
+            continue
+        if not rep.get("gstin_valid"):
+            high.append(f"• {rep['firm']}: ❌ GSTIN checksum invalid ({rep.get('gstin')})")
+        for c in rep.get("checks", []):
+            if c.get("severity") != "high":
+                continue
+            if c.get("tax_diff") is not None:
+                detail = f" — Δ ₹{abs(c['tax_diff']):,.0f}"
+            elif c.get("count"):
+                detail = f" — {c['count']}"
+            else:
+                detail = ""
+            high.append(f"• {rep['firm']}: {c['check']}{detail}")
+    if not high:
+        logger.info("Pratibha GST audit alert: no high-severity findings")
+        return
+    msg = ("🧾 *GST Audit — high-severity findings* (monthly):\n" + "\n".join(high[:15])
+           + "\n\nPura report: CRM → Finance → GST Audit. (Invoice-level/2B/3B reconciliation ke liye GSP connect karein.)")
+    try:
+        await send_whatsapp_message(await _pr_wa_target(_pr_founder_wa_target()), msg)
+        logger.info(f"Pratibha GST audit alert: surfaced {len(high)} high findings")
+    except Exception as e:
+        logger.error(f"GST audit alert send failed: {e}")
+
+
+async def scheduled_pratibha_transit_watch():
+    """Flag shipments STUCK in transit (or failed delivery) — dispatched too long ago but still
+    in-transit / undelivered, not yet terminal. One consolidated digest to the group every ~2 days,
+    self-limiting per AWB so it never nags forever."""
+    if not email_agent.is_configured():
+        return
+    now = datetime.now(timezone.utc)
+    days = int(os.environ.get("PRATIBHA_TRANSIT_STUCK_DAYS", "7"))
+    max_days = int(os.environ.get("PRATIBHA_TRANSIT_MAX_DAYS", "45"))
+    cap = int(os.environ.get("PRATIBHA_TRANSIT_CHASE_MAX", "4"))
+    batch = int(os.environ.get("PRATIBHA_TRANSIT_BATCH", "12"))
+    cooldown = (now - timedelta(hours=int(os.environ.get("PRATIBHA_TRANSIT_COOLDOWN_HOURS", "48")))).isoformat()
+    cutoff = (now - timedelta(days=days)).isoformat()
+    floor = (now - timedelta(days=max_days)).isoformat()
+    # in-transit / undelivered / RTO-in-transit, dispatched `days`–`max_days` ago (actionable window;
+    # older than max_days = likely written off). Terminal states (Delivered/RTO Delivered/Cancelled)
+    # don't match the regex, so they're naturally excluded.
+    q = {"created_at": {"$lt": cutoff, "$gte": floor},
+         "status": {"$regex": r"in[ -]?transit|undelivered", "$options": "i"},
+         "transit_chase_count": {"$not": {"$gte": cap}}}
+    due = []
+    async for s in db.courier_shipments.find(
+            q, {"_id": 0, "awb_number": 1, "courier_name": 1, "customer_name": 1, "status": 1,
+                "created_at": 1, "order_id": 1, "transit_chase_reminded_at": 1}).sort("created_at", 1):
+        if (s.get("transit_chase_reminded_at") or "") > cooldown:
+            continue
+        if not s.get("awb_number"):
+            continue
+        due.append(s)
+        if len(due) >= batch:
+            break
+    if not due:
+        return
+    def _age(s):
+        try:
+            return (now - _pr_parse_iso(s["created_at"])).days
+        except Exception:
+            return 0
+    lines = "\n".join(
+        f"• AWB {s['awb_number']} ({s.get('courier_name', '?')}) — {s.get('customer_name', '')} — "
+        f"{s.get('status')}, {_age(s)}d" for s in due)
+    msg = ("🚚 *Stuck shipments* (bahut din se in-transit / undelivered — courier se follow up karein):\n"
+           + lines + "\n\nKoi deliver/resolve ho gaya ho to bata dijiye.")
+    try:
+        await send_whatsapp_message(await _pr_wa_target(_pr_founder_wa_target()), msg)
+        for s in due:
+            await db.courier_shipments.update_one({"awb_number": s["awb_number"]},
+                {"$set": {"transit_chase_reminded_at": now.isoformat()}, "$inc": {"transit_chase_count": 1}})
+        logger.info(f"Pratibha transit watch: flagged {len(due)} stuck shipments")
+    except Exception as e:
+        logger.error(f"transit watch failed: {e}")
+
+
+async def scheduled_pratibha_payment_nudge():
+    """Re-nudge the founder about PROVISIONAL payments he hasn't confirmed yet — every few hours,
+    with a cooldown and a cap, until he replies 'confirm <REF>' (which finalizes them)."""
+    if not email_agent.is_configured():
+        return
+    now = datetime.now(timezone.utc)
+    cooldown = (now - timedelta(hours=int(os.environ.get("PRATIBHA_PAYMENT_NUDGE_HOURS", "3")))).isoformat()
+    cap = int(os.environ.get("PRATIBHA_PAYMENT_NUDGE_MAX", "6"))
+    async for rec in db.pratibha_payments.find({"status": "provisional"}, {"_id": 0}):
+        if (rec.get("founder_reminded_at") or "") > cooldown:  # reminded recently — wait
+            continue
+        if rec.get("nudge_count", 0) >= cap:  # stop after the cap; founder can still confirm anytime
+            continue
+        n = rec.get("nudge_count", 0) + 1
+        await _pratibha_payment_remind_founder(rec, nudge_n=n)
+        await db.pratibha_payments.update_one({"id": rec["id"]}, {"$set": {"nudge_count": n}})
+        logger.info(f"Pratibha payment nudge {n} to founder for {rec.get('ref')} ({rec.get('matched_name')})")
+
+
+_PR_PAY_KW = re.compile(r"\b(pay(ment|ed|)|paid|paisa|paise|rupee|rupees|amount|neft|imps|rtgs|upi|cheque|"
+                        r"chq|cash|transfer|received|recd|credited|de diya|kar diye|kar diya|aa gaye|aa gaya|mil gaye)\b", re.I)
+_PR_CONFIRM_KW = re.compile(r"\b(confirm|confirmed|received|recd|credited|done|haan|ha|yes|mil gaya|aa gaya|ok)\b", re.I)
+
+
+async def _pratibha_wa_payment(message):
+    """Shweta (or Pawan) relays a customer/dealer payment on WhatsApp. Pratibha matches the party,
+    confirms with Shweta, records a PROVISIONAL entry, reminds the founder, and only posts to the
+    ledger as FINAL once the founder confirms the money hit the bank. Returns a Hinglish reply or None."""
+    frm = getattr(message, "from_number", "")
+    if not _wa_reply_allowed(frm):
+        return None
+    digits = re.sub(r"\D", "", frm)
+    has_media = getattr(message, "has_media", False)
+    mtype = (getattr(message, "media_type", "") or "")
+    media = getattr(message, "media_data", None)
+
+    # IMAGE branch: a payment-confirmation screenshot (UPI / bank). Vision-read it; if it's a payment,
+    # start the same confirm flow (often the payer isn't on the screenshot → Pratibha asks Shweta whose
+    # it is). PDFs/other docs are NOT payments here — let the attachment/shipping handlers take them.
+    if has_media:
+        if mtype == "image" and media:
+            b64 = base64.b64encode(media).decode("ascii") if isinstance(media, (bytes, bytearray)) else media
+            pay = await pratibha_brain.extract_payment_image(
+                [{"media_type": "image/jpeg", "kind": "image", "b64": b64}])
+            if pay.get("is_payment") and pay.get("amount"):
+                return await _pratibha_payment_begin(digits, pay, source="screenshot")
+        return None
+
+    text = (getattr(message, "text", "") or "").strip()
+    if not text:
+        return None
+    low = text.lower()
+    is_founder = any(digits == f or (len(digits) >= 10 and len(f) >= 10 and digits[-10:] == f[-10:])
+                     for f in _pr_founder_wa_digits())
+    now = datetime.now(timezone.utc).isoformat()
+
+    # (1) Founder confirming a provisional payment → finalize to the ledger.
+    if is_founder and _PR_CONFIRM_KW.search(low):
+        prov = None
+        mref = re.search(r"\b([A-Z0-9]{6,8})\b", text.upper())
+        if mref:
+            prov = await db.pratibha_payments.find_one({"ref": mref.group(1), "status": "provisional"})
+        if not prov:
+            prov = await db.pratibha_payments.find_one({"status": "provisional"}, sort=[("created_at", -1)])
+        if prov:
+            ok = await _pratibha_payment_finalize(prov, by="founder")
+            party = prov.get("matched_name") or prov.get("party_name")
+            amt = float(prov.get("amount") or 0)
+            if ok:
+                try:  # close the loop with Shweta too
+                    await send_whatsapp_message(
+                        await _pr_wa_target(os.environ.get("EMAIL_AGENT_WA_MANAGER_TARGET", "192157440847938@lid")),
+                        f"Mam, Pawan sir ne *{party}* ka ₹{amt:,.0f} payment confirm kar diya — maine ledger me final post kar diya ✅")
+                except Exception:
+                    pass
+                return f"Done sir ✅ *{party}* ka ₹{amt:,.0f} ledger me final post kar diya."
+            return f"Sir, {party} ka ledger post karne me dikkat aa gayi — main dobara try karti hu."
+        return None  # no provisional pending — let other handlers take it
+
+    # Auto-expire stale awaiting_party_confirm pendings: a never-resolved one (e.g. an unidentified
+    # screenshot) used to block EVERY future payment from this sender forever. Older than 12h → stale.
+    stale_cut = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()
+    await db.pratibha_payments.update_many(
+        {"from_digits": digits, "status": "awaiting_party_confirm", "created_at": {"$lt": stale_cut}},
+        {"$set": {"status": "stale", "stale_at": now}})
+
+    # If THIS message is itself a fresh payment report (amount + a payment keyword), start a NEW payment
+    # instead of mis-reading it as the party-name answer to an older pending (the bug that jammed the queue).
+    if _PR_PAY_KW.search(low):
+        _fresh = await pratibha_brain.extract_payment(text)
+        if _fresh.get("is_payment") and _fresh.get("amount"):
+            return await _pratibha_payment_begin(digits, _fresh, source="text")
+
+    # (2) A payment already awaiting Shweta's party-confirmation?
+    pend = await db.pratibha_payments.find_one(
+        {"from_digits": digits, "status": "awaiting_party_confirm"}, sort=[("created_at", -1)])
+    if pend:
+        # If the party is still UNKNOWN (screenshot case — we asked "whose payment is it?"), Shweta's
+        # reply IS the party name. Look it up directly instead of the confirm/correct classifier.
+        if not pend.get("party_id"):
+            if re.search(r"\b(rehne do|cancel|chhod|nahi|abhi nahi|baad me)\b", low):
+                await db.pratibha_payments.update_one({"id": pend["id"]}, {"$set": {"status": "cancelled", "cancelled_at": now}})
+                return "Theek hai mam, is payment ko abhi rehne deti hu 👍"
+            name = text.strip()
+            matches = await _pratibha_payment_find_party(name)
+            if matches:
+                top = matches[0]; tname = top["name"].strip()
+                amt = float(pend["amount"])
+                pis = await _pratibha_party_pis(top, amt)
+                pi_clause, auto_pi, pi_flag = _pr_pi_clause(pis, amt)
+                await db.pratibha_payments.update_one({"id": pend["id"]}, {"$set": {
+                    "party_id": top["id"], "matched_name": tname, "matched_balance": top["balance"],
+                    "party_kind": top["kind"], "party_name": name, "pis": pis, "pi_number": auto_pi, "pi_flag": pi_flag,
+                    "proposed": f"{tname} (balance ₹{top['balance']:,.0f})"}})
+                return (f"Mil gaya mam — *{tname}* ({top['kind']}), {_pr_balance_phrase(top['balance'])}.{pi_clause}\n\n"
+                        f"Iska ₹{amt:,.0f} payment update kar du?")
+            return (f"Mam, '{name}' se CRM me koi customer/dealer nahi mila 🙏 "
+                    f"*Phone number* bata dijiye (ya sahi spelling), main usse search kar lungi — ya kahein to nayi party bana du.")
+        # Party already known. If Shweta named a PI, capture it; then confirm/correct/cancel.
+        pim = _PR_PI_RX.search(text)
+        if pim and pend.get("party_id"):
+            await db.pratibha_payments.update_one({"id": pend["id"]},
+                {"$set": {"status": "provisional", "provisional_at": now, "pi_number": pim.group(0).upper()}})
+            pend["pi_number"] = pim.group(0).upper()
+            await _pratibha_payment_remind_founder(pend)
+            return (f"Theek hai mam, *{pim.group(0).upper()}* ke against ₹{float(pend['amount']):,.0f} provisional daal diya 📝 — "
+                    "Pawan sir ko reminder bhej diya. Account me aate hi final mark kar dungi.")
+        r = await pratibha_brain.payment_reply(pend.get("proposed", ""), text)
+        intent = r.get("intent")
+        if intent == "confirm" and pend.get("party_id"):
+            await db.pratibha_payments.update_one({"id": pend["id"]},
+                {"$set": {"status": "provisional", "provisional_at": now}})
+            await _pratibha_payment_remind_founder(pend)
+            pitxt = f" ({pend.get('pi_number')} ke against)" if pend.get("pi_number") else ""
+            return (f"Theek hai mam, abhi CRM me *provisional* update kar diya hai{pitxt} 📝 — Pawan sir ko reminder bhej diya hai. "
+                    "Jaise hi wo account me payment receive confirm karenge, main ledger me *final* mark kar dungi.")
+        if intent == "correct" and r.get("party_name"):
+            matches = await _pratibha_payment_find_party(r["party_name"])
+            if matches:
+                top = matches[0]; tname = top["name"].strip()
+                amt = float(pend["amount"])
+                pis = await _pratibha_party_pis(top, amt)
+                pi_clause, auto_pi, pi_flag = _pr_pi_clause(pis, amt)
+                await db.pratibha_payments.update_one({"id": pend["id"]}, {"$set": {
+                    "party_id": top["id"], "matched_name": tname, "matched_balance": top["balance"],
+                    "party_kind": top["kind"], "party_name": r["party_name"], "pis": pis, "pi_number": auto_pi, "pi_flag": pi_flag,
+                    "proposed": f"{tname} (balance ₹{top['balance']:,.0f})"}})
+                return (f"Theek hai mam — *{tname}* ({top['kind']}), {_pr_balance_phrase(top['balance'])}.{pi_clause}\n\n"
+                        f"Iska ₹{amt:,.0f} payment update kar du?")
+            return f"Mam, '{r['party_name']}' naam se CRM me koi customer/dealer nahi mila. Naam ya phone bata dijiye 🙏"
+        if intent == "cancel":
+            await db.pratibha_payments.update_one({"id": pend["id"]}, {"$set": {"status": "cancelled", "cancelled_at": now}})
+            return "Theek hai mam, is payment update ko abhi rehne deti hu 👍"
+        return None  # unrelated → let the draft/general handlers take it
+
+    # (3) A fresh payment report (text)?
+    if not _PR_PAY_KW.search(low):
+        return None
+    pay = await pratibha_brain.extract_payment(text)
+    if not (pay.get("is_payment") and pay.get("amount")):
+        return None
+    return await _pratibha_payment_begin(digits, pay, source="text")
+
+
+async def _pratibha_capture_wa_note(note: str, draft_doc: dict, from_number: str, due_hours: int = 24):
+    """Shweta tacked an instruction/commitment onto a WhatsApp approval (e.g. 'Jaspreet will email the
+    BIS certificate, copy her'). Memorize it as a task so Pratibha reminds the named owner till done."""
+    note = (note or "").strip()
+    if not note:
+        return
+    now = datetime.now(timezone.utc)
+    if await db.pratibha_tasks.find_one({"task": note[:300], "status": "open"}, {"_id": 1}):
+        return
+    # Derive the owner from any assignee name mentioned in the note (else the founder gets it).
+    low = note.lower()
+    owner_hint = next((nm for nm in _pratibha_assignees() if nm and nm in low), "")
+    await db.pratibha_tasks.insert_one({
+        "id": str(uuid.uuid4()), "ref": uuid.uuid4().hex[:8].upper(), "task": note[:300],
+        "due_at": (now + timedelta(hours=due_hours)).isoformat(), "owner_hint": owner_hint,
+        "urgency": "medium", "from_addr": from_number, "subject": draft_doc.get("subject"),
+        "orig_message_id": draft_doc.get("orig_message_id"), "orig_references": draft_doc.get("orig_references", ""),
+        "status": "open", "remind_count": 0, "source": "wa_shweta_note",
+        "created_at": now.isoformat(), "last_reminded_at": None})
+    logger.info(f"Pratibha memorized WA note from Shweta (owner={owner_hint or 'founder'}): {note[:60]}")
+
+
+async def _pratibha_wa_draft_reply(from_number: str, text: str):
+    """If Shweta is replying on WhatsApp to a pending drafted email, act on it (send/revise/ask) and
+    return the Hinglish message to send back to her. Returns None if not applicable (let the normal
+    WhatsApp brain handle it)."""
+    c = email_agent.cfg()
+    if not c.get("wa_manager"):
+        return None
+    # Accept the approver via the reply allowlist — Shweta messages from her @lid (192157…), which
+    # differs from her phone number, so a phone-only match would (and did) miss her "Send".
+    if not _wa_reply_allowed(from_number):
+        return None
+    draft_doc = await db.pratibha_wa_drafts.find_one({"status": "awaiting_shweta"}, sort=[("created_at", -1)])
+    if not draft_doc:
+        return None  # nothing pending — let the general brain answer her
+    res = await pratibha_brain.wa_dialog(draft_doc.get("draft", ""), text or "", draft_doc.get("brief", ""))
+    action = res.get("action")
+    now = datetime.now(timezone.utc).isoformat()
+    if action == "send":
+        subj = draft_doc.get("subject") or ""
+        if not subj.lower().startswith("re:"):
+            subj = f"Re: {subj}"
+        # Customer ALONE on TO. CC keeps only EXTERNAL extra recipients (the customer's own people) —
+        # never internal @musclegrid.in addresses. service@ comes via standing CC; Shweta/founder via BCC.
+        cust = (draft_doc.get("customer_email") or "").lower()
+        to_c = [draft_doc.get("customer_email")]
+        cc_c = list(dict.fromkeys(
+            a for a in (draft_doc.get("orig_to", []) + draft_doc.get("orig_cc", []))
+            if a and a.lower() != cust and not a.lower().endswith("@musclegrid.in")))
+        # Final guard: never let an internal @musclegrid.in address reach the customer.
+        body_out = pratibha_brain._scrub_internal_emails(draft_doc["draft"])
+        # Attach any document Shweta just handed over on WhatsApp (e.g. a BIS certificate) so it
+        # actually reaches the customer instead of a text-only reply.
+        wa_atts = await _pratibha_wa_take_attachments(from_number)
+        # Guard: a draft that PROMISES an attachment must not go out empty. Ask for the file first.
+        if draft_doc.get("requires_attachment") and not wa_atts:
+            return ("Mam, is reply ke saath file attach honi chahiye par mujhe abhi koi file nahi mili 🙏 "
+                    "Pehle file (jaise BIS Letter.pdf) bhej dijiye, phir 'send karu' bol dijiye — "
+                    "tabhi main attach karke bhejungi.")
+        try:
+            # add_standing=True → service@ (+ shweta@) auto-CC'd, founder BCC. So service@ is always CC'd.
+            await email_agent.send_reply_all(to_c, cc_c, subj, body_out,
+                                             draft_doc.get("orig_message_id") or "", draft_doc.get("orig_references", "") or "",
+                                             add_standing=True, attachments=wa_atts or None)
+        except Exception as e:
+            logger.error(f"Pratibha WA-approved customer send failed: {e}")
+            return "Mam, bhejne me thodi dikkat aa gayi — main dobara try karti hu."
+        await db.pratibha_wa_drafts.update_one({"id": draft_doc["id"]}, {"$set": {"status": "sent", "sent_at": now}})
+        if draft_doc.get("email_id"):
+            await db.email_agent_inbox.update_one({"id": draft_doc["email_id"]}, {"$set": {
+                "status": "replied", "sent_reply": body_out, "replied_at": now,
+                "replied_by_name": "Pratibha (WhatsApp-approved by Shweta)"}})
+        if draft_doc.get("source") == "backlog":  # one-by-one: move to the next unanswered email
+            asyncio.create_task(_pratibha_backlog_next())
+        # If this draft was a stand-in for something an owner was asked to do (e.g. Jaspreet was
+        # asked to email the BIS cert), tell the owner it's now handled and close the chase task —
+        # so they don't ALSO send it.
+        owner_email = draft_doc.get("notify_owner_on_send")
+        if owner_email and wa_atts:
+            try:
+                oname = _pratibha_assignee_name(owner_email)
+                await email_agent.send_reply_all(
+                    [owner_email], draft_doc.get("notify_owner_cc") or [],
+                    draft_doc.get("notify_owner_subject") or f"Re: {subj}",
+                    f"Hi {oname},\n\n{draft_doc.get('notify_owner_msg') or 'This has now been sent to the customer directly — no need to resend. Thanks!'}\n\nPratibha, MuscleGrid",
+                    add_standing=False)
+            except Exception as e:
+                logger.error(f"Pratibha notify-owner-done failed: {e}")
+            rx = draft_doc.get("close_tasks_matching")
+            if rx:
+                await db.pratibha_tasks.update_many(
+                    {"status": "open", "task": {"$regex": rx, "$options": "i"}},
+                    {"$set": {"status": "done", "resolved_at": now,
+                              "resolved_note": "Delivered to the customer directly by Pratibha"}})
+        # Capture any extra instruction Shweta tacked onto the approval so it's not lost.
+        note = (res.get("extra_note") or "").strip()
+        if note:
+            await _pratibha_capture_wa_note(note, draft_doc, from_number)
+        base = res.get("to_shweta") or "Theek hai mam, customer ko reply bhej diya ✅ (service@ ko CC kiya hai)"
+        if wa_atts:
+            base += f" — aapki bheji hui file ({wa_atts[0].get('filename')}) bhi attach kar di hai 📎"
+        if note and "note" not in base.lower():
+            base += " — aur aapki extra baat note kar li hai, follow-up kar dungi 📝"
+        return base
+    if action == "revise":
+        newd = pratibha_brain._scrub_internal_emails(res.get("revised_draft") or draft_doc["draft"])
+        await db.pratibha_wa_drafts.update_one({"id": draft_doc["id"]},
+            {"$set": {"draft": newd, "round": draft_doc.get("round", 1) + 1, "updated_at": now}})
+        head = res.get("to_shweta") or "Ji mam, ye update kiya hai, ab send kar du?"
+        return f"{head}\n\n———\n{newd}\n———"
+    if action == "skip":
+        await db.pratibha_wa_drafts.update_one({"id": draft_doc["id"]},
+            {"$set": {"status": "skipped", "skipped_at": now, "skipped_by": from_number}})
+        if draft_doc.get("source") == "backlog":  # leave this one, ask about the next
+            asyncio.create_task(_pratibha_backlog_next())
+        return res.get("to_shweta") or "Theek hai mam, ise rehne deti hu 👍"
+    return res.get("to_shweta") or "Mam thoda clear bataiye — bhej du, change karu, ya rehne du?"
+
+
+def _wa_reply_allowed(from_number: str) -> bool:
+    """Is this WhatsApp sender on the reply allowlist (full digits or last-10)?"""
+    raw = re.sub(r"\D", "", from_number or "")
+    if not raw:
+        return False
+    allow = [re.sub(r"\D", "", x) for x in os.environ.get("WHATSAPP_AGENT_ALLOWLIST", "").split(",") if x.strip()]
+    return any(raw == a or (len(raw) >= 10 and len(a) >= 10 and raw[-10:] == a[-10:]) for a in allow)
+
+
+async def _pratibha_wa_shipping(message):
+    """Allowlisted sender (Shweta/Pawan) sends a photo/invoice + asks for a shipping label → extract,
+    auto-book via Delhivery, and reply on WhatsApp with the label PDF. Returns a Hinglish reply, or None."""
+    frm = getattr(message, "from_number", "")
+    if not _wa_reply_allowed(frm):
+        return None
+    txt = (getattr(message, "text", "") or "")
+    media = getattr(message, "media_data", None)
+    mtype = (getattr(message, "media_type", "") or "")
+    has_doc = bool(media) and mtype in ("image", "document")
+    low = txt.strip().lower()
+
+    # RE-SHARE: "send" / "share label" / "resend" with NO new image → re-send the LAST label I made
+    # for this sender, instead of letting the general brain reply confusingly ("I don't see a label").
+    reshare = (not has_doc) and (low in ("send", "send this", "share", "label", "resend", "bhejo", "bhej do")
+               or any(p in low for p in ["share label", "send label", "label bhej", "resend label",
+                                         "share the label", "label pdf", "send this label", "label send"]))
+    if reshare:
+        _fd = re.sub(r"\D", "", frm)  # match on digits (robust to @lid vs @c.us)
+        last = await db.pratibha_shipments.find_one(
+            {"by": {"$regex": f"whatsapp:.*{_fd}"}, "success": True, "awb": {"$ne": None}}, sort=[("created_at", -1)])
+        if last and last.get("awb"):
+            cs = await db.courier_shipments.find_one({"awb_number": last["awb"]}, {"_id": 0, "bigship_order_id": 1})
+            soid = (cs or {}).get("bigship_order_id")
+            lbl = await _pratibha_fetch_label(soid) if soid else None
+            cost = last.get("shipping_cost")
+            if lbl:
+                try:
+                    await send_whatsapp_media(await _pr_wa_target(frm), f"Label (AWB {last['awb']}, {last.get('courier', 'Delhivery')})", lbl)
+                except Exception as e:
+                    logger.error(f"WA re-share label failed: {e}")
+                return (f"Ye raha mam 📄\n*Tracking ID (AWB):* {last['awb']} ({last.get('courier', 'Delhivery')})"
+                        + (f"\n*Bigship cost:* ₹{cost:,.0f}" if cost else "") + "\nLabel PDF bhej diya hai ✅")
+            return f"Mam, AWB {last['awb']} hai par label PDF abhi fetch nahi ho pa raha — thodi der me dobara try karti hu."
+        return "Mam, abhi koi recent label nahi mila — order/invoice ki photo bhej dijiye, main turant bana deti hu 🙏"
+
+    intent = any(w in low for w in ["label", "ship", "bigship", "courier", "awb", "dispatch", "parcel", "bhej"])
+    # An allowlisted sender's IMAGE almost always means "make a label" (invoice/order screenshot) —
+    # so trigger on any image/doc OR an explicit intent word, even if the photo has no caption.
+    if not (has_doc or intent):
+        return None
+    images = None
+    if has_doc:
+        b64 = base64.b64encode(media).decode("ascii") if isinstance(media, (bytes, bytearray)) else media
+        images = [{"media_type": "application/pdf" if mtype == "document" else "image/jpeg",
+                   "kind": "document" if mtype == "document" else "image", "b64": b64}]
+    sh = await pratibha_brain.extract_shipment("WhatsApp shipping label request", txt, images)
+    if not sh.get("is_shipment"):
+        # Not a shipment but it IS a document (e.g. a BIS certificate / letter Shweta wants forwarded) →
+        # park it as a pending attachment; it rides along on the next customer email she approves.
+        if has_doc:
+            b64 = base64.b64encode(media).decode("ascii") if isinstance(media, (bytes, bytearray)) else media
+            await _pratibha_wa_store_attachment(
+                frm, (txt.strip() or "attachment.pdf"),
+                "application/pdf" if mtype == "document" else "image/jpeg", b64)
+            return ("File mil gayi mam 📎 — jis customer ko bhejni hai uska reply 'send karu' karte hi "
+                    "isko attach karke bhej dungi. (Ya bataiye kis email par bhejni hai.)")
+        return None
+    prepared = await _pratibha_prepare_shipment(sh)
+    if not prepared.get("ok"):
+        return f"Mam, label banane ke liye thoda aur chahiye 🙏 — {prepared.get('error')}"
+    f = prepared["fields"]
+    dup = await _pratibha_dupe_shipment(f["phone"], f["pincode"], f["invoice_amount"])
+    if dup:
+        return (f"Mam, is number/pincode pe maine recently AWB {dup.get('awb')} book kiya tha — duplicate "
+                f"avoid karne ke liye dobara book nahi kar rahi. Dashboard se karein agar genuinely zaroori hai.")
+    try:
+        resp = await _pratibha_book_shipment(f, {"from_addr": f"whatsapp:{frm}"})
+    except Exception as e:
+        logger.error(f"Pratibha WA shipping book failed: {e}")
+        return "Mam, book karne me thodi dikkat aa gayi — main dobara dekhti hu."
+    if getattr(resp, "success", False) and getattr(resp, "awb_number", None):
+        lbl = await _pratibha_fetch_label(getattr(resp, "system_order_id", None), f.get("shipment_type", "b2c"))
+        courier = getattr(resp, "courier_name", None) or "Delhivery"
+        cost = getattr(resp, "shipping_cost", None)
+        cost_txt = f" · Bigship cost ₹{cost:,.0f}" if cost else ""
+        cap = f"Label ready ✅ AWB {resp.awb_number} ({courier}){cost_txt}"
+        if lbl:
+            try:
+                await send_whatsapp_media(await _pr_wa_target(frm), cap, lbl)
+            except Exception as e:
+                logger.error(f"WA label media send failed: {e}")
+        return (f"Ho gaya mam ✅ Label ban gaya —\n*Tracking ID (AWB):* {resp.awb_number} ({courier})\n"
+                f"*To:* {f['first_name']} {f.get('last_name','')} · {f['city']} {f['pincode']}\n"
+                + (f"*Bigship label cost:* ₹{cost:,.0f}\n" if cost else "")
+                + ("Label PDF bhej diya hai 📄" if lbl else ""))
+    return f"Mam, book nahi ho paya: {getattr(resp, 'message', 'unknown error')}"
+
+
+async def _pratibha_handle_assignment_reply(m: dict) -> bool:
+    """Shweta — OR the founder/CEO, whose word is final — replying to a '[Pratibha assign REF]'
+    email with a name → loop that person in with the case + CRM brief, and start chasing them
+    via the follow-up tracker."""
+    c = email_agent.cfg()
+    sender = m.get("from_addr", "")
+    is_manager = bool(sender) and sender == c.get("triage_manager")
+    is_founder = bool(sender) and (sender == c.get("founder_email")
+                                   or email_agent.is_finance_sender(sender, c.get("finance_senders", [])))
+    if not (is_manager or is_founder):
+        return False
+    # How to address the replier in the ack, and who to credit as the assigner.
+    honorific = "Mam" if is_manager else "sir"
+    assigner_name = c.get("triage_manager_name", "Shweta") if is_manager else "the founder"
+    mref = re.search(r"\[Pratibha assign ([A-Z0-9]{6,10})\]", m.get("subject", "") or "")
+    if not mref:
+        return False
+    asg = await db.pratibha_assignments.find_one({"ref": mref.group(1), "status": "awaiting_assignment"}, {"_id": 0})
+    if not asg:
+        return False
+    # Read the name ONLY from the NEW reply text, not the quoted history below it.
+    # The quoted ask enumerates every assignee ("Jaspreet, Harleen, Aman, Angad"),
+    # so scanning the whole body would always latch onto the first-listed name
+    # instead of the one the replier actually chose ("Assign to angad").
+    raw = m.get("body") or ""
+    reply_top = re.split(
+        r"(?:\r?\n)\s*-{2,}\s*On .+?wrote\s*-{2,}|(?:\r?\n)\s*On .+?wrote:|(?:\r?\n)_{5,}|(?:\r?\n)From:\s",
+        raw, maxsplit=1, flags=re.I | re.S)[0]
+    body = reply_top.lower()
+    directory = _pratibha_assignees()
+    chosen = chosen_email = None
+    # 1) An explicit "...to <name>" directive wins ("assign it to angad").
+    if directory:
+        names_alt = "|".join(re.escape(n) for n in directory)
+        md = re.search(rf"\bto\s+({names_alt})\b", body)
+        if md:
+            chosen = md.group(1)
+            chosen_email = directory[chosen]
+    # 2) Else an explicit @musclegrid.in address in the reply.
+    if not chosen_email:
+        em = re.search(r"[\w.+-]+@musclegrid\.in", body)
+        if em:
+            chosen_email = em.group(0)
+            chosen = chosen_email.split("@")[0]
+    # 3) Else the first known assignee name appearing in the reply text.
+    if not chosen_email:
+        for nm, em in directory.items():
+            if re.search(rf"\b{re.escape(nm)}\b", body):
+                chosen, chosen_email = nm, em
+                break
+    now = datetime.now(timezone.utc).isoformat()
+
+    # No name given, but the replier APPROVED sending the draft reply I prepared → reply to the
+    # customer myself on the original thread, then confirm back. (Founder/CEO or manager only.)
+    if not chosen_email and asg.get("proposed_reply") and _PR_APPROVE_RX.search(reply_top):
+        cust = asg.get("sender")
+        subj_c = asg.get("customer_subject") or asg.get("subject") or ""
+        if not subj_c.lower().startswith("re:"):
+            subj_c = f"Re: {subj_c}"
+        # Customer ALONE on TO; only EXTERNAL extras on CC. service@ via standing CC; Shweta/founder via BCC.
+        custl = (cust or "").lower()
+        to_c = [cust]
+        cc_c = list(dict.fromkeys(
+            a for a in (asg.get("orig_to", []) + asg.get("orig_cc", []))
+            if a and a.lower() != custl and not a.lower().endswith("@musclegrid.in")))
+        sent_mid = None
+        try:
+            sent_mid = await email_agent.send_reply_all(
+                to_c, cc_c, subj_c, asg["proposed_reply"],
+                asg.get("orig_message_id") or "", asg.get("orig_references", ""),
+                add_standing=True)
+            await _pratibha_track_followup(sent_mid, subj_c, to_c, cc_c,
+                                           asg.get("orig_references", ""),
+                                           f"Replied to customer (approved by {assigner_name}): {asg.get('summary')}")
+        except Exception as e:
+            logger.error(f"Pratibha approved customer-reply send failed: {e}")
+        await db.pratibha_assignments.update_one({"id": asg["id"]},
+            {"$set": {"status": "answered_by_pratibha", "answered_at": now,
+                      "answered_to": cust, "answer_message_id": sent_mid or ""}})
+        try:
+            await email_agent.send_reply_all([m["from_addr"]], [], f"Re: {m.get('subject')}",
+                f"Done, {honorific} — I've sent the reply to the customer ({cust}) and I'll watch the thread "
+                f"for their response.\n\nPratibha, MuscleGrid", m.get("message_id") or "", add_standing=False)
+        except Exception:
+            pass
+        return True
+
+    if not chosen_email:
+        send_hint = (" — or just reply \"send\" if you'd like me to reply to the customer with the draft I prepared"
+                     if asg.get("proposed_reply") else "")
+        try:
+            await email_agent.send_reply_all([m["from_addr"]], [], f"Re: {m.get('subject')}",
+                f"Sorry {honorific}, I couldn't catch the name — please reply with just the person's name "
+                f"(Jaspreet / Harleen / Aman / Angad) or their @musclegrid.in email{send_hint}.\n\nPratibha, MuscleGrid",
+                m.get("message_id") or "", add_standing=False)
+        except Exception:
+            pass
+        return True
+    subj = f"For your follow-up: {asg.get('subject')}"
+    body_out = (f"Hi {chosen.capitalize()},\n\n{assigner_name.capitalize()} has assigned this to you "
+                f"for follow-up.\n\nCustomer: {asg.get('from_name') or ''} <{asg.get('sender')}>\n"
+                f"What they want: {asg.get('summary')}\n\n--- CRM context ---\n{asg.get('crm_brief')}\n\n"
+                f"--- their email ---\n{asg.get('body_excerpt')}\n\nPlease take it forward; reply 'resolved' "
+                f"once it's handled.\n\nPratibha, MuscleGrid")
+    mid = None
+    try:
+        mid = await email_agent.send_reply_all([chosen_email], [c["triage_manager"]], subj, body_out, add_standing=False)
+        await _pratibha_track_followup(mid, subj, [chosen_email], [c["triage_manager"]], "",
+                                       f"Assigned by {assigner_name}: {asg.get('summary')}")
+    except Exception as e:
+        logger.error(f"Pratibha assignment send failed: {e}")
+    await db.pratibha_assignments.update_one({"id": asg["id"]},
+        {"$set": {"status": "assigned", "assignee": chosen_email, "assigned_at": now, "assign_message_id": mid or ""}})
+    try:
+        await email_agent.send_reply_all([m["from_addr"]], [], f"Re: {m.get('subject')}",
+            f"Done, {honorific} — assigned to {chosen.capitalize()} ({chosen_email}); I'll chase them until it's resolved.\n\n"
+            f"Pratibha, MuscleGrid", m.get("message_id") or "", add_standing=False)
+    except Exception:
+        pass
+    return True
+
+
+# ---- Pratibha shipping: book a Bigship courier from the founder's email -------
+_PKG_PROJ = {"_id": 0, "sku_code": 1, "name": 1, "weight_kg": 1, "length_cm": 1, "breadth_cm": 1,
+             "height_cm": 1, "hsn_code": 1, "category": 1}
+
+# Bigship's order API only accepts product_category from its own enum; our internal categories
+# (Stabilizer / Inverter / Battery …) are NOT valid there and 400 the booking. Map to a safe enum.
+# "Others" is the confirmed-valid generic value; extend this map only with verified Bigship enums.
+_BIGSHIP_CATEGORY_MAP = {
+    "stabilizer": "Others", "inverter": "Others", "battery": "Others", "solar panel": "Others",
+    "panel": "Others", "ac": "Others", "ups": "Others", "mcb": "Others", "others": "Others",
+}
+
+
+def _bigship_category(internal: str) -> str:
+    return _BIGSHIP_CATEGORY_MAP.get((internal or "").strip().lower(), "Others")
+
+
+async def _pratibha_resolve_package(product_name):
+    """Resolve a free-text product to a master SKU (so the courier uses true specs, not defaults).
+    Tries, in order: exact name/SKU substring → an explicit SKU code in the text → capacity (e.g.
+    '4KVA'/'6.2kW') + category + voltage tokens. Returns the SKU doc (incl sku_code) or {}."""
+    if not product_name:
+        return {}
+    name = product_name.strip()
+    # 1) direct substring on name or sku_code
+    rx = {"$regex": re.escape(name), "$options": "i"}
+    hit = await db.master_skus.find_one({"$or": [{"name": rx}, {"sku_code": rx}]}, _PKG_PROJ)
+    if hit:
+        return hit
+    # 2) an explicit SKU code mentioned in the text (e.g. "MG4KVA90VAAC")
+    skutok = re.search(r"\bMG[A-Z0-9]{4,}\b", name, re.I)
+    if skutok:
+        hit = await db.master_skus.find_one(
+            {"sku_code": {"$regex": f"^{re.escape(skutok.group(0))}$", "$options": "i"}}, _PKG_PROJ)
+        if hit:
+            return hit
+    # 3) capacity (+ category + voltage) token match
+    cap = re.search(r"(\d+(?:\.\d+)?)\s*(kva|kw)\b", name, re.I)
+    volt = re.search(r"(\d{2,3})\s*v\b", name, re.I)
+    cats = [w for w in ["stabilizer", "inverter", "battery", "panel", "ups", "mcb", "ac"] if w in name.lower()]
+    if cap:
+        ands = [{"name": {"$regex": re.escape(cap.group(1)) + r"\s*" + cap.group(2), "$options": "i"}}]
+        if cats:
+            ands.append({"$or": [{"name": {"$regex": cats[0], "$options": "i"}},
+                                 {"category": {"$regex": cats[0], "$options": "i"}}]})
+        cands = [d async for d in db.master_skus.find({"$and": ands}, _PKG_PROJ).limit(10)]
+        if volt:  # prefer a candidate whose name carries the same voltage
+            for d in cands:
+                if re.search(volt.group(1) + r"\s*v", d.get("name", ""), re.I):
+                    return d
+        if cands:
+            return cands[0]
+    return {}
+
+
+def _pratibha_parse_dims(text: str) -> dict:
+    """Pull weight (kg) and L x B x H (cm) from email text, if present."""
+    out = {}
+    text = text or ""
+    w = re.search(r"(\d+(?:\.\d+)?)\s*kg\b", text, re.I) or re.search(r"\bweight\s*[:=]?\s*(\d+(?:\.\d+)?)", text, re.I)
+    if w:
+        out["weight_kg"] = float(w.group(1))
+    d = re.search(r"(\d+(?:\.\d+)?)\s*[x×*]\s*(\d+(?:\.\d+)?)\s*[x×*]\s*(\d+(?:\.\d+)?)", text, re.I)
+    if d:
+        out["length_cm"], out["breadth_cm"], out["height_cm"] = float(d.group(1)), float(d.group(2)), float(d.group(3))
+    return out
+
+
+async def _pratibha_update_sku_dims(sku_code: str, dims: dict) -> bool:
+    """Save weight/dimensions onto a master SKU that was missing them (learned from an email)."""
+    if not sku_code or not dims:
+        return False
+    upd = {k: v for k, v in dims.items() if k in ("weight_kg", "length_cm", "breadth_cm", "height_cm") and v}
+    if not upd:
+        return False
+    upd["updated_at"] = datetime.now(timezone.utc).isoformat()
+    r = await db.master_skus.update_one({"sku_code": sku_code}, {"$set": upd})
+    if r.modified_count:
+        logger.info(f"Pratibha learned dims for SKU {sku_code}: {upd}")
+    return bool(r.modified_count)
+
+
+async def _pratibha_dupe_shipment(phone, pincode, amount, hours=48):
+    """Has Pratibha already booked a near-identical shipment recently? (the ₹6L incident pattern)."""
+    cut = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    q = {"created_at": {"$gte": cut}, "phone": str(phone)}
+    if pincode:
+        q["pincode"] = str(pincode)
+    return await db.pratibha_shipments.find_one(q, {"_id": 0, "awb": 1, "created_at": 1})
+
+
+async def _pratibha_order_id_used(order_id: str) -> bool:
+    """Has this exact order id already been shipped on Bigship (by Pratibha)?"""
+    return bool(order_id) and bool(await db.pratibha_shipments.find_one({"order_id": str(order_id)}, {"_id": 1}))
+
+
+async def _pratibha_free_order_id(order_id: str):
+    """Bigship rejects a duplicate order id. If this one is already used, append '-' per the house
+    convention (2011 -> 2011- -> 2011--) until free. Returns (final_id, was_dashed)."""
+    oid = str(order_id or "").strip()
+    if not oid:
+        return oid, False
+    cand = oid
+    for _ in range(6):
+        if not await _pratibha_order_id_used(cand):
+            return cand, (cand != oid)
+        cand = cand + "-"
+    return cand, True
+
+
+async def _pratibha_shipments_today():
+    cut = datetime.now(timezone.utc).date().isoformat()
+    return await db.pratibha_shipments.count_documents({"created_at": {"$gte": cut}})
+
+
+# ---- Shipping: accumulate details across a thread so a follow-up that supplies the missing
+# fields completes the earlier request instead of looping. Keyed by (sender, normalized subject). ----
+async def _pratibha_ship_pending_get(sender: str, subject: str) -> dict:
+    cut = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    row = await db.pratibha_ship_pending.find_one(
+        {"sender": sender, "subject_key": _pr_norm_subject(subject or ""), "updated_at": {"$gte": cut}},
+        {"_id": 0, "params": 1})
+    return (row or {}).get("params") or {}
+
+
+async def _pratibha_ship_pending_save(sender: str, subject: str, params: dict):
+    now = datetime.now(timezone.utc).isoformat()
+    await db.pratibha_ship_pending.update_one(
+        {"sender": sender, "subject_key": _pr_norm_subject(subject or "")},
+        {"$set": {"sender": sender, "subject_key": _pr_norm_subject(subject or ""),
+                  "params": params, "updated_at": now}, "$setOnInsert": {"created_at": now}},
+        upsert=True)
+
+
+async def _pratibha_ship_pending_clear(sender: str, subject: str):
+    await db.pratibha_ship_pending.delete_one(
+        {"sender": sender, "subject_key": _pr_norm_subject(subject or "")})
+
+
+async def _pratibha_prepare_shipment(ship: dict) -> dict:
+    """Validate + enrich an extracted shipment into a booking-ready field set. Returns
+    {ok, fields, summary, pkg_matched} or {ok: False, error}."""
+    p = dict(ship.get("params") or {})
+    req = ["order_id", "first_name", "phone", "address_line1", "city", "state", "pincode", "product_name", "invoice_amount"]
+    missing = [f for f in req if not p.get(f)]
+    if p.get("pincode") and not re.fullmatch(r"\d{6}", str(p["pincode"]).strip()):
+        missing.append("valid 6-digit pincode")
+    if missing:
+        return {"ok": False, "error": f"I couldn't get these required shipping fields: {', '.join(missing)}. "
+                                      f"Please add them and resend."}
+    pkg = await _pratibha_resolve_package(p.get("product_name"))
+    # Dims: prefer the catalog SKU; else any dims given in the email; else ask (never guess + ship).
+    prov = {k: p.get(k) for k in ("weight_kg", "length_cm", "breadth_cm", "height_cm") if p.get(k)}
+    cat_dims = bool(pkg.get("weight_kg")) and bool(pkg.get("length_cm"))
+    if not cat_dims and not ("weight_kg" in prov and "length_cm" in prov):
+        skutxt = f" (SKU {pkg['sku_code']})" if pkg.get("sku_code") else ""
+        return {"ok": False, "needs_dims": True, "sku_code": pkg.get("sku_code"),
+                "error": (f"I matched the product to \"{pkg.get('name') or p.get('product_name')}\"{skutxt}, but I "
+                          f"don't have its weight & dimensions on file. Reply with the weight (kg) and size "
+                          f"L x B x H (cm) — e.g. \"8kg, 20x12x32 cm\" — and I'll save them to the SKU and book.")}
+    qty = max(1, int(p.get("quantity") or 1))
+    unit_weight = float(prov.get("weight_kg") or pkg.get("weight_kg") or 1.0)
+    # Scale dead-weight by quantity: a per-unit (catalog) weight × qty; a weight given in the email is
+    # treated as the TOTAL already. So 4 × 8kg stabilizers ship as 32kg, not 8kg.
+    weight = unit_weight if "weight_kg" in prov else round(unit_weight * qty, 2)
+    length = int(float(prov.get("length_cm") or pkg.get("length_cm") or 10))
+    width = int(float(prov.get("breadth_cm") or pkg.get("breadth_cm") or 10))
+    height = int(float(prov.get("height_cm") or pkg.get("height_cm") or 10))
+    dims_source = "catalog" if cat_dims else "provided"
+    # Order id is the Bigship order reference (invoice_id) and must be unique there. If it's already
+    # been shipped, append '-' (2011 -> 2011-) per the house convention so it can ship.
+    order_id_raw = str(p.get("order_id") or "").strip()
+    order_id_final, order_id_dashed = await _pratibha_free_order_id(order_id_raw)
+    c = email_agent.cfg()
+    pay = "COD" if str(p.get("payment_type", "")).upper() == "COD" else "Prepaid"
+    amt = float(p.get("invoice_amount") or 0)
+    fields = {
+        "shipment_type": (p.get("shipment_type") or "b2c").lower(),
+        "warehouse_id": c.get("shipping_warehouse_id"),
+        "first_name": p["first_name"], "last_name": p.get("last_name") or "", "phone": str(p["phone"]),
+        "alt_phone": str(p.get("alt_phone") or ""), "email": p.get("email") or "",
+        "address_line1": p["address_line1"], "address_line2": p.get("address_line2") or "",
+        "city": p["city"], "state": p["state"], "pincode": str(p["pincode"]),
+        "product_name": p["product_name"], "product_category": _bigship_category(pkg.get("category")),
+        "quantity": int(p.get("quantity") or 1), "hsn_code": str(pkg.get("hsn_code") or ""),
+        "weight_kg": weight, "length_cm": length, "width_cm": width, "height_cm": height,
+        "invoice_number": (order_id_final or f"PB-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{uuid.uuid4().hex[:5].upper()}")[:25],
+        "amazon_order_id": order_id_raw or None,
+        "invoice_amount": amt,
+        "payment_type": pay, "cod_amount": float(p.get("cod_amount") or (amt if pay == "COD" else 0)),
+    }
+    sku_txt = f" [SKU {pkg['sku_code']}]" if pkg.get("sku_code") else " (not matched to a catalog SKU)"
+    dim_note = {"catalog": "", "provided": " (from your email — will save to the SKU)"}.get(dims_source, "")
+    oid_line = f"Order ID: {order_id_final}"
+    if order_id_dashed:
+        oid_line += f"  ⚠️ ({order_id_raw} was already shipped on Bigship — shipping as {order_id_final})"
+    summary = (f"{oid_line}\n"
+               f"  {fields['first_name']} {fields['last_name']}".strip() + f" · {fields['phone']} · "
+               f"{fields['city']}, {fields['state']} {fields['pincode']}\n"
+               f"  Product: {fields['product_name']}{sku_txt} · Qty {qty} · {fields['weight_kg']}kg total "
+               f"{fields['length_cm']}x{fields['width_cm']}x{fields['height_cm']}cm{dim_note}\n"
+               f"  {pay}{(' collect ₹' + format(fields['cod_amount'], ',.0f')) if pay == 'COD' else ''} · "
+               f"value ₹{amt:,.0f} · pickup warehouse {fields['warehouse_id']}")
+    return {"ok": True, "fields": fields, "summary": summary, "pkg_matched": bool(pkg),
+            "order_id": order_id_final, "order_id_dashed": order_id_dashed,
+            "sku_code": pkg.get("sku_code"), "dims_source": dims_source,
+            "provided_dims": ({"weight_kg": weight, "length_cm": length, "breadth_cm": width, "height_cm": height}
+                              if dims_source == "provided" else None)}
+
+
+async def _pratibha_fetch_label(system_order_id, shipment_type: str = "b2c"):
+    """Fetch the Bigship shipping label as a base64 PDF for a manifested order → an email attachment dict."""
+    if not system_order_id:
+        return None
+    try:
+        token = await get_bigship_token()
+        sid = 3 if str(shipment_type).lower() == "b2b" else 2
+        async with httpx.AsyncClient(timeout=40.0) as client:
+            r = await client.post(f"{BIGSHIP_API_URL}/shipment/data",
+                                  params={"shipment_data_id": sid, "system_order_id": str(system_order_id)},
+                                  json={}, headers={"Content-Type": "application/json",
+                                                    "Authorization": f"Bearer {token}"})
+        d = r.json()
+        dd = d.get("data") or {}
+        if d.get("success") and dd.get("res_FileContent"):
+            return {"filename": dd.get("res_FileName") or f"Label_{system_order_id}.pdf",
+                    "content": dd.get("res_FileContent"), "media_type": dd.get("res_MediaType") or "application/pdf"}
+    except Exception as e:
+        logger.warning(f"Pratibha label fetch failed for {system_order_id}: {e}")
+    return None
+
+
+async def _pratibha_book_shipment(fields: dict, ctx: dict):
+    """Book via the existing agent endpoint, log it (for dedup + audit), return the response."""
+    req = ShipmentCreateRequest(**fields)
+    resp = await create_shipment_for_agent(req, auto_manifest=True, preferred_courier_id=None,
+                                           current_user=_PRATIBHA_AGENT_USER)
+    awb = getattr(resp, "awb_number", None)
+    await db.pratibha_shipments.insert_one({
+        "id": str(uuid.uuid4()), "phone": fields["phone"], "pincode": fields["pincode"],
+        "amount": fields["invoice_amount"], "product": fields["product_name"], "awb": awb,
+        # The order id used as the Bigship reference (possibly dash-suffixed) — drives future dedup.
+        "order_id": fields.get("invoice_number"), "amazon_order_id": fields.get("amazon_order_id"),
+        "courier": getattr(resp, "courier_name", None), "label_url": getattr(resp, "label_url", None),
+        "shipping_cost": getattr(resp, "shipping_cost", None),
+        "success": getattr(resp, "success", None), "by": ctx.get("from_addr"),
+        "created_at": datetime.now(timezone.utc).isoformat()})
+    return resp
+
+
+def _pr_thread_subject(orig_subject: str, ref: str) -> str:
+    """Keep approval emails INSIDE the original conversation: 'Re: <original subject> [Pratibha
+    approval REF]'. The REF marker lets us match the founder's reply; threading itself is by the
+    In-Reply-To/References headers. This stops Pratibha from spawning a new, chain-breaking thread."""
+    s = (orig_subject or "").strip()
+    if not s:
+        return f"[Pratibha approval {ref}] Confirm"
+    if not s.lower().startswith("re:"):
+        s = f"Re: {s}"
+    return f"{s} [Pratibha approval {ref}]"
+
+
+async def _pratibha_request_ship_approval(fields: dict, summary: str, ctx: dict, warn: str = "") -> dict:
+    """Confirm-first shipping: email the founder the exact shipment and store it pending YES.
+    Replies inside the founder's original request thread (keeps the conversation chain intact)."""
+    ref = uuid.uuid4().hex[:8].upper()
+    subj = _pr_thread_subject(ctx.get("subject"), ref)
+    body = (f"Sir,\n\n{warn}Please confirm — I'll book this shipment via Bigship:\n\n{summary}\n\n"
+            f"Reply YES to book it, or NO to cancel.\n\nPratibha, MuscleGrid")
+    appr = {"id": str(uuid.uuid4()), "ref": ref, "ship_action": "shipment", "action": "finance:shipment",
+            "ship_fields": fields, "summary": summary[:300], "ctx": ctx, "tier": 3, "status": "pending",
+            "requested_at": datetime.now(timezone.utc).isoformat()}
+    try:
+        await email_agent.send_reply_all([ctx["from_addr"]], [], subj, body,
+                                         ctx.get("message_id") or "", ctx.get("references", ""), add_standing=False)
+    except Exception as e:
+        appr["send_error"] = str(e)
+        logger.error(f"Pratibha ship approval email failed: {e}")
+    await db.pratibha_approvals.insert_one(appr)
+    return appr
+
+
+# ---- CA agent: classify an accounting document → draft for accountant review ----
+_PR_PAY_MODE_MAP = {"upi": "upi", "cash": "cash", "cheque": "cheque", "card": "card",
+                    "bank transfer": "bank_transfer", "bank_transfer": "bank_transfer", "neft": "bank_transfer",
+                    "imps": "bank_transfer", "rtgs": "bank_transfer", "net banking": "bank_transfer"}
+
+
+async def _ca_prepare_draft(cl: dict, sender: str) -> dict:
+    """Resolve party + firm against the CRM and store a reviewable accounting draft."""
+    party = None
+    if cl.get("party_name"):
+        party = await db.parties.find_one({"name": {"$regex": re.escape(cl["party_name"].strip()), "$options": "i"}},
+                                          {"_id": 0, "id": 1, "name": 1, "state": 1, "gstin": 1})
+    firm_id = firm_name = None
+    if cl.get("firm_hint"):
+        fdoc = await db.firms.find_one({"name": {"$regex": re.escape(cl["firm_hint"].strip()), "$options": "i"}},
+                                       {"_id": 0, "id": 1, "name": 1})
+        if fdoc:
+            firm_id, firm_name = fdoc["id"], fdoc["name"]
+    if not firm_id:
+        fid = await get_default_firm_id()
+        fdoc = await db.firms.find_one({"id": fid}) if fid else None
+        firm_id, firm_name = fid, (fdoc["name"] if fdoc else None)
+    now = datetime.now(timezone.utc).isoformat()
+    draft = {
+        "id": str(uuid.uuid4()), "doc_type": cl.get("doc_type"), "classified": cl,
+        "party_name": cl.get("party_name"), "party_id": (party or {}).get("id"), "party_matched": bool(party),
+        "firm_id": firm_id, "firm_name": firm_name, "document_number": cl.get("document_number"),
+        "document_date": cl.get("document_date"), "grand_total": (cl.get("totals") or {}).get("grand_total"),
+        "confidence": cl.get("confidence"), "compliance_flags": cl.get("compliance_flags") or [],
+        "tds": cl.get("tds"), "status": "pending_review", "created_by": sender, "created_at": now}
+    await db.accounting_drafts.insert_one(draft)
+    return draft
+
+
+def _ca_draft_summary(d: dict) -> str:
+    cl = d.get("classified") or {}
+    t = cl.get("totals") or {}
+    L = [f"I've read and drafted this {d.get('doc_type', 'document')} for your review:", ""]
+    L.append(f"  Party   : {d.get('party_name') or '?'}"
+             + (" (matched in CRM)" if d.get("party_matched") else " (NOT matched — may need to create)"))
+    L.append(f"  Firm    : {d.get('firm_name') or '(default)'}")
+    if d.get("document_number"):
+        L.append(f"  Doc no. : {d['document_number']} dated {d.get('document_date') or '?'}")
+    if t.get("grand_total") is not None:
+        L.append(f"  Total   : {_inr(t.get('grand_total'))} (taxable {_inr(t.get('taxable_value'))}, GST {_inr(t.get('total_gst'))})")
+    if cl.get("payment"):
+        p = cl["payment"]
+        L.append(f"  Payment : {p.get('direction')} {_inr(p.get('amount'))} via {p.get('mode')}"
+                 + (f" (ref {p['reference']})" if p.get("reference") else ""))
+    tds = cl.get("tds") or {}
+    if tds.get("applicable"):
+        L.append(f"  TDS     : {tds.get('section')} @ {tds.get('rate')}% = {_inr(tds.get('amount'))}")
+    L.append(f"  Ledger  : {cl.get('suggested_ledger') or '?'}")
+    if d.get("compliance_flags"):
+        L.append("  ! Flags : " + "; ".join(d["compliance_flags"][:5]))
+    if cl.get("missing"):
+        L.append("  Missing : " + ", ".join(cl["missing"][:6]))
+    L += ["", f"Review & approve in the CRM (Accounting Drafts), ref {d['id'][:8]}.",
+          "", "Pratibha (Accounts), MuscleGrid"]
+    return "\n".join(L)
 
 
 async def process_email_agent_inbox() -> dict:
@@ -60152,25 +64235,88 @@ async def process_email_agent_inbox() -> dict:
     if not email_agent.is_configured():
         return {"skipped": "not configured"}
     c = email_agent.cfg()
+    # High-water-mark fetch (by UID, via PEEK) — does NOT rely on the Seen flag, so emails a
+    # human already opened in the shared inbox are still processed. Dedup by message_id backs it up.
+    state = await db.email_agent_state.find_one({"id": "poll"}, {"_id": 0, "last_uid": 1})
+    last_uid = (state or {}).get("last_uid")
     try:
-        msgs = await email_agent.fetch_unseen(limit=20)
+        msgs, new_high_uid = await email_agent.fetch_new(last_uid, limit=80)
     except Exception as e:
         logger.error(f"Email agent IMAP fetch failed: {e}")
         return {"error": str(e)}
+    # Also poll the pratibha@ (send-identity) inbox — replies to her own emails (approvals,
+    # Shweta's assignments, ship confirms) and direct mail to pratibha@ land there, not in service@.
+    poll_from = (c.get("read_from_inbox", True) and c.get("from_email") and c["from_email"] != c["email"]
+                 and c.get("smtp_pass"))
+    from_high = None
+    if poll_from:
+        stf = await db.email_agent_state.find_one({"id": "poll_from"}, {"_id": 0, "last_uid": 1})
+        try:
+            from_msgs, from_high = await email_agent.fetch_new(
+                (stf or {}).get("last_uid"), limit=80, imap_email=c["from_email"], imap_pass=c["smtp_pass"])
+            msgs = list(msgs) + list(from_msgs)
+        except Exception as e:
+            logger.error(f"Pratibha from-inbox fetch failed: {e}")
+            poll_from = False
+
+    # The same email often lands in BOTH inboxes (service@ + pratibha@), and one copy may carry the
+    # attachments (e.g. an invoice PDF) while the other doesn't. Dedup by message_id, keeping the copy
+    # WITH the most attachments so the invoice/label copy always wins.
+    if msgs:
+        best = {}
+        order = []
+        for mm in msgs:
+            mid = mm.get("message_id") or f"__noid__{id(mm)}"
+            if mid not in best:
+                best[mid] = mm
+                order.append(mid)
+            elif len(mm.get("attachments") or []) > len(best[mid].get("attachments") or []):
+                best[mid] = mm
+        msgs = [best[mid] for mid in order]
 
     observed, triggered, auto_sent = 0, 0, 0
     now = datetime.now(timezone.utc)
     for m in msgs:
         sender = m.get("from_addr", "")
-        if not sender or sender == c["email"]:
+        # Skip only HER OWN outgoing (the send identity, pratibha@). Mail that
+        # arrives from the shared inbox address itself (service@) is real traffic
+        # from other agents/staff and must be processed, not treated as self.
+        if not sender or sender == c["from_email"]:
             continue  # ignore our own outgoing
         if m.get("message_id") and await db.email_agent_inbox.find_one(
                 {"message_id": m["message_id"]}, {"_id": 1}):
             continue
 
-        # Is this the founder answering a pending approval? Resolve and move on.
-        if c["allow_actions"] and await _pratibha_handle_approval_reply(m):
+        # Did this inbound respond to / resolve a thread Pratibha is chasing? (updates the
+        # follow-up timer and closes it on "resolved/done/closed"). Doesn't stop processing.
+        await _pratibha_followup_on_inbound(m, sender)
+
+        # Is this the founder answering a pending approval (incl. a finance confirm)? Resolve and move on.
+        if await _pratibha_handle_approval_reply(m):
             continue
+
+        # Is this Shweta replying with who should own a triaged email? Loop that person in.
+        if await _pratibha_handle_assignment_reply(m):
+            continue
+
+        # Is this someone replying "done" on a task reminder? Close the task and move on.
+        if await _pratibha_handle_task_reply(m):
+            continue
+
+        # Is this a staff member answering Pratibha's "what do you want X to do?" handoff question?
+        if await _pratibha_handoff_on_reply(m):
+            continue
+
+        # Is the founder teaching Pratibha a decision/policy to remember? Store & ack.
+        if await _pratibha_handle_memory(m, sender):
+            continue
+
+        # Memorize any time-bound actionable items in this email (internal/founder mail), so Pratibha
+        # reminds until done. Cheap pre-filter avoids an LLM call unless a deadline word is present.
+        if (email_agent.is_trigger_sender(sender, ["@musclegrid.in"])
+                or email_agent.is_finance_sender(sender, c.get("finance_senders", []))) and \
+                _PR_DEADLINE_RX.search(f"{m.get('subject','')} {m.get('body','')}"):
+            await _pratibha_save_tasks(m, sender)
 
         is_trigger = (email_agent.has_trigger(m.get("subject", ""), m.get("body", ""), c["trigger_word"])
                       and email_agent.is_trigger_sender(sender, c["trigger_senders"]))
@@ -60185,6 +64331,47 @@ async def process_email_agent_inbox() -> dict:
         }
 
         if not is_trigger:
+            # Unowned external email? Ask Shweta who should follow up (with a CRM brief).
+            if (c.get("triage_enabled", True) and pratibha_brain.available()
+                    and not email_agent.is_trigger_sender(sender, ["@musclegrid.in"])  # not internal staff
+                    and not _pratibha_is_automated(sender)):
+                tr = await pratibha_brain.triage_inbound(m.get("subject", ""), m.get("body", ""), sender)
+                if tr.get("needs_owner"):
+                    # 1) Email triage as before — ask Shweta whom to assign (with CRM brief).
+                    ref = await _pratibha_triage_to_shweta(m, sender, tr.get("summary", ""))
+                    # 2) ALSO WhatsApp Shweta a Hinglish draft for quick approval — capped per day.
+                    waref = None
+                    if c.get("wa_approval") and c.get("wa_manager"):
+                        if await _pratibha_wa_asks_today() < c.get("wa_daily_cap", 25):
+                            brief = await _pratibha_crm_brief(sender, m.get("body", ""), m.get("subject", ""), m.get("from_name", ""))
+                            guide = await _pratibha_guidance(m.get("subject", ""), m.get("body", ""), doc.get("category"))
+                            ctx = "\n\n".join([p for p in [guide, ("CRM context:\n" + brief if brief else "")] if p])[:4800]
+                            dr = await pratibha_brain.draft_customer(sender, m.get("subject", ""), m.get("body", ""), context=ctx)
+                            draft = (dr.get("reply") or "").strip()
+                            waref = await _pratibha_wa_ask_shweta(m, draft, brief, doc["id"]) if draft else None
+                        else:
+                            logger.info("Pratibha WhatsApp draft-ask daily cap reached — email triage only.")
+                    doc.update({"triggered": False, "category": "triage", "model_ok": True,
+                                "status": "triaged" if ref else "observed",
+                                "triage_summary": tr.get("summary"), "assign_ref": ref, "wa_ref": waref})
+                    await db.email_agent_inbox.insert_one(doc)
+                    observed += 1
+                    continue
+            # INTERNAL staff-to-staff handoff (e.g. Jaspreet → Angad): Pratibha steps in — tops up the
+            # owner to call the customer immediately (clear) or asks the sender what they want (unclear),
+            # then chases the owner every 30 min.
+            if (pratibha_brain.available()
+                    and email_agent.is_trigger_sender(sender, ["@musclegrid.in"])
+                    and not _pratibha_is_automated(sender)):
+                try:
+                    if await _pratibha_internal_handoff(m, sender):
+                        doc.update({"triggered": False, "category": "internal_handoff", "model_ok": True,
+                                    "status": "handoff"})
+                        await db.email_agent_inbox.insert_one(doc)
+                        observed += 1
+                        continue
+                except Exception as e:
+                    logger.error(f"Pratibha internal handoff failed: {e}")
             doc.update({"triggered": False, "status": "observed", "draft_reply": "", "model_ok": None})
             await db.email_agent_inbox.insert_one(doc)
             observed += 1
@@ -60197,21 +64384,237 @@ async def process_email_agent_inbox() -> dict:
             subj = f"Re: {subj}"
         to_list, cc_list = email_agent.reply_all_recipients(
             sender, m.get("to", []), m.get("cc", []), c["email"])
+        # Never address her own send identity (pratibha@) on a reply either.
+        to_list = [a for a in to_list if a != c["from_email"]]
+        cc_list = [a for a in cc_list if a != c["from_email"]]
         doc.update({"triggered": True, "trigger_by": sender, "reply_subject": subj})
 
-        lookup = await email_agent.extract_lookup(m.get("subject", ""), m.get("body", ""))
-        if lookup["is_lookup"]:
-            # --- CRM data lookup: answer with REAL data, reply INTERNAL-ONLY so a
-            #     customer's details never go to an external thread. ---
-            results = await _crm_lookup(lookup["name"])
-            reply_text = _format_lookup_reply(lookup["name"], results)
+        # Decide intent with the configured brain. Default = Claude (haiku) for
+        # accuracy; if the API is unavailable or errors we fall back to the local
+        # model so a brief outage never silences her.
+        use_claude = (c.get("brain", "claude") == "claude" and pratibha_brain.available())
+        kind = None
+        if use_claude:
+            rt = await pratibha_brain.route(m.get("subject", ""), m.get("body", ""), sender)
+            if rt.get("model_ok"):
+                kind = rt.get("kind")
+            else:
+                use_claude = False  # API hiccup → use the local model this round
+
+        has_images = bool(m.get("attachments"))
+
+        # --- ACCOUNTING (CA agent): an authorised sender emails a DOCUMENT (bill / invoice /
+        #     payment proof) → the CA brain reads + classifies it and drafts an entry for the
+        #     accountant to review. Code does the math; nothing posts here. ---
+        if (use_claude and c.get("accounting_enabled", True) and has_images
+                and email_agent.is_finance_sender(sender, c.get("accounting_senders", []))):
+            cl = await ca_agent.classify(m.get("attachments"), m.get("body", ""), today=now.strftime("%Y-%m-%d"))
+            if cl.get("is_accounting_doc"):
+                draft = await _ca_prepare_draft(cl, sender)
+                reply = _ca_draft_summary(draft)
+                doc.update({"category": "accounting", "model_ok": True, "internal_only": True,
+                            "reply_to": [sender], "draft_reply": reply, "accounting_draft_id": draft["id"],
+                            "status": "needs_review"})
+                if c["auto_send"]:
+                    try:
+                        await email_agent.send_reply_all([sender], [], subj, reply,
+                                                         m.get("message_id") or "", m.get("references", ""), add_standing=False)
+                        doc.update({"status": "replied", "replied_at": now.isoformat()})
+                    except Exception as e:
+                        doc["send_error"] = str(e)
+                await db.email_agent_inbox.insert_one(doc)
+                asyncio.create_task(create_notification(
+                    title="📒 CA agent drafted an entry",
+                    message=f"{draft.get('doc_type')} · {draft.get('party_name') or ''} · {_inr(draft.get('grand_total'))}"[:80],
+                    notification_type="info", link="/admin/accounting-drafts", priority="high",
+                    target_roles=["admin", "accountant"], created_by_name="Pratibha (Accounts)",
+                    data={"draft_id": draft["id"]}))
+                continue
+            # not an accounting document → fall through
+
+        # --- FINANCIAL WRITE (founder-only, confirm-first): payment / purchase / sales draft.
+        #     Triggered for an action-type request OR any email with image attachments (a
+        #     payment screenshot), but ONLY from a finance-authorised sender (founder). ---
+        fin_eligible = (use_claude and c.get("allow_finance_writes", True)
+                        and email_agent.is_finance_sender(sender, c.get("finance_senders", []))
+                        and (kind == "action" or has_images))
+        if fin_eligible:
+            fin = await pratibha_brain.extract_financial(
+                m.get("subject", ""), m.get("body", ""), m.get("attachments"), today=now.strftime("%Y-%m-%d"))
+            if fin.get("action") in ("payment", "purchase", "sales_invoice"):
+                prepared = await _pratibha_prepare_financial(fin, sender)
+                doc.update({"category": "finance_write", "fin_action": fin["action"], "model_ok": True,
+                            "internal_only": True, "reply_to": [sender],
+                            "fin_summary": fin.get("summary"), "fin_confidence": fin.get("confidence")})
+                auto_max = c.get("mandate_payment_auto_max", 0) or 0
+                within_mandate = (prepared.get("ok") and fin["action"] == "payment" and auto_max > 0
+                                  and float(prepared["params"].get("amount", 0)) <= auto_max)
+                if within_mandate:
+                    # Founder-proxy mandate: act without a confirm, then notify. Still logged.
+                    ok_x, result_x = await _pratibha_execute_financial(
+                        {"fin_action": "payment", "fin_params": prepared["params"], "ref": "MANDATE"})
+                    doc.update({"status": "replied" if ok_x else "needs_review",
+                                "draft_reply": result_x, "fin_params": prepared.get("params"),
+                                "mandate_auto": True})
+                    try:
+                        await email_agent.send_reply_all([sender], [], subj,
+                            f"Per your standing mandate (auto-post ≤ {_inr(auto_max)}):\n{result_x}\n\nPratibha, MuscleGrid",
+                            m.get("message_id") or "", m.get("references", ""), add_standing=False)
+                    except Exception as e:
+                        doc.update({"send_error": str(e)})
+                elif prepared.get("ok"):
+                    fctx = {"from_addr": sender, "subject": subj, "message_id": m.get("message_id"),
+                            "references": m.get("references", "")}
+                    appr = await _pratibha_request_fin_approval(fin["action"], prepared, fctx)
+                    doc.update({"status": "awaiting_approval", "approval_ref": appr.get("ref"),
+                                "draft_reply": prepared.get("confirm_text"), "fin_params": prepared.get("params")})
+                else:
+                    err = prepared.get("error") or "I couldn't process that financial entry."
+                    doc.update({"status": "needs_review", "draft_reply": err})
+                    if c["auto_send"]:
+                        try:
+                            await email_agent.send_reply_all([sender], [], subj, f"{err}\n\nPratibha, MuscleGrid",
+                                                             m.get("message_id") or "", m.get("references", ""),
+                                                             add_standing=False)
+                            doc.update({"status": "replied", "replied_at": now.isoformat()})
+                        except Exception as e:
+                            doc.update({"send_error": str(e)})
+                await db.email_agent_inbox.insert_one(doc)
+                asyncio.create_task(create_notification(
+                    title="💰 Pratibha finance request", message=(fin.get("summary") or fin["action"])[:80],
+                    notification_type="warning", link="/admin/email-agent", priority="high",
+                    target_roles=["admin", "accountant"], created_by_name="Pratibha", data={"email_id": doc["id"]}))
+                continue
+            # not a financial action → fall through to normal data/action/customer handling
+
+        # --- SHIPPING: book a Bigship courier from emailed customer details. Authorised by the
+        #     SHIPPING allowlist (separate from finance — defaults to all @musclegrid.in staff).
+        #     Auto-books ONLY clean+complete+high-confidence+non-duplicate requests under the
+        #     daily cap; otherwise holds for review (never books on doubt). ---
+        if (use_claude and c.get("allow_shipping", True)
+                and email_agent.is_finance_sender(sender, c.get("shipping_senders", c.get("finance_senders", [])))
+                and (kind == "action" or has_images)):
+            sh = await pratibha_brain.extract_shipment(m.get("subject", ""), m.get("body", ""), m.get("attachments"))
+            if sh.get("is_shipment"):
+                # Merge with details already gathered earlier on this thread, so a follow-up that
+                # only supplies what was missing (e.g. "phone is X, amount is Y") completes the
+                # original request instead of looping back asking for the name/address again.
+                prev = await _pratibha_ship_pending_get(sender, m.get("subject", ""))
+                merged = dict(prev)
+                for _k, _v in (sh.get("params") or {}).items():
+                    if _v not in (None, "", []):
+                        merged[_k] = _v
+                # Capture any weight/dimensions written in the email (e.g. "8kg, 20x12x32 cm") so a
+                # follow-up that supplies them completes a request held for missing dims.
+                for _k, _v in _pratibha_parse_dims(f"{m.get('subject','')}\n{m.get('body','')}").items():
+                    merged[_k] = _v
+                sh["params"] = merged
+                prepared = await _pratibha_prepare_shipment(sh)
+                # If the dims came from the email (SKU had none), persist them back to the master SKU.
+                if prepared.get("dims_source") == "provided" and prepared.get("sku_code"):
+                    await _pratibha_update_sku_dims(prepared["sku_code"], prepared.get("provided_dims") or {})
+                doc.update({"category": "shipping", "model_ok": True, "internal_only": True, "reply_to": [sender]})
+                conf = sh.get("confidence")
+                low_conf = isinstance(conf, (int, float)) and conf < c.get("shipping_min_confidence", 0.8)
+                auto = c.get("shipping_auto", False)
+                reply = ""
+                send_now = True
+                ship_attachments = None
+                if not prepared.get("ok"):
+                    reply = prepared["error"]; doc["status"] = "needs_review"
+                    # Remember what we have so far; the next reply on this thread will add to it.
+                    await _pratibha_ship_pending_save(sender, m.get("subject", ""), merged)
+                else:
+                    # Complete now — clear the thread's partial state.
+                    await _pratibha_ship_pending_clear(sender, m.get("subject", ""))
+                    f = prepared["fields"]
+                    dup = await _pratibha_dupe_shipment(f["phone"], f["pincode"], f["invoice_amount"])
+                    cap_hit = (await _pratibha_shipments_today()) >= c.get("shipping_daily_cap", 15)
+                    if dup:
+                        reply = (f"⚠️ I recently booked a shipment to this number/pincode (AWB {dup.get('awb')}). "
+                                 f"NOT re-booking to avoid a duplicate. Book from the dashboard if you really need another.")
+                        doc["status"] = "needs_review"
+                    elif auto and not low_conf and not cap_hit:
+                        # AUTO-BOOK (only when shipping_auto is on and the request is clean)
+                        try:
+                            resp = await _pratibha_book_shipment(f, {"from_addr": sender})
+                            if getattr(resp, "success", False) and getattr(resp, "awb_number", None):
+                                lbl = await _pratibha_fetch_label(getattr(resp, "system_order_id", None),
+                                                                  f.get("shipment_type", "b2c"))
+                                if lbl:
+                                    ship_attachments = [lbl]
+                                reply = (f"Booked ✓  AWB {resp.awb_number} ({resp.courier_name or 'courier'}).\n\n"
+                                         f"{prepared['summary']}"
+                                         + ("\nLabel attached." if lbl else (f"\nLabel: {resp.label_url}" if getattr(resp, 'label_url', None) else "")))
+                                doc.update({"status": "replied", "awb": resp.awb_number, "replied_at": now.isoformat()})
+                            else:
+                                reply = f"Booking did not complete: {getattr(resp, 'message', 'unknown error')}. Please check Bigship."
+                                doc["status"] = "needs_review"
+                        except Exception as e:
+                            logger.error(f"Pratibha shipment booking failed: {e}")
+                            reply = f"I hit an error booking it: {e}. Nothing booked from my side — use the dashboard."
+                            doc["status"] = "needs_review"
+                    else:
+                        # CONFIRM-FIRST (default, or auto fell back due to low confidence / cap):
+                        warn = "⚠️ I'm not fully sure I read this correctly — please verify the details. " if low_conf else ""
+                        fctx = {"from_addr": sender, "subject": subj, "message_id": m.get("message_id"),
+                                "references": m.get("references", "")}
+                        appr = await _pratibha_request_ship_approval(f, prepared["summary"], fctx, warn)
+                        doc.update({"status": "awaiting_approval", "approval_ref": appr.get("ref"),
+                                    "draft_reply": f"{warn}Confirm to book:\n{prepared['summary']}"})
+                        send_now = False  # approval email already sent
+                if send_now:
+                    doc["draft_reply"] = reply
+                    if c["auto_send"]:
+                        try:
+                            await email_agent.send_reply_all([sender], [], subj, f"{reply}\n\nPratibha, MuscleGrid",
+                                                             m.get("message_id") or "", m.get("references", ""),
+                                                             add_standing=False, attachments=ship_attachments)
+                        except Exception as e:
+                            doc["send_error"] = str(e)
+                await db.email_agent_inbox.insert_one(doc)
+                asyncio.create_task(create_notification(
+                    title="📦 Pratibha shipping",
+                    message=(doc.get("awb") and f"booked {doc['awb']}") or doc.get("status", "shipment"),
+                    notification_type="warning", link="/admin/email-agent", priority="high",
+                    target_roles=["admin", "dispatcher"], created_by_name="Pratibha", data={"email_id": doc["id"]}))
+                continue
+            # not a shipment → fall through
+
+        # --- CRM DATA question: answer with REAL data, reply INTERNAL-ONLY so a
+        #     customer's details never go to an external thread. ---
+        if use_claude:
+            is_data = (kind == "data")
+        else:
+            lookup = await email_agent.extract_lookup(m.get("subject", ""), m.get("body", ""))
+            is_data = lookup["is_lookup"]
+        if is_data:
+            if use_claude:
+                # Finance/accounts tools are founder-only by default (EMAIL_AGENT_FINANCE_SENDERS).
+                allow_finance = email_agent.is_finance_sender(sender, c.get("finance_senders", []))
+
+                async def _exec(_tn, _tp, _af=allow_finance):
+                    return await _pratibha_tool_exec(_tn, _tp, allow_finance=_af)
+
+                res = await pratibha_brain.answer_data(
+                    m.get("subject", ""), m.get("body", ""), sender, _exec, allow_finance=allow_finance)
+                reply_text = (res.get("reply") or "").strip()
+                data_ok = bool(res.get("model_ok") and reply_text)
+                lookup_meta = {"brain": "claude", "tool_calls": res.get("tool_calls", 0),
+                               "finance_allowed": allow_finance}
+            else:
+                results = await _crm_lookup(lookup["name"])
+                reply_text = _format_lookup_reply(lookup["name"], results)
+                data_ok = True
+                lookup_meta = {"name": lookup["name"], "count": len(results)}
             internal = list(dict.fromkeys(
                 [a for a in ([sender] + to_list + cc_list)
-                 if a != c["email"] and email_agent.is_trigger_sender(a, c["trigger_senders"])]))
-            doc.update({"category": "data_lookup", "draft_reply": reply_text, "model_ok": True,
+                 if a != c["email"] and a != c["from_email"]
+                 and email_agent.is_trigger_sender(a, c["trigger_senders"])]))
+            doc.update({"category": "data_lookup", "draft_reply": reply_text, "model_ok": data_ok,
                         "reply_to": internal, "reply_cc": [], "internal_only": True,
-                        "lookup": {"name": lookup["name"], "count": len(results)}})
-            if c["auto_send"] and internal:
+                        "lookup": lookup_meta})
+            if c["auto_send"] and internal and data_ok:
                 try:
                     await email_agent.send_reply_all(internal, [], subj, reply_text,
                                                      m.get("message_id") or "", m.get("references", ""))
@@ -60226,15 +64629,18 @@ async def process_email_agent_inbox() -> dict:
                 doc.update({"status": "needs_review"})
             await db.email_agent_inbox.insert_one(doc)
             asyncio.create_task(create_notification(
-                title="🔎 Pratibha CRM lookup", message=f"{lookup['name']}: {len(results)} match(es)",
+                title="🔎 Pratibha CRM lookup", message=(m.get("subject") or "(no subject)")[:80],
                 notification_type="info", link="/admin/email-agent", priority="normal",
                 target_roles=["admin", "call_support"], created_by_name="Email Agent",
                 data={"email_id": doc["id"]}))
             continue
 
         # --- CRM action request? (only when actions are enabled) ---
-        if c["allow_actions"]:
-            act = await email_agent.extract_action(m.get("subject", ""), m.get("body", ""))
+        run_action = c["allow_actions"] and (kind == "action" if use_claude else True)
+        if run_action:
+            act = await (pratibha_brain.extract_action(m.get("subject", ""), m.get("body", ""))
+                         if use_claude else
+                         email_agent.extract_action(m.get("subject", ""), m.get("body", "")))
             tier = _pratibha_tier(act["action"])
             if tier in (1, 2, 3):
                 actx = {"from_name": m.get("from_name"), "from_addr": sender, "subject": subj,
@@ -60249,11 +64655,13 @@ async def process_email_agent_inbox() -> dict:
                                 "reply_to": [sender], "reply_cc": [], "internal_only": True})
                     if c["auto_send"]:
                         try:
-                            await email_agent.send_reply_all([sender], [], subj, f"{result}\n\nPratibha",
+                            _mid = await email_agent.send_reply_all([sender], [], subj, f"{result}\n\nPratibha",
                                                              m.get("message_id") or "", m.get("references", ""))
                             doc.update({"status": "replied", "sent_reply": result,
                                         "replied_by_name": "Pratibha (auto · action)", "replied_at": now.isoformat()})
                             auto_sent += 1
+                            await _pratibha_track_followup(_mid, subj, [sender], [], m.get("references", ""),
+                                                           f"Action: {act['action']}")
                         except Exception as e:
                             doc.update({"status": "needs_review", "send_error": str(e)})
                     else:
@@ -60270,18 +64678,50 @@ async def process_email_agent_inbox() -> dict:
 
         # --- Customer reply: draft, and AUTO-SEND ONLY a simple acknowledgement;
         #     anything substantive (specifics, promises) is held for a human. ---
-        ans = await email_agent.answer(sender, m.get("subject", ""), m.get("body", ""))
-        simple = email_agent.is_simple_ack(ans["reply"])
-        doc.update({"draft_reply": ans["reply"], "model_ok": ans["model_ok"],
-                    "reply_to": to_list, "reply_cc": cc_list,
-                    "auto_eligible": simple})
-        if c["auto_send"] and ans["model_ok"] and (ans["reply"] or "").strip() and to_list and simple:
+        if use_claude:
+            # Give her the customer's 360 (no finance in a customer-facing draft) so she
+            # replies with real context when the sender is a known customer.
+            ctx360 = ""
             try:
-                await email_agent.send_reply_all(
-                    to_list, cc_list, subj, ans["reply"], m.get("message_id") or "", m.get("references", ""))
+                c360 = await _pratibha_customer_360(sender, allow_finance=False)
+                # Fall back to any phone written in the email body when the sender's address isn't on file.
+                if not c360.get("found"):
+                    for _p in _pr_email_phones(f"{m.get('subject','')}\n{m.get('body','')}"):
+                        c360 = await _pratibha_customer_360(_p, allow_finance=False)
+                        if c360.get("found"):
+                            break
+                if c360.get("found"):
+                    ctx360 = "CRM context: " + json.dumps(c360, default=str)[:3000]
+            except Exception:
+                ctx360 = ""
+            # House style + lessons learned from past human corrections.
+            guide = await _pratibha_guidance(m.get("subject", ""), m.get("body", ""), doc.get("category"))
+            # Observe the customer's full email history (mailbox + observed) before replying.
+            hist = await _pratibha_email_history(sender)
+            context = "\n\n".join([p for p in [guide, ctx360, hist] if p])[:6000]
+            ans = await pratibha_brain.draft_customer(sender, m.get("subject", ""), m.get("body", ""), context=context)
+        else:
+            ans = await email_agent.answer(sender, m.get("subject", ""), m.get("body", ""))
+        simple = email_agent.is_simple_ack(ans["reply"])
+        # Customer-facing reply goes to the customer ALONE on TO, with only EXTERNAL extras on CC
+        # (their own colleagues) — never internal @musclegrid.in addresses. service@ is added as the
+        # only visible standing CC; Shweta + founder are BCC'd via standing config.
+        custl = (sender or "").lower()
+        to_cust = [sender]
+        cc_cust = list(dict.fromkeys(
+            a for a in (m.get("to", []) + m.get("cc", []))
+            if a and a.lower() != custl and not a.lower().endswith("@musclegrid.in")))
+        doc.update({"draft_reply": ans["reply"], "model_ok": ans["model_ok"],
+                    "reply_to": to_cust, "reply_cc": cc_cust,
+                    "auto_eligible": simple})
+        if c["auto_send"] and ans["model_ok"] and (ans["reply"] or "").strip() and simple:
+            try:
+                _mid = await email_agent.send_reply_all(
+                    to_cust, cc_cust, subj, ans["reply"], m.get("message_id") or "", m.get("references", ""))
                 doc.update({"status": "replied", "sent_reply": ans["reply"],
                             "replied_by_name": "Pratibha (auto · ack)", "replied_at": now.isoformat()})
                 auto_sent += 1
+                await _pratibha_track_followup(_mid, subj, to_cust, cc_cust, m.get("references", ""), "Reply to staff/customer")
             except Exception as e:
                 logger.error(f"Pratibha auto reply-all failed: {e}")
                 doc.update({"status": "needs_review", "send_error": str(e)})
@@ -60293,10 +64733,23 @@ async def process_email_agent_inbox() -> dict:
         await db.email_agent_inbox.insert_one(doc)
         asyncio.create_task(create_notification(
             title=("🤖 Pratibha replied" if doc["status"] == "replied" else "🤖 Pratibha drafted a reply"),
-            message=f"{m.get('subject') or '(no subject)'} → {', '.join(to_list)[:80]}",
+            message=f"{m.get('subject') or '(no subject)'} → {', '.join(to_cust)[:80]}",
             notification_type="info", link="/admin/email-agent", priority="normal",
             target_roles=["admin", "call_support"], created_by_name="Email Agent",
             data={"email_id": doc["id"]}))
+    # Advance the high-water marks (per mailbox) so processed messages are never re-fetched.
+    if new_high_uid:
+        await db.email_agent_state.update_one(
+            {"id": "poll"}, {"$set": {"last_uid": new_high_uid, "updated_at": now.isoformat()}}, upsert=True)
+    if poll_from and from_high:
+        await db.email_agent_state.update_one(
+            {"id": "poll_from"}, {"$set": {"last_uid": from_high, "updated_at": now.isoformat()}}, upsert=True)
+    # Persist buffered API usage (Pratibha + CA agent) for the monthly cost log.
+    for ev in pratibha_brain.drain_usage():
+        await db.api_usage_log.insert_one({
+            "model": ev.get("model"), "input_tokens": ev.get("in", 0), "output_tokens": ev.get("out", 0),
+            "cost_inr": pratibha_brain.usage_cost_inr(ev.get("model"), ev.get("in", 0), ev.get("out", 0)),
+            "at": now.isoformat()})
     return {"fetched": len(msgs), "observed": observed, "triggered": triggered, "auto_sent": auto_sent}
 
 
@@ -64810,6 +69263,204 @@ LEAD_INTAKE_API_KEY = os.environ.get("LEAD_INTAKE_API_KEY", "")
 _public_lead_hits = {}  # ip -> [timestamps]; best-effort in-memory rate limit
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# SHOPIFY ORDERS INTEGRATION
+# Real-time order capture via Shopify webhooks (HMAC-verified) + a nightly reconcile
+# poll to catch any missed events. Orders land in `shopify_orders` and upsert a
+# customer in `parties`. Like the Amazon flow, ingest does NOT auto-create GST sales
+# invoices — invoicing stays a deliberate, reviewed step so the books never depend on a sync.
+# ─────────────────────────────────────────────────────────────────────────────
+async def _shopify_upsert_party(norm: dict):
+    """Upsert a customer party from a normalized Shopify order. Match by phone, then email."""
+    phone = (norm.get("phone") or "").strip()
+    email = (norm.get("email") or "").strip()
+    q = None
+    if phone:
+        q = {"phone": phone}
+    elif email:
+        q = {"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}}
+    if not q:
+        return None
+    existing = await db.parties.find_one(q, {"_id": 0, "id": 1})
+    if existing:
+        return existing["id"]
+    now = datetime.now(timezone.utc).isoformat()
+    ship = norm.get("shipping_address") or {}
+    pid = str(uuid.uuid4())
+    await db.parties.insert_one({
+        "id": pid, "name": norm.get("customer_name") or "Shopify Customer",
+        "phone": phone or None, "email": email or None,
+        "city": ship.get("city"), "state": ship.get("province"),
+        "party_type": "customer", "source": "shopify",
+        "created_at": now, "updated_at": now,
+    })
+    return pid
+
+
+def _shopify_shipping_hint(tags):
+    """Detect an external shipping aggregator from order tags (Fastrr/Shiprocket). Tags arrive
+    as a comma-separated string (REST/webhook) or a list (GraphQL) — handle both."""
+    s = (" ".join(str(t) for t in tags) if isinstance(tags, list) else str(tags or "")).lower()
+    if "fastrr" in s or "shiprocket" in s or re.search(r"\bsr_", s):
+        return "fastrr_shiprocket"
+    return None
+
+
+async def _shopify_resolve_item(title, sku):
+    """Resolve a line item to a CRM master SKU — by SKU when present, else best-effort by TITLE
+    (Shopify SKUs are usually blank, so title is the reliable identifier — same lesson as Amazon)."""
+    sku = (sku or "").strip()
+    if sku:
+        m = await db.master_skus.find_one({"sku_code": sku}, {"_id": 0, "sku_code": 1, "name": 1})
+        if m:
+            return {"resolved_sku": m.get("sku_code"), "resolved_name": m.get("name"), "match": "sku"}
+    t = (title or "").strip()
+    if not t:
+        return {"resolved_sku": None, "resolved_name": None, "match": "unmatched"}
+    # 1) a master-SKU name that begins the Shopify title (titles are longer/marketing-y)
+    m = await db.master_skus.find_one({"name": {"$regex": re.escape(t[:40]), "$options": "i"}},
+                                      {"_id": 0, "sku_code": 1, "name": 1})
+    if m:
+        return {"resolved_sku": m.get("sku_code"), "resolved_name": m.get("name"), "match": "title"}
+    # 2) distinctive capacity token (e.g. "8KVA", "6.2kW")
+    tok = re.search(r"\b(\d+(?:\.\d+)?\s*k(?:va|w))\b", t, re.I)
+    if tok:
+        m = await db.master_skus.find_one({"name": {"$regex": re.escape(tok.group(1)), "$options": "i"}},
+                                          {"_id": 0, "sku_code": 1, "name": 1})
+        if m:
+            return {"resolved_sku": m.get("sku_code"), "resolved_name": m.get("name"), "match": f"token:{tok.group(1)}"}
+    return {"resolved_sku": None, "resolved_name": None, "match": "unmatched"}
+
+
+async def _shopify_upsert_order(raw: dict, source: str = "webhook") -> dict:
+    """Normalize + upsert a Shopify order into `shopify_orders` (idempotent by shopify_order_id)."""
+    norm = shopify_service.normalize_order(raw)
+    if not norm.get("shopify_order_id"):
+        return {"skipped": "no order id"}
+    now = datetime.now(timezone.utc).isoformat()
+    party_id = await _shopify_upsert_party(norm)
+
+    # Adj 2 — Shopify prices are GST-INCLUSIVE (total_tax is broken out); flag it so the
+    # eventual invoicing step backs out tax instead of adding it.
+    norm["price_tax_inclusive"] = True
+
+    # Adj 1 — resolve each line item to a master SKU by title (SKUs are usually blank).
+    for li in norm.get("line_items", []) or []:
+        li.update(await _shopify_resolve_item(li.get("title"), li.get("sku")))
+
+    # The CRM keeps Shopify orders as RECORDS ONLY — it never dispatches them (fulfillment is
+    # handled on Shopify/Fastrr). Everything ingests to one neutral status; the provider hint is
+    # kept purely as metadata. This is the "I just want them as Shopify orders" rule.
+    provider = _shopify_shipping_hint(norm.get("tags"))
+    initial_status = "ingested"
+
+    doc = {**norm, "party_id": party_id, "ingest_source": source, "updated_at": now,
+           "shipping_provider_hint": provider,
+           "firm_id": shopify_service.cfg().get("default_firm_id"), "raw": raw}
+    await db.shopify_orders.update_one(
+        {"shopify_order_id": norm["shopify_order_id"]},
+        {"$set": doc,
+         "$setOnInsert": {"id": str(uuid.uuid4()), "crm_status": initial_status, "created_at": now}},
+        upsert=True)
+    return {"ok": True, "order_number": norm.get("order_number"), "party_id": party_id,
+            "shipping_provider_hint": provider, "crm_status_on_insert": initial_status}
+
+
+@api_router.post("/webhooks/shopify")
+async def shopify_webhook(request: Request):
+    """Inbound Shopify order webhook — HMAC-verified with the custom app secret.
+    Reads the RAW body (no declared params) so the signature check is exact."""
+    if not shopify_service.cfg().get("webhook_secret"):
+        raise HTTPException(status_code=503, detail="Shopify webhook secret not configured")
+    raw = await request.body()
+    if not shopify_service.verify_webhook(raw, request.headers.get("X-Shopify-Hmac-Sha256", "")):
+        raise HTTPException(status_code=401, detail="Invalid Shopify HMAC signature")
+    topic = request.headers.get("X-Shopify-Topic", "")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Malformed JSON body")
+    try:
+        res = await _shopify_upsert_order(payload, source=f"webhook:{topic or '?'}")
+    except Exception as e:
+        logger.error(f"Shopify webhook upsert failed ({topic}): {e}")
+        raise HTTPException(status_code=500, detail="Order upsert failed")
+    logger.info(f"Shopify webhook {topic}: {res}")
+    return {"success": True, "topic": topic}
+
+
+async def scheduled_shopify_reconcile():
+    """Nightly catch-up: pull orders updated since the last successful sync and upsert them,
+    in case any webhook was missed. Idempotent."""
+    if not shopify_service.is_configured():
+        return
+    try:
+        st = await db.shopify_sync_state.find_one({"id": "reconcile"}, {"_id": 0, "last_updated_at": 1})
+        since = (st or {}).get("last_updated_at") or (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        orders = await shopify_service.fetch_orders(updated_at_min=since)
+        n, maxts = 0, since
+        for o in orders:
+            await _shopify_upsert_order(o, source="reconcile")
+            n += 1
+            if (o.get("updated_at") or "") > maxts:
+                maxts = o["updated_at"]
+        await db.shopify_sync_state.update_one(
+            {"id": "reconcile"},
+            {"$set": {"last_updated_at": maxts, "last_run_at": datetime.now(timezone.utc).isoformat(),
+                      "last_count": n}}, upsert=True)
+        logger.info(f"Shopify reconcile: upserted {n} orders updated since {since}")
+    except Exception as e:
+        logger.error(f"Shopify reconcile failed: {e}")
+
+
+@api_router.get("/admin/shopify/status")
+async def shopify_status(user: dict = Depends(require_roles(["admin"]))):
+    """Integration health: configured?, order count, last reconcile."""
+    c = shopify_service.cfg()
+    st = await db.shopify_sync_state.find_one({"id": "reconcile"}, {"_id": 0})
+    return {
+        "configured": shopify_service.is_configured(),
+        "store": c.get("store"), "api_version": c.get("api_version"),
+        "webhook_secret_set": bool(c.get("webhook_secret")),
+        "default_firm_id": c.get("default_firm_id"),
+        "orders_in_crm": await db.shopify_orders.count_documents({}),
+        "last_reconcile": st,
+    }
+
+
+@api_router.post("/admin/shopify/register-webhooks")
+async def shopify_register_webhooks(user: dict = Depends(require_roles(["admin"]))):
+    """Register the order webhooks with Shopify, pointing at this CRM. Run once after setting the token."""
+    if not shopify_service.is_configured():
+        raise HTTPException(status_code=400, detail="Shopify not configured (set SHOPIFY_STORE + SHOPIFY_ADMIN_TOKEN)")
+    base = (os.environ.get("SHOPIFY_WEBHOOK_CALLBACK", "").strip()
+            or f"{os.environ.get('FRONTEND_URL', '').rstrip('/')}/api/webhooks/shopify")
+    if not base.startswith("https://"):
+        raise HTTPException(status_code=400, detail="Need an HTTPS callback URL (set FRONTEND_URL or SHOPIFY_WEBHOOK_CALLBACK)")
+    res = await shopify_service.register_webhooks(base)
+    return {"callback": base, "result": res}
+
+
+@api_router.post("/admin/shopify/backfill")
+async def shopify_backfill(days: int = 90, user: dict = Depends(require_roles(["admin"]))):
+    """Manual one-off pull of the last N days of orders (idempotent)."""
+    if not shopify_service.is_configured():
+        raise HTTPException(status_code=400, detail="Shopify not configured")
+    since = (datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))).isoformat()
+    orders = await shopify_service.fetch_orders(updated_at_min=since)
+    for o in orders:
+        await _shopify_upsert_order(o, source="backfill")
+    return {"success": True, "pulled": len(orders), "since": since}
+
+
+@api_router.post("/admin/pratibha/backlog-sweep")
+async def pratibha_backlog_sweep(days: int = 15, user: dict = Depends(require_roles(["admin"]))):
+    """Start the unanswered-email backlog sweep: Pratibha finds the next unanswered customer email
+    (last `days` days), drafts a reply with full history, and WhatsApps Shweta one-by-one."""
+    res = await _pratibha_backlog_next(days)
+    return {"started": True, "result": res}
+
+
 @api_router.post("/public/leads")
 async def create_public_lead(
     body: PublicLeadCreate,
@@ -67157,6 +71808,8 @@ async def email_agent_send(msg_id: str, payload: EmailAgentSend,
         "replied_by": user.get("id"),
         "replied_by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip() or user.get("email"),
         "replied_at": now, "updated_at": now}})
+    # Learn from the human's edit: if they changed Pratibha's draft meaningfully, capture a lesson.
+    asyncio.create_task(_pratibha_record_correction(m, m.get("draft_reply"), payload.body.strip(), user))
     return {"success": True, "status": "replied"}
 
 
@@ -67233,6 +71886,25 @@ async def send_whatsapp_message(to: str, message: str):
         return {"error": str(e)}
 
 
+async def send_whatsapp_media(to: str, caption: str, attachment: dict):
+    """Send a WhatsApp message with a file (e.g. a label PDF) via the bridge. `attachment` is
+    {filename, content(base64), media_type} as returned by _pratibha_fetch_label."""
+    import httpx
+    to = to if "@" in (to or "") else f"{re.sub(r'[^0-9]', '', to or '')}@c.us"
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{WHATSAPP_BRIDGE_URL}/send",
+                json={"to": to, "message": caption,
+                      "media": {"mimetype": attachment.get("media_type", "application/pdf"),
+                                "data": attachment.get("content"),
+                                "filename": attachment.get("filename", "label.pdf")}})
+            return response.json()
+    except Exception as e:
+        logger.error(f"WhatsApp media send error: {e}")
+        return {"error": str(e)}
+
+
 @api_router.get("/whatsapp/status")
 async def whatsapp_status(user: dict = Depends(require_roles(["admin"]))):
     """Get WhatsApp connection status"""
@@ -67291,11 +71963,91 @@ async def whatsapp_message_webhook(data: dict, request: Request):
             has_media=data.get("has_media", False),
             media_type=data.get("media_type"),
             media_data=base64.b64decode(data.get("media_data", "")) if data.get("media_data") else None,
-            quoted_message=data.get("quoted_message")
+            quoted_message=data.get("quoted_message"),
+            chat_id=data.get("chat_id"),
+            author=data.get("author"),
+            is_group=bool(data.get("is_group")),
         )
         
         logger.info(f"WhatsApp message from {message.from_number}: {message.text[:50]}...")
-        
+
+        # Conversation key: the GROUP (so Pawan+Shweta share one thread) when in a group, else the DM sender.
+        conv_key = message.chat_id if (message.is_group and message.chat_id) else message.from_number
+
+        # SMART FRONT-DOOR: an LLM router picks the skill from the message + live pending-state context.
+        # If it produces a reply, use it; otherwise fall through to the ordered chain below (the safety net).
+        try:
+            wa_orch = await _pratibha_wa_orchestrate(message)
+        except Exception as e:
+            logger.error(f"WA orchestrate failed: {e}")
+            wa_orch = None
+        if wa_orch is not None:
+            await _wa_remember_turn(conv_key, message.text, wa_orch)
+            return {"reply": wa_orch}
+
+        # "Make this the main group" — an allowlisted member designates the group Pratibha routes to.
+        try:
+            wa_grp = await _pratibha_wa_group_admin(message)
+        except Exception as e:
+            logger.error(f"WA group-admin handling failed: {e}")
+            wa_grp = None
+        if wa_grp is not None:
+            await _wa_remember_turn(conv_key, message.text, wa_grp)
+            return {"reply": wa_grp}
+
+        # "dispatched <REF>" — close a money-in-goods-not-shipped watch.
+        try:
+            wa_disp = await _pratibha_wa_dispatch_reply(message)
+        except Exception as e:
+            logger.error(f"WA dispatch-reply handling failed: {e}")
+            wa_disp = None
+        if wa_disp is not None:
+            await _wa_remember_turn(conv_key, message.text, wa_disp)
+            return {"reply": wa_disp}
+
+        # Payment update from Shweta/Pawan ("Ramesh ne 50000 pay kiye") — match party, confirm,
+        # record provisional, remind founder, finalize to ledger on his confirmation.
+        try:
+            wa_pay = await _pratibha_wa_payment(message)
+        except Exception as e:
+            logger.error(f"WA payment handling failed: {e}")
+            wa_pay = None
+        if wa_pay is not None:
+            await _wa_remember_turn(conv_key, message.text, wa_pay)
+            return {"reply": wa_pay}
+
+        # If this is Shweta replying to a drafted customer email (the Hinglish approval loop),
+        # handle it here — send/revise the customer reply — instead of the general CRM brain.
+        # Skip when the message carries MEDIA: a file (e.g. a certificate to forward) must reach the
+        # attachment handler below, not be misread as a text approval that ignores the file.
+        wa_draft = None
+        if not message.has_media:
+            try:
+                wa_draft = await _pratibha_wa_draft_reply(message.from_number, message.text)
+            except Exception as e:
+                logger.error(f"WA draft-approval handling failed: {e}")
+                wa_draft = None
+        if wa_draft is not None:
+            await _wa_remember_turn(conv_key, message.text, wa_draft)
+            return {"reply": wa_draft}
+
+        # Allowlisted sender sent a photo/invoice asking for a shipping label? Make it + send the PDF.
+        try:
+            wa_ship = await _pratibha_wa_shipping(message)
+        except Exception as e:
+            logger.error(f"WA shipping handling failed: {e}")
+            wa_ship = None
+        if wa_ship is not None:
+            utext = message.text or (f"[sent {message.media_type or 'file'}]" if message.has_media else "")
+            await _wa_remember_turn(conv_key, utext, wa_ship)
+            return {"reply": wa_ship}
+
+        # In a GROUP, the general brain replies ONLY when explicitly addressed ("Pratibha ...") —
+        # otherwise she observes silently so she doesn't butt into Pawan↔Shweta chatter. (Replies to
+        # her own pending questions are already handled by the specialized handlers above.)
+        if getattr(message, "is_group", False) and not re.search(r"pratibha|pratiba", message.text or "", re.I):
+            return {"reply": None, "silent_drop": True}
+
         # Process with AI
         ai = await get_whatsapp_ai()
         reply = await ai.process_message(message)
