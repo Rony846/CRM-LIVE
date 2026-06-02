@@ -71,6 +71,43 @@ def parse_boe(pdf_bytes: bytes) -> dict:
     return out
 
 
+def parse_boe_items(pdf_bytes: bytes) -> list:
+    """Parse the BoE PART-II per-item pages -> [{hsn, qty, assess, desc}].
+    Each item sits on its own page (anchored by the '29.ASSESS VALUE' label); values are read by
+    coordinate. Used by the BoE->purchases backfill to break a shipment into material lines."""
+    d = fitz.open(stream=pdf_bytes, filetype='pdf')
+    items = []
+    for pno in range(d.page_count):
+        pg = d[pno]; txt = pg.get_text()
+        if '29.ASSESS VALUE' not in txt:
+            continue
+        words = [(w[0], w[1], w[4]) for w in pg.get_text("words")]
+        hsn = assess = qty = desc = None
+        m = re.search(r'\b(\d{8})\b', txt)
+        if m:
+            hsn = m.group(1)
+        for x, y, t in words:
+            if t.startswith('29.ASSESS'):
+                cands = [(abs(wx - x), _num(wt)) for wx, wy, wt in words
+                         if y < wy <= y + 16 and _num(wt) is not None]
+                if cands:
+                    assess = min(cands, key=lambda z: z[0])[1]
+            if t.startswith('13.C.QTY'):
+                cands = [(abs(wx - x), _num(wt)) for wx, wy, wt in words
+                         if y < wy <= y + 16 and _num(wt) is not None]
+                if cands:
+                    qty = min(cands, key=lambda z: z[0])[1]
+        dlabel = [(x, y) for x, y, t in words if t.startswith('5.ITEM')]
+        if dlabel:
+            lx, ly = dlabel[0]
+            band = [(wx, wt) for wx, wy, wt in words
+                    if ly - 2 <= wy <= ly + 10 and wx > lx + 5 and re.search(r'[A-Za-z0-9]', wt)]
+            desc = ' '.join(t for _, t in sorted(band))[:60] or None
+        if assess:
+            items.append({'hsn': hsn, 'qty': qty, 'assess': assess, 'desc': desc})
+    return items
+
+
 def _imap_conn():
     host = os.environ.get('EMAIL_AGENT_IMAP_HOST', 'imappro.zoho.in').strip()
     port = int(os.environ.get('EMAIL_AGENT_IMAP_PORT', '993'))
