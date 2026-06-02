@@ -83,7 +83,8 @@ def _match_invoices(invoices, filed_rows):
         if not num:
             continue
         crm[_norm_inv(num)] = {"num": num, "taxable": _f(i.get("taxable_value")) or _f(i.get("subtotal")),
-                               "tax": _f(i.get("cgst")) + _f(i.get("sgst")) + _f(i.get("igst"))}
+                               "tax": _f(i.get("cgst")) + _f(i.get("sgst")) + _f(i.get("igst")),
+                               "gstin": (i.get("gstin") or "").upper()}
     matched, mismatch, only_crm, only_filed = [], [], [], []
     used = set()
     # 1) exact invoice-number match
@@ -96,14 +97,30 @@ def _match_invoices(invoices, filed_rows):
             else:
                 mismatch.append({"invoice": c["num"], "crm_taxable": round(c["taxable"], 2),
                                  "filed_taxable": round(f["taxable"], 2)})
-    # 2) amount fallback for the leftovers
+    # 2) GSTIN + amount match — invoice NUMBERS differ between books (Vyapar voucher no.) and the
+    # portal (IN-xxx), but a B2B invoice's counterparty GSTIN + taxable value should agree. This is
+    # the reliable fuzzy match; it replaces blind amount-only matching for B2B.
+    crm_left = [(k, c) for k, c in crm.items() if k not in filed]
+    by_gst_amt = defaultdict(list)
+    for k, f in filed.items():
+        if k not in used and f.get("gstin"):
+            by_gst_amt[(f["gstin"].upper(), round(f["taxable"]))].append(k)
+    gstin_matched = 0
+    rem = []
+    for k, c in crm_left:
+        key = (c.get("gstin"), round(c["taxable"]))
+        if c.get("gstin") and by_gst_amt.get(key):
+            used.add(by_gst_amt[key].pop(0))
+            gstin_matched += 1
+        else:
+            rem.append((k, c))
+    # 3) amount-only last resort (B2C / no-GSTIN invoices)
     by_amt = defaultdict(list)
     for k, f in filed.items():
         if k not in used:
             by_amt[round(f["taxable"])].append(k)
     fuzzy = 0
-    crm_left = [(k, c) for k, c in crm.items() if k not in filed]
-    for k, c in crm_left:
+    for k, c in rem:
         cands = by_amt.get(round(c["taxable"]))
         if cands:
             used.add(cands.pop(0))
@@ -113,7 +130,8 @@ def _match_invoices(invoices, filed_rows):
     for k, f in filed.items():
         if k not in used:
             only_filed.append({"invoice": f["num"], "taxable": round(f["taxable"], 2), "gstin": f.get("gstin")})
-    return {"matched_count": len(matched) + fuzzy, "exact": len(matched), "fuzzy": fuzzy,
+    return {"matched_count": len(matched) + gstin_matched + fuzzy, "exact": len(matched),
+            "by_gstin": gstin_matched, "fuzzy": fuzzy,
             "value_mismatch": mismatch, "only_in_crm": only_crm, "only_in_filed": only_filed}
 
 
@@ -278,7 +296,7 @@ async def run_firm_audit(db, firm: dict, period_key: str = None) -> dict:
         sev = "high" if (mr["only_in_filed"] or mr["value_mismatch"]) else ("medium" if mr["only_in_crm"] else "ok")
         findings["checks"].append({
             "check": "Invoice-level match (CRM ↔ GSTR-1, non-Amazon)", "severity": sev,
-            "matched": mr["matched_count"], "exact": mr["exact"], "fuzzy": mr["fuzzy"],
+            "matched": mr["matched_count"], "exact": mr["exact"], "by_gstin": mr.get("by_gstin", 0), "fuzzy": mr["fuzzy"],
             "only_in_crm_count": len(mr["only_in_crm"]), "only_in_filed_count": len(mr["only_in_filed"]),
             "value_mismatch_count": len(mr["value_mismatch"]),
             "only_in_crm": mr["only_in_crm"][:20], "only_in_filed": mr["only_in_filed"][:20],
