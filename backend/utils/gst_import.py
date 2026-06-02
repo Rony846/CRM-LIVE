@@ -101,11 +101,23 @@ def parse_gstr2b(data: dict, firm_id: str, period_key: str) -> list:
     for sup in doc.get("b2b", []) or []:
         ctin = sup.get("ctin")
         for inv in sup.get("inv", []) or []:
+            # Two portal 2B formats: older (pre ~Oct-2024) carries tax in a per-line-item `items`/`itms`
+            # array; newer carries it on the invoice. Handle both, else early months read as ₹0 ITC.
+            items = inv.get("items") or inv.get("itms")
+            if items:
+                txval = sum(_num(it.get("txval")) for it in items)
+                ig = sum(_num(it.get("igst")) for it in items)
+                cg = sum(_num(it.get("cgst")) for it in items)
+                sg = sum(_num(it.get("sgst")) for it in items)
+                rt = (items[0] or {}).get("rt")
+            else:
+                txval, ig, cg, sg, rt = (_num(inv.get("txval")), _num(inv.get("igst")),
+                                         _num(inv.get("cgst")), _num(inv.get("sgst")), inv.get("rt"))
             rows.append({"section": "2b_itc", "gstin": ctin, "party_name": sup.get("trdnm"),
                          "invoice_number": inv.get("inum"), "invoice_date": inv.get("dt") or inv.get("idt"),
                          "invoice_value": _num(inv.get("val")), "place_of_supply": inv.get("pos"),
-                         "taxable_value": _num(inv.get("txval")), "rate": _num(inv.get("rt")),
-                         "igst": _num(inv.get("igst")), "cgst": _num(inv.get("cgst")), "sgst": _num(inv.get("sgst"))})
+                         "taxable_value": txval, "rate": _num(rt),
+                         "igst": ig, "cgst": cg, "sgst": sg})
     return rows
 
 
