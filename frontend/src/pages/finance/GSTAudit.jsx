@@ -116,6 +116,12 @@ function FirmCard({ r }) {
                     {c.filed_itc !== undefined && (
                       <p className="text-xs text-muted-foreground mt-1 font-mono">
                         Filed ITC {inr(c.filed_itc)} · {c.crm_purchase_records} purchase records in CRM
+                        {c.crm_purchase_itc !== undefined && (
+                          <> · ITC on bills {inr(c.crm_purchase_itc)}</>
+                        )}
+                        {c.intra_group_itc_proxy > 0 && (
+                          <> &nbsp;(<span className="text-amber-600">incl. {inr(c.intra_group_itc_proxy)} intra-group, pending own GSTR-2B</span>)</>
+                        )}
                       </p>
                     )}
                     {/* Amazon MTR 3-way match breakdown */}

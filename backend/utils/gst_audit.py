@@ -262,14 +262,32 @@ async def run_firm_audit(db, firm: dict, period_key: str = None) -> dict:
         findings["checks"].append({"check": "Invalid counterparty GSTINs in returns", "severity": "high",
                                    "count": len(bad_gstins), "sample": bad_gstins[:15]})
 
-    # ---- 6. ITC (input credit): filed 4_itc vs CRM purchases ----
+    # ---- 6. ITC (input credit): filed 4_itc/2B vs CRM purchases (incl. intra-group mirror) ----
     itc_rows = [r for r in report if (r.get("section") or "").lower().endswith("itc")]
     purchases = await db.purchases.count_documents({"firm_id": fid})
+    # ITC value carried on CRM purchase records (the inward-bill ledger). For firms whose purchases
+    # are intra-group transfers mirrored from the sellers' books, this is the working ITC figure
+    # until the firm's own portal GSTR-2B is loaded.
+    pur_q = {"firm_id": fid}
+    if period_key:
+        pur_q["invoice_date"] = {"$regex": f"^{re.escape(period_key)}"}
+    purchase_itc = 0.0
+    mirror_itc = 0.0
+    async for p in db.purchases.find(pur_q, {"total_gst": 1, "total_igst": 1, "total_cgst": 1,
+                                             "total_sgst": 1, "source": 1}):
+        g = _f(p.get("total_gst")) or (_f(p.get("total_igst")) + _f(p.get("total_cgst")) + _f(p.get("total_sgst")))
+        purchase_itc += g
+        if (p.get("source") or "") == "intercompany_mirror":
+            mirror_itc += g
     if itc_rows or purchases:
         filed_itc = sum(_f(r.get("cgst")) + _f(r.get("sgst")) + _f(r.get("igst")) for r in itc_rows)
         findings["checks"].append({"check": "ITC: filed input credit vs CRM purchases", "severity": "medium",
                                    "filed_itc": round(filed_itc, 2), "crm_purchase_records": purchases,
-                                   "note": "Purchase capture is thin — ITC reconciliation needs GSTR-2B (GSP) + full purchase entry."})
+                                   "crm_purchase_itc": round(purchase_itc, 2),
+                                   "intra_group_itc_proxy": round(mirror_itc, 2),
+                                   "note": "filed_itc = portal GSTR-3B/2B. crm_purchase_itc = ITC on recorded inward bills; "
+                                           "intra_group_itc_proxy is the portion mirrored from group sellers' books, "
+                                           "claimable once it appears in this firm's own GSTR-2B."})
     else:
         findings["data_gaps"].append("No purchase/ITC data — connect GSTR-2B (GSP) and record purchases for input-credit audit.")
 
