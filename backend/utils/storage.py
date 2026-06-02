@@ -57,6 +57,8 @@ BASE_FOLDERS = [
     "amazon_orders",
     # Internal team-chat attachments.
     "chat",
+    # Customs Bill of Entry (OOC copy) PDFs auto-ingested from ICEGATE emails.
+    "import_boe",
 ]
 
 # Folder mapping for backwards compatibility with existing code

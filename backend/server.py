@@ -510,7 +510,21 @@ async def create_indexes():
             name="SLA Breach Auto-Escalation",
             replace_existing=True
         )
-        
+
+        # Bill of Entry (customs OOC copy) ingest — watches service@ for ICEGATE OOC emails,
+        # parses each BoE PDF and books it as an import_shipment (customs IGST = ITC). Opt-in via
+        # BOE_INGEST_ENABLED; cadence BOE_INGEST_INTERVAL_HOURS (default 6h).
+        if os.environ.get("BOE_INGEST_ENABLED", "false").strip().lower() == "true":
+            from utils.boe_ingest import scheduled_boe_ingest
+            scheduler.add_job(
+                scheduled_boe_ingest,
+                IntervalTrigger(hours=int(os.environ.get("BOE_INGEST_INTERVAL_HOURS", "6"))),
+                id="boe_ingest",
+                name="Bill of Entry email ingest (ICEGATE OOC -> import_shipments)",
+                replace_existing=True,
+                misfire_grace_time=3600,
+            )
+
         # Dealer Payment Verification Reminder - runs every hour
         scheduler.add_job(
             scheduled_payment_verification_reminder,
@@ -6044,6 +6058,31 @@ def sign_file_urls_deep(obj, user_id: str | None = None):
     return obj
 
 
+async def _auto_assign_agent(role: str, firm_id: str = None):
+    """Pick the least-loaded ACTIVE user of a role (fewest open tickets) so new tickets always get an
+    owner and load is balanced. Prefers an agent of the ticket's firm when firm-scoped agents exist.
+    Returns (user_id, display_name) or (None, None) if no agent of that role exists."""
+    open_st = ["new_request", "call_support_followup", "escalated_to_supervisor", "supervisor_followup",
+               "hardware_service", "awaiting_label", "label_uploaded", "pickup_scheduled",
+               "received_at_factory", "in_repair", "repair_completed", "service_invoice_added",
+               "ready_for_dispatch", "assigned_to_technician", "in_progress", "pending_parts"]
+    q = {"role": role, "is_active": {"$ne": False}}
+    agents = [u async for u in db.users.find(q, {"_id": 0, "id": 1, "first_name": 1, "last_name": 1, "firm_id": 1})]
+    if firm_id:
+        same = [a for a in agents if a.get("firm_id") == firm_id]
+        if same:
+            agents = same
+    if not agents:
+        return None, None
+    best, best_load = None, None
+    for a in agents:
+        load = await db.tickets.count_documents({"assigned_to": a["id"], "status": {"$in": open_st}})
+        if best_load is None or load < best_load:
+            best, best_load = a, load
+    name = f"{best.get('first_name', '')} {best.get('last_name', '')}".strip()
+    return best["id"], (name or "Agent")
+
+
 @api_router.post("/tickets")
 async def create_ticket(
     background_tasks: BackgroundTasks,
@@ -6149,6 +6188,11 @@ async def create_ticket(
     # None = unattributed (treated as global by the firm-scoped queue).
     firm_id = await derive_ticket_firm_id(order_id, invoice_number, serial_number)
 
+    # Auto-assign at intake so the ticket has an OWNER from minute one (root-cause fix for the
+    # 'unassigned breached' pile). New tickets go to the least-loaded first-line agent.
+    intake_role = os.environ.get("TICKET_INTAKE_ROLE", "call_support")
+    auto_assignee_id, auto_assignee_name = await _auto_assign_agent(intake_role, firm_id)
+
     ticket_doc = {
         "id": ticket_id,
         "ticket_number": ticket_number,
@@ -6172,8 +6216,9 @@ async def create_ticket(
         "diagnosis": None,
         "agent_notes": None,
         "repair_notes": None,
-        "assigned_to": None,
-        "assigned_to_name": None,
+        "assigned_to": auto_assignee_id,
+        "assigned_to_name": auto_assignee_name,
+        "auto_assigned": bool(auto_assignee_id),
         "pickup_label": None,
         "pickup_courier": None,
         "pickup_tracking": None,
@@ -6198,10 +6243,23 @@ async def create_ticket(
             "by_role": user["role"],
             "timestamp": now.isoformat(),
             "details": {"status": "new_request"}
-        }]
+        }] + ([{
+            "action": f"Auto-assigned to {auto_assignee_name}",
+            "by": "System", "by_id": "system", "by_role": "system",
+            "timestamp": now.isoformat(),
+            "details": {"assigned_to": auto_assignee_id, "rule": f"least-loaded {intake_role}"}
+        }] if auto_assignee_id else [])
     }
-    
+
     await db.tickets.insert_one(ticket_doc)
+
+    # Notify the auto-assigned agent so they pick it up immediately.
+    if auto_assignee_id:
+        asyncio.create_task(create_notification(
+            title="🎫 New ticket assigned to you",
+            message=f"{ticket_number} — {device_type} — {ticket_doc['customer_name']}",
+            notification_type="info", link=f"/tickets?search={ticket_number}", priority="normal",
+            target_user_ids=[auto_assignee_id], created_by_name="Auto-assign", data={"ticket_id": ticket_id}))
 
     # ========== AUTO-LINK to recent inbound call ==========
     # If this agent answered a call from this customer in the last 10 minutes
@@ -8729,7 +8787,10 @@ async def ensure_customer_party(
     party_doc = {
         "id": party_id,
         "name": customer_name,
-        "party_types": ["customer"],
+        # One-time dispatch consignees are marketplace buyers, NOT onboarded customers/dealers —
+        # tag them so they're searchable but never pollute the customer/dealer master.
+        "party_type": "marketplace_buyer",
+        "party_types": ["marketplace_buyer"],
         "phone": phone,
         "address": address or "",
         "city": city or "",
@@ -10895,6 +10956,29 @@ async def update_dispatch_customer_fields(
 
 # ==================== GATE SCAN ENDPOINTS ====================
 
+async def _gate_resolve_customer(tracking_id, ticket=None, dispatch=None):
+    """Resolve a customer name for a gate scan: ticket → dispatch → sales_order →
+    Bigship shipment (courier_shipments) → Amazon order (by tracking_number). Returns None
+    only when the AWB links to no order record in the CRM (raw self-ship marketplace parcels)."""
+    if ticket and ticket.get("customer_name"):
+        return ticket["customer_name"]
+    if dispatch and dispatch.get("customer_name"):
+        return dispatch["customer_name"]
+    if not tracking_id:
+        return None
+    so = await db.sales_orders.find_one({"tracking_id": tracking_id}, {"_id": 0, "customer_name": 1})
+    if so and so.get("customer_name"):
+        return so["customer_name"]
+    cs = await db.courier_shipments.find_one({"awb_number": tracking_id}, {"_id": 0, "customer_name": 1})
+    if cs and cs.get("customer_name"):
+        return cs["customer_name"]
+    az = await db.amazon_orders.find_one({"tracking_number": tracking_id},
+                                         {"_id": 0, "buyer_name": 1, "customer_name_manual": 1})
+    if az:
+        return az.get("buyer_name") or az.get("customer_name_manual")
+    return None
+
+
 @api_router.post("/gate/scan", response_model=GateScanResponse)
 async def gate_scan(
     scan_data: GateScanCreate,
@@ -10921,7 +11005,10 @@ async def gate_scan(
         {"tracking_id": scan_data.tracking_id},
         {"_id": 0}
     )
-    
+
+    # Resolve the customer at scan time (ticket → dispatch → sales order → Bigship → Amazon).
+    resolved_customer = await _gate_resolve_customer(scan_data.tracking_id, ticket, dispatch)
+
     gate_log = {
         "id": scan_id,
         "scan_type": scan_data.scan_type,
@@ -10931,7 +11018,7 @@ async def gate_scan(
         "ticket_number": ticket["ticket_number"] if ticket else None,
         "dispatch_id": dispatch["id"] if dispatch else None,
         "dispatch_number": dispatch["dispatch_number"] if dispatch else None,
-        "customer_name": ticket["customer_name"] if ticket else (dispatch["customer_name"] if dispatch else None),
+        "customer_name": resolved_customer,
         "scanned_by": user["id"],
         "scanned_by_name": f"{user['first_name']} {user['last_name']}",
         "notes": scan_data.notes,
@@ -10962,7 +11049,7 @@ async def gate_scan(
             "linked_ticket_number": ticket["ticket_number"] if ticket else None,
             "linked_dispatch_id": dispatch["id"] if dispatch else None,
             "linked_dispatch_number": dispatch["dispatch_number"] if dispatch else None,
-            "customer_name": ticket["customer_name"] if ticket else (dispatch["customer_name"] if dispatch else None),
+            "customer_name": resolved_customer,
             # Status
             "status": "pending",  # pending, classified, processed
             "classification_type": None,
@@ -12106,9 +12193,18 @@ async def admin_dashboard_executive(user: dict = Depends(require_roles(["admin"]
 
     revenue_trend = [{"date": _daykey(i), "value": rev_by_day.get(_daykey(i), 0)}
                      for i in range(29, -1, -1)]
-    this_month_rev = round(sum(v for d, v in rev_by_day.items() if d >= month_start), 2)
+    # This-month totals: sum the FULL calendar month, not the rolling 30-day window
+    # (the window starts at now-29d, so near month-start it would silently drop the 1st/2nd).
+    mtd = await db.sales_invoices.aggregate([
+        {"$addFields": {"_d": {"$substr": [{"$ifNull": ["$invoice_date", "$created_at"]}, 0, 10]}}},
+        {"$match": {"_d": {"$gte": month_start, "$lte": today}}},
+        {"$group": {"_id": None,
+                    "rev": {"$sum": {"$ifNull": ["$grand_total", 0]}},
+                    "cnt": {"$sum": 1}}},
+    ]).to_list(1)
+    this_month_rev = round(mtd[0]["rev"], 2) if mtd else 0
+    orders_month = mtd[0]["cnt"] if mtd else 0
     today_rev = rev_by_day.get(today, 0)
-    orders_month = sum(c for d, c in cnt_by_day.items() if d >= month_start)
 
     lm = await db.sales_invoices.aggregate([
         {"$addFields": {"_d": {"$substr": [{"$ifNull": ["$invoice_date", "$created_at"]}, 0, 10]}}},
@@ -25795,6 +25891,7 @@ async def list_parties(
     party_type: Optional[str] = None,
     search: Optional[str] = None,
     is_active: Optional[bool] = True,
+    include_marketplace: bool = False,
     limit: int = 1000,
     skip: int = 0,
     user: dict = Depends(require_roles(["admin", "accountant", "call_support"]))
@@ -25836,6 +25933,14 @@ async def list_parties(
             {"party_type": party_type},
             {"party_types": party_type},
         ]})
+
+    # Marketplace buyers (one-time dispatch consignees) are excluded from the
+    # customer/dealer master by default so they don't pollute pickers/lists.
+    # Pass include_marketplace=true (or explicitly ask for party_type=marketplace_buyer)
+    # to see them.
+    if not include_marketplace and party_type != "marketplace_buyer":
+        filters.append({"party_type": {"$ne": "marketplace_buyer"}})
+        filters.append({"party_types": {"$ne": "marketplace_buyer"}})
 
     if search:
         # GST number is stored as `gstin` on newer rows and `gst_number` on
@@ -27597,8 +27702,17 @@ async def _create_payment_core(payment_data: "PaymentCreate", user: dict) -> dic
             "type": payment_data.payment_type
         }
     )
-    
+
     return payment
+
+
+@api_router.post("/payments", response_model=PaymentResponse)
+async def create_payment(
+    payment_data: PaymentCreate,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Record a payment received or made"""
+    return await _create_payment_core(payment_data, user)
 
 
 class InterCompanyAdjustment(BaseModel):
@@ -31031,16 +31145,8 @@ async def upload_mtr_report(
     filename = file.filename or "mtr_report.csv"
     
     # Check if this exact filename was already uploaded for this firm
-    existing_report = await db.mtr_reports.find_one({
-        "filename": filename,
-        "firm_id": firm_id,
-        "mtr_type": mtr_type
-    })
-    if existing_report:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"This MTR report ({filename}) was already uploaded on {existing_report.get('created_at', 'unknown date')}. Duplicate uploads are not allowed."
-        )
+    # Re-upload of the same file overwrites the prior report record (so corrections / re-runs work).
+    await db.mtr_reports.delete_many({"filename": filename, "firm_id": firm_id, "mtr_type": mtr_type})
     
     # Track statistics
     stats = {
@@ -31202,14 +31308,32 @@ async def upload_mtr_report(
         "created_at": now
     }
     await db.mtr_reports.insert_one(report_record)
-    
+
+    # Also persist line-level invoice rows into `amazon_mtr` so the GST Audit can do invoice-level
+    # Amazon↔GSTR-1↔CRM matching (the order_id→invoice_number bridge). Best-effort, never blocks upload.
+    mtr_persisted = 0
+    try:
+        from utils import amazon_mtr as _amtr
+        parsed = _amtr.parse_mtr_csv(content)
+        pk = parsed.get("period_key")
+        if pk and parsed.get("invoices"):
+            await db.amazon_mtr.delete_many({"firm_id": firm_id, "period_key": pk, "mtr_type": mtr_type})
+            docs = [{"id": str(uuid.uuid4()), "firm_id": firm_id, "period_key": pk,
+                     "mtr_type": mtr_type, "created_at": now, **e} for e in parsed["invoices"].values()]
+            if docs:
+                await db.amazon_mtr.insert_many(docs)
+                mtr_persisted = len(docs)
+    except Exception as e:
+        logger.error(f"amazon_mtr persist from upload-mtr failed: {e}")
+
     return {
         "report_id": report_id,
         "filename": filename,
         "mtr_type": mtr_type,
         "firm_id": firm_id,
         "stats": stats,
-        "message": f"MTR {mtr_type.upper()} processed: {stats['matched_dispatches']} dispatches matched, {stats['state_updated']} states updated, {stats['gst_updated']} GST records updated",
+        "message": f"MTR {mtr_type.upper()} processed: {stats['matched_dispatches']} dispatches matched, {stats['state_updated']} states updated, {stats['gst_updated']} GST records updated"
+                   + (f"; {mtr_persisted} invoices linked for GST audit" if mtr_persisted else ""),
         "updates": updates_made[:20]  # Return first 20 updates for reference
     }
 
@@ -39745,6 +39869,7 @@ def generate_quotation_pdf_html(quotation: dict) -> str:
                 </td>
                 <td class="num">{item.get('quantity', 0)}</td>
                 <td class="num">{format_currency(item.get('rate', 0))}</td>
+                <td class="num">{('-' + format_currency(item.get('discount', 0))) if item.get('discount', 0) else '—'}</td>
                 <td class="num">{item.get('gst_rate', 18)}%</td>
                 <td class="num total">{format_currency(item.get('total', 0))}</td>
             </tr>
@@ -40140,6 +40265,7 @@ def generate_quotation_pdf_html(quotation: dict) -> str:
                     <th>Item Description</th>
                     <th style="width: 42px;">Qty</th>
                     <th style="width: 78px;">Rate</th>
+                    <th style="width: 70px;">Discount</th>
                     <th style="width: 42px;">GST</th>
                     <th style="width: 90px;">Amount</th>
                 </tr>
@@ -44864,6 +44990,8 @@ async def cancel_dealer_order(
 async def create_dealer_ticket(
     issue_description: str = Form(...),
     product_id: str = Form(None),
+    subject: str = Form(None),
+    issue_type: str = Form(None),
     customer_name: str = Form(None),
     customer_phone: str = Form(None),
     attachment: UploadFile = File(None),
@@ -44907,6 +45035,8 @@ async def create_dealer_ticket(
         "dealer_name": dealer["firm_name"],
         "product_id": product_id,
         "product_name": product_name,
+        "subject": subject,
+        "issue_type": issue_type,
         "customer_name": customer_name,
         "customer_phone": customer_phone,
         "issue_description": issue_description,
@@ -46458,6 +46588,34 @@ async def admin_get_dealers(
     return result
 
 
+class DealerOrderValueUpdate(BaseModel):
+    total_amount: float
+    items: Optional[List[dict]] = None
+    note: Optional[str] = None
+
+
+@api_router.post("/admin/dealer-orders/{order_ref}/set-value")
+async def set_dealer_order_value(order_ref: str, payload: DealerOrderValueUpdate,
+                                 user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Add/edit the value (and optionally line items) on an EDITABLE dealer order — e.g. a
+    Bigship-imported dispatch order that had no invoiced amount. order_ref = id or order_number."""
+    o = await db.dealer_orders.find_one({"$or": [{"id": order_ref}, {"order_number": order_ref}]},
+                                        {"_id": 0, "id": 1, "editable": 1})
+    if not o:
+        raise HTTPException(status_code=404, detail="Dealer order not found")
+    if o.get("editable") is False:
+        raise HTTPException(status_code=400, detail="This order is locked (not editable)")
+    now = datetime.now(timezone.utc).isoformat()
+    upd = {"total_amount": float(payload.total_amount), "value_pending": False,
+           "value_set_by": user["id"], "value_set_at": now, "updated_at": now}
+    if payload.items:
+        upd["items"] = payload.items
+    if payload.note:
+        upd["value_note"] = payload.note
+    await db.dealer_orders.update_one({"id": o["id"]}, {"$set": upd})
+    return {"success": True, "order_id": o["id"], "total_amount": float(payload.total_amount)}
+
+
 @api_router.get("/admin/dealers/{dealer_id}")
 async def admin_get_dealer(
     dealer_id: str,
@@ -46476,17 +46634,26 @@ async def admin_get_dealer(
     
     # Get order stats
     orders = await db.dealer_orders.find({"dealer_id": dealer_id}, {"_id": 0}).to_list(200)
-    
+
+    # Dispatches matched to this dealer (Bigship shipments linked by dealer_id, via phone reconciliation)
+    dispatches = await db.courier_shipments.find(
+        {"dealer_id": dealer_id},
+        {"_id": 0, "awb_number": 1, "product_name": 1, "status": 1, "courier_name": 1,
+         "consignee_city": 1, "shipment_category": 1, "created_at": 1}).sort("created_at", -1).to_list(300)
+
     return {
         "dealer": dealer,
         "party": party,
         "ledger": ledger,
         "orders": orders,
+        "dispatches": dispatches,
         "stats": {
             "total_orders": len(orders),
             "total_order_value": sum(o.get("total_amount", 0) for o in orders),
             "pending_orders": len([o for o in orders if o.get("status") == "pending"]),
-            "delivered_orders": len([o for o in orders if o.get("status") == "delivered"])
+            "delivered_orders": len([o for o in orders if o.get("status") == "delivered"]),
+            "total_dispatches": len(dispatches),
+            "delivered_dispatches": len([d for d in dispatches if "deliver" in (d.get("status") or "").lower()])
         }
     }
 
@@ -59743,7 +59910,9 @@ async def get_courier_shipments(
     
     query = {}
     if status:
-        query["status"] = status
+        # Stored Bigship statuses are mixed-case ("NOT PICKED", "Delivered", "DELIVERED");
+        # match case-insensitively so a single chip value catches every casing.
+        query["status"] = {"$regex": f"^{re.escape(status)}$", "$options": "i"}
     if search:
         query["$or"] = [
             {"customer_name": {"$regex": search, "$options": "i"}},
@@ -59766,6 +59935,144 @@ async def get_courier_shipments(
         "page": page,
         "page_size": page_size,
         "shipments": shipments
+    }
+
+
+@api_router.get("/admin/gst-audit")
+async def gst_audit(firm_id: str = None, period_key: str = None,
+                    user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Deloitte-style GST audit of firms — reconciliations + data-quality on CRM + filed-return data.
+    Runs offline (GSTIN checksum, sequence gaps, duplicates, tax anomalies, CRM-vs-filed totals) and
+    flags the gaps a live GSP pull (GSTR-1/2B/3B) would close. Accountants are firm-scoped."""
+    from utils import gst_audit as _ga
+    from utils import gst_gsp as _gsp
+    scope = get_user_firm_scope(user)
+    q = {}
+    if firm_id:
+        q["id"] = firm_id
+    if scope:  # accountant — restrict to own firm
+        q["id"] = scope
+    firms = await db.firms.find(q, {"_id": 0}).to_list(50)
+    reports = [await _ga.run_firm_audit(db, f, period_key) for f in firms]
+    totals = {"firms": len(reports),
+              "high": sum(r["summary"]["high"] for r in reports),
+              "medium": sum(r["summary"]["medium"] for r in reports),
+              "data_gaps": sum(r["summary"]["data_gaps"] for r in reports)}
+    return {"success": True, "generated_for": period_key or "all periods",
+            "gsp_connected": _gsp.is_configured(),
+            "gsp_note": None if _gsp.is_configured() else
+            "Live GST-portal pull not connected — set GSP_* in .env (a paid GSP subscription + per-firm "
+            "OTP auth) to unlock filed-return reconciliation, GSTR-2B ITC, and 3B liability. "
+            "Meanwhile, upload return JSON below to reconcile now.",
+            "totals": totals, "firms": reports}
+
+
+@api_router.post("/admin/gst-audit/import")
+async def gst_audit_import(firm_id: str = Form(...), period: str = Form(None),
+                           file: UploadFile = File(...),
+                           user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Import a GST-portal return JSON (GSTR-1 / GSTR-2B / GSTR-3B) — the free, no-GSP reconciliation
+    path. Auto-detects the return type, normalizes it into gst_report_data (source 'portal_import',
+    which the audit prefers over other sources), and the audit then reconciles against it."""
+    from utils import gst_import as gi
+    scope = get_user_firm_scope(user)
+    if scope and firm_id != scope:
+        raise HTTPException(status_code=403, detail="Accountants can only import for their own firm.")
+    if not await db.firms.find_one({"id": firm_id}, {"_id": 1}):
+        raise HTTPException(status_code=404, detail="Firm not found")
+    raw = await file.read()
+    try:
+        data = json.loads(raw)
+    except Exception:
+        logger.error(f"GST import: not JSON (firm={firm_id}, {len(raw)} bytes, name={file.filename})")
+        raise HTTPException(status_code=400, detail="File must be GST-portal return JSON (.json), not Excel/PDF.")
+    # Diagnostic: log the shape so we can match any portal variant.
+    try:
+        top_keys = list(data.keys()) if isinstance(data, dict) else f"<{type(data).__name__}>"
+        inner_keys = list(data.get("data", {}).keys()) if isinstance(data, dict) and isinstance(data.get("data"), dict) else None
+        logger.info(f"GST import shape: firm={firm_id} top_keys={top_keys} inner_keys={inner_keys} period_arg={period}")
+    except Exception:
+        pass
+    # Friendly guard for the common mistake: uploading a CRM/DB export instead of a portal return.
+    if isinstance(data, dict) and (data.keys() & {"users", "tickets", "firms", "master_skus", "parties", "dispatches"}):
+        raise HTTPException(status_code=400, detail=(
+            "This looks like a CRM/database export, not a GST return. Please download the GSTR-1 / "
+            "GSTR-2B / GSTR-3B *JSON* from gst.gov.in (Returns Dashboard → select the period → Download) "
+            "and upload that file."))
+    try:
+        rtype, period_key, rows, summary = gi.parse(data, firm_id, period)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"{e} (top-level keys: {list(data.keys())[:15] if isinstance(data, dict) else type(data).__name__})")
+    if not period_key:
+        raise HTTPException(status_code=400, detail="Could not determine the return period — pass period=YYYY-MM.")
+    now = datetime.now(timezone.utc).isoformat()
+    base = {"firm_id": firm_id, "period_key": period_key, "source": "portal_import", "import_return": rtype}
+    # Replace any prior import of the SAME return+firm+period (re-uploads overwrite, never duplicate).
+    await db.gst_report_data.delete_many(base)
+    if rtype in ("gstr1", "gstr2b"):
+        docs = [{**base, "id": str(uuid.uuid4()), "created_at": now, **r} for r in rows]
+        if docs:
+            await db.gst_report_data.insert_many(docs)
+        return {"success": True, "return_type": rtype, "period": period_key, "rows_imported": len(docs)}
+    # gstr3b → one summary row
+    await db.gst_report_data.insert_one({**base, "id": str(uuid.uuid4()), "created_at": now, **summary})
+    return {"success": True, "return_type": rtype, "period": period_key, "summary": summary}
+
+
+@api_router.post("/admin/gst-audit/import-mtr")
+async def gst_audit_import_mtr(firm_id: str = Form(...), period: str = Form(None),
+                               file: UploadFile = File(...),
+                               user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Import the Amazon GST MTR (Merchant Tax Report) CSV — maps each Amazon order id → invoice number,
+    enabling invoice-level matching of CRM Amazon orders to filed GSTR-1. Stored in `amazon_mtr`."""
+    from utils import amazon_mtr as mtr
+    scope = get_user_firm_scope(user)
+    if scope and firm_id != scope:
+        raise HTTPException(status_code=403, detail="Accountants can only import for their own firm.")
+    if not await db.firms.find_one({"id": firm_id}, {"_id": 1}):
+        raise HTTPException(status_code=404, detail="Firm not found")
+    raw = await file.read()
+    try:
+        parsed = mtr.parse_mtr_csv(raw)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not read the MTR — upload the Amazon GST MTR as CSV.")
+    period_key = period or parsed.get("period_key")
+    if not period_key:
+        raise HTTPException(status_code=400, detail="Could not determine period from invoice dates — pass period=YYYY-MM.")
+    now = datetime.now(timezone.utc).isoformat()
+    await db.amazon_mtr.delete_many({"firm_id": firm_id, "period_key": period_key})
+    docs = [{"id": str(uuid.uuid4()), "firm_id": firm_id, "period_key": period_key, "created_at": now, **e}
+            for e in parsed["invoices"].values()]
+    if docs:
+        await db.amazon_mtr.insert_many(docs)
+    b2b = sum(1 for d in docs if d.get("is_b2b"))
+    return {"success": True, "period": period_key, "invoices_imported": len(docs),
+            "b2b_invoices": b2b, "lines_parsed": parsed["line_count"]}
+
+
+@api_router.get("/courier/shipments/status-summary")
+async def get_courier_shipments_status_summary(current_user: dict = Depends(get_current_user)):
+    """Counts of courier shipments grouped by status (powers the History quick-filters /
+    'NOT PICKED' highlight). Also returns how many NOT PICKED parcels are stale (>30 days
+    since creation) so the operator can tell dead bookings from genuinely pending pickups."""
+    if current_user["role"] not in ["admin", "accountant", "dispatcher"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    summary = {}
+    async for g in db.courier_shipments.aggregate([{"$group": {"_id": "$status", "count": {"$sum": 1}}}]):
+        summary[(g["_id"] or "unknown")] = g["count"]
+    # Age split for NOT PICKED (case-insensitive match on the stored Bigship status).
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    not_picked_q = {"status": {"$regex": "^not picked$", "$options": "i"}}
+    not_picked_total = await db.courier_shipments.count_documents(not_picked_q)
+    not_picked_stale = await db.courier_shipments.count_documents(
+        {**not_picked_q, "created_at": {"$lt": cutoff}})
+    return {
+        "success": True,
+        "summary": summary,
+        "not_picked": {"total": not_picked_total, "stale": not_picked_stale,
+                       "recent": not_picked_total - not_picked_stale},
     }
 
 
@@ -65073,6 +65380,7 @@ class ShipmentCreateResponse(BaseModel):
     courier_name: Optional[str] = None
     label_url: Optional[str] = None
     tracking_url: Optional[str] = None
+    shipping_cost: Optional[float] = None  # what Bigship charges us to ship (the selected courier's rate)
 
 
 class TrackingUpdateRequest(BaseModel):
@@ -65264,9 +65572,10 @@ async def create_shipment_for_agent(
             "contact_number_primary": request.phone,
             "contact_number_secondary": request.alt_phone,
             "consignee_address": {
+                # Bigship hard-limits every address field to 50 chars — never exceed it.
                 "address_line1": address_line1[:50],
-                "address_line2": address_line2[:100] if address_line2 else f"{request.city} {request.state}".strip(),
-                "address_landmark": request.landmark,
+                "address_line2": (address_line2 or f"{request.city} {request.state}").strip()[:50],
+                "address_landmark": (request.landmark or "")[:50],
                 "pincode": str(request.pincode)
             }
         },
@@ -65352,17 +65661,22 @@ async def create_shipment_for_agent(
             }
         )
         
-        data = response.json()
-        
-        if not data.get("success"):
-            error_msg = data.get("message", "Failed to create shipment")
-            if data.get("validationErrors"):
-                errors = [f"{e.get('propertyName', 'unknown')}: {e.get('errorMessage', 'error')}" for e in data["validationErrors"]]
-                error_msg = "; ".join(errors)
-            return ShipmentCreateResponse(
-                success=False,
-                message=error_msg
-            )
+        try:
+            data = response.json()
+        except Exception:
+            data = {}
+        if response.status_code >= 400 or not data.get("success"):
+            logger.error(f"Bigship order failed [{response.status_code}]: {response.text[:1500]}")
+            error_msg = data.get("message") or "Failed to create shipment"
+            # Bigship returns validation detail under various keys depending on the error.
+            errs = data.get("validationErrors") or data.get("errors") or data.get("ModelState")
+            if isinstance(errs, list) and errs:
+                error_msg = "; ".join(
+                    f"{e.get('propertyName', e.get('field', 'field'))}: {e.get('errorMessage', e.get('message', 'error'))}"
+                    for e in errs if isinstance(e, dict)) or error_msg
+            elif isinstance(errs, dict) and errs:
+                error_msg = "; ".join(f"{k}: {', '.join(v) if isinstance(v, list) else v}" for k, v in errs.items())
+            return ShipmentCreateResponse(success=False, message=error_msg[:500])
         
         # Extract system_order_id
         order_id_match = data.get("data", "")
@@ -65409,29 +65723,56 @@ async def create_shipment_for_agent(
         # Auto-manifest if requested
         if auto_manifest and system_order_id:
             try:
-                # Get available couriers with rates
+                # Rates come from /calculator (the old /order/rate/card path 404s). It needs the
+                # pickup pincode, which we resolve from the warehouse.
+                pickup_pin = None
+                try:
+                    wresp = await client.get(f"{BIGSHIP_API_URL}/warehouse/get/list",
+                                             params={"page_index": 1, "page_size": 200},
+                                             headers={"Authorization": f"Bearer {token}"})
+                    for w in (wresp.json().get("data") or {}).get("result_data", []) or []:
+                        if str(w.get("warehouse_id")) == str(request.warehouse_id):
+                            pickup_pin = w.get("address_pincode")
+                            break
+                except Exception as e:
+                    logger.warning(f"Bigship warehouse pincode lookup failed: {e}")
+
+                rate_payload = {
+                    "shipment_category": shipment_category.upper(),
+                    "payment_type": request.payment_type,
+                    "pickup_pincode": int(pickup_pin) if pickup_pin else 0,
+                    "destination_pincode": int(str(request.pincode).strip()),
+                    "shipment_invoice_amount": int(request.invoice_amount or 0),
+                    "box_details": [{"each_box_dead_weight": float(request.weight_kg),
+                                     "each_box_length": int(request.length_cm),
+                                     "each_box_width": int(request.width_cm),
+                                     "each_box_height": int(request.height_cm),
+                                     "box_count": 1}],
+                    "risk_type": "" if shipment_category != "b2b" else "OwnerRisk",
+                }
                 rate_response = await client.post(
-                    f"{BIGSHIP_API_URL}/order/rate/card",
-                    params={"system_order_id": system_order_id},
-                    json={},
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {token}"
-                    }
-                )
-                
+                    f"{BIGSHIP_API_URL}/calculator", json=rate_payload,
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
                 rate_data = rate_response.json()
                 courier_id = preferred_courier_id
-                
-                if rate_data.get("success") and rate_data.get("data"):
-                    couriers = rate_data["data"]
-                    if couriers and not courier_id:
-                        # Select cheapest active courier
-                        active_couriers = [c for c in couriers if c.get("is_active")]
-                        if active_couriers:
-                            cheapest = min(active_couriers, key=lambda x: float(x.get("total_charges", 99999)))
-                            courier_id = cheapest.get("courier_id")
-                
+                couriers = rate_data.get("data") or []
+
+                if not courier_id and isinstance(couriers, list) and couriers:
+                    # Self-ship policy: ship via DELHIVERY only. Pick the cheapest Delhivery option;
+                    # if Delhivery isn't serviceable for this lane, FAIL LOUDLY (never swap couriers).
+                    delhivery = [c for c in couriers if "delhivery" in str(c.get("courier_name", "")).lower()]
+                    if delhivery:
+                        cheapest = min(delhivery, key=lambda x: float(x.get("total_shipping_charges") or x.get("courier_charge") or 99999))
+                        courier_id = cheapest.get("courier_id")
+                        try:
+                            result.shipping_cost = float(cheapest.get("total_shipping_charges") or cheapest.get("courier_charge") or 0)
+                        except Exception:
+                            result.shipping_cost = None
+                    else:
+                        result.message = ("Shipment created but NOT manifested: Delhivery is not serviceable for "
+                                          f"{request.pincode}. Please handle manually (per self-ship→Delhivery policy).")
+                        logger.warning(f"Delhivery unserviceable for {request.pincode} (order {system_order_id})")
+
                 if courier_id:
                     # Manifest the shipment
                     manifest_endpoint = "/order/manifest/heavy" if shipment_category == "b2b" else "/order/manifest/single"
@@ -71865,6 +72206,53 @@ async def email_agent_test(body: EmailAgentTest, user: dict = Depends(require_ro
 
 class EmailAgentSend(BaseModel):
     body: str  # the (possibly edited) reply to send
+
+
+@api_router.get("/admin/accounting-drafts")
+async def list_accounting_drafts(status: str = "pending_review",
+                                 user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """CA-agent drafts awaiting accountant review."""
+    q = {"status": status} if status else {}
+    rows = [d async for d in db.accounting_drafts.find(q, {"_id": 0}).sort("created_at", -1).limit(100)]
+    return {"count": len(rows), "drafts": rows}
+
+
+@api_router.post("/admin/accounting-drafts/{draft_id}/approve")
+async def approve_accounting_draft(draft_id: str, user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Approve a CA-agent draft. Payments post to the ledger via the shared core; other doc
+    types are marked approved for finalisation in their accounting module (purchase/invoice/expense)."""
+    d = await db.accounting_drafts.find_one({"id": draft_id}, {"_id": 0})
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if d.get("status") != "pending_review":
+        raise HTTPException(status_code=400, detail=f"Draft is already '{d.get('status')}'")
+    cl = d.get("classified") or {}
+    now = datetime.now(timezone.utc).isoformat()
+    pay = cl.get("payment") or {}
+    if d.get("doc_type") == "payment_receipt" and pay.get("amount") and d.get("party_id"):
+        mode = _PR_PAY_MODE_MAP.get(str(pay.get("mode", "")).strip().lower(), "other")
+        pc = PaymentCreate(
+            party_id=d["party_id"], payment_type=("received" if pay.get("direction") == "received" else "made"),
+            amount=float(pay["amount"]), payment_date=(pay.get("date") or d.get("document_date") or now[:10]),
+            payment_mode=mode, reference_number=pay.get("reference"), firm_id=d.get("firm_id"),
+            notes="Posted from CA-agent draft (accountant-approved)")
+        payment = await _create_payment_core(pc, user)
+        result = {"type": "payment", "number": payment["payment_number"]}
+        await db.accounting_drafts.update_one({"id": draft_id}, {"$set": {
+            "status": "posted", "posted": result, "approved_by": user["id"], "posted_at": now}})
+    else:
+        result = {"type": d.get("doc_type"), "note": "Approved — finalise in the accounting module "
+                  "(purchase/invoice/expense); GST/posting handled there."}
+        await db.accounting_drafts.update_one({"id": draft_id}, {"$set": {
+            "status": "approved_for_posting", "approved_by": user["id"], "approved_at": now}})
+    return {"success": True, "result": result}
+
+
+@api_router.post("/admin/accounting-drafts/{draft_id}/reject")
+async def reject_accounting_draft(draft_id: str, user: dict = Depends(require_roles(["admin", "accountant"]))):
+    await db.accounting_drafts.update_one({"id": draft_id}, {"$set": {
+        "status": "rejected", "rejected_by": user["id"], "rejected_at": datetime.now(timezone.utc).isoformat()}})
+    return {"success": True}
 
 
 @api_router.post("/admin/email-agent/messages/{msg_id}/send")
