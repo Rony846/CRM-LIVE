@@ -411,8 +411,15 @@ async def run_firm_audit(db, firm: dict, period_key: str = None) -> dict:
 
     # ---- 7. GSTR-3B outward tax vs GSTR-1 (when 3B imported) — the classic 3B↔1 mismatch ----
     b3 = [r for r in report if (r.get("section") or "") == "3b_summary"]
-    if b3:
-        b3_out = sum(_f(r.get("outward_tax")) for r in b3)
+    # The Vyapar 3B Excel import stores outward supplies as section "3.1" rows (igst/cgst/sgst per
+    # nature-of-supply) rather than a single "3b_summary"/outward_tax row — fold those in (excluding the
+    # 3.1(d) RCM-inward line) so the 3B↔1 check also fires for Vyapar-imported firms, not just portal PDFs.
+    b31 = [r for r in report if (r.get("section") or "") == "3.1"
+           and "reverse charge" not in (r.get("nature_of_supplies") or "").lower()
+           and "inward" not in (r.get("nature_of_supplies") or "").lower()]
+    if b3 or b31:
+        b3_out = (sum(_f(r.get("outward_tax")) for r in b3)
+                  + sum(_f(r.get("igst")) + _f(r.get("cgst")) + _f(r.get("sgst")) for r in b31))
         diff3 = round(b3_out - filed_tax, 2)
         findings["checks"].append({
             "check": "GSTR-3B outward tax vs GSTR-1", "gstr3b_tax": round(b3_out, 2),
