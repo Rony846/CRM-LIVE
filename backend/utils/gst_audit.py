@@ -280,14 +280,26 @@ async def run_firm_audit(db, firm: dict, period_key: str = None) -> dict:
         if (p.get("source") or "") == "intercompany_mirror":
             mirror_itc += g
     if itc_rows or purchases:
-        filed_itc = sum(_f(r.get("cgst")) + _f(r.get("sgst")) + _f(r.get("igst")) for r in itc_rows)
+        # 2b_itc (GSTR-2B = ITC *available*) and 4_itc (GSTR-3B = ITC *claimed*) are the SAME credit
+        # reported on two returns — summing them double-counts. Report each separately and use 2B as
+        # the authoritative "available" figure (fall back to the 3B-claimed value when 2B isn't loaded).
+        def _itc_sum(sec):
+            return sum(_f(r.get("cgst")) + _f(r.get("sgst")) + _f(r.get("igst"))
+                       for r in itc_rows if (r.get("section") or "").lower() == sec)
+        itc_available_2b = _itc_sum("2b_itc")
+        itc_claimed_3b = _itc_sum("4_itc")
+        filed_itc = itc_available_2b or itc_claimed_3b
         findings["checks"].append({"check": "ITC: filed input credit vs CRM purchases", "severity": "medium",
-                                   "filed_itc": round(filed_itc, 2), "crm_purchase_records": purchases,
+                                   "filed_itc": round(filed_itc, 2),
+                                   "itc_available_2b": round(itc_available_2b, 2),
+                                   "itc_claimed_3b": round(itc_claimed_3b, 2),
+                                   "crm_purchase_records": purchases,
                                    "crm_purchase_itc": round(purchase_itc, 2),
                                    "intra_group_itc_proxy": round(mirror_itc, 2),
-                                   "note": "filed_itc = portal GSTR-3B/2B. crm_purchase_itc = ITC on recorded inward bills; "
-                                           "intra_group_itc_proxy is the portion mirrored from group sellers' books, "
-                                           "claimable once it appears in this firm's own GSTR-2B."})
+                                   "note": "filed_itc = GSTR-2B available ITC (falls back to 3B-claimed when 2B not loaded); "
+                                           "2B and 3B are the same credit from two returns and are NOT summed. "
+                                           "crm_purchase_itc = ITC on recorded inward bills; intra_group_itc_proxy is the "
+                                           "portion mirrored from group sellers' books, claimable once in this firm's own GSTR-2B."})
     else:
         findings["data_gaps"].append("No purchase/ITC data — connect GSTR-2B (GSP) and record purchases for input-credit audit.")
 

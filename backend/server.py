@@ -70853,12 +70853,22 @@ async def browser_key(
     return {"success": True}
 
 
+async def _ensure_agent_logged_in(agent):
+    """Verify the agent is logged into Amazon. The cached `agent.state` goes stale — it resets to
+    waiting_login after a processing run even though the persisted browser session is still
+    authenticated — so when the flag isn't 'logged_in' we do a LIVE re-check before refusing."""
+    if agent is None or getattr(agent, "page", None) is None:
+        raise HTTPException(status_code=400, detail="Browser agent not started.")
+    if getattr(agent.state, "value", str(agent.state)) != "logged_in":
+        if not await agent.check_login_status():
+            raise HTTPException(status_code=400, detail="Not logged in to Amazon.")
+
+
 @api_router.get("/browser-agent/orders")
 async def get_browser_orders(user: dict = Depends(require_roles(["admin"]))):
     """Get unshipped orders from Amazon"""
     agent = await get_browser_agent()
-    if agent.state.value != "logged_in":
-        raise HTTPException(status_code=400, detail="Not logged in to Amazon")
+    await _ensure_agent_logged_in(agent)
     orders = await agent.get_unshipped_orders()
     return {"orders": orders}
 
@@ -70879,16 +70889,34 @@ async def process_browser_order(
     """Process a single order. Pass shipping_type="b2b"/"b2c" to override
     the auto-router."""
     agent = await get_browser_agent()
+    await _ensure_agent_logged_in(agent)
     result = await agent.process_order(data.order_id, force_shipping_type=data.shipping_type)
     return result.__dict__
 
 
+class ProcessAllRequest(BaseModel):
+    # When set, MUST match the active profile's firm — guards against accidentally
+    # booking shipments on the wrong seller account (the agent holds one profile at a time).
+    firm_id: Optional[str] = None
+
+
 @api_router.post("/browser-agent/process-all")
-async def process_all_browser_orders(user: dict = Depends(require_roles(["admin"]))):
-    """Process all self-ship orders"""
+async def process_all_browser_orders(
+    data: ProcessAllRequest = None,
+    user: dict = Depends(require_roles(["admin"])),
+):
+    """Process all self-ship orders for the ACTIVE firm profile. Verifies login (live) and, if a
+    firm_id is supplied, asserts it matches the active profile so we never ship the wrong account."""
     agent = await get_browser_agent()
+    await _ensure_agent_logged_in(agent)
+    if data and data.firm_id and data.firm_id != agent.firm_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Active Amazon profile is {agent.firm_name} ({agent.firm_id}), not the requested "
+                    f"firm {data.firm_id}. Switch profiles before processing to avoid booking the wrong account."),
+        )
     results = await agent.process_all_orders()
-    return {"results": [r.__dict__ for r in results]}
+    return {"results": [r.__dict__ for r in results], "firm_id": agent.firm_id, "firm_name": agent.firm_name}
 
 
 class AICommandRequest(BaseModel):
@@ -71160,7 +71188,7 @@ async def _basic_command_handler(agent, command: str, response: dict):
         response["message"] = "Navigated to Amazon Seller Central"
         
     elif any(phrase in command for phrase in ["fetch orders", "get orders", "list orders"]):
-        if agent.state.value != "logged_in":
+        if agent.state.value != "logged_in" and not await agent.check_login_status():
             response["success"] = False
             response["message"] = "Please log in first."
             return response
