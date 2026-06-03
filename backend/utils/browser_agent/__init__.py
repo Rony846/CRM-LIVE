@@ -2914,6 +2914,7 @@ class AmazonBrowserAgent:
                 "shipping_type": shipping_type.value,
                 "tracking_id": tracking_id,
                 "awb_number": tracking_id,
+                "awb": tracking_id,  # canonical alias — keep tracking_id/awb_number/awb in sync
                 "system_order_id": system_order_id,
                 "courier_name": "Delhivery",
                 "total_weight_kg": total_weight,
