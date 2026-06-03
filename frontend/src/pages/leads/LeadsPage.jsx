@@ -28,6 +28,9 @@ const LEAD_SOURCES = [
   { value: 'referral', label: 'Referral' },
   { value: 'social_media', label: 'Social Media' },
   { value: 'advertisement', label: 'Advertisement' },
+  { value: 'shopify_pending_payment', label: 'Shopify – Pending Payment' },
+  { value: 'kommo', label: 'Kommo (WhatsApp)' },
+  { value: 'kommo_lead', label: 'Kommo Deal' },
   { value: 'other', label: 'Other' },
 ];
 
@@ -155,6 +158,7 @@ export default function LeadsPage() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [sourceFilter, setSourceFilter] = useState('');
+  const [limit, setLimit] = useState(300);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showNoteModal, setShowNoteModal] = useState(false);
@@ -170,6 +174,7 @@ export default function LeadsPage() {
       if (search) params.append('search', search);
       if (statusFilter) params.append('status', statusFilter);
       if (sourceFilter) params.append('source', sourceFilter);
+      params.append('limit', String(limit));
 
       const res = await fetch(`${API}/api/leads?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -184,7 +189,7 @@ export default function LeadsPage() {
     } finally {
       setLoading(false);
     }
-  }, [token, search, statusFilter, sourceFilter]);
+  }, [token, search, statusFilter, sourceFilter, limit]);
 
   const fetchUsers = async () => {
     try {
@@ -441,6 +446,22 @@ export default function LeadsPage() {
           ))}
         </select>
       </div>
+
+      {/* Count + load more */}
+      {!loading && (stats.total ?? 0) > 0 && (
+        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <span>Showing <span className="text-foreground font-medium">{leads.length}</span> of {stats.total} leads</span>
+          {leads.length < (stats.total ?? 0) && (
+            <button
+              onClick={() => setLimit((l) => l + 500)}
+              className="px-3 py-1 rounded border border-border bg-card text-foreground hover:bg-muted/50"
+              data-testid="leads-load-more"
+            >
+              Load more
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Loading */}
       {loading ? (
