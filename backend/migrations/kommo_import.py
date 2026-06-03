@@ -59,7 +59,10 @@ def paginate(path, embedded_key, page_limit=None):
     """Yield all items from a paginated Kommo v4 endpoint."""
     page = 1
     while True:
-        data = kommo_get(path, {"page": page, "limit": 250})
+        params = {"page": page, "limit": 250}
+        if path == "/api/v4/leads":
+            params["with"] = "contacts"  # keep lead<->contact linkage for mapping
+        data = kommo_get(path, params)
         if not data:
             break
         items = (data.get("_embedded", {}) or {}).get(embedded_key, []) or []
