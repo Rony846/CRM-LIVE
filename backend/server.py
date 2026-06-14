@@ -44108,7 +44108,17 @@ async def create_dealer_order(
     
     if dealer.get("status") != "approved":
         raise HTTPException(status_code=403, detail="Dealer account not active")
-    
+
+    # Terms & Conditions must be accepted (current version) before ordering.
+    # The React TermsAcceptanceGuard is advisory only (fails open if it never
+    # mounts / is bypassed) — enforce the same invariant server-side.
+    tnc_user = await db.users.find_one({"id": user["id"]}, {"_id": 0, "tnc_accepted_version": 1})
+    if (tnc_user or {}).get("tnc_accepted_version") != DEALER_TNC_CURRENT_VERSION:
+        raise HTTPException(
+            status_code=403,
+            detail="You must accept the current Dealer Terms & Conditions before placing an order.",
+        )
+
     from decimal import Decimal, ROUND_HALF_UP
 
     def _money(v):
@@ -44311,9 +44321,22 @@ async def upload_dealer_payment_proof(
     
     if order.get("payment_status") == "received":
         raise HTTPException(status_code=400, detail="Payment already received for this order")
-    
+
+    # Admin must APPROVE the order before the dealer can pay. The approve step
+    # was previously skippable — proof could be uploaded on a still-'pending'
+    # (never-reviewed) order, which then flowed straight through verify/confirm
+    # without anyone approving it. Gate the upload on an admin-approved status.
+    if order.get("status") != "approved":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Order is not yet approved for payment (status '{order.get('status')}'). "
+                f"Please wait for admin approval before uploading payment proof."
+            ),
+        )
+
     now = datetime.now(timezone.utc).isoformat()
-    
+
     # Upload file using storage utility
     try:
         content = await proof_file.read()
@@ -44559,23 +44582,41 @@ async def confirm_dealer_payment(
                 f"verified first via the verify-payment action."
             ),
         )
-    if order.get("status") not in ["pending", "approved", "confirmed"]:
+    # A verified payment leaves the order at status "payment_received" (set by
+    # verify-payment). The old allow-list had "pending" (never-approved orders
+    # could be confirmed → approve gate bypass) and omitted "payment_received"
+    # (so a correctly-verified order could NEVER be confirmed → 0 ledger entries
+    # ever booked in prod). Accept only post-approval/post-verify statuses.
+    if order.get("status") not in ["payment_received", "approved", "confirmed"]:
         raise HTTPException(status_code=400, detail=f"Cannot confirm payment for order in status '{order.get('status')}'")
     
     now = datetime.now(timezone.utc).isoformat()
-    
-    await db.dealer_orders.update_one(
-        {"id": order_id},
+
+    # ATOMIC payment-status flip: only ONE request can move verified -> received.
+    # The old check-then-act let two concurrent confirms both pass the read-guard
+    # above and both post a ledger CREDIT, double-booking the dealer's payment.
+    locked = await db.dealer_orders.find_one_and_update(
+        {"id": order_id, "payment_status": "verified"},
         {"$set": {
             "payment_status": "received",
             "payment_received_at": payment_date or now[:10],
             "payment_confirmed_by": user["id"],
             "payment_remarks": remarks,
             "status": "confirmed",
-            "updated_at": now
-        }}
+            "updated_at": now,
+        }},
     )
-    
+    if not locked:
+        # Lost the race — another request already confirmed it. Idempotent, no double-book.
+        raise HTTPException(status_code=400, detail="Payment already confirmed for this order")
+
+    # Idempotency backstop: never post a second CREDIT for the same order, even if
+    # a prior run flipped the status but died before booking the ledger.
+    if await db.party_ledger.find_one(
+        {"reference_type": "dealer_order_payment", "reference_id": order_id}, {"_id": 1}
+    ):
+        return {"message": "Payment confirmed", "order_id": order_id}
+
     # Add to party ledger — auto-create party if missing
     dealer = await db.dealers.find_one({"id": order["dealer_id"]})
     party = await db.parties.find_one({"dealer_id": order["dealer_id"]})
