@@ -563,11 +563,20 @@ still help with, greetings).
 Respond with ONLY compact JSON: {"escalate": true|false, "wants": "replacement|refund|repair|callback|none", "reason": "<5-8 words>"}"""
 
 
-_SUPPORT_SYS = """You are Pratibha, MuscleGrid's WhatsApp support agent (MuscleGrid sells inverters, batteries, \
-stabilizers, solar). You are chatting LIVE with a CUSTOMER on WhatsApp. You are a real, thinking agent — decide \
-in the moment what to say and what to do. There is no script.
+_SUPPORT_PERSONA_PRATIBHA = """You are Pratibha, MuscleGrid's front-line WhatsApp support agent (MuscleGrid sells \
+inverters, batteries, stabilizers, solar). You are chatting LIVE with a CUSTOMER on WhatsApp. You are a real, thinking \
+agent — decide in the moment what to say and what to do. There is no script."""
 
-HOW YOU TALK
+_SUPPORT_PERSONA_KALPANA = """You are Kalpana, MuscleGrid's SENIOR customer-support specialist — Pratibha's senior and \
+the escalation point. You step in personally when a case is complex, technical, the customer is upset, or a real \
+decision is needed. You are calm, expert, thorough, and you OWN the resolution end-to-end. You are a real, thinking \
+agent — decide in the moment what to say and what to do. There is no script.{handoff}"""
+
+_SUPPORT_HANDOFF = ("\n- You are TAKING OVER this chat from Pratibha right now. In your FIRST message ONLY, introduce "
+                    "yourself warmly in one short line (e.g. \"Main Kalpana, senior support se — ab main khud aapki "
+                    "problem dekhungi\"), then get straight to helping. Do NOT introduce yourself again after that.")
+
+_SUPPORT_SYS = """HOW YOU TALK
 - PROFESSIONAL, courteous Hinglish (Hindi in Roman letters). Address the customer respectfully using "aap". Do NOT \
 use casual words like "bhai", "yaar", "bro", or "dost". Keep it short, clear and polite — like a professional support \
 executive. At most one emoji. No "Dear", no sign-off, no email address, never mention any internal email.
@@ -585,9 +594,9 @@ PHOTOS (you can SEE)
 - For a wiring/connection issue: ask for a clear photo, then check polarity (+/-), terminals and the connection sequence against the manual, and tell them exactly what looks wrong.
 
 TROUBLESHOOTING (use the manuals)
-- MuscleGrid has detailed user manuals for the TITAN and FOCUS inverter series. To give model-specific help, first find the
-  product SERIES: from get_customer_info (their ticket/warranty product name), or ASK the customer to send a photo of their
-  INVOICE (you can read it) — the model/series will be on it (e.g. MG6500 = a Focus model). Once you know titan or focus,
+- MuscleGrid has detailed user manuals for the TITAN, FOCUS and HEAVY-DUTY (3.6kW–6.2kW high-capacity) inverter series. To give
+  model-specific help, first find the product SERIES: from get_customer_info (their ticket/warranty product name), or ASK the customer
+  to send a photo of their INVOICE (you can read it) — the model/series will be on it. Once you know titan, focus or heavy_duty,
   call search_knowledge(query, series) and troubleshoot step-by-step from the manual + KB. If unsure of the series, ask for the invoice.
 
 YOUR JUDGEMENT & HARD RULES
@@ -615,7 +624,7 @@ SUPPORT_TOOLS = [
                      "technical troubleshooting so your advice matches MuscleGrid's own manuals."),
      "input_schema": {"type": "object", "properties": {
          "query": {"type": "string", "description": "the issue/keywords, e.g. 'battery not charging', 'overload fault', 'wiring connection'"},
-         "series": {"type": "string", "enum": ["titan", "focus"], "description": "inverter series, if known"}},
+         "series": {"type": "string", "enum": ["titan", "focus", "heavy_duty"], "description": "inverter series, if known"}},
          "required": ["query"]}},
     {"name": "ask_manager",
      "description": ("Escalate a decision to the manager (Pawan/Shweta). Use for replacement/refund/repair-vs-replace "
@@ -681,19 +690,23 @@ async def support_triage(conversation: list) -> str:
         return "hard"
 
 
-async def support_agent(conversation: list, situation: str, tool_executor, brain: str = None) -> dict:
+async def support_agent(conversation: list, situation: str, tool_executor, brain: str = None, handoff: bool = False) -> dict:
     """The real customer-support agent: Claude decides what to say + which actions (tools) to take,
     turn by turn. `conversation` = [{role:'user'|'assistant', content:str}] (oldest→newest), `situation`
     = a context note (customer info + current state), `tool_executor` = async (name, input)->dict in server.py.
-    `brain` = which model to run this turn (the router picks Haiku for easy turns, Opus for hard); defaults to Opus.
-    Returns {reply, model_ok, tool_calls}."""
+    `brain` = which model to run this turn: the cheap brain answers AS PRATIBHA (front-line), the smart brain
+    (support_model, Opus) answers AS KALPANA, the senior who steps in for hard turns. `handoff`=True tells Kalpana
+    she is taking over from Pratibha (so she introduces herself once). Returns {reply, model_ok, tool_calls}."""
     client = _client_or_none()
     if client is None:
         return {"reply": "", "model_ok": False, "tool_calls": 0}
     mdl = brain or support_model()
+    is_senior = mdl == support_model()
+    persona = (_SUPPORT_PERSONA_KALPANA.format(handoff=_SUPPORT_HANDOFF if handoff else "")
+               if is_senior else _SUPPORT_PERSONA_PRATIBHA)
     tools = [dict(t) for t in SUPPORT_TOOLS]
     tools[-1] = {**tools[-1], "cache_control": {"type": "ephemeral"}}
-    system = _sys(_SUPPORT_SYS + ("\n\n--- CURRENT SITUATION ---\n" + situation if situation else ""))
+    system = _sys(persona + "\n\n" + _SUPPORT_SYS + ("\n\n--- CURRENT SITUATION ---\n" + situation if situation else ""))
     messages = [{"role": m["role"], "content": m["content"]} for m in conversation if m.get("content")]
     if not messages:
         return {"reply": "", "model_ok": False, "tool_calls": 0}

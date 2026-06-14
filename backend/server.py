@@ -67581,6 +67581,47 @@ async def _pratibha_book_reverse_pickup(rp: dict, ctx: dict):
     return resp
 
 
+async def _bigship_meerut_warehouse_id():
+    """Get-or-create (and cache) the Bigship warehouse for the MuscleGrid Meerut return location — the
+    ORIGIN when we ship a repaired unit back to the customer. Created once; id cached in pratibha_settings."""
+    s = await db.pratibha_settings.find_one({"key": "meerut_warehouse_id"})
+    if s and s.get("value"):
+        return int(s["value"])
+    wid = await _bigship_create_warehouse(
+        name="MuscleGrid Meerut Return", address_line1=RP_RETURN["address_line1"],
+        address_line2=RP_RETURN["address_line2"], landmark=RP_RETURN["address_line2"],
+        pincode=RP_RETURN["pincode"], city=RP_RETURN["city"], state=RP_RETURN["state"],
+        person=RP_RETURN["first_name"], phone=RP_RETURN["phone"])
+    if wid:
+        await db.pratibha_settings.update_one({"key": "meerut_warehouse_id"},
+                                              {"$set": {"value": int(wid)}}, upsert=True)
+    return wid
+
+
+async def _pratibha_book_shipback(dest: dict, product_name: str, weight_kg, payment_type: str,
+                                  cod_amount, order_id: str = "", ctx: dict = None):
+    """Ship-back (Gate-2): book a forward Bigship shipment FROM the Meerut return warehouse TO the customer,
+    after a repair. `payment_type` = 'Prepaid' (company pays) or 'COD' (customer pays cod_amount to courier)."""
+    from types import SimpleNamespace
+    wid = await _bigship_meerut_warehouse_id()
+    if not wid:
+        return SimpleNamespace(success=False, message="Could not register the Meerut return warehouse on Bigship.")
+    pay = "COD" if str(payment_type).upper() == "COD" else "Prepaid"
+    cod = float(cod_amount or 0) if pay == "COD" else 0
+    fields = {
+        "shipment_type": "b2c", "warehouse_id": wid,
+        "first_name": dest.get("first_name") or "Customer", "last_name": dest.get("last_name") or "",
+        "phone": re.sub(r"\D", "", str(dest.get("phone") or ""))[-10:],
+        "address_line1": (dest.get("address_line1") or "")[:50], "address_line2": (dest.get("address_line2") or "")[:50],
+        "city": dest.get("city") or "", "state": dest.get("state") or "", "pincode": str(dest.get("pincode") or ""),
+        "product_name": (product_name or "Repaired unit") + " (repaired)", "quantity": 1,
+        "invoice_amount": cod or 100.0, "payment_type": pay, "cod_amount": cod,
+        "invoice_number": (order_id or f"SB-{uuid.uuid4().hex[:8].upper()}")[:25],
+        "weight_kg": float(weight_kg or 5.0),
+    }
+    return await _pratibha_book_shipment(fields, ctx or {})
+
+
 def _pr_thread_subject(orig_subject: str, ref: str) -> str:
     """Keep approval emails INSIDE the original conversation: 'Re: <original subject> [Pratibha
     approval REF]'. The REF marker lets us match the founder's reply; threading itself is by the
@@ -74394,7 +74435,7 @@ async def _wa_agent_respond(digits: str, contact_name: str = "", manager_note: s
         lead = await db.leads.find_one({"phone": rgx}, {"_id": 0, "name": 1, "customer_name": 1})
         name = contact_name or (lead or {}).get("name") or (lead or {}).get("customer_name") or ""
         msgs = await db.whatsapp_cloud_messages.find(
-            {"phone": digits}, {"_id": 0, "direction": 1, "text": 1, "received_at": 1}).sort("received_at", 1).to_list(60)
+            {"phone": digits}, {"_id": 0, "direction": 1, "text": 1, "received_at": 1, "brain": 1}).sort("received_at", 1).to_list(60)
         # Dedup: if the last thing in the log is already OUR reply (an earlier queued turn handled
         # everything), don't reply again — unless this call carries a fresh photo or manager note.
         if msgs and msgs[-1].get("direction") == "outgoing" and not latest_image and not manager_note:
@@ -74429,7 +74470,12 @@ async def _wa_agent_respond(digits: str, contact_name: str = "", manager_note: s
         else:
             tier = await pratibha_brain.support_triage(conv)
             brain = pratibha_brain.support_model() if tier == "hard" else pratibha_brain.model()
-        res = await pratibha_brain.support_agent(conv, situation, _wa_support_executor(digits, name), brain=brain)
+        # Kalpana (Opus, senior) introduces herself when she takes over a chat Pratibha (Haiku) was handling.
+        prev_out = next((m for m in reversed(msgs) if m.get("direction") == "outgoing"), None)
+        handoff = bool(brain == pratibha_brain.support_model() and prev_out
+                       and prev_out.get("brain") and prev_out.get("brain") != brain)
+        res = await pratibha_brain.support_agent(conv, situation, _wa_support_executor(digits, name),
+                                                 brain=brain, handoff=handoff)
         reply = (res or {}).get("reply", "").strip()
         if not res.get("model_ok") or not reply:
             await create_notification(title="WhatsApp needs a human",
@@ -74646,11 +74692,8 @@ async def _pratibha_wa_technician_reply(message):
 
     if kind == "done":
         await db.repair_jobs.update_one({"id": job["id"]}, {"$set": {"status": "repaired", "repaired_at": now}})
-        await create_notification(
-            title="✅ Repair done — ready to ship back",
-            message=f"{cust_name} ({cust_phone}) {product} ticket {job.get('ticket_number')} — repaired by technician. Decide ship-back: PREPAID or COD (labour ₹?).",
-            notification_type="service", link="/operations/courier-tracking",
-            target_roles=["admin", "accountant"], priority="high")
+        # Gate-2: ask Pawan/Shweta whether to ship back PREPAID (we pay) or COD (customer pays labour/freight).
+        await _pratibha_raise_shipback_decision(job)
         if cust_phone:
             await _wa_agent_respond(cust_phone, cust_name, manager_note=(
                 "The technician has CONFIRMED the repair is done. Give the customer a professional Hinglish update "
@@ -74664,6 +74707,108 @@ async def _pratibha_wa_technician_reply(message):
         return "Theek hai, maine ye Pawan sir ko bata diya. \U0001f64f"
 
     return None  # greeting/unclear — let other handlers/brain decide
+
+
+async def _pratibha_raise_shipback_decision(job: dict) -> bool:
+    """Repair done → Gate-2: ask Pawan/Shweta how to ship the repaired unit back — PREPAID (company pays)
+    or COD (customer pays). Single-in-flight per customer. The unit returns to the SAME address we picked it
+    up from (db.repair_pickups), so we don't re-ask the customer."""
+    cust_phone = job.get("customer_phone")
+    if not cust_phone:
+        return False
+    if await db.repair_shipbacks.find_one({"customer_phone": cust_phone, "status": "awaiting_mode"}, {"_id": 1}):
+        return True  # already asked — don't spam
+    pickup = await db.repair_pickups.find_one(
+        {"customer_phone": cust_phone, "status": "booked"}, sort=[("created_at", -1)])
+    dest = (pickup or {}).get("address") or {}
+    ref = uuid.uuid4().hex[:6].upper()
+    now = datetime.now(timezone.utc).isoformat()
+    name = job.get("customer_name") or "the customer"
+    product = job.get("product") or "unit"
+    tkn = job.get("ticket_number") or ""
+    await db.repair_shipbacks.insert_one({
+        "id": str(uuid.uuid4()), "ref": ref, "customer_phone": cust_phone, "customer_name": name,
+        "product": product, "ticket_number": tkn, "address": dest, "weight_kg": dest.get("weight_kg") or 5,
+        "status": "awaiting_mode", "created_at": now})
+    where = ", ".join(x for x in [dest.get("city"), str(dest.get("pincode") or "")] if x) or "customer address"
+    msg = (f"\U0001f4e6 *Ship-back ready* [{ref}]\n{name} ka {product} repair ho gaya"
+           f"{(' (ticket ' + tkn + ')') if tkn else ''}. Wapas bhejna hai → {where}.\n\n"
+           f"Reply: *shipback prepaid {ref}* (hum pay karein) ya *shipback cod <amount> {ref}* (customer se ₹ lein).")
+    ok, asked_via = await _wa_send_to_manager(
+        msg, fallback_desc=f"Repair done for {name} ({cust_phone}). Decide ship-back prepaid/COD — ref {ref}.")
+    await db.repair_shipbacks.update_one({"ref": ref}, {"$set": {"asked": ok, "asked_via": asked_via}})
+    return ok
+
+
+async def _pratibha_wa_shipback_reply(message):
+    """Authorised (Pawan/Shweta) reply to a Gate-2 ship-back: 'shipback prepaid <REF>' or
+    'shipback cod <amount> <REF>'. Books the return shipment Meerut→customer and sends the customer the
+    tracking via the agent. Returns an ack string, or None to fall through to other handlers."""
+    if not _wa_reply_allowed(getattr(message, "from_number", "")):
+        return None
+    low = (getattr(message, "text", "") or "").strip().lower()
+    if "shipback" not in low and "ship back" not in low and "ship-back" not in low:
+        return None
+    toks = re.findall(r"[a-z0-9,]+", low)
+    ref_tok = next((t.upper() for t in toks
+                    if len(t) == 6 and re.fullmatch(r"[0-9a-f]{6}", t) and re.search(r"[a-f]", t)), None)
+    sb = None
+    if ref_tok:
+        sb = await db.repair_shipbacks.find_one({"ref": ref_tok, "status": "awaiting_mode"})
+    if not sb:
+        sb = await db.repair_shipbacks.find_one({"status": "awaiting_mode"}, sort=[("created_at", -1)])
+    if not sb:
+        return None
+    now = datetime.now(timezone.utc).isoformat()
+    is_cod = "cod" in low
+    cod_amount = 0.0
+    if is_cod:
+        amt_tok = next((t for t in toks if re.fullmatch(r"[0-9][0-9,]*", t)
+                        and t != (ref_tok.lower() if ref_tok else None)), None)
+        cod_amount = float(amt_tok.replace(",", "")) if amt_tok else 0.0
+        if cod_amount <= 0:
+            await _wa_send_to_manager(f"COD amount kitna lein {sb.get('customer_name')} se? "
+                                      f"Reply: *shipback cod <amount> {sb['ref']}*")
+            return f"COD amount chahiye — reply: shipback cod <amount> {sb['ref']}"
+    dest = sb.get("address") or {}
+    pay = "COD" if is_cod else "Prepaid"
+    if not dest.get("address_line1") or len(re.sub(r"\D", "", str(dest.get("pincode") or ""))) != 6:
+        await db.repair_shipbacks.update_one({"id": sb["id"]}, {"$set": {"status": "manual", "resolved_at": now}})
+        await create_notification(
+            title="Ship-back — book manually", notification_type="service", link="/operations/courier-tracking",
+            message=f"Pickup address missing for {sb.get('customer_name')} ({sb.get('customer_phone')}); book the {pay} return shipment manually.",
+            target_roles=["admin", "accountant"], priority="high")
+        return "Pickup address nahi mila — ops ko manually book karne ko bola."
+    try:
+        resp = await _pratibha_book_shipback(dest, sb.get("product"), sb.get("weight_kg") or 5, pay,
+                                             cod_amount, sb.get("ticket_number") or "")
+    except Exception as e:
+        resp = None
+        logger.warning(f"ship-back booking error: {e}")
+    awb = getattr(resp, "awb_number", None) or (resp.get("awb_number") if isinstance(resp, dict) else None)
+    if not awb or getattr(resp, "success", True) is False:
+        await db.repair_shipbacks.update_one({"id": sb["id"]}, {"$set": {"status": "book_failed", "resolved_at": now}})
+        await create_notification(
+            title="⚠️ Ship-back booking failed", notification_type="service", link="/operations/courier-tracking",
+            message=f"Couldn't book the {pay} return for {sb.get('customer_name')} ({sb.get('customer_phone')}). Book manually.",
+            target_roles=["admin", "accountant"], priority="high")
+        return f"Ship-back booking fail hua — ops ko bata diya. ({getattr(resp, 'message', '') or 'Bigship error'})"
+    await db.repair_shipbacks.update_one({"id": sb["id"]}, {"$set": {
+        "status": "booked", "payment_mode": pay, "cod_amount": cod_amount, "awb": awb,
+        "label_url": getattr(resp, "label_url", None), "decided_by": message.from_number, "resolved_at": now}})
+    if sb.get("ticket_number"):
+        await db.tickets.update_one({"ticket_number": sb["ticket_number"]}, {"$set": {
+            "return_tracking": awb, "return_courier": "Bigship", "return_payment": pay,
+            "return_cod_amount": cod_amount, "updated_at": now}})
+    cust_phone = sb.get("customer_phone")
+    if cust_phone:
+        pay_note = (f"It is COD — the customer must pay ₹{cod_amount:,.0f} to the courier on delivery."
+                    if pay == "COD" else "It is prepaid — no charge to the customer.")
+        await _wa_agent_respond(cust_phone, sb.get("customer_name") or "", manager_note=(
+            f"The repaired {sb.get('product') or 'unit'} has been SHIPPED BACK to the customer via Bigship, "
+            f"tracking/AWB {awb}. {pay_note} Give the customer a warm, professional Hinglish update: their repaired "
+            f"unit is on the way, share the AWB {awb}" + (f", and mention the ₹{cod_amount:,.0f} COD to pay on delivery." if pay == "COD" else ".")))
+    return f"\U0001f44d Ship-back booked: {pay}{(' ₹' + format(cod_amount, ',.0f')) if pay == 'COD' else ''}, AWB {awb}."
 
 
 @api_router.get("/whatsapp/cloud/webhook")
@@ -76416,6 +76561,16 @@ async def whatsapp_message_webhook(data: dict, request: Request):
         if wa_dec is not None:
             await _wa_remember_turn(conv_key, message.text, wa_dec)
             return {"reply": wa_dec}
+
+        # Authorised ship-back decision (Gate 2): "shipback prepaid <REF>" / "shipback cod <amt> <REF>".
+        try:
+            wa_sb = await _pratibha_wa_shipback_reply(message)
+        except Exception as e:
+            logger.error(f"WA ship-back-reply handling failed: {e}")
+            wa_sb = None
+        if wa_sb is not None:
+            await _wa_remember_turn(conv_key, message.text, wa_sb)
+            return {"reply": wa_sb}
 
         # Technician (Gaurav) replying about an open repair job — interpret + update the customer.
         try:
