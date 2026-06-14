@@ -56,6 +56,7 @@ from utils import email_agent  # inbound email assistant (IMAP/SMTP transport)
 from utils import pratibha_brain  # Claude brain + CRM query tools for the email agent
 from utils import ca_agent  # accounting brain (top-CA classification of documents → draft entries)
 from utils import shopify_service  # Shopify Admin API client + webhook HMAC verify + order normaliser
+from utils import whatsapp_cloud  # WhatsApp Business Cloud API (official customer messaging)
 
 # Jobcard generator import
 from utils.jobcard import create_and_upload_jobcard
@@ -308,6 +309,25 @@ def _const_eq(a: str, b: str) -> bool:
     import hmac as _hmac
     return _hmac.compare_digest((a or "").encode(), (b or "").encode())
 
+# Razorpay (online payments for the customer marketplace). Optional: when keys
+# are unset or the SDK is missing, online payment is hard-disabled and checkout
+# falls back to Cash-on-Delivery.
+RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID", "").strip()
+RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "").strip()
+# Webhook secret set in the Razorpay dashboard. When unset, the webhook is
+# hard-disabled (returns 503) so it can't be used to forge payment events.
+RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "").strip()
+try:
+    import razorpay as _razorpay
+except ImportError:
+    _razorpay = None
+razorpay_client = (
+    _razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+    if _razorpay and RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET
+    else None
+)
+RAZORPAY_ENABLED = razorpay_client is not None
+
 # Email Configuration (Resend)
 RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
 SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'onboarding@resend.dev')
@@ -482,6 +502,36 @@ async def create_indexes():
          [("firm_id", 1), ("refund_date", -1)], {}),
         ("amazon_refunds.refund_type", "amazon_refunds", "refund_type", {}),
         ("amazon_refunds.a_to_z_outcome", "amazon_refunds", "a_to_z_outcome", {"sparse": True}),
+        # Solar Samrat — open-industry solar community super-app (CRM is the admin plane).
+        ("samrat_members.user_id", "samrat_members", "user_id", {"sparse": True}),
+        ("samrat_members.status", "samrat_members", "status", {}),
+        ("samrat_members.verification", "samrat_members", "verification", {}),
+        ("samrat_members.(role,state)", "samrat_members", [("role", 1), ("state", 1)], {}),
+        ("samrat_members.gstin", "samrat_members", "gstin", {"sparse": True}),
+        ("samrat_crown_ledger.member_id", "samrat_crown_ledger", "member_id", {}),
+        ("samrat_leads.status", "samrat_leads", "status", {}),
+        ("samrat_leads.member_id", "samrat_leads", "member_id", {}),
+        ("samrat_posts.status", "samrat_posts", "status", {}),
+        ("samrat_posts.member_id", "samrat_posts", "member_id", {}),
+        ("samrat_posts.(group,status,created)", "samrat_posts", [("group", 1), ("status", 1), ("created_at", -1)], {}),
+        ("samrat_questions.status", "samrat_questions", "status", {}),
+        ("samrat_questions.answers.id", "samrat_questions", "answers.id", {"sparse": True}),
+        ("samrat_ai_quotes.user_id", "samrat_ai_quotes", "user_id", {}),
+        ("samrat_channels.members", "samrat_channels", "members", {}),
+        ("samrat_channels.(is_public,type)", "samrat_channels", [("is_public", 1), ("type", 1)], {}),
+        ("samrat_channels.updated_at", "samrat_channels", "updated_at", {}),
+        ("samrat_channels.dm_key", "samrat_channels", "dm_key", {"unique": True, "sparse": True}),
+        ("samrat_messages.(channel_id,created_at)", "samrat_messages", [("channel_id", 1), ("created_at", 1)], {}),
+        ("samrat_chat_reads.(channel_id,user_id)", "samrat_chat_reads", [("channel_id", 1), ("user_id", 1)], {"unique": True}),
+        # Dealer business toolkit (private per-dealer: customers, quotes, sales).
+        ("samrat_customers.user_id", "samrat_customers", "user_id", {}),
+        ("samrat_quotes.user_id", "samrat_quotes", "user_id", {}),
+        ("samrat_quotes.public_token", "samrat_quotes", "public_token", {"unique": True, "sparse": True}),
+        ("samrat_sales.(user_id,sale_date)", "samrat_sales", [("user_id", 1), ("sale_date", -1)], {}),
+        ("samrat_invoices.user_id", "samrat_invoices", "user_id", {}),
+        ("samrat_invoices.(user_id,customer_id)", "samrat_invoices", [("user_id", 1), ("customer_id", 1)], {}),
+        ("samrat_invoices.public_token", "samrat_invoices", "public_token", {"unique": True, "sparse": True}),
+        ("samrat_ledger.(user_id,customer_id,created_at)", "samrat_ledger", [("user_id", 1), ("customer_id", 1), ("created_at", 1)], {}),
     ]
     succeeded, failed = 0, 0
     for label, coll, keys, kwargs in INDEX_PLAN:
@@ -538,15 +588,61 @@ async def create_indexes():
         # firm with active Amazon credentials. Default 02:00 IST (20:30 UTC); can be
         # overridden via CRON_AMAZON_HOUR_UTC / CRON_AMAZON_MIN_UTC env vars.
         from apscheduler.triggers.cron import CronTrigger
-        cron_hour = int(os.environ.get("CRON_AMAZON_HOUR_UTC", "20"))
+        # Twice-daily Amazon pull (default 02:30 & 14:30 UTC ~ 08:00 & 20:00 IST). Override with
+        # CRON_AMAZON_HOURS_UTC (comma-separated hours); legacy single CRON_AMAZON_HOUR_UTC still honoured.
+        cron_hours = os.environ.get("CRON_AMAZON_HOURS_UTC") or os.environ.get("CRON_AMAZON_HOUR_UTC", "2,14")
         cron_min  = int(os.environ.get("CRON_AMAZON_MIN_UTC", "30"))
         scheduler.add_job(
             scheduled_amazon_sync,
-            CronTrigger(hour=cron_hour, minute=cron_min),
+            CronTrigger(hour=cron_hours, minute=cron_min),
             id="amazon_nightly_sync",
-            name="Amazon Nightly Sync (orders + refunds + A-Z)",
+            name="Amazon Sync (orders + refunds + A-Z) - twice daily",
             replace_existing=True,
             misfire_grace_time=3600,  # accept up-to-1h late firing after VPS reboot
+        )
+        # Pratibha verifies the freshly-pulled Amazon dispatches + their Delhivery pickup status and
+        # WhatsApps the main group (default 1h after each pull).
+        scheduler.add_job(
+            scheduled_pratibha_amazon_dispatch_check,
+            CronTrigger(hour=os.environ.get("CRON_AMAZON_CHECK_HOURS_UTC", "3,15"),
+                        minute=int(os.environ.get("CRON_AMAZON_CHECK_MIN_UTC", "30"))),
+            id="pratibha_amazon_dispatch_check",
+            name="Pratibha Amazon Dispatch Check (Delhivery pickup-pending -> group)",
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
+        # Cancelled-on-Delhivery-but-not-refunded-on-Amazon cross-check -> group (twice daily, after the pickup check).
+        scheduler.add_job(
+            scheduled_pratibha_amazon_refund_check,
+            CronTrigger(hour=os.environ.get("CRON_AMAZON_REFUND_HOURS_UTC", "4,16"),
+                        minute=int(os.environ.get("CRON_AMAZON_REFUND_MIN_UTC", "0"))),
+            id="pratibha_amazon_refund_check",
+            name="Pratibha Amazon Refund Gap Check (Delhivery-cancelled not-refunded -> group)",
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
+
+        # Instagram news auto-post (@nofilterpromedia) — one solar/energy card a few times a day
+        if os.environ.get("INSTAGRAM_ACCESS_TOKEN") and os.environ.get("INSTAGRAM_USER_ID"):
+            scheduler.add_job(
+                scheduled_instagram_news,
+                CronTrigger(hour=os.environ.get("IG_NEWS_HOURS_UTC", "4,9,14"),
+                            minute=int(os.environ.get("IG_NEWS_MIN_UTC", "20"))),
+                id="instagram_news",
+                name="Instagram solar-news auto-post (@nofilterpromedia)",
+                replace_existing=True,
+                misfire_grace_time=3600,
+            )
+
+        # Monthly payroll auto-draft — on the 1st, generate the just-ended month's payroll as DRAFT
+        # (status pending) so it's never forgotten. Admin still reviews / approves / pays manually.
+        scheduler.add_job(
+            scheduled_payroll_draft,
+            CronTrigger(day=1, hour=3, minute=0),
+            id="payroll_draft",
+            name="Monthly payroll auto-draft (previous month, pending)",
+            replace_existing=True,
+            misfire_grace_time=6 * 3600,
         )
 
         # Warranty Claim SLA Breach Check — hourly, T&C §5.1(e) commits 7-working-day turnaround
@@ -556,6 +652,20 @@ async def create_indexes():
             id="warranty_claim_sla_check",
             name="Warranty Claim SLA Breach Check",
             replace_existing=True
+        )
+
+        # Product Maintenance Reminders — daily nudge for due/overdue upkeep
+        # (battery checks, service, solar cleaning) + 30-day warranty-expiry.
+        # Configurable via CRON_MAINTENANCE_HOUR_UTC / _MIN_UTC (default 03:30 UTC ≈ 09:00 IST).
+        maint_hour = int(os.environ.get("CRON_MAINTENANCE_HOUR_UTC", "3"))
+        maint_min = int(os.environ.get("CRON_MAINTENANCE_MIN_UTC", "30"))
+        scheduler.add_job(
+            scheduled_maintenance_reminders,
+            CronTrigger(hour=maint_hour, minute=maint_min),
+            id="maintenance_reminders",
+            name="Product Maintenance Reminders (daily)",
+            replace_existing=True,
+            misfire_grace_time=6 * 3600,
         )
 
         # Amazon Tracking Push — hourly poll for dispatched orders whose tracking
@@ -611,6 +721,18 @@ async def create_indexes():
             misfire_grace_time=900,
             max_instances=1,  # never overlap refreshes
         )
+        # Repair-loop agent (Phase 1) — every 30 min, advances service tickets +
+        # warranty claims (RP-delivered → assign technician → follow up). Notify-only;
+        # no shipping. No-op unless REPAIR_LOOP_ENABLED is set.
+        scheduler.add_job(
+            scheduled_repair_loop,
+            IntervalTrigger(minutes=30),
+            id="repair_loop",
+            name="Repair-loop agent (every 30m)",
+            replace_existing=True,
+            misfire_grace_time=900,
+            max_instances=1,
+        )
 
         # Dispatch auto-finalize — hourly, completes gate-scanned-but-unfinalized
         # dispatches so shipped orders don't linger in the active queue. Only acts
@@ -624,6 +746,21 @@ async def create_indexes():
             misfire_grace_time=1800,
             max_instances=1,
         )
+
+        # Zoho Desk sync — disabled by default (Zoho subscriptions cancelled, no
+        # new tickets; the 1,966 imported are final and live in db.zoho_tickets).
+        # Manual "Sync now" still works while the token is valid. Re-enable with
+        # ZOHO_DESK_AUTOSYNC=true if a subscription returns.
+        if os.environ.get("ZOHO_DESK_AUTOSYNC", "").lower() == "true":
+            scheduler.add_job(
+                scheduled_zoho_desk_sync,
+                IntervalTrigger(hours=2),
+                id="zoho_desk_sync",
+                name="Zoho Desk Ticket Sync (read-only mirror, every 2h)",
+                replace_existing=True,
+                misfire_grace_time=1800,
+                max_instances=1,
+            )
 
         # Duplicate-shipment watch (Layer 5) — every 15 min, flag any Amazon order
         # that just got more than one active shipment so it's caught before pickup.
@@ -768,6 +905,33 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Emails unanswered for 2+ days → surface to Shweta one-by-one (paced by her replies).
+        # Live new emails only ping her when urgent; routine ones wait for this daily sweep.
+        # Default 04:00 UTC ≈ 09:30 IST (start of her workday). Disable with PRATIBHA_BACKLOG_ENABLED=false.
+        if os.environ.get("PRATIBHA_BACKLOG_ENABLED", "true").lower() == "true":
+            scheduler.add_job(
+                scheduled_pratibha_backlog_sweep,
+                _CronTrigger(hour=int(os.environ.get("PRATIBHA_BACKLOG_UTC_HOUR", "4")),
+                             minute=int(os.environ.get("PRATIBHA_BACKLOG_UTC_MIN", "0"))),
+                id="pratibha_backlog_sweep",
+                name="Pratibha Backlog Sweep (emails unanswered 2+ days → ask Shweta one-by-one)",
+                replace_existing=True,
+                misfire_grace_time=3600,
+                max_instances=1,
+            )
+
+        # WhatsApp outbox flush — delivers messages held overnight once India business hours resume.
+        # Runs every 30 min; no-ops while outside hours, so the held queue waits for the next morning.
+        scheduler.add_job(
+            scheduled_wa_outbox_flush,
+            IntervalTrigger(minutes=int(os.environ.get("PRATIBHA_WA_FLUSH_INTERVAL_MIN", "30"))),
+            id="pratibha_wa_outbox_flush",
+            name="Pratibha WhatsApp Outbox Flush (deliver overnight-held messages in business hours)",
+            replace_existing=True,
+            misfire_grace_time=1800,
+            max_instances=1,
+        )
+
         # Monthly GST audit alert — high-severity findings to the group.
         scheduler.add_job(
             scheduled_pratibha_gst_audit_alert,
@@ -871,7 +1035,7 @@ async def create_indexes():
         logger.info(
             f"Scheduled jobs started: SLA breach (30min), Payment verification (1hr), "
             f"Warranty claim SLA (1hr), Amazon tracking push (1hr), "
-            f"Amazon nightly sync ({cron_hour:02d}:{cron_min:02d} UTC), "
+            f"Amazon sync ({cron_hours} UTC x{len(str(cron_hours).split(','))}/day), "
             f"Finance agent ({agent_hour:02d}:{agent_min:02d} UTC), "
             f"Finance scraper pulse ({pulse_min}min)"
         )
@@ -1505,6 +1669,8 @@ class MasterSKUCreate(BaseModel):
     aliases: Optional[List[SKUAlias]] = None           # Platform-specific SKU codes
     reorder_level: int = 10
     description: Optional[str] = None
+    image_url: Optional[str] = None                    # Customer storefront image
+    images: Optional[List[str]] = None                 # Additional gallery images
     # Dimensions for shipping (Amazon/Flipkart compliance)
     length_cm: Optional[float] = None   # Length in centimeters
     breadth_cm: Optional[float] = None  # Breadth in centimeters
@@ -1526,6 +1692,8 @@ class MasterSKUUpdate(BaseModel):
     aliases: Optional[List[SKUAlias]] = None
     reorder_level: Optional[int] = None
     description: Optional[str] = None
+    image_url: Optional[str] = None                    # Customer storefront image
+    images: Optional[List[str]] = None
     is_active: Optional[bool] = None
     cost_price: Optional[float] = None  # For WAC calculation
     selling_price: Optional[float] = None  # Customer selling price (for dealer portal)
@@ -1553,6 +1721,8 @@ class MasterSKUResponse(BaseModel):
     aliases: Optional[List[dict]] = None
     reorder_level: int
     description: Optional[str] = None
+    image_url: Optional[str] = None
+    images: Optional[List[str]] = None
     is_active: bool
     cost_price: Optional[float] = None
     selling_price: Optional[float] = None  # Customer selling price
@@ -2704,6 +2874,86 @@ async def generate_dealer_order_number():
 async def generate_dealer_ticket_number():
     return await _format_daily_number("MG-DT")
 
+# Default push preference per category when a user hasn't set one.
+_PUSH_PREF_DEFAULTS = {"orders": True, "tickets": True, "promotions": False}
+
+
+def _push_category(notification_type: str) -> Optional[str]:
+    """Map a notification type onto a user-toggleable push category, or None
+    (None = always deliver, e.g. maintenance / warranty / appointment)."""
+    t = (notification_type or "").lower()
+    if t in ("order", "dispatch", "shipment") or t.startswith("order"):
+        return "orders"
+    if t == "ticket":
+        return "tickets"
+    if t == "promotion":
+        return "promotions"
+    return None
+
+
+async def send_expo_push(
+    user_ids: List[str],
+    title: str,
+    body: str,
+    data: Optional[dict] = None,
+    category: Optional[str] = None,
+):
+    """Best-effort Expo push to the given customers' registered devices.
+
+    Honours each user's push_prefs for the category, batches ≤100 tokens, and
+    prunes tokens Expo reports as DeviceNotRegistered. Never raises.
+    """
+    if not user_ids:
+        return
+    try:
+        users = await db.users.find(
+            {"id": {"$in": user_ids}, "push_tokens": {"$exists": True, "$ne": []}},
+            {"_id": 0, "id": 1, "push_tokens": 1, "push_prefs": 1},
+        ).to_list(1000)
+        messages = []
+        for u in users:
+            if category:
+                prefs = u.get("push_prefs") or {}
+                allowed = prefs.get(category, _PUSH_PREF_DEFAULTS.get(category, True))
+                if not allowed:
+                    continue
+            for tok in (u.get("push_tokens") or []):
+                messages.append({
+                    "to": tok,
+                    "title": title,
+                    "body": body,
+                    "sound": "default",
+                    "data": data or {},
+                })
+        if not messages:
+            return
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for i in range(0, len(messages), 100):
+                batch = messages[i:i + 100]
+                try:
+                    r = await client.post(
+                        "https://exp.host/--/api/v2/push/send",
+                        headers={"Content-Type": "application/json"},
+                        json=batch,
+                    )
+                    tickets = (r.json() or {}).get("data") or []
+                    for msg, ticket in zip(batch, tickets):
+                        if (
+                            isinstance(ticket, dict)
+                            and ticket.get("status") == "error"
+                            and (ticket.get("details") or {}).get("error")
+                            == "DeviceNotRegistered"
+                        ):
+                            await db.users.update_many(
+                                {"push_tokens": msg["to"]},
+                                {"$pull": {"push_tokens": msg["to"]}},
+                            )
+                except Exception as e:
+                    logger.warning(f"Expo push batch failed: {e}")
+    except Exception as e:
+        logger.warning(f"send_expo_push failed: {e}")
+
+
 async def create_notification(
     title: str,
     message: str,
@@ -2741,6 +2991,27 @@ async def create_notification(
     }
 
     await db.notifications.insert_one(notification_doc)
+
+    # Deliver a phone push for user-targeted notifications (customers). Staff
+    # broadcasts (target_roles) stay in-app only. Fire-and-forget so callers —
+    # including request handlers and scheduled jobs — are never blocked.
+    if target_user_ids:
+        payload = {"link": link, **(data or {})}
+        try:
+            asyncio.create_task(
+                send_expo_push(
+                    target_user_ids,
+                    title,
+                    message,
+                    data=payload,
+                    category=_push_category(notification_type),
+                )
+            )
+        except RuntimeError:
+            # No running loop (rare, e.g. sync context) — skip push, keep the
+            # in-app notification.
+            pass
+
     return notification_id
 
 
@@ -3238,6 +3509,589 @@ async def scheduled_amazon_sync():
         logger.error(f"[CRON] amazon_nightly_sync failed: {e}")
 
 
+async def scheduled_pratibha_amazon_dispatch_check():
+    """Twice daily (after the Amazon pull): verify recently-processed Amazon orders have tracking IDs,
+    check each AWB's Delhivery status, and WhatsApp the main group a summary — flagging any that show
+    'pickup pending' (booked + tracking entered, but Delhivery hasn't physically collected them yet)."""
+    try:
+        days = int(os.environ.get("CRON_AMAZON_CHECK_DAYS", "20"))
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        seen, recs = set(), []
+        async for p in db.amazon_order_processing.find(
+                {"status": "completed", "processed_at": {"$gte": cutoff}}, {"_id": 0}
+                ).sort("processed_at", -1):
+            awb = (p.get("awb") or p.get("tracking_id") or p.get("awb_number") or "").strip()
+            if not awb or awb in seen:
+                continue
+            seen.add(awb)
+            recs.append((p, awb))
+        if not recs:
+            logger.info("[CRON] pratibha amazon dispatch check: no Amazon dispatches in window")
+            return
+        # Over a 20-day window most parcels are already settled. Skip ones we've already seen reach a
+        # TERMINAL Delhivery state (delivered/cancelled/returned) so we don't re-hammer the API; only
+        # live-check the rest, persist their state, and cap live calls per run.
+        TERMINAL = {"delivered", "cancelled", "returned"}
+        MAX_LIVE = int(os.environ.get("CRON_AMAZON_CHECK_MAX", "150"))
+        pending, unresolved, live = [], 0, 0
+        for p, awb in recs:
+            if p.get("delhivery_state") in TERMINAL:
+                continue  # already settled — no need to re-check
+            if live >= MAX_LIVE:
+                break
+            try:
+                st = (await fetch_delhivery_tracking(awb)).get("state")
+                live += 1
+                await db.amazon_order_processing.update_one(
+                    {"order_id": p.get("order_id"), "awb": awb},
+                    {"$set": {"delhivery_state": st,
+                              "delhivery_checked_at": datetime.now(timezone.utc).isoformat()}})
+                if st == "awaiting_pickup":
+                    pending.append((p, awb))
+            except Exception:
+                unresolved += 1
+            await asyncio.sleep(0.4)  # pace Delhivery's API
+        total = len(recs)
+
+        def _age_days(iso):
+            try:
+                dt = datetime.fromisoformat((iso or "").replace("Z", "+00:00"))
+                return max(0, (datetime.now(timezone.utc) - dt).days)
+            except Exception:
+                return None
+
+        def _item_label(p):
+            its = p.get("items") or []
+            titles = [(i.get("title") or i.get("master_sku_name") or i.get("sku") or "").strip() for i in its]
+            titles = [t for t in titles if t]
+            if not titles:
+                t = (p.get("product_title") or p.get("product_sku") or "").strip()
+                titles = [t] if t else []
+            if not titles:
+                return "item ?"
+            return titles[0][:36] + (f" +{len(titles) - 1} more" if len(titles) > 1 else "")
+
+        def _firm_tag(name):
+            n = (name or "").lower()
+            if "gurgaon" in n:
+                return "Gurgaon"
+            if "ebay up" in n:
+                return "EBAY-UP"
+            if "electronics bay" in n:
+                return "EBay-Delhi"
+            return (name or "?")[:14]
+
+        firm_counts = {}
+        for p, _a in recs:
+            t = _firm_tag(p.get("firm_name"))
+            firm_counts[t] = firm_counts.get(t, 0) + 1
+        firm_line = " · ".join(f"{k} {v}" for k, v in sorted(firm_counts.items(), key=lambda x: -x[1]))
+
+        lines = ["📦 *Amazon dispatch check*",
+                 f"Sir, I can see *{total}* dispatch done from Amazon and tracking IDs are entered."
+                 + (f"\n_(by firm: {firm_line})_" if firm_line else "")]
+        if pending:
+            pending.sort(key=lambda pa: pa[0].get("processed_at") or "")  # oldest (most stuck) first
+            lines.append(f"\n⚠️ But *{len(pending)}* show *pickup pending* on Delhivery — "
+                         "means they are not physically dispatched yet:")
+            for p, awb in pending[:15]:
+                age = _age_days(p.get("processed_at"))
+                age_s = f" · ⏱ {age}d waiting" if age is not None else ""
+                lines.append(f"• [{_firm_tag(p.get('firm_name'))}] *{_item_label(p)}* — {p.get('customer_name') or ''} · "
+                             f"{p.get('order_id')} · AWB {awb}{age_s}".rstrip())
+            if len(pending) > 15:
+                lines.append(f"…and {len(pending) - 15} more.")
+        else:
+            lines.append(f"\n✅ All {total} have been picked up by Delhivery.")
+        if unresolved:
+            lines.append(f"\n(Note: {unresolved} AWB(s) had no Delhivery status yet — too new or not on Delhivery.)")
+        target = await _pr_wa_target(_pr_founder_wa_target())
+        if target:
+            await send_whatsapp_message(target, "\n".join(lines))
+            logger.info(f"[CRON] pratibha amazon dispatch check: reported {total} ({len(pending)} pending) to {target}")
+    except Exception as e:
+        logger.error(f"[CRON] pratibha amazon dispatch check failed: {e}")
+
+
+async def scheduled_pratibha_amazon_refund_check():
+    """Twice daily: find Amazon orders whose Delhivery shipment is CANCELLED but Amazon still shows
+    'Shipped' (not cancelled) with NO refund on record — i.e. customer paid, parcel isn't going, and
+    no refund. WhatsApps the manager (Shweta) the actionable list grouped by firm. Read-only —
+    NEVER cancels/refunds anything (we never auto-touch Amazon)."""
+    try:
+        import collections as _c
+        days = int(os.environ.get("CRON_AMAZON_CHECK_DAYS", "20"))
+        cut = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        fresh = (datetime.now(timezone.utc) - timedelta(hours=18)).isoformat()
+        seen, recs = set(), []
+        async for p in db.amazon_order_processing.find(
+                {"status": "completed", "processed_at": {"$gte": cut}}, {"_id": 0}).sort("processed_at", -1):
+            awb = (p.get("awb") or p.get("tracking_id") or p.get("awb_number") or "").strip()
+            if not awb or awb in seen:
+                continue
+            seen.add(awb)
+            recs.append((p, awb))
+        if not recs:
+            return
+        # Delhivery state per AWB — reuse a recently-persisted state, else live-check + persist.
+        st = {}
+        for p, awb in recs:
+            if p.get("delhivery_state") and (p.get("delhivery_checked_at") or "") >= fresh:
+                st[awb] = p["delhivery_state"]
+                continue
+            try:
+                s = (await fetch_delhivery_tracking(awb)).get("state")
+                await db.amazon_order_processing.update_one(
+                    {"order_id": p.get("order_id"), "awb": awb},
+                    {"$set": {"delhivery_state": s, "delhivery_checked_at": datetime.now(timezone.utc).isoformat()}})
+            except Exception:
+                s = "(no status)"
+            st[awb] = s
+            await asyncio.sleep(0.3)
+        # group by order
+        # RECENT-ONLY: a cancelled AWB with no refund is only actionable while it's fresh — older ones
+        # have usually been re-shipped outside the CRM (so they look "cancelled" here but actually
+        # delivered). Default last 7 days; tune via CRON_AMAZON_REFUND_RECENT_DAYS.
+        recent_days = int(os.environ.get("CRON_AMAZON_REFUND_RECENT_DAYS", "7"))
+        recent_cut = (datetime.now(timezone.utc) - timedelta(days=recent_days)).isoformat()
+        orders = _c.defaultdict(lambda: {"awbs": [], "states": set(), "firm": None, "cust": None, "latest": "", "c_awb": None})
+        for p, awb in recs:
+            o = orders[p.get("order_id")]
+            o["awbs"].append(awb); o["states"].add(st.get(awb)); o["firm"] = p.get("firm_name"); o["cust"] = p.get("customer_name")
+            pa = p.get("processed_at") or ""
+            if pa > o["latest"]:
+                o["latest"] = pa
+            if st.get(awb) == "cancelled":
+                o["c_awb"] = awb
+
+        def _tag(n):
+            n = (n or "").lower()
+            return "EBAY UP" if "ebay up" in n else "Gurgaon" if "gurgaon" in n else "Electronics Bay" if "electronics bay" in n else (n or "?")
+
+        def _age_days(iso):
+            try:
+                return max(0, (datetime.now(timezone.utc) - datetime.fromisoformat((iso or "").replace("Z", "+00:00"))).days)
+            except Exception:
+                return None
+
+        risk = _c.defaultdict(list)
+        for oid, o in orders.items():
+            if o["states"] != {"cancelled"}:   # only orders whose EVERY AWB on record is cancelled
+                continue
+            if (o["latest"] or "") < recent_cut:  # recent-only: skip old (likely re-shipped) ones
+                continue
+            ao = await db.amazon_orders.find_one({"amazon_order_id": oid}, {"_id": 0, "order_status": 1, "refund_status": 1})
+            amz = (ao or {}).get("order_status")
+            refunded = bool((ao or {}).get("refund_status"))
+            if not refunded and await db.amazon_refunds.find_one({"amazon_order_id": oid}):
+                refunded = True
+            if str(amz).lower() != "canceled" and not refunded:
+                risk[_tag(o["firm"])].append((oid, o["cust"], o.get("c_awb"), len(o["awbs"]), _age_days(o["latest"])))
+        total = sum(len(v) for v in risk.values())
+        if total == 0:
+            logger.info("[CRON] pratibha amazon refund check: no recent cancelled-not-refunded mismatches")
+            return
+        L = [f"📋 *Amazon — please verify (last {recent_days} days)*", "",
+             f"Mam, in *{total}* orders ka jo shipment hamare record me hai wo Delhivery pe *cancelled* hai, "
+             "Amazon pe *Shipped* dikh raha hai aur refund record nahi mila. "
+             "*Please Seller Central pe verify kijiye* — ho sakta hai re-ship hokar deliver ho gaya ho, "
+             "ya phir refund/cancel karna pade 🙏"]
+        for firm in ["EBAY UP", "Gurgaon", "Electronics Bay"]:
+            rows = risk.get(firm)
+            if not rows:
+                continue
+            L.append(f"\n*{firm} ({len(rows)})*")
+            for oid, cust, c_awb, nawb, age in sorted(rows, key=lambda x: (x[4] if x[4] is not None else 999)):
+                age_s = f" · ⏱ {age}d" if age is not None else ""
+                awb_s = f" · AWB {c_awb}" if c_awb else ""
+                extra = f" · ⚠️{nawb} AWBs cancelled" if nawb > 1 else ""
+                L.append(f"• {oid} · {cust or ''}{awb_s}{age_s}{extra}".rstrip())
+        L.append(f"\n_(Note: hamare record ka shipment cancelled hai; agar re-ship CRM ke bahar hua to wo yahan nahi dikhega. Isliye verify zaroori hai.)_")
+        target = await _pr_wa_target(_pr_founder_wa_target())  # the main group (Shweta + Pawan both see it)
+        await send_whatsapp_message(target, "\n".join(L))
+        logger.info(f"[CRON] pratibha amazon refund check: reported {total} mismatches to {target}")
+    except Exception as e:
+        logger.error(f"[CRON] pratibha amazon refund check failed: {e}")
+
+
+# capitalised words that may legitimately appear in a caption without being in the source headline
+_CAP_COMMON = {"india", "indian", "world", "global", "national", "government", "governments", "state",
+               "states", "centre", "center", "union", "north", "south", "east", "west", "today",
+               "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "news",
+               "report", "reports", "city", "police", "court", "minister", "ministers", "president",
+               "parliament", "supreme", "high", "new", "prime", "chief", "this", "that", "these",
+               "those", "many", "several", "amid", "after", "following", "the", "a", "an", "officials"}
+_CAPTION_META = ("could you", "please provide", "i need", "i can see", "as an ai", "summary section",
+                 "let me know", "i'm unable", "i cannot", "provide the", "more context", "i don't have")
+
+
+def _caption_hallucinates(cap: str, source_text: str) -> bool:
+    """True if the caption introduces a proper noun / acronym NOT present in the source headline+summary
+    (e.g. invents a party 'DMK' or a name 'Ramadoss'). Sentence-initial words and common words are allowed."""
+    src = source_text.lower()
+    for sentence in re.split(r"(?<=[.!?])\s+", cap.strip()):
+        toks = re.findall(r"[A-Za-z][A-Za-z.&'-]+", sentence)
+        for i, w in enumerate(toks):
+            wl = w.lower().strip(".")
+            if wl in src or wl in _CAP_COMMON:
+                continue
+            if w.isupper() and 2 <= len(w) <= 6:          # acronym not in source -> invented (e.g. DMK)
+                return True
+            if i > 0 and w[0].isupper() and len(w) >= 4:   # mid-sentence proper noun not in source -> invented
+                return True
+    return False
+
+
+async def _ig_caption(it: dict) -> str:
+    """Rephrase a headline into a short ORIGINAL caption + source attribution + hashtags. Falls back to the
+    verbatim headline if the LLM is unavailable, refuses, or invents any fact not in the source (accuracy
+    matters more than flair for a news brand)."""
+    tags = os.environ.get("IG_NEWS_HASHTAGS",
+        "#news #india #breakingnews #currentaffairs #worldnews #headlines #nofilter #dailynews #indianews #newsupdate")
+    summary = (it.get("summary") or "").strip()
+    user = f"Headline: {it['title']}" + (f"\nSummary: {summary}" if summary else "")
+    cap = ""
+    try:
+        client = pratibha_brain._client_or_none()
+        if client:
+            resp = await client.messages.create(
+                model=pratibha_brain.model(), max_tokens=180,
+                system=("You write short ORIGINAL Instagram captions for a credible general-news page (India & world). "
+                        "2-3 lines, neutral and factual, engaging but NO clickbait, NO sensationalism, NO opinion, "
+                        "NO hashtags (added separately).\n"
+                        "CRITICAL — accuracy over fluency: use ONLY facts explicitly present in the given headline and "
+                        "summary. NEVER add, expand, or guess names, party affiliations, designations, abbreviations, "
+                        "places, dates or numbers that are not stated. If you don't know what an acronym/person is, "
+                        "leave it exactly as written — do NOT invent it. Better vague than wrong.\n"
+                        "ALWAYS return a caption. Never ask questions, never address the reader, never apologise. "
+                        "With little context, write a concise faithful caption from the headline alone. "
+                        "Output ONLY the caption text — no preamble, no labels."),
+                messages=[{"role": "user", "content": user}])
+            cap = "".join(getattr(b, "text", "") for b in resp.content).strip()
+    except Exception as e:
+        logger.error(f"IG caption rephrase failed: {e}")
+    cap = re.sub(r"^\s*\**\s*caption\s*:?\s*\**\s*", "", cap, flags=re.I).strip()    # strip echoed label
+    src_text = f"{it['title']} {summary}"
+    if (not cap) or any(m in cap.lower() for m in _CAPTION_META) or _caption_hallucinates(cap, src_text):
+        cap = it["title"]                                                            # safe fallback: the real headline
+    return f"{cap}\n\n📰 Source: {it['source']}\n\n{tags}"
+
+
+async def _ig_kicker(it: dict, fallback: str) -> str:
+    """A short punchy ALL-CAPS hook/label for the card (like a magazine teaser), derived only from the
+    headline — neutral, no invented facts. Falls back to the category if the LLM is off/invents/too long."""
+    title = it["title"]
+    try:
+        client = pratibha_brain._client_or_none()
+        if client:
+            resp = await client.messages.create(
+                model=pratibha_brain.model(), max_tokens=24,
+                system=("Write a SHORT punchy label (2-3 words, MAX 22 characters) for a news card — like a "
+                        "magazine section tag/teaser. Use ONLY words/topics present in the headline. Neutral and "
+                        "factual: NO superlatives ('biggest'/'shocking') unless in the headline, NO invented names, "
+                        "numbers, or expansions of acronyms. ALL CAPS. Return ONLY the label."),
+                messages=[{"role": "user", "content": f"Headline: {title}"}])
+            k = "".join(getattr(b, "text", "") for b in resp.content).strip().upper()
+            k = re.sub(r'["""\'.]', "", k).strip(" :-")
+            if k and len(k) <= 22 and not _caption_hallucinates(k, title):
+                return k
+    except Exception as e:
+        logger.error(f"IG kicker failed: {e}")
+    return (fallback or "NEWS").upper()
+
+
+async def _ig_concepts(it: dict, n: int = 3):
+    """N distinct SYMBOLIC visual concepts for editorial-cartoon illustrations of the story — objects/
+    scenes only, no real people, no text. Falls back to a category-based concept."""
+    title = it["title"]
+    out = []
+    try:
+        client = pratibha_brain._client_or_none()
+        if client:
+            resp = await client.messages.create(
+                model=pratibha_brain.model(), max_tokens=240,
+                system=("Give DISTINCT symbolic visual concepts for editorial CARTOON illustrations of a news "
+                        "headline. Each concept = one short concrete scene of OBJECTS / SYMBOLS / anonymous "
+                        "figures only — NEVER name or depict a real/famous person, NO text or words, no logos. "
+                        "Keep it tasteful and non-graphic. Return one concept per line, no numbering."),
+                messages=[{"role": "user", "content": f"Headline: {title}\nGive {n} distinct concepts."}])
+            for ln in "".join(getattr(b, "text", "") for b in resp.content).splitlines():
+                ln = re.sub(r"^\s*[#>*\-\d.)\s]+", "", ln).strip()          # strip md headers/bullets/numbers
+                low = ln.lower()
+                if len(ln) < 12:
+                    continue
+                if low.startswith(("concept", "here are", "editorial cartoon", "visual concept", "scene to")):
+                    continue                                                # skip meta/header lines
+                out.append(ln)
+    except Exception as e:
+        logger.error(f"IG concepts failed: {e}")
+    if not out:
+        out = [f"a symbolic editorial scene representing this news: {title[:120]}"]
+    return out[:n]
+
+
+async def _ig_pick_interesting(fresh, pool: int = 30):
+    """From the fresh-story pool, pick the SINGLE most engaging story — weighted to viral + human-interest
+    — instead of just the newest. Falls back to the newest if the LLM is unavailable."""
+    cands = fresh[:pool]
+    if len(cands) <= 1:
+        return cands[0] if cands else None
+    try:
+        client = pratibha_brain._client_or_none()
+        if client:
+            listing = "\n".join(f"{i + 1}. {c['title']}" for i, c in enumerate(cands))
+            resp = await client.messages.create(
+                model=pratibha_brain.model(), max_tokens=10,
+                system=("You curate a VIRAL Indian news Instagram page (think The Tatva). From the numbered "
+                        "headlines pick the SINGLE most engaging, shareable story. STRONGLY favour viral, "
+                        "surprising, emotional, heartwarming or shocking HUMAN-INTEREST stories that make "
+                        "people stop scrolling. AVOID dull procedural, administrative, routine "
+                        "political-process or purely bureaucratic news. Reply with ONLY the number."),
+                messages=[{"role": "user", "content": listing}])
+            m = re.search(r"\d+", "".join(getattr(b, "text", "") for b in resp.content))
+            if m and 0 <= int(m.group()) - 1 < len(cands):
+                return cands[int(m.group()) - 1]
+    except Exception as e:
+        logger.error(f"IG pick-interesting failed: {e}")
+    return cands[0]
+
+
+async def _ig_audio_suggestion(it: dict, category: str = "") -> str:
+    """Best-suited background track for the post's MOOD (a suggestion to add manually in the IG app — the
+    API can't attach music). Returns 'Track — Artist' or None."""
+    try:
+        client = pratibha_brain._client_or_none()
+        if client:
+            resp = await client.messages.create(
+                model=pratibha_brain.model(), max_tokens=40,
+                system=("Suggest ONE widely-known, real background/instrumental track that fits the MOOD of a "
+                        "news headline for an Instagram post — cinematic/neutral by default, somber for tragic "
+                        "news, hopeful/upbeat for positive news. Avoid lyrics-heavy or meme tracks. Return ONLY "
+                        "'Track Name — Artist', nothing else."),
+                messages=[{"role": "user", "content": f"Headline: {it['title']}\nCategory: {category}"}])
+            s = "".join(getattr(b, "text", "") for b in resp.content).strip().strip('"')
+            s = re.sub(r"^\s*(track|audio|suggestion)\s*:?\s*", "", s, flags=re.I).strip()
+            if s and 3 <= len(s) <= 80:
+                return s
+    except Exception as e:
+        logger.error(f"IG audio suggestion failed: {e}")
+    return None
+
+
+async def _ig_points(it: dict, max_points: int = 6):
+    """Distinct factual detail points from the headline+summary for carousel slides. Uses ONLY stated
+    facts (no invention), never repeats the headline, one short sentence each. May be empty/short if the
+    source carries little detail. Each point is guarded against hallucinated proper nouns."""
+    title, summary = it["title"], (it.get("summary") or "").strip()
+    if not summary:
+        return []
+    src_text = f"{title} {summary}"
+    pts = []
+    try:
+        client = pratibha_brain._client_or_none()
+        if client:
+            resp = await client.messages.create(
+                model=pratibha_brain.model(), max_tokens=320,
+                system=("Break a news item into DISTINCT factual points for an Instagram carousel.\n"
+                        "Rules: use ONLY facts explicitly in the given text; NEVER invent names, numbers, "
+                        "quotes, places or details; do NOT repeat the headline wording; each point covers a "
+                        "DIFFERENT aspect; one short sentence each (max ~16 words); neutral, no hype.\n"
+                        "Return 1-6 points, one per line, no numbering or bullets. If the text holds only one "
+                        "fact, return just one line."),
+                messages=[{"role": "user", "content": f"Headline: {title}\nSummary: {summary}"}])
+            import difflib
+            hl = title.lower()
+            raw = "".join(getattr(b, "text", "") for b in resp.content)
+            for ln in raw.splitlines():
+                ln = re.sub(r"^\s*[-*\d.)]+\s*", "", ln).strip()
+                if len(ln) < 12 or _caption_hallucinates(ln, src_text):
+                    continue
+                # drop points that merely restate the headline (so slide 2 isn't the same text as slide 1)
+                if difflib.SequenceMatcher(None, ln.lower(), hl).ratio() > 0.6:
+                    continue
+                pts.append(ln)
+    except Exception as e:
+        logger.error(f"IG points failed: {e}")
+    seen, out = set(), []
+    for p in pts:
+        k = p.lower()[:40]
+        if k not in seen:
+            seen.add(k)
+            out.append(p)
+        if len(out) >= max_points:
+            break
+    return out
+
+
+def _ig_subtitle(it: dict):
+    """Short factual sub-line for the card (The Tatva-style) — first sentence of the source summary,
+    capped. Returns None if no summary."""
+    s = (it.get("summary") or "").strip()
+    if not s:
+        return None
+    first = re.split(r"(?<=[.!?])\s", s)[0]
+    if len(first) <= 150:
+        return first
+    return s[:150].rsplit(" ", 1)[0] + "…"
+
+
+async def _ig_post_next_news() -> dict:
+    """Post the newest not-yet-posted solar news item to Instagram (@nofilterpromedia): make a branded
+    card, host it at a signed public URL, publish via the Instagram API, and record it."""
+    from utils import instagram_news as ign
+    token = os.environ.get("INSTAGRAM_ACCESS_TOKEN")
+    ig_user = os.environ.get("INSTAGRAM_USER_ID")
+    if not (token and ig_user):
+        return {"posted": False, "error": "Instagram not configured"}
+    items = ign.fetch_news()
+    if not items:
+        return {"posted": False, "error": "no news fetched from feeds"}
+    posted = set()
+    async for p in db.instagram_posts.find({"success": True}, {"_id": 0, "news_id": 1}):
+        posted.add(p.get("news_id"))
+    fresh = [it for it in items if it["id"] not in posted]
+    if not fresh:
+        return {"posted": False, "reason": "no fresh news (all already posted)"}
+    it = fresh[0]
+    caption = await _ig_caption(it)
+    q = ign.image_query(it["title"], it.get("summary", ""))
+    bg, img_src, credit = None, "matte", None
+    try:                                  # 1) real editorial event photo (paid, entity-gated)
+        bg = await ign.fetch_shutterstock_editorial(it["title"], category_query=q, seed=it["id"])
+        if bg:
+            img_src = "shutterstock_editorial"
+    except Exception as e:
+        logger.error(f"IG editorial fetch failed: {e}")
+    if not bg:                            # 2) real FREE-licensed photo of the named entity
+        try:
+            bg, credit = await ign.fetch_wikimedia_image(it["title"], seed=it["id"], source=it["source"])
+            if bg:
+                img_src = "wikimedia"
+        except Exception as e:
+            logger.error(f"IG wikimedia fetch failed: {e}")
+    if not bg and q != ign.DEFAULT_QUERY:   # 3) generic stock — only when a real category matched
+        try:                                # (a vague default query returns irrelevant stock; matte is safer)
+            bg = await ign.fetch_pexels_image(q, seed=it["id"])
+            if bg:
+                img_src = "pexels"
+        except Exception as e:
+            logger.error(f"IG pexels fetch failed: {e}")
+    if credit:                            # CC-BY attribution in the caption
+        caption = f"{caption}\n\n📷 Photo: {credit}"
+    cat = ign.category_label(it["title"], it.get("summary", ""), it["source"])
+    kicker = await _ig_kicker(it, cat)
+    style = ign.highlight_style(len(posted))      # rotate the 4 highlight styles per post
+    card = ign.make_news_card(it["title"], it["source"], bg_bytes=bg, category=cat,
+                              subtitle=_ig_subtitle(it), kicker=kicker, style=style)
+    rel, _st = await storage_upload(file_data=card, folder="instagram",
+                                    original_filename=f"{it['id']}.jpg", filename_prefix="ignews")
+    base = os.environ.get("FRONTEND_URL", "https://newcrm.musclegrid.in").rstrip("/")
+    public_url = base + make_signed_file_url(rel, ttl_seconds=6 * 3600)
+    audio = await _ig_audio_suggestion(it, cat)
+    ok, info = await ign.ig_create_and_publish(ig_user, token, public_url, caption)
+    await db.instagram_posts.insert_one({
+        "id": str(uuid.uuid4()), "news_id": it["id"], "source": it["source"], "title": it["title"],
+        "link": it["link"], "caption": caption, "image_url": public_url, "image_source": img_src,
+        "category": cat, "suggested_audio": audio, "success": ok,
+        "media_id": info if ok else None, "error": None if ok else info,
+        "created_at": datetime.now(timezone.utc).isoformat()})
+    return {"posted": ok, "title": it["title"], "source": it["source"], "suggested_audio": audio,
+            "media_id": info if ok else None, "error": None if ok else info}
+
+
+async def _ig_upload_card(card_bytes, name) -> str:
+    """Upload a card image and return a public signed URL Instagram can fetch."""
+    rel, _st = await storage_upload(file_data=card_bytes, folder="instagram",
+                                    original_filename=name, filename_prefix="ignews")
+    base = os.environ.get("FRONTEND_URL", "https://newcrm.musclegrid.in").rstrip("/")
+    return base + make_signed_file_url(rel, ttl_seconds=6 * 3600)
+
+
+async def _ig_post_carousel() -> dict:
+    """Post a CAROUSEL whose images are AI editorial CARTOONS generated for the story (copyright-safe,
+    always on-topic, distinct per slide). Slide 1 = headline over cartoon 1; each detail point gets its
+    own cartoon. Works for ANY story (no dependence on stock/Wikimedia photo availability)."""
+    from utils import instagram_news as ign
+    token = os.environ.get("INSTAGRAM_ACCESS_TOKEN")
+    ig_user = os.environ.get("INSTAGRAM_USER_ID")
+    if not (token and ig_user):
+        return {"posted": False, "error": "Instagram not configured"}
+    posted = set()
+    async for p in db.instagram_posts.find({"success": True}, {"_id": 0, "news_id": 1}):
+        posted.add(p.get("news_id"))
+    fresh = [it for it in ign.fetch_news() if it["id"] not in posted]
+    if not fresh:
+        return {"posted": False, "reason": "no fresh news"}
+    it = await _ig_pick_interesting(fresh)               # most viral/human-interest, not just newest
+    cat = ign.category_label(it["title"], it.get("summary", ""), it["source"])
+    kicker = await _ig_kicker(it, cat)
+    style = ign.highlight_style(len(posted))
+    points = await _ig_points(it)
+    caption = await _ig_caption(it)
+    audio = await _ig_audio_suggestion(it, cat)
+
+    n_slides = 1 + min(len(points), 2)                       # 1 headline + up to 2 detail slides
+    # MIX: use ONE real photo for the hero ONLY when the story's subject is a genuine NAMED PERSON
+    # (>=2 capitalised words, none generic) — generic phrases like "Tourism Minister"/"Mumbai" match the
+    # wrong photo, so for those we use AI. AI cartoons fill the rest; all-AI when no named person.
+    _GENERIC = {"tourism", "minister", "ministry", "bureau", "government", "govt", "party", "council",
+                "committee", "board", "court", "police", "commission", "department", "authority", "centre",
+                "center", "state", "national", "union", "parliament", "assembly", "supreme", "high", "city",
+                "scheme", "mumbai", "delhi", "india", "chief", "president", "leader", "house", "cabinet",
+                "opposition", "congress", "world", "nation"}
+    terms = ign.editorial_terms(it["title"])
+    prim = terms[0].split() if terms else []
+    is_person = len(prim) >= 2 and all(w[:1].isupper() and w.lower() not in _GENERIC for w in prim)
+    hero_real, hero_credit = None, None
+    if is_person:
+        real = await ign.fetch_wikimedia_images(it["title"], source=it["source"], n=1)
+        if real:
+            hero_real, hero_credit = real[0][0], real[0][1]
+    n_ai = n_slides - (1 if hero_real else 0)
+    concepts = await _ig_concepts(it, max(1, n_ai))
+    ai_imgs = [b for b in await asyncio.gather(*[ign.generate_ai_cartoon(c) for c in concepts[:n_ai]]) if b]
+    bgs = ([hero_real] if hero_real else []) + ai_imgs
+    if not bgs:
+        return {"posted": False, "error": "image generation failed (AI + real both unavailable)"}
+    img_src = "mixed (real photo + AI)" if hero_real else "ai_cartoon"
+    if hero_credit:
+        caption = f"{caption}\n\n📷 {hero_credit} · illustrations by AI"
+
+    slides = [ign.make_news_card(it["title"], it["source"], bg_bytes=bgs[0], category=cat,
+                                 kicker=kicker, style=style)]
+    for i in range(1, len(bgs)):
+        pt = points[i - 1] if (i - 1) < len(points) else None
+        if not pt:
+            break
+        # detail slides use the same BRIGHT bottom-text layout (only the bottom darkens for the text),
+        # so the white-background cartoon stays bright — the point is the slide's text.
+        slides.append(ign.make_news_card(pt, it["source"], bg_bytes=bgs[i], category=cat,
+                                         kicker=kicker, style=style))
+
+    urls = [await _ig_upload_card(s, f"{it['id']}-{i}.jpg") for i, s in enumerate(slides)]
+    if len(urls) >= 2:
+        ok, info = await ign.ig_create_and_publish_carousel(ig_user, token, urls, caption)
+    else:
+        ok, info = await ign.ig_create_and_publish(ig_user, token, urls[0], caption)
+    await db.instagram_posts.insert_one({
+        "id": str(uuid.uuid4()), "news_id": it["id"], "source": it["source"], "title": it["title"],
+        "link": it["link"], "caption": caption, "image_url": urls[0], "image_source": img_src,
+        "category": cat, "suggested_audio": audio, "slides": len(urls), "concepts": concepts,
+        "is_carousel": len(urls) > 1, "success": ok,
+        "media_id": info if ok else None, "error": None if ok else info,
+        "created_at": datetime.now(timezone.utc).isoformat()})
+    return {"posted": ok, "slides": len(urls), "title": it["title"], "concepts": concepts,
+            "suggested_audio": audio, "media_id": info if ok else None, "error": None if ok else info}
+
+
+async def scheduled_instagram_news():
+    """Cron: post one AI-cartoon news carousel to Instagram (a few times a day)."""
+    try:
+        logger.info(f"[CRON] instagram news: {await _ig_post_carousel()}")
+    except Exception as e:
+        logger.error(f"[CRON] instagram news failed: {e}")
+
+
 async def scheduled_sla_breach_check():
     """
     Scheduled job: Check for SLA breaches every 30 minutes.
@@ -3259,6 +4113,67 @@ async def scheduled_warranty_claim_sla_check():
         await check_warranty_claim_sla_breaches()
     except Exception as e:
         logger.error(f"[SCHEDULED] Warranty Claim SLA check failed: {e}")
+
+
+async def scheduled_maintenance_reminders():
+    """Daily: notify customers of due/overdue product maintenance + warranty
+    expiry. De-duped per cycle (reminded_for) so a parked task isn't re-sent
+    every day. Reminders flow through create_notification → push."""
+    try:
+        reminded = 0
+        now = datetime.now(timezone.utc)
+        warranties = await db.warranties.find(
+            {"status": {"$in": ["approved", "active", "extended"]},
+             "customer_id": {"$nin": [None, ""]}},
+            {"_id": 0},
+        ).to_list(5000)
+        for w in warranties:
+            cust = w.get("customer_id")
+            if not cust:
+                continue
+            label = w.get("product_name") or w.get("device_type") or "your product"
+            for t in await _ensure_maintenance_tasks(w):
+                status = _maintenance_status(t["due_date"])
+                if status not in ("due_soon", "overdue"):
+                    continue
+                if t.get("reminded_for") == t["due_date"]:
+                    continue
+                verb = "is overdue" if status == "overdue" else "is due soon"
+                await create_notification(
+                    title=f"Maintenance due: {t['title']}",
+                    message=f"{t['title']} for {label} {verb}. Tap to book it.",
+                    notification_type="maintenance",
+                    link=f"/products/{w['id']}",
+                    target_user_ids=[cust],
+                    priority="normal",
+                    data={"warranty_id": w["id"], "task_key": t["task_key"]},
+                )
+                await db.maintenance_tasks.update_one(
+                    {"warranty_id": w["id"], "task_key": t["task_key"]},
+                    {"$set": {"reminded_for": t["due_date"]}},
+                )
+                reminded += 1
+            end = _parse_dt(w.get("warranty_end_date"))
+            if end:
+                days = (end - now).days
+                if 0 <= days <= 30 and w.get("expiry_reminded_for") != w.get("warranty_end_date"):
+                    await create_notification(
+                        title="Warranty expiring soon",
+                        message=f"The warranty for {label} expires in {days} day(s).",
+                        notification_type="warranty",
+                        link=f"/products/{w['id']}",
+                        target_user_ids=[cust],
+                        priority="normal",
+                        data={"warranty_id": w["id"]},
+                    )
+                    await db.warranties.update_one(
+                        {"id": w["id"]},
+                        {"$set": {"expiry_reminded_for": w.get("warranty_end_date")}},
+                    )
+                    reminded += 1
+        logger.info(f"[SCHEDULED] Maintenance reminders: sent {reminded}")
+    except Exception as e:
+        logger.error(f"[SCHEDULED] Maintenance reminders failed: {e}")
 
 
 async def scheduled_amazon_tracking_push():
@@ -4692,10 +5607,13 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
 
 def create_token(user_id: str, role: str) -> str:
+    # Consumer-app roles get a long-lived session so customers aren't logged out
+    # every day; staff/admin keep the short 24h session for security.
+    hours = 24 * 30 if role in ("customer", "dealer") else JWT_EXPIRATION_HOURS
     payload = {
         "user_id": user_id,
         "role": role,
-        "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRATION_HOURS)
+        "exp": datetime.now(timezone.utc) + timedelta(hours=hours)
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
@@ -4703,7 +5621,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     try:
         payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         user = await db.users.find_one({"id": payload["user_id"]}, {"_id": 0})
-        if not user:
+        if not user or user.get("is_deleted"):
             raise HTTPException(status_code=401, detail="User not found")
         return user
     except jwt.ExpiredSignatureError:
@@ -5231,6 +6149,113 @@ async def update_me(update_data: UserUpdate, user: dict = Depends(get_current_us
         user_data["created_at"] = user_data["created_at"].isoformat()
     return UserResponse(**user_data)
 
+@api_router.post("/auth/delete-account")
+async def delete_my_account(user: dict = Depends(get_current_user)):
+    """Customer-initiated account deletion (Apple Guideline 5.1.1(v)).
+
+    Soft-deletes by anonymizing PII and flagging is_deleted, rather than a hard
+    delete that would orphan referential history (tickets/warranties/orders).
+    The freed phone/email allow a clean re-registration; get_current_user treats
+    is_deleted as 401 so the existing token dies immediately.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    anon_email = f"deleted_{uuid.uuid4().hex}@deleted.invalid"
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {
+            "is_deleted": True,
+            "deleted_at": now,
+            "email": anon_email,
+            "phone": None,
+            "first_name": "Deleted",
+            "last_name": "User",
+            "address": None,
+            "city": None,
+            "state": None,
+            "pincode": None,
+            "password_hash": None,
+            "updated_at": now,
+        }},
+    )
+    try:
+        await db.audit_logs.insert_one({
+            "id": str(uuid.uuid4()),
+            "action": "account_self_deleted",
+            "entity_type": "user",
+            "entity_id": user["id"],
+            "performed_by": user["id"],
+            "performed_by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+            "details": {"deleted_user_role": user.get("role")},
+            "timestamp": now,
+        })
+    except Exception as e:
+        logger.warning(f"delete-account audit log failed: {e}")
+    return {"success": True, "message": "Your account has been deleted."}
+
+
+class PushTokenInput(BaseModel):
+    token: str
+    platform: Optional[str] = None
+    prefs: Optional[Dict[str, bool]] = None
+
+
+class PushTokenRemove(BaseModel):
+    token: str
+
+
+class NotificationPrefsInput(BaseModel):
+    orders: Optional[bool] = None
+    tickets: Optional[bool] = None
+    promotions: Optional[bool] = None
+
+
+@api_router.post("/auth/push-token")
+async def register_push_token(
+    body: PushTokenInput, user: dict = Depends(get_current_user)
+):
+    """Register this device's Expo push token for the signed-in customer."""
+    token = (body.token or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="token is required")
+    update: dict = {"$addToSet": {"push_tokens": token}}
+    sets = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    if body.prefs:
+        for k in ("orders", "tickets", "promotions"):
+            if k in body.prefs:
+                sets[f"push_prefs.{k}"] = bool(body.prefs[k])
+    update["$set"] = sets
+    await db.users.update_one({"id": user["id"]}, update)
+    return {"success": True}
+
+
+@api_router.delete("/auth/push-token")
+async def remove_push_token(
+    body: PushTokenRemove, user: dict = Depends(get_current_user)
+):
+    """Drop a device token (called on sign-out)."""
+    token = (body.token or "").strip()
+    if token:
+        await db.users.update_one(
+            {"id": user["id"]}, {"$pull": {"push_tokens": token}}
+        )
+    return {"success": True}
+
+
+@api_router.post("/auth/notification-prefs")
+async def update_notification_prefs(
+    body: NotificationPrefsInput, user: dict = Depends(get_current_user)
+):
+    """Update the customer's per-category push preferences (Settings toggles)."""
+    sets = {}
+    for k in ("orders", "tickets", "promotions"):
+        v = getattr(body, k)
+        if v is not None:
+            sets[f"push_prefs.{k}"] = bool(v)
+    if sets:
+        sets["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await db.users.update_one({"id": user["id"]}, {"$set": sets})
+    return {"success": True}
+
 # ==================== OTP AUTHENTICATION ====================
 
 # Fast2SMS Configuration
@@ -5241,6 +6266,11 @@ OTP_EXPIRY_MINUTES = 5
 
 # In-memory OTP storage (use Redis in production)
 otp_store = {}
+
+# App Store review demo account: a fixed phone + OTP so Apple's reviewer can log
+# in (phone-OTP login otherwise needs a real Indian SMS). Set in .env.
+REVIEW_DEMO_PHONE = os.environ.get("REVIEW_DEMO_PHONE", "").strip()
+REVIEW_DEMO_OTP = os.environ.get("REVIEW_DEMO_OTP", "").strip()
 
 def generate_otp() -> str:
     """Generate a 6-digit OTP"""
@@ -5310,7 +6340,11 @@ async def send_otp(request: OTPRequest):
     
     if len(phone) != 10 or not phone.isdigit():
         raise HTTPException(status_code=400, detail="Invalid phone number. Please enter 10-digit mobile number.")
-    
+
+    # App Store reviewer demo account — accept without SMS; the OTP is fixed.
+    if REVIEW_DEMO_PHONE and phone == REVIEW_DEMO_PHONE and REVIEW_DEMO_OTP:
+        return {"message": "OTP sent successfully", "phone": f"******{phone[-4:]}", "expires_in": OTP_EXPIRY_MINUTES * 60}
+
     # Check if user exists (in users table or has a ticket)
     user = await db.users.find_one({"phone": phone})
     
@@ -5380,9 +6414,24 @@ async def verify_otp(request: OTPVerify):
     
     # Clean OTP input
     otp_input = request.otp.strip()
-    
+
     logger.info(f"OTP verification attempt for phone: ******{phone[-4:]}")
-    
+
+    # App Store reviewer demo account — fixed OTP, bypass the store entirely.
+    if (REVIEW_DEMO_PHONE and REVIEW_DEMO_OTP and phone == REVIEW_DEMO_PHONE
+            and otp_input == REVIEW_DEMO_OTP):
+        demo = await db.users.find_one({"phone": phone, "role": "customer"})
+        if not demo:
+            raise HTTPException(status_code=404, detail="Demo account not provisioned")
+        token = create_token(demo["id"], demo["role"])
+        demo_data = {k: v for k, v in demo.items() if k not in ["password_hash", "_id"]}
+        demo_data["profile_incomplete"] = False
+        demo_data["missing_fields"] = []
+        return TokenResponse(
+            access_token=token,
+            user=UserResponse(**{k: v for k, v in demo_data.items() if k in UserResponse.__fields__}),
+        )
+
     # Check OTP store
     stored = otp_store.get(phone)
     
@@ -5823,6 +6872,27 @@ class AdminCreateDealer(BaseModel):
     credit_limit: Optional[float] = 0  # 0 = unlimited
     discount_percent: Optional[float] = None
 
+@api_router.post("/admin/instagram/post-news")
+async def admin_instagram_post_news(user: dict = Depends(require_roles(["admin"]))):
+    """Manually post the next news item to Instagram now."""
+    return await _ig_post_next_news()
+
+
+@api_router.post("/admin/instagram/post-carousel")
+async def admin_instagram_post_carousel(user: dict = Depends(require_roles(["admin"]))):
+    """Manually post the next story as a multi-image carousel (hero photo + context + second photo)."""
+    return await _ig_post_carousel()
+
+
+@api_router.get("/admin/instagram/status")
+async def admin_instagram_status(user: dict = Depends(require_roles(["admin"]))):
+    """Recent Instagram auto-posts + config."""
+    posts = [p async for p in db.instagram_posts.find({}, {"_id": 0}).sort("created_at", -1).limit(20)]
+    return {"configured": bool(os.environ.get("INSTAGRAM_ACCESS_TOKEN")),
+            "ig_user_id": os.environ.get("INSTAGRAM_USER_ID"),
+            "posted_count": await db.instagram_posts.count_documents({"success": True}), "recent": posts}
+
+
 @api_router.post("/admin/dealers/create")
 async def admin_create_dealer(
     data: AdminCreateDealer,
@@ -6093,11 +7163,17 @@ async def create_ticket(
     invoice_number: Optional[str] = Form(None),
     order_id: Optional[str] = Form(None),
     customer_id: Optional[str] = Form(None),
+    category: Optional[str] = Form(None),
     invoice_file: Optional[UploadFile] = File(None),
     issue_photo: Optional[UploadFile] = File(None),
     user: dict = Depends(get_current_user)
 ):
-    """Create support ticket - Customer or Agent"""
+    """Create support ticket - Customer or Agent.
+
+    `category` is an optional intake tag (e.g. "warranty_claim") used to mark
+    tickets raised as warranty claims from the app. It does not change the
+    support_type channel or routing.
+    """
     now = datetime.now(timezone.utc)
     ticket_id = str(uuid.uuid4())
     ticket_number = await generate_ticket_number()
@@ -6212,6 +7288,7 @@ async def create_ticket(
         "issue_photo": issue_photo_path,
         "issue_description": issue_description,
         "support_type": "phone",  # Default to phone support
+        "category": category,  # optional intake tag e.g. "warranty_claim"
         "status": "new_request",
         "diagnosis": None,
         "agent_notes": None,
@@ -7372,7 +8449,7 @@ async def send_ticket_message(
     success = False
 
     if channel == "whatsapp":
-        result = await send_whatsapp_message(phone, message)
+        result = await send_whatsapp_message(phone, message, force=True)  # staff→customer, send regardless of hour
         success = "error" not in result
     elif channel == "sms":
         result = await send_post_call_sms(phone, call_type="ticket_outbound")
@@ -7921,6 +8998,28 @@ async def reply_to_ticket(
 
 # ==================== WARRANTY ENDPOINTS ====================
 
+# Registration reward: customers who REGISTER their product get extra months of
+# warranty as a thank-you. This is a value-add for registering — deliberately NOT
+# tied to leaving a review (incentivising reviews violates Amazon/marketplace
+# policy). Set to 0 to disable. Applied on approval, once per warranty.
+WARRANTY_REGISTRATION_BONUS_MONTHS = int(os.environ.get("WARRANTY_REGISTRATION_BONUS_MONTHS", "3") or 0)
+
+
+def _add_months_iso(date_str: str, months: int) -> str:
+    """Add `months` to an ISO date ('YYYY-MM-DD' or full ISO); return same shape.
+    Returns the input unchanged if it can't be parsed (never break approval)."""
+    from dateutil.relativedelta import relativedelta
+    s = str(date_str or "")
+    try:
+        if "T" in s:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            return (dt + relativedelta(months=months)).isoformat()
+        d = datetime.strptime(s[:10], "%Y-%m-%d").date()
+        return (d + relativedelta(months=months)).isoformat()
+    except (ValueError, TypeError):
+        return date_str
+
+
 @api_router.post("/warranties")
 async def create_warranty(
     first_name: str = Form(...),
@@ -7990,13 +9089,27 @@ async def create_warranty(
         "extension_requested": False,
         "extension_status": None,
         "extension_review_file": None,
+        # Registration reward (applied on approval): a thank-you for registering.
+        "registered_via": "self_registration",
+        "registered_at": now,
+        "registration_bonus_months": WARRANTY_REGISTRATION_BONUS_MONTHS,
+        "registration_bonus_applied": False,
         "created_at": now,
         "updated_at": now
     }
-    
+
     await db.warranties.insert_one(warranty_doc)
     del warranty_doc["_id"]
     return warranty_doc
+
+
+@api_router.get("/warranties/registration-offer")
+async def warranty_registration_offer(user: dict = Depends(get_current_user)):
+    """The current 'register & get extra warranty' promo — drives the app's
+    registration nudge. Reflects WARRANTY_REGISTRATION_BONUS_MONTHS; hides at 0.
+    (Registered before /warranties/{id} so the static path isn't shadowed.)"""
+    m = WARRANTY_REGISTRATION_BONUS_MONTHS
+    return {"enabled": m > 0, "months": m}
 
 @api_router.get("/warranties")
 async def list_warranties(
@@ -8052,6 +9165,11 @@ async def list_warranties(
             query["status"] = status
     
     warranties = await db.warranties.find(query, {"_id": 0}).sort("created_at", -1).to_list(10000)
+    for w in warranties:
+        # Alias the cover-end date under `end_date` too, so older app builds
+        # (which read end_date, not warranty_end_date) show warranty health.
+        if w.get("warranty_end_date") and not w.get("end_date"):
+            w["end_date"] = w["warranty_end_date"]
     return warranties
 
 @api_router.get("/warranties/{warranty_id}")
@@ -8082,8 +9200,183 @@ async def get_warranty(warranty_id: str, user: dict = Depends(get_current_user))
             if warranty.get("dealer_id") != user.get("dealer_id"):
                 raise HTTPException(status_code=403, detail="Access denied")
     # Admin, supervisor, call_support, service_agent can see all
-    
+
+    if warranty.get("warranty_end_date") and not warranty.get("end_date"):
+        warranty["end_date"] = warranty["warranty_end_date"]
     return warranty
+
+
+# ==================== PRODUCT MAINTENANCE SCHEDULE ====================
+
+def _maintenance_template_for(device_type: Optional[str]):
+    """Founder-confirmed maintenance tasks per device type, with a fallback.
+
+    Order matters: a 'Solar Inverter' is an inverter (battery schedule), not a
+    solar panel — so match inverter/battery/UPS before the solar-panel branch.
+    """
+    t = (device_type or "").lower()
+    if "batter" in t or "inverter" in t or "ups" in t:
+        return [
+            {"key": "battery_check", "title": "Battery water & health check", "interval_months": 3},
+            {"key": "full_service", "title": "Full service", "interval_months": 12},
+        ]
+    if "panel" in t or "solar" in t:
+        return [
+            {"key": "panel_clean", "title": "Solar panel cleaning", "interval_months": 1},
+            {"key": "full_service", "title": "Full service", "interval_months": 12},
+        ]
+    if "stabil" in t:
+        return [{"key": "annual_check", "title": "Annual stabilizer check", "interval_months": 12}]
+    return [{"key": "full_service", "title": "Full service", "interval_months": 12}]
+
+
+def _parse_dt(s):
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except Exception:
+        try:
+            dt = datetime.strptime(str(s)[:10], "%Y-%m-%d")
+        except Exception:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _maintenance_status(due_iso: Optional[str]) -> str:
+    due = _parse_dt(due_iso)
+    if not due:
+        return "upcoming"
+    days = (due - datetime.now(timezone.utc)).days
+    if days < 0:
+        return "overdue"
+    if days <= 14:
+        return "due_soon"
+    return "upcoming"
+
+
+def _customer_owns_warranty(warranty: dict, user: dict) -> bool:
+    if user["role"] != "customer":
+        return user["role"] in ("admin", "supervisor", "call_support", "service_agent")
+    return (
+        (warranty.get("customer_id") or warranty.get("user_id")) == user["id"]
+        or warranty.get("email", "").lower() == user.get("email", "").lower()
+        or warranty.get("phone", "") == user.get("phone", "")
+    )
+
+
+async def _ensure_maintenance_tasks(warranty: dict):
+    """Lazily generate maintenance task docs for a warranty from its template."""
+    from dateutil.relativedelta import relativedelta
+    wid = warranty["id"]
+    existing = {
+        t["task_key"]: t
+        for t in await db.maintenance_tasks.find(
+            {"warranty_id": wid}, {"_id": 0}
+        ).to_list(50)
+    }
+    base = (
+        _parse_dt(warranty.get("invoice_date"))
+        or _parse_dt(warranty.get("created_at"))
+        or datetime.now(timezone.utc)
+    )
+    out = []
+    for tpl in _maintenance_template_for(warranty.get("device_type")):
+        if tpl["key"] in existing:
+            out.append(existing[tpl["key"]])
+            continue
+        due = base + relativedelta(months=tpl["interval_months"])
+        doc = {
+            "id": str(uuid.uuid4()),
+            "warranty_id": wid,
+            "customer_id": warranty.get("customer_id"),
+            "serial_number": warranty.get("serial_number"),
+            "device_type": warranty.get("device_type"),
+            "task_key": tpl["key"],
+            "title": tpl["title"],
+            "interval_months": tpl["interval_months"],
+            "due_date": due.isoformat(),
+            "last_done_at": None,
+            "reminded_for": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.maintenance_tasks.insert_one(dict(doc))
+        out.append(doc)
+    return out
+
+
+@api_router.get("/warranties/{warranty_id}/maintenance")
+async def get_warranty_maintenance(
+    warranty_id: str, user: dict = Depends(get_current_user)
+):
+    """Upcoming/overdue maintenance for a registered product (My Products)."""
+    warranty = await db.warranties.find_one({"id": warranty_id}, {"_id": 0})
+    if not warranty:
+        raise HTTPException(status_code=404, detail="Warranty not found")
+    if not _customer_owns_warranty(warranty, user):
+        raise HTTPException(status_code=403, detail="Access denied")
+    tasks = await _ensure_maintenance_tasks(warranty)
+    items = [{
+        "task_key": t["task_key"],
+        "title": t["title"],
+        "due_date": t["due_date"],
+        "interval_months": t.get("interval_months"),
+        "last_done_at": t.get("last_done_at"),
+        "status": _maintenance_status(t["due_date"]),
+    } for t in tasks]
+    # Surface a warranty-expiry nudge within 30 days as a (non-stored) item.
+    end = _parse_dt(warranty.get("warranty_end_date"))
+    if end:
+        days = (end - datetime.now(timezone.utc)).days
+        if days <= 30:
+            items.append({
+                "task_key": "warranty_expiry",
+                "title": "Warranty expiring",
+                "due_date": warranty.get("warranty_end_date"),
+                "interval_months": None,
+                "last_done_at": None,
+                "status": "overdue" if days < 0 else "due_soon",
+            })
+    rank = {"overdue": 0, "due_soon": 1, "upcoming": 2}
+    items.sort(key=lambda x: (rank.get(x["status"], 3), x["due_date"] or ""))
+    return {"tasks": items}
+
+
+@api_router.post("/warranties/{warranty_id}/maintenance/{task_key}/complete")
+async def complete_warranty_maintenance(
+    warranty_id: str, task_key: str, user: dict = Depends(get_current_user)
+):
+    """Mark a maintenance task done; advance its next due date by the interval."""
+    from dateutil.relativedelta import relativedelta
+    warranty = await db.warranties.find_one({"id": warranty_id}, {"_id": 0})
+    if not warranty:
+        raise HTTPException(status_code=404, detail="Warranty not found")
+    if not _customer_owns_warranty(warranty, user):
+        raise HTTPException(status_code=403, detail="Access denied")
+    task = await db.maintenance_tasks.find_one(
+        {"warranty_id": warranty_id, "task_key": task_key}, {"_id": 0}
+    )
+    if not task:
+        await _ensure_maintenance_tasks(warranty)
+        task = await db.maintenance_tasks.find_one(
+            {"warranty_id": warranty_id, "task_key": task_key}, {"_id": 0}
+        )
+    if not task:
+        raise HTTPException(status_code=404, detail="Maintenance task not found")
+    now = datetime.now(timezone.utc)
+    next_due = now + relativedelta(months=task.get("interval_months") or 12)
+    await db.maintenance_tasks.update_one(
+        {"warranty_id": warranty_id, "task_key": task_key},
+        {"$set": {
+            "last_done_at": now.isoformat(),
+            "due_date": next_due.isoformat(),
+            "reminded_for": None,
+        }},
+    )
+    return {"success": True, "next_due": next_due.isoformat()}
+
 
 @api_router.patch("/warranties/{warranty_id}/approve")
 async def approve_warranty(
@@ -8097,17 +9390,39 @@ async def approve_warranty(
         raise HTTPException(status_code=404, detail="Warranty not found")
     
     now = datetime.now(timezone.utc).isoformat()
-    await db.warranties.update_one(
-        {"id": warranty_id},
-        {"$set": {
-            "status": "approved",
-            "warranty_end_date": approval.warranty_end_date,
-            "admin_notes": approval.notes,
-            "updated_at": now
-        }}
-    )
-    
-    return {"message": "Warranty approved"}
+    base_end = approval.warranty_end_date
+    bonus = int(warranty.get("registration_bonus_months") or 0)
+    set_fields = {
+        "status": "approved",
+        "warranty_end_date": base_end,
+        "admin_notes": approval.notes,
+        "updated_at": now,
+    }
+    bonus_applied = False
+    # Add the registration-reward months on top of the admin's end date — once,
+    # and only for warranties the customer actually registered (imported ones
+    # don't carry registration_bonus_months).
+    if base_end and bonus > 0 and not warranty.get("registration_bonus_applied"):
+        set_fields["base_warranty_end_date"] = base_end
+        set_fields["warranty_end_date"] = _add_months_iso(base_end, bonus)
+        set_fields["registration_bonus_applied"] = True
+        set_fields["registration_bonus_applied_at"] = now
+        bonus_applied = True
+
+    await db.warranties.update_one({"id": warranty_id}, {"$set": set_fields})
+
+    if bonus_applied and warranty.get("customer_id"):
+        prod = warranty.get("product_name") or warranty.get("device_type") or "your product"
+        await create_notification(
+            title=f"+{bonus} months warranty added 🎉",
+            message=(f"Thanks for registering {prod}! We've added {bonus} extra months of warranty — "
+                     f"your cover now runs to {set_fields['warranty_end_date'][:10]}."),
+            notification_type="warranty", link="/warranty",
+            target_user_ids=[warranty["customer_id"]], priority="normal",
+        )
+
+    return {"message": "Warranty approved", "warranty_end_date": set_fields["warranty_end_date"],
+            "registration_bonus_months": bonus if bonus_applied else 0}
 
 class WarrantyRejectRequest(BaseModel):
     reason: Optional[str] = None
@@ -8269,12 +9584,15 @@ async def review_warranty_extension(
 async def upload_warranty_invoice(
     warranty_id: str,
     invoice_file: UploadFile = File(...),
-    user: dict = Depends(require_roles(["admin", "supervisor", "call_support"]))
+    user: dict = Depends(get_current_user)
 ):
-    """Admin, Supervisor or Support uploads invoice PDF for a warranty"""
+    """Upload an invoice PDF/image for a warranty. Staff can upload to any;
+    a customer can upload only to their own registered warranty."""
     warranty = await db.warranties.find_one({"id": warranty_id}, {"_id": 0})
     if not warranty:
         raise HTTPException(status_code=404, detail="Warranty not found")
+    if user["role"] not in ("admin", "supervisor", "call_support") and warranty.get("customer_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="You can only upload an invoice for your own warranty")
     
     # Upload file using storage utility
     try:
@@ -9671,19 +10989,39 @@ async def upload_dispatch_label(
         raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
     
     now = datetime.now(timezone.utc).isoformat()
-    
-    await db.dispatches.update_one(
-        {"id": dispatch_id},
-        {"$set": {
-            "courier": courier,
-            "tracking_id": tracking_id,
-            "label_file": label_url,
-            "status": "ready_for_dispatch",
-            "updated_at": now
-        }}
-    )
-    
-    return {"message": "Label uploaded", "label_url": label_url}
+
+    # Split-dispatch: now that the label exists, route the parcel to the technician (inverter)
+    # + supervisor (battery/rest) instead of straight to the dispatcher. Held in
+    # 'awaiting_dispatch_tasks' until both mark dispatched, then it flips to 'ready_for_dispatch'.
+    split_items = _dispatch_items_for_split({**dispatch, "label_file": label_url})
+    split_tasks, split_present = await _classify_dispatch_split(split_items)
+    set_fields = {
+        "courier": courier, "tracking_id": tracking_id, "label_file": label_url,
+        "status": SPLIT_STATUS_AWAITING if split_present else "ready_for_dispatch",
+        "updated_at": now,
+    }
+    if split_present:
+        set_fields["split_tasks"] = split_tasks
+        set_fields["split_managed"] = True
+        set_fields["split_status"] = "pending"
+        if not dispatch.get("items"):
+            set_fields["items"] = split_items  # so task item_indexes resolve in the queue
+    await db.dispatches.update_one({"id": dispatch_id}, {"$set": set_fields})
+
+    if split_present:
+        if any(t["group"] == "inverter" for t in split_tasks):
+            await create_notification(
+                title="Inverter to dispatch",
+                message=f"Order {dispatch.get('order_id')}: please dispatch the INVERTER. Dispatch #{dispatch.get('dispatch_number')}",
+                notification_type="info", target_roles=[SPLIT_INVERTER_ROLE], priority="high")
+        if any(t["group"] == "rest" for t in split_tasks):
+            await create_notification(
+                title="Battery & items to dispatch",
+                message=f"Order {dispatch.get('order_id')}: please dispatch the BATTERY & other items. Dispatch #{dispatch.get('dispatch_number')}",
+                notification_type="info", target_roles=[SPLIT_REST_ROLE], priority="high")
+
+    return {"message": "Label uploaded", "label_url": label_url,
+            "status": set_fields["status"], "split_managed": split_present}
 
 @api_router.patch("/dispatches/{dispatch_id}/status")
 async def update_dispatch_status(
@@ -14343,6 +15681,15 @@ async def serve_file(
     if not user:
         if not (sig and exp and verify_signed_file_url(relative_path, exp, sig, u)):
             raise HTTPException(status_code=401, detail="Authentication required")
+    elif user.get("role") == "dealer":
+        # A dealer's bare Bearer token is NOT sufficient to fetch arbitrary files —
+        # that let any dealer read another dealer's invoices / payment proofs /
+        # deposit receipts just by knowing the path. Dealers must present a signed,
+        # user-bound URL (which /dealer/documents now always issues), and the URL's
+        # user binding must match the caller — so one dealer can't replay another's
+        # signed link either.
+        if not (sig and exp and verify_signed_file_url(relative_path, exp, sig, u) and u == user["id"]):
+            raise HTTPException(status_code=403, detail="Access denied")
 
     # Try to download from storage (WebDAV or local)
     try:
@@ -14933,6 +16280,34 @@ async def get_master_sku(
     return sku
 
 
+@api_router.post("/master-skus/upload-image")
+async def upload_master_sku_image(
+    file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Upload a product image for a master SKU; returns a permanent public URL
+    the customer app shop can load directly."""
+    ext = ('.' + file.filename.split('.')[-1].lower()) if file.filename and '.' in file.filename else ''
+    if ext not in ('.jpg', '.jpeg', '.png', '.webp'):
+        raise HTTPException(status_code=400, detail="Use a JPG, PNG or WEBP image")
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Image exceeds 10MB")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    try:
+        relative_path, _st = await storage_upload(
+            file_data=content, folder="products",
+            original_filename=file.filename, filename_prefix=f"sku_{ts}",
+        )
+    except Exception as e:
+        logger.error(f"SKU image upload failed: {e}")
+        raise HTTPException(status_code=502, detail="Upload failed")
+    base = os.environ.get("FRONTEND_URL", "https://newcrm.musclegrid.in").rstrip("/")
+    # 10-year TTL signed URL, no user binding → effectively permanent + public.
+    url = base + make_signed_file_url(relative_path, ttl_seconds=10 * 365 * 24 * 3600)
+    return {"image_url": url, "url": url}
+
+
 @api_router.post("/master-skus", response_model=MasterSKUResponse)
 async def create_master_sku(
     sku_data: MasterSKUCreate,
@@ -14992,6 +16367,8 @@ async def create_master_sku(
         "aliases": [alias.dict() for alias in sku_data.aliases] if sku_data.aliases else [],
         "reorder_level": sku_data.reorder_level,
         "description": sku_data.description,
+        "image_url": sku_data.image_url,
+        "images": sku_data.images or [],
         "cost_price": sku_data.cost_price,
         "selling_price": sku_data.selling_price,  # Customer selling price
         "mrp": sku_data.mrp,                      # MRP
@@ -19802,6 +21179,40 @@ async def _release_reservations(reservation_ids: List[str]) -> None:
         )
 
 
+# ===================== SPLIT-DISPATCH (technician=inverter, supervisor=rest) =====================
+# Founder model (2026-06-05): a parcel's INVERTER is physically dispatched by a TECHNICIAN
+# (service_agent); the BATTERY + everything else by a SUPERVISOR. We keep ONE dispatch record / one
+# label / one invoice / one COGS booking — and simply hold the dispatch in 'awaiting_dispatch_tasks'
+# until BOTH staff mark their product dispatched, then flip it to 'ready_for_dispatch' so the
+# existing gate-scan / finalize path books it exactly once (those paths only act on ready_for_dispatch,
+# so they are untouched). Legacy dispatches have no split_managed flag and behave as before.
+from utils.dispatch_split import (classify_dispatch_split as _classify_dispatch_split_impl,
+                                  SPLIT_DISPATCH_ENABLED, SPLIT_INVERTER_ROLE,
+                                  SPLIT_REST_ROLE, SPLIT_STATUS_AWAITING)
+
+
+def _dispatch_items_for_split(dispatch: dict) -> list:
+    """Best-effort list of {master_sku_id,...} lines for a dispatch, for split classification.
+    Prefers an explicit items[] array; else rebuilds from item_serials; else the single top-level SKU."""
+    items = dispatch.get("items")
+    if items:
+        return items
+    isz = dispatch.get("item_serials")
+    if isz:
+        return [{"master_sku_id": x.get("master_sku_id"), "master_sku_name": x.get("master_sku_name"),
+                 "serial_number": x.get("serial_number"), "quantity": x.get("quantity", 1)} for x in isz]
+    if dispatch.get("master_sku_id"):
+        return [{"master_sku_id": dispatch.get("master_sku_id"), "master_sku_name": dispatch.get("master_sku_name"),
+                 "sku_code": dispatch.get("sku") or dispatch.get("sku_code"),
+                 "serial_number": dispatch.get("serial_number"), "quantity": dispatch.get("quantity", 1)}]
+    return []
+
+
+async def _classify_dispatch_split(items: list):
+    """Thin wrapper binding the shared classifier (utils/dispatch_split) to this module's db."""
+    return await _classify_dispatch_split_impl(db, items)
+
+
 @api_router.post("/pending-fulfillment/{fulfillment_id}/dispatch")
 async def dispatch_pending_fulfillment(
     fulfillment_id: str,
@@ -20009,6 +21420,14 @@ async def dispatch_pending_fulfillment(
         "created_by_name": f"{user['first_name']} {user['last_name']}",
         "created_at": now.isoformat()
     }
+    # Split-dispatch: if the parcel has an inverter and/or other items, hold it for the
+    # technician (inverter) + supervisor (rest) to each dispatch their product before it goes out.
+    split_tasks, split_present = await _classify_dispatch_split(dispatch_items)
+    if split_present:
+        dispatch_doc["split_tasks"] = split_tasks
+        dispatch_doc["split_managed"] = True
+        dispatch_doc["split_status"] = "pending"
+        dispatch_doc["status"] = SPLIT_STATUS_AWAITING
     try:
         await db.dispatches.insert_one(dispatch_doc)
     except Exception:
@@ -20041,21 +21460,175 @@ async def dispatch_pending_fulfillment(
         "timestamp": now.isoformat()
     })
     
-    # Notify dispatcher
-    await create_notification(
-        title="New Dispatch Ready",
-        message=f"Order {entry.get('order_id')} is ready for dispatch. Dispatch #{dispatch_number}",
-        notification_type="info",
-        target_roles=["dispatcher", "admin"],
-        priority="high"
-    )
-    
+    # Notify: split dispatches go to the two product owners; otherwise the dispatcher queue.
+    if split_present:
+        if any(t["group"] == "inverter" for t in split_tasks):
+            await create_notification(
+                title="Inverter to dispatch",
+                message=f"Order {entry.get('order_id')}: please dispatch the INVERTER. Dispatch #{dispatch_number}",
+                notification_type="info", target_roles=[SPLIT_INVERTER_ROLE], priority="high")
+        if any(t["group"] == "rest" for t in split_tasks):
+            await create_notification(
+                title="Battery & items to dispatch",
+                message=f"Order {entry.get('order_id')}: please dispatch the BATTERY & other items. Dispatch #{dispatch_number}",
+                notification_type="info", target_roles=[SPLIT_REST_ROLE], priority="high")
+    else:
+        await create_notification(
+            title="New Dispatch Ready",
+            message=f"Order {entry.get('order_id')} is ready for dispatch. Dispatch #{dispatch_number}",
+            notification_type="info",
+            target_roles=["dispatcher", "admin"],
+            priority="high"
+        )
+
     return {
-        "message": "Order sent to dispatcher queue. Dispatcher must finalize the dispatch.",
+        "message": ("Order split for technician (inverter) + supervisor (battery/rest)."
+                    if split_present else "Order sent to dispatcher queue. Dispatcher must finalize the dispatch."),
         "dispatch_id": dispatch_id,
         "dispatch_number": dispatch_number,
-        "status": "ready_for_dispatch"
+        "status": dispatch_doc["status"],
+        "split_managed": split_present,
     }
+
+
+@api_router.get("/dispatch-tasks")
+async def list_dispatch_tasks(user: dict = Depends(require_roles(["service_agent", "supervisor", "admin"]))):
+    """Split-dispatch queue. Technician (service_agent) sees INVERTER tasks; supervisor sees
+    BATTERY & other tasks; admin sees both. Each row carries the SHARED label + invoice (signed)
+    and only that staff's product lines."""
+    role = user.get("role")
+    groups = ["inverter"] if role == "service_agent" else (["rest"] if role == "supervisor" else ["inverter", "rest"])
+    out = []
+    # Show split dispatches that haven't yet left the outward gate. A staff's marked-sent task
+    # STAYS in the queue (shown green) until the parcel is scanned out (status -> 'dispatched').
+    async for d in db.dispatches.find(
+            {"split_managed": True, "status": {"$in": [SPLIT_STATUS_AWAITING, "ready_for_dispatch"]}}, {"_id": 0}):
+        items = d.get("items") or []
+        for t in (d.get("split_tasks") or []):
+            if t.get("group") not in groups:
+                continue
+            my_items = [items[i] for i in (t.get("item_indexes") or []) if i < len(items)]
+            out.append({
+                "dispatch_id": d["id"], "dispatch_number": d.get("dispatch_number"),
+                "group": t["group"], "group_label": t["label"], "status": t["status"],
+                "dispatch_status": d.get("status"),
+                "order_id": d.get("order_id"), "customer_name": d.get("customer_name"),
+                "city": d.get("city"), "state": d.get("state"),
+                "courier": d.get("courier"), "tracking_id": d.get("tracking_id"),
+                "label_url": d.get("label_file") or d.get("label_url"),
+                "invoice_url": d.get("invoice_url"),
+                "items": my_items,
+                "all_tasks": [{"group": x["group"], "label": x["label"], "status": x["status"],
+                               "completed_by_name": x.get("completed_by_name")} for x in (d.get("split_tasks") or [])],
+                "created_at": d.get("created_at"),
+            })
+    out.sort(key=lambda x: x.get("created_at") or "")
+    sign_file_urls_deep(out, user.get("id"))
+    return out
+
+
+@api_router.put("/dispatch-tasks/{dispatch_id}/ready")
+async def mark_dispatch_task_ready(dispatch_id: str, user: dict = Depends(require_roles(["service_agent", "supervisor", "admin"]))):
+    """The technician/supervisor marks THEIR product gathered & dispatched. When the last pending
+    task flips, the dispatch becomes 'ready_for_dispatch' so the gate/dispatcher can finalize it."""
+    role = user.get("role")
+    group = "inverter" if role == "service_agent" else ("rest" if role == "supervisor" else None)
+    now = datetime.now(timezone.utc)
+    d = await db.dispatches.find_one({"id": dispatch_id, "split_managed": True})
+    if not d:
+        raise HTTPException(status_code=404, detail="Split dispatch not found")
+    target = None
+    for t in (d.get("split_tasks") or []):
+        if t.get("status") == "ready":
+            continue
+        if role == "admin" or t.get("group") == group:
+            target = t
+            break
+    if not target:
+        raise HTTPException(status_code=400, detail="No pending task for you on this dispatch")
+    res = await db.dispatches.update_one(
+        {"id": dispatch_id, "split_tasks": {"$elemMatch": {"group": target["group"], "status": "pending"}}},
+        {"$set": {"split_tasks.$.status": "ready", "split_tasks.$.completed_by": user["id"],
+                  "split_tasks.$.completed_by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+                  "split_tasks.$.completed_at": now.isoformat()}})
+    if res.modified_count == 0:
+        raise HTTPException(status_code=409, detail="That task was just completed by someone else")
+    d2 = await db.dispatches.find_one({"id": dispatch_id})
+    all_ready = all(t.get("status") == "ready" for t in (d2.get("split_tasks") or []))
+    if all_ready:
+        flipped = await db.dispatches.update_one(
+            {"id": dispatch_id, "status": SPLIT_STATUS_AWAITING},
+            {"$set": {"split_status": "both_ready", "status": "ready_for_dispatch"}})
+        if flipped.modified_count:
+            await create_notification(
+                title="Dispatch ready for gate",
+                message=f"Dispatch #{d2.get('dispatch_number')} — both products dispatched; ready for courier/finalize.",
+                notification_type="success", target_roles=["dispatcher", "admin"], priority="high")
+    return {"message": f"{target['label']} marked dispatched", "all_ready": all_ready,
+            "dispatch_status": "ready_for_dispatch" if all_ready else SPLIT_STATUS_AWAITING}
+
+
+@api_router.put("/dispatch-tasks/{dispatch_id}/force-ready")
+async def force_dispatch_ready(dispatch_id: str, reason: Optional[str] = Form(None),
+                               user: dict = Depends(require_roles(["admin"]))):
+    """Admin override: skip the split tasks and make the dispatch ready_for_dispatch (e.g. a staff
+    member is absent, or a one-product parcel needs to move). Stamped + auditable."""
+    now = datetime.now(timezone.utc)
+    res = await db.dispatches.update_one(
+        {"id": dispatch_id, "split_managed": True, "status": SPLIT_STATUS_AWAITING},
+        {"$set": {"split_status": "both_ready", "status": "ready_for_dispatch",
+                  "split_override_by": user["id"], "split_override_reason": reason or "",
+                  "split_override_at": now.isoformat()}})
+    if res.modified_count == 0:
+        raise HTTPException(status_code=404, detail="No awaiting-split dispatch with that id")
+    await create_notification(
+        title="Dispatch released (override)",
+        message=f"A split dispatch was released to the gate by admin override.",
+        notification_type="info", target_roles=["dispatcher", "admin"], priority="normal")
+    return {"message": "Dispatch forced to ready_for_dispatch", "dispatch_id": dispatch_id}
+
+
+@api_router.get("/admin/amazon/unmapped-skus")
+async def amazon_unmapped_skus(user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Amazon SKUs the browser-agent could NOT map to a master_sku during dispatch creation.
+    These lines ship (they fall to the supervisor) but don't deduct stock / book GST until mapped.
+    Fix by adding an alias on the master SKU (aliases.alias_code) or an amazon_sku_mappings row."""
+    agg = {}
+
+    def _bump(sku, title, order_id, dispatch_number, when):
+        sku = (sku or "").strip()
+        if not sku:
+            return
+        e = agg.get(sku)
+        if not e:
+            e = agg[sku] = {"amazon_sku": sku, "title": title, "count": 0,
+                            "sample_order": order_id, "sample_dispatch": dispatch_number, "last_seen": when}
+        e["count"] += 1
+        if title and not e.get("title"):
+            e["title"] = title
+        if (when or "") > (e.get("last_seen") or ""):
+            e["last_seen"] = when
+            e["sample_order"] = order_id or e["sample_order"]
+            e["sample_dispatch"] = dispatch_number or e["sample_dispatch"]
+
+    async for d in db.dispatches.find(
+            {"order_source": "amazon"},
+            {"_id": 0, "dispatch_number": 1, "order_id": 1, "items": 1, "created_at": 1}):
+        for it in (d.get("items") or []):
+            if it.get("master_sku_id"):
+                continue
+            _bump(it.get("amazon_sku") or it.get("sku_code"),
+                  it.get("title") or it.get("master_sku_name"),
+                  d.get("order_id"), d.get("dispatch_number"), d.get("created_at"))
+
+    async for p in db.amazon_order_processing.find(
+            {"unmapped_skus": {"$nin": [None, []]}},
+            {"_id": 0, "unmapped_skus": 1, "order_id": 1, "processed_at": 1}):
+        for sku in (p.get("unmapped_skus") or []):
+            _bump(sku, None, p.get("order_id"), None, p.get("processed_at"))
+
+    out = sorted(agg.values(), key=lambda x: (-x["count"], x["amazon_sku"]))
+    return {"count": len(out), "total_lines": sum(x["count"] for x in out), "unmapped": out}
 
 
 @api_router.post("/pending-fulfillment/{fulfillment_id}/dispatch-with-invoice")
@@ -22369,22 +23942,36 @@ async def log_financial_action(action: str, entity_type: str, entity_id: str, de
 
 @api_router.get("/finance/dashboard")
 async def get_finance_dashboard(
+    month: Optional[str] = None,
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
-    """Get finance dashboard overview with firm-wise summary (scoped)."""
+    """Get finance dashboard overview with firm-wise summary (scoped).
+
+    `month` (YYYY-MM) selects the GST period; defaults to the PREVIOUS calendar
+    month (the one being filed). Output GST is summed by INVOICE PERIOD
+    (invoice_date / invoice_month) — NOT by created_at, which previously lumped
+    all recently-imported history into the current month. ITC is wired from the
+    reconciled sources in priority: portal (GSTR-3B claimed + Bill-of-Entry
+    imports, else GSTR-2B available) -> purchases register -> manual ITC balance.
+    """
     # Accountants should only see their own firm in the dashboard.
     firm_query = {"is_active": True}
     scope = get_user_firm_scope(user)
     if scope:
         firm_query["id"] = scope
     firms = await db.firms.find(firm_query, {"_id": 0}).to_list(100)
-    
+
     firm_summaries = []
     total_inventory_value = 0
     total_receivables = 0
     total_gst_liability = 0
-    
-    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+
+    # GST period to view. Default = previous completed month (typical filing view).
+    if month:
+        current_month = month
+    else:
+        _now = datetime.now(timezone.utc)
+        current_month = f"{_now.year - 1}-12" if _now.month == 1 else f"{_now.year}-{str(_now.month - 1).zfill(2)}"
     
     for firm in firms:
         firm_id = firm["id"]
@@ -22412,107 +23999,69 @@ async def get_finance_dashboard(
             wac = await calculate_wac(item_id, item_type, firm_id)
             inventory_value += qty * wac
         
-        # Get monthly sales (from both dispatches AND sales_invoices)
-        month_start = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        
-        # Method 1: From dispatches collection (legacy)
-        dispatches = await db.dispatches.find({
-            "firm_id": firm_id,
-            "status": "dispatched",
-            "dispatched_at": {"$gte": month_start.isoformat()}
-        }, {"_id": 0}).to_list(1000)
-        
-        # Some legacy/Amazon dispatches stored invoice_value as a raw SP-API
-        # dict ({"Amount": 1234.0, "CurrencyCode": "INR"}) rather than a
-        # plain float. Coerce both shapes so summation doesn't TypeError.
-        def _money(v):
-            if isinstance(v, dict):
-                try:
-                    return float(v.get("Amount") or 0)
-                except (TypeError, ValueError):
-                    return 0.0
-            try:
-                return float(v or 0)
-            except (TypeError, ValueError):
-                return 0.0
-        dispatch_sales = sum(_money(d.get("invoice_value")) for d in dispatches)
-        dispatch_taxable = sum(_money(d.get("taxable_value")) for d in dispatches)
-        
-        # Method 2: From sales_invoices collection (primary source)
-        month_str = datetime.now(timezone.utc).strftime("%Y-%m")
-        month_num = datetime.now(timezone.utc).month
-        year_num = datetime.now(timezone.utc).year
-        
-        # Handle various date formats: YYYY-MM-DD, DD/MM/YYYY, etc.
+        # Monthly sales BY INVOICE PERIOD (FIX: previously matched created_at, which
+        # lumped every recently-imported invoice — years of history — into one month).
         sales_invoices = await db.sales_invoices.find({
             "firm_id": firm_id,
             "$or": [
-                {"date": {"$regex": f"^{month_str}"}},           # YYYY-MM format
-                {"date": {"$regex": f"/{str(month_num).zfill(2)}/{year_num}"}},  # DD/MM/YYYY format
-                {"date": {"$regex": f"{str(month_num).zfill(2)}/{year_num}"}},   # M/YYYY format
-                {"invoice_date": {"$regex": f"^{month_str}"}},   # YYYY-MM format
-                {"invoice_date": {"$regex": f"/{str(month_num).zfill(2)}/{year_num}"}},  # DD/MM/YYYY
-                {"created_at": {"$gte": month_start.isoformat()}}
+                {"invoice_month": current_month},                 # YYYY-MM tag (our imports)
+                {"invoice_date": {"$regex": f"^{current_month}"}},# YYYY-MM-DD
+                {"date": {"$regex": f"^{current_month}"}},        # legacy date field
             ]
-        }, {"_id": 0}).to_list(1000)
-        
-        invoice_sales = sum(
-            inv.get("grand_total", 0) or inv.get("total_amount", 0) or inv.get("total", 0) or 0 
+        }, {"_id": 0}).to_list(20000)
+
+        monthly_sales = sum(
+            (inv.get("grand_total") or inv.get("total_amount") or inv.get("total") or 0)
             for inv in sales_invoices
         )
-        invoice_taxable = sum(
-            inv.get("taxable_value", 0) or inv.get("subtotal", 0) or 0 
+        monthly_taxable = sum(
+            (inv.get("taxable_value") or inv.get("subtotal") or 0)
             for inv in sales_invoices
         )
-        invoice_gst = sum(
-            inv.get("total_gst", 0) or inv.get("gst_amount", 0) or 0 
+        output_gst = sum(
+            (inv.get("total_gst") or ((inv.get("igst") or 0) + (inv.get("cgst") or 0) + (inv.get("sgst") or 0)) or 0)
             for inv in sales_invoices
         )
         
-        # Use the higher value (to avoid double counting)
-        # If sales_invoices has data, prefer that as it's more accurate
-        if len(sales_invoices) > 0:
-            monthly_sales = invoice_sales
-            monthly_taxable = invoice_taxable
-            output_gst = invoice_gst if invoice_gst > 0 else (invoice_taxable * 0.18)  # Fallback to 18%
-        else:
-            monthly_sales = dispatch_sales
-            monthly_taxable = dispatch_taxable
-            output_gst = 0
-            for d in dispatches:
-                taxable = d.get("taxable_value", 0) or 0
-                gst_rate = d.get("gst_rate", 18) or 18
-                output_gst += taxable * (gst_rate / 100)
-        
-        # Get GST ITC balance - use previous month's ITC (which is available to offset current month's GST)
-        # ITC entered for March 2026 is available to use against April 2026 output GST
-        current_date = datetime.now(timezone.utc)
-        if current_date.month == 1:
-            prev_month = f"{current_date.year - 1}-12"
-        else:
-            prev_month = f"{current_date.year}-{str(current_date.month - 1).zfill(2)}"
-        
-        # First check for previous month's ITC (primary - this is what gets carried forward)
-        itc_entry = await db.gst_itc_balances.find_one({
-            "firm_id": firm_id,
-            "month": prev_month
-        }, {"_id": 0})
-        
-        # Also check current month in case user entered it that way
-        if not itc_entry:
-            itc_entry = await db.gst_itc_balances.find_one({
-                "firm_id": firm_id,
-                "month": current_month
-            }, {"_id": 0})
-        
+        # ITC for the period — wired from reconciled sources (FIX: previously only
+        # read manual gst_itc_balances, ignoring portal / Bill-of-Entry / purchase ITC).
+        # Priority: 1) portal GSTR-3B(claimed) + Bill-of-Entry imports, else GSTR-2B(available)
+        #           2) purchases register input GST for the period
+        #           3) manual gst_itc_balances entry
+        period_mmyyyy = current_month[5:7] + current_month[0:4]  # YYYY-MM -> MMYYYY
         itc_balance = 0
-        itc_month_used = None
-        if itc_entry:
-            itc_balance = (itc_entry.get("igst_balance", 0) + 
-                         itc_entry.get("cgst_balance", 0) + 
-                         itc_entry.get("sgst_balance", 0))
-            itc_month_used = itc_entry.get("month")
-        
+        itc_source = None
+        itc_month_used = current_month
+        portal = await db.gst_portal_itc.find(
+            {"firm_id": firm_id, "period": period_mmyyyy}, {"_id": 0}).to_list(50)
+        if portal:
+            dom = sum((r.get("itc_total") or 0) for r in portal if r.get("doc") == "GSTR-3B")
+            boe = sum((r.get("itc_total") or 0) for r in portal if r.get("doc") == "BOE-import")
+            if dom or boe:
+                itc_balance = dom + boe
+                itc_source = "portal: GSTR-3B" + (" + Bill-of-Entry" if boe else "")
+            else:
+                itc_balance = max((r.get("itc_total") or 0) for r in portal)
+                itc_source = "portal: GSTR-2B"
+        if not itc_balance:
+            purchases_p = await db.purchases.find(
+                {"firm_id": firm_id, "$or": [
+                    {"invoice_month": current_month},
+                    {"invoice_date": {"$regex": f"^{current_month}"}}]}, {"_id": 0}).to_list(20000)
+            if purchases_p:
+                itc_balance = sum(
+                    (p.get("total_gst") or ((p.get("igst") or 0) + (p.get("cgst") or 0) + (p.get("sgst") or 0)) or 0)
+                    for p in purchases_p)
+                if itc_balance:
+                    itc_source = "purchases register"
+        if not itc_balance:
+            itc_entry = await db.gst_itc_balances.find_one(
+                {"firm_id": firm_id, "month": current_month}, {"_id": 0})
+            if itc_entry:
+                itc_balance = (itc_entry.get("igst_balance", 0) + itc_entry.get("cgst_balance", 0) + itc_entry.get("sgst_balance", 0))
+                if itc_balance:
+                    itc_source = "manual ITC balance"
+
         net_gst_payable = max(0, output_gst - itc_balance)
         
         firm_summary = {
@@ -22523,6 +24072,8 @@ async def get_finance_dashboard(
             "monthly_sales": round(monthly_sales, 2),
             "monthly_taxable": round(monthly_taxable, 2),
             "itc_balance": round(itc_balance, 2),
+            "itc_source": itc_source,
+            "period": current_month,
             "output_gst": round(output_gst, 2),
             "net_gst_payable": round(net_gst_payable, 2)
         }
@@ -22552,14 +24103,9 @@ async def get_finance_dashboard(
                 "message": f"{summary['firm_name']}: High GST liability of Rs.{summary['net_gst_payable']:,.2f}"
             })
         if summary["itc_balance"] == 0:
-            # Calculate previous month for the alert message
-            if datetime.now(timezone.utc).month == 1:
-                alert_month = f"{datetime.now(timezone.utc).year - 1}-12"
-            else:
-                alert_month = f"{datetime.now(timezone.utc).year}-{str(datetime.now(timezone.utc).month - 1).zfill(2)}"
             alerts.append({
-                "type": "warning", 
-                "message": f"{summary['firm_name']}: No ITC balance entered for {alert_month} (to use in {current_month})"
+                "type": "warning",
+                "message": f"{summary['firm_name']}: No ITC found for {current_month} (no portal GSTR-3B/2B, Bill-of-Entry or purchases) - upload its GSTR-2B / purchase register"
             })
         
         # Stock vs ITC Mismatch Alerts
@@ -36328,8 +37874,138 @@ async def list_sales_orders(
     
     orders = await db.sales_orders.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
     total = await db.sales_orders.count_documents(query)
-    
+
     return {"orders": orders, "total": total}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LEGAL / LAWYER PORTAL — staff mark an order for a legal notice; the lawyer
+# (role "lawyer") sees the flagged orders read-only with notice-ready details.
+# ──────────────────────────────────────────────────────────────────────────────
+class LegalMarkBody(BaseModel):
+    reason: str
+    claim_amount: Optional[float] = None
+    note: Optional[str] = None
+
+
+@api_router.post("/sales-orders/{order_id}/mark-legal")
+async def mark_sales_order_legal(order_id: str, body: LegalMarkBody,
+                                 user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Flag a sales order for a legal notice — it then appears in the lawyer portal."""
+    order = await db.sales_orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    reason = (body.reason or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="A reason is required to mark for legal")
+    now = datetime.now(timezone.utc).isoformat()
+    claim = body.claim_amount if body.claim_amount is not None else order.get("total_amount", 0)
+    await db.sales_orders.update_one({"id": order_id}, {"$set": {
+        "legal_flag": True,
+        "legal_reason": reason,
+        "legal_note": (body.note or "").strip() or None,
+        "legal_claim_amount": claim,
+        "legal_notice_status": order.get("legal_notice_status") or "pending",
+        "legal_marked_at": now,
+        "legal_marked_by": user["id"],
+        "legal_marked_by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+        "updated_at": now,
+    }})
+    return {"success": True, "message": "Marked for legal notice", "order_id": order_id}
+
+
+@api_router.post("/sales-orders/{order_id}/unmark-legal")
+async def unmark_sales_order_legal(order_id: str,
+                                   user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Remove the legal flag from a sales order."""
+    res = await db.sales_orders.update_one({"id": order_id}, {"$set": {
+        "legal_flag": False, "legal_notice_status": None,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return {"success": True, "message": "Legal flag removed", "order_id": order_id}
+
+
+@api_router.get("/lawyer/legal-orders")
+async def lawyer_legal_orders(status: Optional[str] = None,
+                              user: dict = Depends(require_roles(["lawyer", "admin"]))):
+    """Read-only list of orders flagged for a legal notice, enriched with the customer's
+    full contact details (from the party master) so the lawyer can draft/send notices."""
+    q = {"legal_flag": True}
+    if status in ("pending", "sent"):
+        q["legal_notice_status"] = status
+    orders = await db.sales_orders.find(q, {"_id": 0}).sort("legal_marked_at", -1).to_list(1000)
+    out = []
+    for o in orders:
+        party = None
+        ph = (o.get("phone") or "").strip()
+        if ph:
+            digits = re.sub(r"\D", "", ph)[-10:]
+            if digits:
+                party = await db.parties.find_one(
+                    {"phone": {"$regex": digits + "$"}},
+                    {"_id": 0, "name": 1, "email": 1, "address": 1, "city": 1, "state": 1,
+                     "pincode": 1, "gstin": 1, "gst_number": 1, "current_balance": 1})
+        out.append({
+            "id": o.get("id"),
+            "order_number": o.get("order_number"),
+            "order_date": o.get("created_at"),
+            "firm_name": o.get("firm_name"),
+            "order_source": o.get("order_source"),
+            "product": o.get("master_sku_name") or o.get("sku"),
+            "quantity": o.get("quantity"),
+            "order_amount": o.get("total_amount"),
+            "payment_status": o.get("payment_status"),
+            # who to serve
+            "customer_name": o.get("customer_name"),
+            "phone": o.get("phone"),
+            "email": (party or {}).get("email"),
+            "address": o.get("address") or (party or {}).get("address"),
+            "city": o.get("city") or (party or {}).get("city"),
+            "state": o.get("state") or (party or {}).get("state"),
+            "pincode": o.get("pincode") or (party or {}).get("pincode"),
+            "gstin": (party or {}).get("gstin") or (party or {}).get("gst_number"),
+            "party_balance": (party or {}).get("current_balance"),
+            # the legal claim
+            "claim_amount": o.get("legal_claim_amount", o.get("total_amount")),
+            "reason": o.get("legal_reason"),
+            "note": o.get("legal_note"),
+            "marked_by": o.get("legal_marked_by_name"),
+            "marked_at": o.get("legal_marked_at"),
+            "notice_status": o.get("legal_notice_status") or "pending",
+            "notice_sent_at": o.get("legal_notice_sent_at"),
+            "notice_ref": o.get("legal_notice_ref"),
+        })
+    summary = {
+        "total": len(out),
+        "pending": sum(1 for x in out if x["notice_status"] == "pending"),
+        "sent": sum(1 for x in out if x["notice_status"] == "sent"),
+        "total_claim": round(sum(float(x.get("claim_amount") or 0) for x in out), 2),
+    }
+    return {"success": True, "summary": summary, "orders": out}
+
+
+class LegalNoticeBody(BaseModel):
+    notice_ref: Optional[str] = None
+    note: Optional[str] = None
+
+
+@api_router.post("/lawyer/legal-orders/{order_id}/notice-sent")
+async def lawyer_mark_notice_sent(order_id: str, body: LegalNoticeBody,
+                                  user: dict = Depends(require_roles(["lawyer", "admin"]))):
+    """Lawyer records that the legal notice for this order has been sent."""
+    res = await db.sales_orders.update_one({"id": order_id, "legal_flag": True}, {"$set": {
+        "legal_notice_status": "sent",
+        "legal_notice_sent_at": datetime.now(timezone.utc).isoformat(),
+        "legal_notice_ref": (body.notice_ref or "").strip() or None,
+        "legal_notice_note": (body.note or "").strip() or None,
+        "legal_notice_by": user["id"],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Flagged order not found")
+    return {"success": True, "message": "Notice marked as sent", "order_id": order_id}
 
 
 @api_router.get("/sales-orders/stats")
@@ -39113,6 +40789,17 @@ async def approve_quotation_public(token: str, request: Request):
         except Exception as e:
             logger.error(f"quotation-approved email failed for {refreshed.get('quotation_number')}: {e}")
 
+    # Incentive on approval is OFF by default: the founder maintains the authoritative incentive
+    # numbers in the manual sales Excel (0.5% of DISPATCHED sales), imported into db.incentives.
+    # PI approvals don't match that record, so auto-generation here is disabled (reversible via
+    # INCENTIVE_AUTO_ON_APPROVAL=true). Eligibility is still enforced inside create_incentive_record.
+    if os.environ.get("INCENTIVE_AUTO_ON_APPROVAL", "false").lower() == "true":
+        try:
+            if refreshed:
+                await create_incentive_record(refreshed, "pi_approved", None)
+        except Exception as e:
+            logger.error(f"incentive on approval failed for {quotation.get('quotation_number')}: {e}")
+
     # Notify the call-support agent who created the PI (Schema A — readable + dismissible).
     if quotation.get("created_by"):
         await create_notification(
@@ -40412,11 +42099,19 @@ async def calculate_incentive(quotation: dict, config: dict) -> float:
     return round(incentive, 2)
 
 
-async def create_incentive_record(quotation: dict, conversion_type: str, user: dict):
-    """Create incentive record when PI is converted to sale"""
+async def create_incentive_record(quotation: dict, conversion_type: str, user: dict = None):
+    """Create incentive record when a call-support agent's PI becomes a real sale.
+    Fired on customer APPROVAL (the team's de-facto sale event) and on PI conversion.
+    Idempotent per quotation so the two triggers can't double-pay."""
     now = datetime.now(timezone.utc)
     month = now.strftime("%Y-%m")
-    
+
+    # Idempotency: never create a second incentive for the same quotation
+    if quotation.get("incentive_id"):
+        return None
+    if await db.incentives.find_one({"quotation_id": quotation.get("id"), "status": {"$ne": "cancelled"}}):
+        return None
+
     # Get incentive config for this month
     config = await db.incentive_configs.find_one({"month": month, "is_active": True}, {"_id": 0})
     
@@ -40435,7 +42130,13 @@ async def create_incentive_record(quotation: dict, conversion_type: str, user: d
     agent = await db.users.find_one({"id": created_by_id}, {"_id": 0})
     if not agent or agent.get("role") != "call_support":
         return None  # Only call support agents get incentives
-    
+
+    # Only incentive-eligible agents earn incentives (founder: a specific subset, not all call-support).
+    # Eligibility is the `incentive_eligible` flag on the agent's employee_salaries record.
+    sal = await db.employee_salaries.find_one({"user_id": created_by_id, "is_active": True})
+    if not sal or not sal.get("incentive_eligible"):
+        return None
+
     # Calculate incentive amount
     incentive_amount = await calculate_incentive(quotation, config)
     
@@ -41615,7 +43316,15 @@ async def get_monthly_payroll(
     total_fixed = sum(p.get("fixed_salary", 0) for p in payroll_data)
     total_incentives = sum(p.get("total_incentives", 0) for p in payroll_data)
     total_payable = sum(p.get("total_payable", 0) for p in payroll_data)
-    
+
+    # Warning: incentives EARNED this month but still PENDING approval — these are NOT in payroll yet
+    # and would be silently dropped if you generate/pay now. Surface them so they get approved first.
+    month_str = f"{year}-{str(month).zfill(2)}"
+    pending_inc = await db.incentives.find(
+        {"month": month_str, "status": "pending"}, {"_id": 0, "incentive_amount": 1}
+    ).to_list(2000)
+    pending_inc_total = round(sum(i.get("incentive_amount", 0) for i in pending_inc), 2)
+
     return {
         "payroll": payroll_data,
         "summary": {
@@ -41624,7 +43333,9 @@ async def get_monthly_payroll(
             "total_incentives": round(total_incentives, 2),
             "total_payable": round(total_payable, 2),
             "pending_count": len([p for p in payroll_data if p.get("status") == "pending"]),
-            "paid_count": len([p for p in payroll_data if p.get("status") == "paid"])
+            "paid_count": len([p for p in payroll_data if p.get("status") == "paid"]),
+            "unapproved_incentives_count": len(pending_inc),
+            "unapproved_incentives_total": pending_inc_total,
         },
         "month": month,
         "year": year
@@ -41726,6 +43437,22 @@ async def generate_payroll(
         created_count += 1
     
     return {"message": f"Payroll generated for {created_count} employees", "created": created_count}
+
+
+async def scheduled_payroll_draft():
+    """On the 1st of each month, auto-generate the PREVIOUS month's payroll as DRAFT (pending) so it's
+    never forgotten. Reuses generate_payroll (idempotent — skips months already generated). Admin still
+    approves + pays manually."""
+    try:
+        now = datetime.now(timezone.utc)
+        y, m = now.year, now.month - 1
+        if m == 0:
+            m, y = 12, y - 1
+        sys_user = {"id": "system", "role": "admin", "first_name": "System", "last_name": "Auto"}
+        result = await generate_payroll(month=m, year=y, firm_id=None, user=sys_user)
+        logger.info(f"[payroll_draft] auto-generated {y}-{m:02d}: {result}")
+    except Exception as e:
+        logger.error(f"[payroll_draft] failed: {e}")
 
 
 @api_router.post("/admin/payroll/{payroll_id}/adjustment")
@@ -43183,23 +44910,34 @@ async def get_my_payroll(
         {"_id": 0}
     ).sort([("year", -1), ("month", -1)]).to_list(24)
     
-    # Get pending incentives for current month
+    # ALL of this agent's incentives (recent first) — not just the current month, so earned
+    # incentives that are still pending/approved are visible even before payroll is generated.
     current_month = datetime.now(timezone.utc).strftime("%Y-%m")
-    pending_incentives = await db.incentives.find({
-        "agent_id": user["id"],
-        "month": current_month,
-        "status": "pending"
-    }, {"_id": 0}).to_list(100)
-    
-    pending_incentive_total = sum(i.get("incentive_amount", 0) for i in pending_incentives)
-    
+    all_incentives = await db.incentives.find(
+        {"agent_id": user["id"], "status": {"$ne": "cancelled"}}, {"_id": 0}
+    ).sort([("month", -1), ("created_at", -1)]).to_list(500)
+
+    def _sum(st):
+        return round(sum(i.get("incentive_amount", 0) for i in all_incentives if i.get("status") == st), 2)
+
+    current_pending = [i for i in all_incentives
+                       if i.get("status") == "pending" and i.get("month") == current_month]
+
     return {
         "payroll_records": payroll_records,
+        "incentives": {
+            "recent": all_incentives[:50],
+            "total_pending": _sum("pending"),
+            "total_approved": _sum("approved"),
+            "total_paid": _sum("paid"),
+            "count": len(all_incentives),
+        },
+        # Backward-compatible field (was current-month pending only)
         "pending_incentives": {
-            "count": len(pending_incentives),
-            "total": round(pending_incentive_total, 2),
-            "month": current_month
-        }
+            "count": len(current_pending),
+            "total": round(sum(i.get("incentive_amount", 0) for i in current_pending), 2),
+            "month": current_month,
+        },
     }
 
 
@@ -45021,7 +46759,35 @@ async def cancel_dealer_order(
             "updated_at": now
         }}
     )
-    
+
+    # If payment was received, a CREDIT was posted to the dealer's ledger at
+    # confirm-payment. The order never dispatched (cancel is blocked once
+    # dispatched/delivered), so there's no offsetting sales-invoice DEBIT —
+    # cancelling without reversing leaves a phantom credit. Post a reversing
+    # DEBIT (once) for the credited amount.
+    if order.get("payment_status") == "received":
+        already = await db.party_ledger.find_one(
+            {"reference_type": "dealer_order_cancel_reversal", "reference_id": order_id}, {"_id": 1})
+        paid_credit = await db.party_ledger.find_one(
+            {"reference_type": "dealer_order_payment", "reference_id": order_id}, {"_id": 0, "credit": 1})
+        if paid_credit and not already:
+            party = await db.parties.find_one({"dealer_id": order["dealer_id"]})
+            if party:
+                amt = paid_credit.get("credit") or order.get("total_amount", 0) or 0
+                led = await create_party_ledger_entry_atomic(
+                    party_id=party["id"], party_name=party["name"],
+                    entry_type="dealer_order_cancel_reversal", debit=amt, credit=0,
+                    narration=f"Reversal of payment credit — dealer order {order.get('order_number')} cancelled",
+                    reference_type="dealer_order_cancel_reversal", reference_id=order_id,
+                    firm_id=party.get("firm_id") or order.get("firm_id"),
+                    user_id=user["id"],
+                    user_name=f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+                    opening_balance=party.get("opening_balance", 0),
+                )
+                await db.parties.update_one(
+                    {"id": party["id"]},
+                    {"$set": {"current_balance": led["running_balance"], "updated_at": now}})
+
     return {"message": "Order cancelled"}
 
 
@@ -45475,7 +47241,13 @@ async def get_dealer_documents(user: dict = Depends(require_roles(["dealer"]))):
         raise HTTPException(status_code=404, detail="Dealer profile not found")
     
     documents = []
-    
+
+    def _sign(p):
+        # Bind raw file paths to THIS dealer so the resulting /api/files URL
+        # can't be reused (with another dealer's token, or a guessed path) to
+        # fetch a different dealer's deposit receipt / invoice / payment proof.
+        return make_signed_file_url(p, user_id=user["id"]) if p else None
+
     # 1. Dealer Certificate
     if dealer.get("status") == "approved":
         documents.append({
@@ -45495,7 +47267,7 @@ async def get_dealer_documents(user: dict = Depends(require_roles(["dealer"]))):
             "type": "deposit",
             "name": "Security Deposit Receipt",
             "description": "Proof of security deposit payment",
-            "download_url": dealer.get("security_deposit", {}).get("proof_path") or dealer.get("security_deposit_proof_path"),
+            "download_url": _sign(dealer.get("security_deposit", {}).get("proof_path") or dealer.get("security_deposit_proof_path")),
             "available": True
         })
     
@@ -45528,7 +47300,7 @@ async def get_dealer_documents(user: dict = Depends(require_roles(["dealer"]))):
                 "description": f"Order {order['order_number']} - ₹{order['total_amount']:,.0f}",
                 "order_id": order["id"],
                 "created_at": order.get("created_at"),
-                "download_url": order.get("final_invoice", {}).get("file_path"),
+                "download_url": _sign(order.get("final_invoice", {}).get("file_path")),
                 "available": True
             })
     
@@ -45546,10 +47318,10 @@ async def get_dealer_documents(user: dict = Depends(require_roles(["dealer"]))):
             "description": f"₹{order['total_amount']:,.0f}",
             "order_id": order["id"],
             "created_at": order.get("created_at"),
-            "download_url": order.get("payment_proof_path"),
+            "download_url": _sign(order.get("payment_proof_path")),
             "available": True
         })
-    
+
     return {
         "dealer_id": dealer["id"],
         "firm_name": dealer.get("firm_name"),
@@ -49465,6 +51237,65 @@ async def send_post_call_sms(phone_number: str, call_type: str = "general"):
         return {"success": False, "error": str(e)}
 
 
+# Missed-call → WhatsApp. OFF by default: sending unsolicited WhatsApp from the
+# (unofficial) bridge number carries a ban risk, so the founder opts in per env.
+MISSED_CALL_WA_ENABLED = os.environ.get("MISSED_CALL_WA_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+MISSED_CALL_WA_DEDUP_MIN = int(os.environ.get("MISSED_CALL_WA_DEDUP_MIN", "180") or 180)
+
+
+async def send_missed_call_whatsapp(phone_number: str, call_type: str = "missed"):
+    """On a missed call, WhatsApp the caller via the bridge so they can be helped
+    without calling back. Off unless MISSED_CALL_WA_ENABLED. Dedup-guarded per
+    number so repeated missed calls don't spam. This is a transactional reply to
+    the caller's own action (lowest-risk moment to message), sent immediately."""
+    # Channel: prefer the official WhatsApp Cloud API (template) when configured;
+    # fall back to the bridge only if explicitly enabled. If neither, do nothing.
+    use_cloud = whatsapp_cloud.enabled()
+    if not use_cloud and not MISSED_CALL_WA_ENABLED:
+        return {"skipped": "disabled"}
+    clean = re.sub(r"\D", "", phone_number or "")[-10:]
+    if len(clean) != 10 or not clean.isdigit():
+        return {"skipped": "bad_number"}
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=MISSED_CALL_WA_DEDUP_MIN)).isoformat()
+    if await db.missed_call_wa_logs.find_one({"phone": clean, "sent_at": {"$gte": cutoff}}, {"_id": 1}):
+        return {"skipped": "dedup"}
+
+    ok = False
+    if use_cloud:
+        # Official API: send the approved missed-call template (initiates the chat).
+        res = await whatsapp_cloud.send_template(clean)
+        ok = bool(res.get("ok"))
+        channel, detail = "cloud", {"wamid": res.get("wamid"), "status": res.get("status")}
+        if res.get("wamid"):
+            await db.whatsapp_cloud_messages.insert_one({
+                "id": str(uuid.uuid4()), "direction": "outgoing", "phone": clean,
+                "text": "[missed-call follow-up template]", "msg_type": "template",
+                "wamid": res["wamid"], "ts": datetime.now(timezone.utc).isoformat(),
+                "source": "whatsapp_cloud", "kind": "missed_call",
+            })
+    else:
+        # Bridge fallback: free-text via the (unofficial) bridge number.
+        lead = await db.leads.find_one({"phone": {"$regex": re.escape(clean) + "$"}},
+                                       {"_id": 0, "name": 1, "customer_name": 1})
+        nm = (lead or {}).get("name") or (lead or {}).get("customer_name")
+        hello = f"Hi {nm.split()[0]}," if nm else "Hi 👋"
+        text = (f"{hello} sorry we missed your call to *MuscleGrid*. How can we help? "
+                f"Reply here and our team will assist you right away.")
+        channel, detail = "bridge", {"text": text}
+        try:
+            await send_whatsapp_message("91" + clean, text, force=True)  # transactional → send now
+            ok = True
+        except Exception as e:
+            logger.warning(f"missed-call WhatsApp (bridge) failed for {clean}: {e}")
+
+    await db.missed_call_wa_logs.insert_one({
+        "id": str(uuid.uuid4()), "phone": clean, "call_type": call_type,
+        "channel": channel, "detail": detail, "success": ok,
+        "sent_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"success": ok, "channel": channel}
+
+
 # =============================================================================
 # Screen-pop pub/sub — in-memory fan-out of inbound-call events to subscribed agents
 # =============================================================================
@@ -49981,6 +51812,462 @@ async def crm_assistant_respond(channel_id: str, question: str, asker_name: str)
     except Exception as e:
         logger.warning(f"crm_assistant_respond failed: {e}")
         await _crm_assistant_post(channel_id, "Sorry, I hit an error answering that.")
+
+
+# ---------------------------------------------------------------------------
+# Volt — customer-facing Claude assistant for the MuscleGrid Connect app.
+# Knows the customer's products/orders/tickets, diagnoses faults from photos,
+# reads live device telemetry, and can take a few safe actions (raise a ticket).
+# ---------------------------------------------------------------------------
+VOLT_MODEL = os.environ.get("VOLT_MODEL", "claude-sonnet-4-6")
+
+VOLT_TOOLS = [
+    {"name": "get_my_products", "description": "List the customer's registered MuscleGrid products (type, name, serial, warranty status).",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "track_order", "description": "Look up the status of one of the customer's marketplace orders by order number (MG-MP-…).",
+     "input_schema": {"type": "object", "properties": {"order_number": {"type": "string"}}, "required": ["order_number"]}},
+    {"name": "get_my_tickets", "description": "List the customer's recent support tickets and their status.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "search_knowledge_base", "description": "Search MuscleGrid's troubleshooting knowledge base for a fault, error code, or topic.",
+     "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+    {"name": "create_support_ticket", "description": "Raise a support ticket for the customer when they need help that requires a human (repair, complaint, service visit). Confirm the issue first.",
+     "input_schema": {"type": "object", "properties": {"device_type": {"type": "string"}, "issue": {"type": "string"}}, "required": ["issue"]}},
+    {"name": "size_system", "description": "Recommend the right inverter VA and battery Ah (plus a catalog product) for a total appliance load in watts over a desired number of backup hours.",
+     "input_schema": {"type": "object", "properties": {"total_watts": {"type": "number"}, "backup_hours": {"type": "number"}}, "required": ["total_watts", "backup_hours"]}},
+    {"name": "estimate_solar_savings", "description": "When the customer shares an electricity BILL (photo) or tells you their monthly units and bill amount, call this for an ACCURATE rooftop-solar savings estimate — system size (kW), cost, monthly saving, payback years and a recommended product. Read units_kwh and bill_amount off the bill yourself (you can see the image); pass per_unit_rate only if it's printed.",
+     "input_schema": {"type": "object", "properties": {"units_kwh": {"type": "number", "description": "units/kWh consumed this billing cycle"}, "bill_amount": {"type": "number", "description": "₹ total bill amount"}, "per_unit_rate": {"type": "number"}, "period_days": {"type": "number"}}, "required": ["units_kwh", "bill_amount"]}},
+    {"name": "check_area_outages", "description": "Check LIVE power-cut status for the customer's area (their saved pincode): how many homes nearby are reporting an outage right now, cuts today, and their typical cut hours. Use when they ask whether there's a power cut / outage in their area.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "report_outage", "description": "Log a power-cut report for the customer's area when they tell you the power is out (or has come back). status is 'outage' or 'restored'.",
+     "input_schema": {"type": "object", "properties": {"status": {"type": "string", "enum": ["outage", "restored"]}}, "required": ["status"]}},
+    {"name": "get_backup_health", "description": "Get the customer's MEASURED battery backup-runtime trend (recent average vs their best, and % drop). Use when they worry their backup time has reduced or ask how their battery is holding up.",
+     "input_schema": {"type": "object", "properties": {}}},
+]
+
+
+async def _volt_tool(name: str, inp: dict, user: dict) -> str:
+    try:
+        uid = user["id"]
+        if name == "get_my_products":
+            ws = await db.warranties.find({"customer_id": uid}, {"_id": 0, "device_type": 1, "product_name": 1, "serial_number": 1, "status": 1, "warranty_end_date": 1}).limit(20).to_list(20)
+            if not ws:
+                return "The customer has no registered products yet."
+            return "; ".join(f"{w.get('product_name') or w.get('device_type') or 'product'} (SN {w.get('serial_number') or '—'}, warranty {w.get('status') or '—'})" for w in ws)
+        if name == "track_order":
+            num = (inp.get("order_number") or "").strip()
+            o = await db.marketplace_orders.find_one({"customer_id": uid, "order_number": {"$regex": re.escape(num), "$options": "i"}}, {"_id": 0})
+            if not o:
+                return f"No order found matching '{num}'."
+            return f"Order {o.get('order_number')}: status={o.get('status')}, total ₹{o.get('total')}, payment={o.get('payment_status') or o.get('payment_method')}."
+        if name == "get_my_tickets":
+            ts = await db.tickets.find({"customer_id": uid}, {"_id": 0, "ticket_number": 1, "status": 1, "device_type": 1}).sort("created_at", -1).limit(5).to_list(5)
+            if not ts:
+                return "The customer has no support tickets."
+            return "; ".join(f"{t.get('ticket_number')} ({t.get('device_type') or ''}, {t.get('status')})" for t in ts)
+        if name == "search_knowledge_base":
+            qy = inp.get("query", "")
+            arts = await db.kb_articles.find({"$or": [{"title": {"$regex": re.escape(qy), "$options": "i"}}, {"content": {"$regex": re.escape(qy), "$options": "i"}}, {"fault_code": {"$regex": re.escape(qy), "$options": "i"}}]}, {"_id": 0, "title": 1, "content": 1}).limit(3).to_list(3)
+            if not arts:
+                return f"No knowledge-base article found for '{qy}'."
+            return " | ".join(f"{a.get('title')}: {(a.get('content') or '')[:300]}" for a in arts)
+        if name == "create_support_ticket":
+            now = datetime.now(timezone.utc)
+            tid = str(uuid.uuid4())
+            tn = await generate_ticket_number()
+            doc = {
+                "id": tid, "ticket_number": tn, "firm_id": None,
+                "customer_id": uid,
+                "customer_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip() or user.get("name", "Customer"),
+                "customer_phone": user.get("phone"), "customer_email": user.get("email"),
+                "device_type": inp.get("device_type") or "", "product_name": None,
+                "serial_number": None, "invoice_number": None, "order_id": None,
+                "issue_description": inp.get("issue", ""), "support_type": "phone",
+                "category": "volt_assistant", "status": "new_request",
+                "sla_due": calculate_sla_due("phone", now).isoformat(), "sla_breached": False,
+                "created_by": uid, "created_at": now.isoformat(), "updated_at": now.isoformat(),
+                "history": [{"action": "Ticket created via Volt assistant", "by": "Volt", "by_id": "volt", "by_role": "system", "timestamp": now.isoformat(), "details": {"status": "new_request"}}],
+            }
+            await db.tickets.insert_one(doc)
+            return f"Created support ticket {tn}. Our team will follow up. (action:ticket_created:{tn})"
+        if name == "size_system":
+            w = float(inp.get("total_watts") or 0)
+            h = float(inp.get("backup_hours") or 1)
+            if w <= 0:
+                return "Need the total appliance load in watts to size a system."
+            va = round(w / 0.8 * 1.15)
+            ah = round(w * h / (12 * 0.85 * 0.7))
+            rec = ""
+            try:
+                invs = await db.product_datasheets.find({"category": {"$regex": "inverter", "$options": "i"}, "is_active": {"$ne": False}}, {"_id": 0}).to_list(300)
+                fit = sorted(((_spec_number(d.get("specifications"), ["va", "kva", "power", "capacity"]), d) for d in invs), key=lambda x: x[0])
+                fit = [(c, d) for c, d in fit if c >= va]
+                if fit:
+                    rec = f" Recommended: {fit[0][1].get('model_name')} ({fit[0][0]:g}VA)."
+            except Exception:
+                pass
+            return f"For {w:g}W over {h:g}h, you need roughly a {va} VA inverter and a ~{ah} Ah battery.{rec}"
+        if name == "estimate_solar_savings":
+            units = float(inp.get("units_kwh") or 0)
+            amount = float(inp.get("bill_amount") or 0)
+            if units <= 0:
+                return "Need the monthly units (kWh) from the bill to estimate solar savings."
+            r = await _compute_solar_savings(units, amount, float(inp.get("per_unit_rate") or 0), float(inp.get("period_days") or 30))
+            await db.bill_analyses.insert_one({"id": str(uuid.uuid4()), "user_id": uid, "source": "volt",
+                "units_kwh": round(units), "bill_amount": round(amount), "per_unit_rate": r["per_unit_rate"],
+                "monthly_units": r["monthly_units"], "solar_kw": r["solar_kw"], "est_cost": r["est_cost"],
+                "monthly_savings": r["monthly_savings"], "payback_years": r["payback_years"],
+                "created_at": datetime.now(timezone.utc).isoformat()})
+            sku = r.get("recommended_sku") or {}
+            rec = f" Recommended: {sku.get('name')}." if sku.get("name") else ""
+            pay = f"{r['payback_years']} yrs" if r.get("payback_years") else "—"
+            return (f"For ~{round(units)} units/month (₹{round(amount):,} bill, ₹{r['per_unit_rate']}/unit): a ~{r['solar_kw']} kW "
+                    f"rooftop solar system (~₹{r['est_cost']:,}) would save about ₹{r['monthly_savings']:,}/month "
+                    f"(₹{r['annual_savings']:,}/year), paying back in {pay}.{rec} (action:solar_estimate)")
+        if name == "check_area_outages":
+            pc = await _user_pincode(user)
+            if not pc:
+                return "The customer hasn't set a pincode, so I can't map their area — ask them to add it in their profile."
+            d = await _compute_outage_radar(pc)
+            return (f"Area {pc}: {d['active_now']} home(s) reporting an outage right now; {d['outages_today']} cut(s) today; "
+                    f"{d['reporters']} homes mapping. {d['prediction']}")
+        if name == "report_outage":
+            pc = await _user_pincode(user)
+            if not pc:
+                return "Can't log it — the customer hasn't set a pincode. Ask them to add it in their profile."
+            st = inp.get("status") if inp.get("status") in ("outage", "restored") else "outage"
+            await db.outage_reports.insert_one({"id": str(uuid.uuid4()), "user_id": uid, "pincode": pc, "status": st,
+                                                "source": "volt", "reported_at": datetime.now(timezone.utc).isoformat()})
+            return f"Logged a '{st}' report for area {pc} — thanks, this helps neighbours see the live picture. (action:outage_reported)"
+        if name == "get_backup_health":
+            h = await _compute_backup_health(uid)
+            if (h.get("samples") or 0) < 2:
+                return "Not enough backup sessions logged yet to show a trend — ask them to log a few backup durations in SoundCheck first."
+            return (f"Measured backup: recent average {h['recent_avg_minutes']} min vs their best {h['best_minutes']} min "
+                    f"({h['degradation_pct']}% drop). {h['recommendation']}")
+    except Exception as e:
+        return f"(tool error: {e})"
+    return "(unknown tool)"
+
+
+async def _volt_context(user: dict) -> str:
+    """Brief grounding context (products, recent order, open tickets) for Volt."""
+    uid = user["id"]
+    parts = []
+    ws = await db.warranties.find({"customer_id": uid}, {"_id": 0, "device_type": 1, "product_name": 1, "serial_number": 1}).limit(10).to_list(10)
+    if ws:
+        parts.append("Registered products: " + "; ".join(f"{w.get('product_name') or w.get('device_type')}" for w in ws))
+    else:
+        parts.append("Customer has no registered products yet.")
+    open_t = await db.tickets.count_documents({"customer_id": uid, "status": {"$nin": ["resolved", "closed", "completed", "cancelled"]}})
+    if open_t:
+        parts.append(f"Open support tickets: {open_t}.")
+    return " ".join(parts)
+
+
+class VoltMessage(BaseModel):
+    message: str = ""
+    image_base64: Optional[str] = None
+    session_id: Optional[str] = None
+
+
+@api_router.post("/ai/volt")
+async def volt_assistant(body: VoltMessage, user: dict = Depends(get_current_user)):
+    """Customer-facing Claude assistant for the MuscleGrid Connect app."""
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        raise HTTPException(status_code=503, detail="Assistant is not available right now")
+    try:
+        import anthropic
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Assistant is not available right now")
+
+    session_id = body.session_id or str(uuid.uuid4())
+    # Load prior turns for continuity.
+    sess = await db.volt_sessions.find_one({"id": session_id, "user_id": user["id"]}, {"_id": 0})
+    history = (sess or {}).get("messages", [])[-12:]
+
+    context = await _volt_context(user)
+    system = (
+        "You are 'Volt', the MuscleGrid energy expert assistant inside the MuscleGrid Connect app. "
+        "MuscleGrid sells inverters, batteries, stabilizers and solar in India. Be warm, concise and practical; "
+        "use ₹ and Indian appliances in examples. Use tools to fetch real facts about THIS customer — never invent "
+        "product, order, warranty or device data. For sizing/runtime questions, use size_system. If the customer "
+        "sends a photo of an error or device, diagnose it. If they send an electricity BILL, read the units and bill "
+        "amount off it and call estimate_solar_savings to give them an accurate rooftop-solar savings plan (size, "
+        "cost, monthly saving, payback) — never guess solar economics yourself. "
+        "For power-cut questions about their area use check_area_outages (and report_outage when they tell you the "
+        "power is out or has come back). When they describe a fault/symptom or worry their backup time has dropped, "
+        "diagnose it and use get_backup_health for their measured runtime; raise a service ticket if a technician is needed. "
+        "Reply in the SAME language the customer writes in (e.g. Hindi or Hinglish). "
+        "Only create a support ticket after confirming the issue with "
+        f"the customer. Customer context: {context}"
+    )
+
+    # Build the new user turn (text + optional image).
+    user_content = []
+    if body.image_base64:
+        user_content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": body.image_base64}})
+    user_content.append({"type": "text", "text": body.message or "(image attached)"})
+    messages = history + [{"role": "user", "content": user_content}]
+
+    client = anthropic.AsyncAnthropic(api_key=key)
+    actions = []
+    reply = ""
+    try:
+        for _ in range(6):
+            resp = await client.messages.create(model=VOLT_MODEL, max_tokens=900, system=system, tools=VOLT_TOOLS, messages=messages)
+            if resp.stop_reason == "tool_use":
+                messages.append({"role": "assistant", "content": resp.content})
+                results = []
+                for block in resp.content:
+                    if getattr(block, "type", None) == "tool_use":
+                        out = await _volt_tool(block.name, block.input or {}, user)
+                        if "(action:" in out:
+                            actions.append(out.split("(action:", 1)[1].rstrip(")"))
+                        results.append({"type": "tool_result", "tool_use_id": block.id, "content": out})
+                messages.append({"role": "user", "content": results})
+                continue
+            reply = "".join(getattr(b, "text", "") for b in resp.content if getattr(b, "type", None) == "text").strip()
+            break
+        if not reply:
+            reply = "I'm not sure how to help with that yet — could you rephrase?"
+    except Exception as e:
+        logger.warning(f"volt_assistant failed: {e}")
+        raise HTTPException(status_code=502, detail="Volt hit an error. Please try again.")
+
+    # Persist a compact transcript (text only) for continuity.
+    now = datetime.now(timezone.utc).isoformat()
+    turn_user = {"role": "user", "content": body.message or "(image)"}
+    turn_assistant = {"role": "assistant", "content": reply}
+    await db.volt_sessions.update_one(
+        {"id": session_id},
+        {"$set": {"id": session_id, "user_id": user["id"], "updated_at": now},
+         "$push": {"messages": {"$each": [turn_user, turn_assistant]}}},
+        upsert=True,
+    )
+    return {"reply": reply, "session_id": session_id, "actions": actions}
+
+
+# ===========================================================================
+# Ground-breaking app features — Bill Doctor · Outage Radar · SoundCheck
+# ===========================================================================
+async def _claude_json(prompt: str, image_base64: str = None, system: str = "", max_tokens: int = 1200) -> dict:
+    """Call Claude and parse a single JSON object from the reply. {} on failure."""
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        return {}
+    try:
+        import anthropic
+        client = anthropic.AsyncAnthropic(api_key=key)
+        content = []
+        if image_base64:
+            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_base64}})
+        content.append({"type": "text", "text": prompt})
+        resp = await client.messages.create(
+            model=VOLT_MODEL, max_tokens=max_tokens,
+            system=system or "You are a precise assistant. Reply with ONLY valid minified JSON, no prose, no markdown.",
+            messages=[{"role": "user", "content": content}],
+        )
+        txt = "".join(getattr(b, "text", "") for b in resp.content if getattr(b, "type", None) == "text").strip()
+        m = re.search(r"\{.*\}", txt, re.DOTALL)
+        return json.loads(m.group(0)) if m else {}
+    except Exception as e:
+        logger.warning(f"_claude_json failed: {e}")
+        return {}
+
+
+# ---------------------------- 1) Bill Doctor ----------------------------
+SOLAR_COST_PER_KW = 55000          # ₹/kW installed (India rooftop, ballpark)
+SOLAR_SUN_HOURS = 4.0              # effective peak sun hours/day
+SOLAR_SYS_EFF = 0.75              # system efficiency
+
+
+async def _compute_solar_savings(units: float, amount: float, rate: float = 0, days: float = 30) -> dict:
+    """Deterministic rooftop-solar sizing + payback from monthly consumption.
+    Shared by the Bill Doctor endpoint and the Volt assistant tool."""
+    days = days or 30
+    rate = rate or (amount / units if units else 8.0)
+    monthly_units = units / days * 30
+    solar_kw = max(1.0, round(monthly_units / 30 * 0.9 / (SOLAR_SUN_HOURS * SOLAR_SYS_EFF), 1))
+    est_cost = round(solar_kw * SOLAR_COST_PER_KW)
+    monthly_gen = solar_kw * SOLAR_SUN_HOURS * SOLAR_SYS_EFF * 30
+    monthly_savings = round(min(monthly_gen, monthly_units) * rate)
+    annual = monthly_savings * 12
+    payback = round(est_cost / annual, 1) if annual else None
+    sku = await db.master_skus.find_one({"category": {"$regex": "solar", "$options": "i"}},
+                                        {"_id": 0, "id": 1, "name": 1, "selling_price": 1, "mrp": 1})
+    return {"monthly_units": round(monthly_units), "per_unit_rate": round(rate, 2), "solar_kw": solar_kw,
+            "est_cost": est_cost, "monthly_savings": monthly_savings, "annual_savings": annual,
+            "payback_years": payback, "recommended_sku": sku}
+
+
+class BillAnalyzeInput(BaseModel):
+    image_base64: str
+    pincode: Optional[str] = None
+
+@api_router.post("/bill/analyze")
+async def bill_analyze(body: BillAnalyzeInput, user: dict = Depends(get_current_user)):
+    """Read an electricity bill photo and produce a personalised solar/savings plan."""
+    facts = await _claude_json(
+        "This is a photo of an Indian household electricity bill. Return STRICT JSON with: "
+        "units_kwh (number of units consumed this cycle), bill_amount (₹ total payable), "
+        "period_days (billing days, default 30), per_unit_rate (₹/unit; compute bill_amount/units_kwh if absent), "
+        "sanctioned_load_kw (number or null), discom (string or null), month (string or null), "
+        "savings_tips (array of EXACTLY 3 short India-specific tips to cut this bill). Use null when unsure.",
+        image_base64=body.image_base64,
+        system="You read Indian electricity bills and output strict JSON only.",
+    )
+    units = float(facts.get("units_kwh") or 0)
+    amount = float(facts.get("bill_amount") or 0)
+    days = float(facts.get("period_days") or 30) or 30
+    if units <= 0:
+        return {"ok": False, "message": "Couldn't read the units off this bill — try a clearer, full-frame photo."}
+    r = await _compute_solar_savings(units, amount, float(facts.get("per_unit_rate") or 0), days)
+    await db.bill_analyses.insert_one({"id": str(uuid.uuid4()), "user_id": user["id"], "source": "bill_doctor",
+        "units_kwh": round(units), "bill_amount": round(amount), "per_unit_rate": r["per_unit_rate"],
+        "monthly_units": r["monthly_units"], "discom": facts.get("discom"), "month": facts.get("month"),
+        "solar_kw": r["solar_kw"], "est_cost": r["est_cost"], "monthly_savings": r["monthly_savings"],
+        "payback_years": r["payback_years"], "created_at": datetime.now(timezone.utc).isoformat()})
+    return {"ok": True, "units_kwh": round(units), "bill_amount": round(amount), "per_unit_rate": r["per_unit_rate"],
+            "monthly_units": r["monthly_units"], "discom": facts.get("discom"), "month": facts.get("month"),
+            "monthly_savings": r["monthly_savings"],
+            "solar": {"size_kw": r["solar_kw"], "est_cost": r["est_cost"], "monthly_savings": r["monthly_savings"],
+                      "annual_savings": r["annual_savings"], "payback_years": r["payback_years"],
+                      "recommended_sku": r["recommended_sku"]},
+            "tips": (facts.get("savings_tips") or [])[:3]}
+
+
+# ---------------------------- 2) Outage Radar ----------------------------
+class OutageReportInput(BaseModel):
+    pincode: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    status: str = "outage"   # "outage" | "restored"
+
+async def _user_pincode(user: dict, fallback: str = None) -> Optional[str]:
+    if fallback:
+        return re.sub(r"\D", "", fallback)[:6] or None
+    u = await db.users.find_one({"id": user["id"]}, {"_id": 0, "pincode": 1, "address": 1})
+    pc = (u or {}).get("pincode") or ""
+    return re.sub(r"\D", "", str(pc))[:6] or None
+
+@api_router.post("/outage/report")
+async def outage_report(body: OutageReportInput, user: dict = Depends(get_current_user)):
+    pincode = await _user_pincode(user, body.pincode)
+    if not pincode:
+        return {"ok": False, "message": "Add your pincode in your profile so we can map your area."}
+    await db.outage_reports.insert_one({
+        "id": str(uuid.uuid4()), "user_id": user["id"], "pincode": pincode,
+        "lat": body.lat, "lng": body.lng, "status": body.status if body.status in ("outage", "restored") else "outage",
+        "reported_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"ok": True, "pincode": pincode}
+
+async def _compute_outage_radar(pincode: str) -> dict:
+    now = datetime.now(timezone.utc)
+    rows = await db.outage_reports.find({"pincode": pincode}, {"_id": 0}).sort("reported_at", -1).to_list(5000)
+    latest_by_user = {}
+    for r in rows:
+        latest_by_user.setdefault(r["user_id"], r)  # rows are newest-first
+    active = sum(1 for r in latest_by_user.values()
+                 if r.get("status") == "outage" and r.get("reported_at", "") >= (now - timedelta(hours=4)).isoformat())
+    today = sum(1 for r in rows if r.get("status") == "outage" and r.get("reported_at", "")[:10] == now.isoformat()[:10])
+    cutoff = (now - timedelta(days=30)).isoformat()
+    from collections import Counter as _C
+    hours = _C()
+    for r in rows:
+        if r.get("status") == "outage" and r.get("reported_at", "") >= cutoff:
+            try:
+                hours[int(r["reported_at"][11:13])] += 1
+            except Exception:
+                pass
+    peak = [h for h, _ in hours.most_common(3)]
+    peak.sort()
+    if peak:
+        rng = f"{peak[0]:02d}:00–{(peak[-1]+1) % 24:02d}:00"
+        prediction = f"Cuts in your area cluster around {rng}. Plan heavy appliances outside this window."
+    else:
+        prediction = "Not enough reports yet to spot a pattern — be the first to map your area."
+    return {"pincode": pincode, "active_now": active, "outages_today": today,
+            "peak_hours": peak, "prediction": prediction, "reporters": len(latest_by_user)}
+
+
+@api_router.get("/outage/radar")
+async def outage_radar(pincode: Optional[str] = None, user: dict = Depends(get_current_user)):
+    pincode = await _user_pincode(user, pincode)
+    if not pincode:
+        return {"ok": False, "message": "Add your pincode in your profile to see your area's power map."}
+    return {"ok": True, **(await _compute_outage_radar(pincode))}
+
+
+# ---------------------------- 3) SoundCheck + backup health ----------------------------
+class SoundCheckInput(BaseModel):
+    device_type: str = ""
+    beep_pattern: Optional[str] = None
+    sounds: Optional[List[str]] = None
+    behavior: Optional[str] = None
+    notes: Optional[str] = None
+
+@api_router.post("/soundcheck/diagnose")
+async def soundcheck_diagnose(body: SoundCheckInput, user: dict = Depends(get_current_user)):
+    """Symptom-based diagnostic — Claude reasons over what the customer sees/hears."""
+    obs = {"device_type": body.device_type, "beep_pattern": body.beep_pattern,
+           "sounds": body.sounds or [], "behavior": body.behavior, "notes": body.notes}
+    data = await _claude_json(
+        "A customer is diagnosing their home inverter/battery/stabilizer using these observations: "
+        f"{json.dumps(obs)}. As a MuscleGrid service expert, return STRICT JSON with: "
+        "diagnosis (1 short sentence, what's likely wrong), severity (one of: ok, watch, urgent), "
+        "likely_cause (short string), steps (array of 2-4 short self-help steps the customer can try), "
+        "action (one of: self_fix, book_service, buy_part), confidence (0-1). "
+        "Beep codes: continuous beep on inverter usually = overload or low battery; "
+        "intermittent = battery low/charging fault; no power + no beep = dead battery or no input.",
+        system="You are a calm, accurate appliance service technician. JSON only.",
+        max_tokens=700,
+    )
+    if not data:
+        data = {"diagnosis": "Couldn't analyse that — please raise a support ticket.", "severity": "watch",
+                "likely_cause": "unknown", "steps": ["Contact support"], "action": "book_service", "confidence": 0}
+    data["ok"] = True
+    await db.soundcheck_diagnoses.insert_one({"id": str(uuid.uuid4()), "user_id": user["id"],
+                                              "observations": obs, "result": data,
+                                              "created_at": datetime.now(timezone.utc).isoformat()})
+    return data
+
+class BackupLogInput(BaseModel):
+    warranty_id: Optional[str] = None
+    minutes: float
+
+@api_router.post("/backup/log")
+async def backup_log(body: BackupLogInput, user: dict = Depends(get_current_user)):
+    if body.minutes <= 0 or body.minutes > 5000:
+        return {"ok": False, "message": "Enter a realistic backup duration."}
+    await db.backup_logs.insert_one({"id": str(uuid.uuid4()), "user_id": user["id"],
+                                     "warranty_id": body.warranty_id, "minutes": round(body.minutes, 1),
+                                     "logged_at": datetime.now(timezone.utc).isoformat()})
+    return {"ok": True}
+
+async def _compute_backup_health(user_id: str) -> dict:
+    logs = await db.backup_logs.find({"user_id": user_id}, {"_id": 0}).sort("logged_at", 1).to_list(1000)
+    if len(logs) < 2:
+        return {"ok": True, "samples": len(logs),
+                "message": "Log a couple of backup sessions and I'll track your battery's real runtime over time."}
+    mins = [l["minutes"] for l in logs]
+    best = max(mins)
+    recent = sum(mins[-3:]) / len(mins[-3:])
+    degradation = round((1 - recent / best) * 100) if best else 0
+    if degradation >= 25:
+        rec, band = "Your backup has dropped noticeably — book a battery health check.", "attention"
+    elif degradation >= 12:
+        rec, band = "Slight drop in backup time — keep an eye on it.", "watch"
+    else:
+        rec, band = "Your battery is holding up well.", "good"
+    return {"ok": True, "samples": len(logs), "best_minutes": round(best), "recent_avg_minutes": round(recent),
+            "degradation_pct": max(0, degradation), "band": band, "recommendation": rec}
+
+
+@api_router.get("/backup/health")
+async def backup_health(user: dict = Depends(get_current_user)):
+    return await _compute_backup_health(user["id"])
 
 
 async def crm_command_respond(channel_id: str, text: str, asker_name: str):
@@ -51118,6 +53405,10 @@ async def smartflo_webhook(request: Request):
             import asyncio
             asyncio.create_task(send_post_call_sms(caller_phone, call_type))
             logger.info(f"Triggered post-call SMS for {caller_phone} (call type: {call_type})")
+
+            # On a MISSED call, also WhatsApp the caller (opt-in via MISSED_CALL_WA_ENABLED).
+            if call_type == "missed":
+                asyncio.create_task(send_missed_call_whatsapp(caller_phone, call_type))
 
         # ========== SCREEN-POP BROADCAST ==========
         # Notify connected agents about the inbound call so the browser can pop
@@ -59937,6 +62228,241 @@ async def get_courier_label(
         }
 
 
+@api_router.post("/pending-fulfillment/{fulfillment_id}/bigship-label")
+async def bigship_label_for_fulfillment(
+    fulfillment_id: str,
+    dry_run: bool = Query(False, description="Build & validate the shipment without booking it on Bigship"),
+    warehouse_id: Optional[int] = Query(None, description="Override pickup warehouse; defaults to the first Bigship warehouse"),
+    force: bool = Query(False, description="Admin-only: bypass the duplicate-shipment guard and re-book"),
+    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))
+):
+    """
+    One-click 'Label & Dispatch': create + manifest a Bigship (Delhivery, B2C) shipment using the
+    data already on the pending_fulfillment record, store the label, and write the real AWB back as
+    the tracking_id. Reuses the existing /courier/* handlers. Idempotent + dedup-guarded so a re-click
+    never re-books a parcel (ref: 2026-05-28 ~Rs.6L duplicate-shipment incident). Recovers a shipment
+    that was created but not manifested instead of creating a second one. Does NOT deduct stock or write
+    to Amazon — the existing gate-scan dispatch -> finalize flow is unchanged.
+    """
+    import re, base64
+    CANCELLED = ["cancelled", "CANCELLED", "Cancelled", "CANCELED", "canceled"]
+    force = bool(force) and user.get("role") == "admin"
+
+    rec = await db.pending_fulfillment.find_one({"id": fulfillment_id})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Pending fulfillment not found")
+    order_id = rec.get("order_id")
+    if not order_id:
+        raise HTTPException(status_code=400, detail="This record has no order id — cannot book a shipment")
+
+    # --- Idempotency: this record already carries a Bigship AWB -> return it, never re-book ---
+    if rec.get("bigship_order_id") and rec.get("awb_number") and not force:
+        return {
+            "success": True, "already_booked": True,
+            "awb_number": rec.get("awb_number"), "bigship_order_id": rec.get("bigship_order_id"),
+            "label_url": rec.get("label_url"),
+            "message": "Shipment already booked on Bigship for this order."
+        }
+
+    # --- Dedup guard: an active courier_shipment already exists for this order ---
+    # Match by order id (invoice_number/amazon_order_id) AND by the AWB already on the record's
+    # tracking_id — historical bigship_excel rows often have a null invoice_number and are only
+    # findable via their AWB. Missing this would let a re-click double-book an already-shipped order.
+    system_order_id = None
+    existing_cs = None
+    if not force:
+        dedup_or = [{"invoice_number": order_id}, {"amazon_order_id": order_id}]
+        tr = str(rec.get("tracking_id") or "")
+        if len(re.sub(r"\D", "", tr)) >= 10:  # looks like a real AWB, not a CRM label number
+            dedup_or.append({"awb_number": tr})
+        existing_cs = await db.courier_shipments.find_one({
+            "$or": dedup_or,
+            "status": {"$nin": CANCELLED}
+        })
+        if existing_cs:
+            system_order_id = existing_cs.get("bigship_order_id")
+            existing_awb = existing_cs.get("awb_number") or existing_cs.get("master_awb")
+            if existing_awb:
+                # Fully booked already -> link onto the record and return (no second parcel).
+                # Never mutate during a dry run.
+                if not dry_run:
+                    now = datetime.now(timezone.utc).isoformat()
+                    await db.pending_fulfillment.update_one({"id": fulfillment_id}, {"$set": {
+                        "bigship_order_id": system_order_id, "awb_number": existing_awb,
+                        "tracking_id": existing_awb, "updated_at": now,
+                    }})
+                return {
+                    "success": True, "already_booked": True, "duplicate_guard": True,
+                    "awb_number": existing_awb, "bigship_order_id": system_order_id,
+                    "message": f"An active Bigship shipment already exists for order {order_id} "
+                               f"(duplicate guard). Linked it to this record instead of re-booking."
+                }
+            # else: created but never manifested -> fall through and complete it (recovery)
+
+    # --- Gather consignee data from the record ---
+    first_name = (rec.get("customer_first_name") or "").strip()
+    last_name = (rec.get("customer_last_name") or "").strip()
+    if not first_name:
+        parts = (rec.get("customer_name") or "").strip().split()
+        first_name = parts[0] if parts else ""
+        last_name = " ".join(parts[1:]) if len(parts) > 1 else last_name
+    phone = re.sub(r"\D", "", str(rec.get("customer_phone") or ""))[-10:]
+    pincode = re.sub(r"\D", "", str(rec.get("pincode") or ""))
+
+    def _amt(v):
+        # invoice_value is sometimes a dict {CurrencyCode, Amount} from the Amazon sync
+        if isinstance(v, dict):
+            v = v.get("Amount") or v.get("amount") or 0
+        try:
+            return float(v or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    invoice_amount = _amt(rec.get("invoice_value")) or _amt(rec.get("taxable_value"))
+
+    missing = []
+    if not first_name: missing.append("customer name")
+    if len(phone) != 10: missing.append("10-digit phone")
+    if len(pincode) != 6: missing.append("6-digit pincode")
+    if not (rec.get("address") or "").strip(): missing.append("address")
+    if invoice_amount <= 0: missing.append("invoice value")
+    if missing:
+        raise HTTPException(status_code=400, detail="Cannot book shipment — missing: " + ", ".join(missing))
+
+    # Sanitize address to Bigship's allowed charset (alphanumerics, space, '.,-/)
+    raw_addr = re.sub(r"[^A-Za-z0-9 '.,\-/]", " ", str(rec.get("address") or ""))
+    raw_addr = re.sub(r"\s+", " ", raw_addr).strip()
+    address_line1 = raw_addr[:50]
+    address_line2 = (raw_addr[50:100] or (rec.get("city") or ".")[:50])
+
+    # Parcel weight/dims/hsn/name from master_skus (aggregate the items into one box)
+    total_weight = 0.0; max_l = max_w = max_h = 0; total_qty = 0
+    primary_name = None; category = "Others"; hsn = ""
+    for it in (rec.get("items") or []):
+        m = await db.master_skus.find_one({"id": it.get("master_sku_id")}) or {}
+        qty = int(it.get("quantity") or 1); total_qty += qty
+        total_weight += float(m.get("weight_kg") or 2) * qty
+        max_l = max(max_l, int(m.get("length_cm") or 0))
+        max_w = max(max_w, int(m.get("breadth_cm") or 0))
+        max_h = max(max_h, int(m.get("height_cm") or 0))
+        if primary_name is None:
+            primary_name = m.get("name") or it.get("master_sku_name") or it.get("sku_code") or "Product"
+            category = m.get("category") or "Others"
+            hsn = it.get("hsn_code") or m.get("hsn_code") or ""
+    if total_qty == 0:
+        total_qty = int(rec.get("quantity") or 1)
+    total_weight = max(round(total_weight, 2), 0.5)
+    length, width, height = (max_l or 30), (max_w or 30), (max_h or 30)
+    product_name = primary_name or "Product"
+    if len(rec.get("items") or []) > 1:
+        product_name = f"{product_name} (+{len(rec['items']) - 1} more)"
+
+    # --- Resolve pickup warehouse ---
+    wh_resp = await get_courier_warehouses(page=1, page_size=50, current_user=user)
+    warehouses = wh_resp.get("warehouses") or []
+    if not warehouses:
+        raise HTTPException(status_code=502, detail="No Bigship pickup warehouse available")
+    wh = warehouses[0]
+    if warehouse_id:
+        wh = next((w for w in warehouses if int(w.get("warehouse_id")) == int(warehouse_id)), warehouses[0])
+    wh_id = int(wh.get("warehouse_id"))
+    wh_pincode = re.sub(r"\D", "", str(wh.get("address_pincode") or wh.get("pincode") or wh.get("warehouse_pincode") or ""))
+
+    # --- Serviceability + Delhivery courier_id via the rate calculator ---
+    rates_resp = await calculate_courier_rates(request={
+        "shipment_category": "B2C", "payment_type": "Prepaid",
+        "pickup_pincode": wh_pincode, "destination_pincode": pincode,
+        "invoice_amount": invoice_amount,
+        "weight": total_weight, "length": length, "width": width, "height": height,
+    }, current_user=user)
+    rates = rates_resp.get("rates") or []
+    delhivery = next((r for r in rates if "delhivery" in str(r.get("courier_name", "")).lower()), None)
+    if not delhivery:
+        avail = ", ".join(sorted({str(r.get("courier_name")) for r in rates})) or "none"
+        raise HTTPException(status_code=422, detail=f"Delhivery not serviceable for pincode {pincode} "
+                            f"(available: {avail}). Self-ship is Delhivery-only — handle this one manually.")
+    courier_id = delhivery.get("courier_id")
+
+    preview = {
+        "order_id": order_id, "consignee": f"{first_name} {last_name}".strip(),
+        "phone": phone, "pincode": pincode, "address_line1": address_line1,
+        "weight_kg": total_weight, "dimensions": f"{length}x{width}x{height}",
+        "product_name": product_name, "hsn": hsn, "invoice_amount": invoice_amount,
+        "warehouse_id": wh_id, "warehouse_pincode": wh_pincode,
+        "courier": delhivery.get("courier_name"), "courier_id": courier_id,
+        "rate": delhivery.get("total_shipping_charges"),
+    }
+    if dry_run:
+        return {"success": True, "dry_run": True, "serviceable": True, "preview": preview,
+                "message": "Validated — Delhivery is serviceable for this lane. No shipment booked (dry run)."}
+
+    # --- Create the shipment (skip if we are recovering an already-created one) ---
+    if not system_order_id:
+        created = await create_courier_shipment(request={
+            "shipment_category": "b2c", "warehouse_id": wh_id,
+            "first_name": first_name[:25], "last_name": last_name[:25], "phone": phone,
+            "address_line1": address_line1, "address_line2": address_line2,
+            "city": rec.get("city") or "", "state": rec.get("state") or "", "pincode": pincode,
+            "invoice_number": order_id, "invoice_amount": invoice_amount, "payment_type": "Prepaid",
+            "weight": total_weight, "length": length, "width": width, "height": height,
+            "product_name": product_name, "product_category": category,
+            "quantity": total_qty, "hsn": hsn,
+        }, current_user=user)
+        system_order_id = created.get("system_order_id")
+        if not system_order_id:
+            raise HTTPException(status_code=502, detail="Bigship did not return a system_order_id")
+        # tag the courier_shipment so it's traceable and dedup-findable next time
+        await db.courier_shipments.update_one({"bigship_order_id": str(system_order_id)}, {"$set": {
+            "amazon_order_id": order_id, "source": "crm_api", "pending_fulfillment_id": fulfillment_id,
+        }})
+
+    # --- Manifest (assign Delhivery, get AWB) ---
+    man = await manifest_courier_shipment(request={
+        "system_order_id": system_order_id, "courier_id": courier_id, "shipment_category": "b2c",
+    }, current_user=user)
+    awb = man.get("awb_number")
+
+    # --- Download + store the label ---
+    label_url = None
+    try:
+        lbl = await get_courier_label(system_order_id=str(system_order_id), shipment_type="b2c", current_user=user)
+        if lbl.get("success") and lbl.get("content"):
+            from utils.storage import upload_file
+            pdf_bytes = base64.b64decode(lbl["content"])
+            rel_path, _ = await upload_file(pdf_bytes, "bigship", f"label_{awb or system_order_id}.pdf",
+                                            filename_prefix=str(order_id))
+            label_url = f"/api/files/{rel_path}"
+    except Exception as e:
+        logger.warning(f"Bigship label download/store failed for {system_order_id}: {e}")
+
+    # --- Write AWB + label back onto the record (tracking_id := the real AWB) ---
+    now = datetime.now(timezone.utc).isoformat()
+    await db.pending_fulfillment.update_one({"id": fulfillment_id}, {
+        "$set": {
+            "tracking_id": awb or rec.get("tracking_id"), "awb_number": awb,
+            "bigship_order_id": str(system_order_id),
+            "bigship_courier": man.get("courier_name") or delhivery.get("courier_name"),
+            "label_url": label_url, "bigship_label_at": now, "updated_at": now,
+        },
+        "$push": {"tracking_history": {"tracking_id": awb, "created_at": now,
+                                       "status": "bigship_awb", "source": "bigship_api"}}
+    })
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()), "action": "bigship_label_generated",
+        "entity_type": "pending_fulfillment", "entity_id": fulfillment_id, "entity_name": order_id,
+        "performed_by": user["id"],
+        "performed_by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+        "details": {"awb": awb, "bigship_order_id": str(system_order_id), "courier": man.get("courier_name")},
+        "timestamp": now,
+    })
+    return {
+        "success": True, "awb_number": awb, "bigship_order_id": str(system_order_id),
+        "courier": man.get("courier_name") or delhivery.get("courier_name"),
+        "label_url": label_url, "preview": preview,
+        "message": f"Booked on {man.get('courier_name') or 'Delhivery'} — AWB {awb}. "
+                   f"Tracking set on the record; proceed with dispatch as usual."
+    }
+
+
 @api_router.get("/courier/shipments")
 async def get_courier_shipments(
     page: int = Query(1, ge=1),
@@ -60006,6 +62532,123 @@ async def gst_audit(firm_id: str = None, period_key: str = None,
             "OTP auth) to unlock filed-return reconciliation, GSTR-2B ITC, and 3B liability. "
             "Meanwhile, upload return JSON below to reconcile now.",
             "totals": totals, "firms": reports}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CA PORTAL — read-only GST filing view for the external chartered accountant.
+# Role "ca" sees the reconciled per-firm GSTR-1 summary (source of truth = the
+# generated gstr1_gstn_v2/*.json that #153 templates are built from) plus a
+# curated set of downloadable filing files (claude_files tagged ca_visible).
+# ──────────────────────────────────────────────────────────────────────────────
+_CA_FIRM_NAMES = {
+    "07AATCM1213F1ZM": "MGIPL (MuscleGrid India Pvt Ltd)",
+    "06BCSPR2468A1ZF": "MuscleGrid Gurgaon",
+    "09BLDPR5944R1Z3": "Electronics Bay (EBAY UP)",
+    "07BLDPR5944R3Z5": "Electronics Bay (Delhi)",
+    "09BPRPR2164D1ZK": "SPV",
+}
+_FP_LABEL = {"052026": "May 2026"}
+
+
+def _ca_firm_summary(j: dict) -> dict:
+    """Compute the GSTR-1 filing summary for one firm from its reconciled GSTN JSON."""
+    def _tax(d):
+        return round((d.get("iamt", 0) or 0) + (d.get("camt", 0) or 0) + (d.get("samt", 0) or 0), 2)
+
+    # B2B (invoice-level, registered recipients)
+    b2b_inv = 0
+    b2b_tx = b2b_tax = 0.0
+    for x in j.get("b2b", []):
+        for inv in x.get("inv", []):
+            b2b_inv += 1
+            for it in inv.get("itms", []):
+                d = it["itm_det"]; b2b_tx += d.get("txval", 0); b2b_tax += _tax(d)
+    # B2C large (inter-state > 2.5L, invoice-level) + B2C small (rate-wise)
+    b2cl_inv = 0
+    b2c_tx = b2c_tax = 0.0
+    for x in j.get("b2cl", []):
+        for inv in x.get("inv", []):
+            b2cl_inv += 1
+            for it in inv.get("itms", []):
+                d = it["itm_det"]; b2c_tx += d.get("txval", 0); b2c_tax += _tax(d)
+    for s in j.get("b2cs", []):
+        b2c_tx += s.get("txval", 0); b2c_tax += _tax(s)
+    # Credit / debit notes (reduce liability)
+    cdn_cnt = 0
+    cdn_tx = cdn_tax = 0.0
+    for x in j.get("cdnr", []) + j.get("cdnur", []):
+        for nt in x.get("nt", []):
+            cdn_cnt += 1
+            for it in nt.get("itms", []):
+                d = it["itm_det"]; cdn_tx += d.get("txval", 0); cdn_tax += _tax(d)
+    hsn_rows = j.get("hsn", {}).get("data", [])
+    out_tax = round(b2b_tax + b2c_tax - cdn_tax, 2)
+    taxable = round(b2b_tx + b2c_tx - cdn_tx, 2)
+    gstin = j.get("gstin", "")
+    return {
+        "gstin": gstin,
+        "firm": _CA_FIRM_NAMES.get(gstin, gstin),
+        "period": _FP_LABEL.get(j.get("fp", ""), j.get("fp", "")),
+        "fp": j.get("fp", ""),
+        "output_gst": out_tax,
+        "taxable_value": taxable,
+        "sections": {
+            "b2b": {"invoices": b2b_inv, "taxable": round(b2b_tx, 2), "tax": round(b2b_tax, 2)},
+            "b2c": {"invoices": b2cl_inv, "taxable": round(b2c_tx, 2), "tax": round(b2c_tax, 2)},
+            "cdn": {"notes": cdn_cnt, "taxable": round(cdn_tx, 2), "tax": round(cdn_tax, 2)},
+            "hsn": {"rows": len(hsn_rows)},
+        },
+    }
+
+
+@api_router.get("/ca/gst-summary")
+async def ca_gst_summary(user: dict = Depends(require_roles(["ca", "admin"]))):
+    """Read-only GSTR-1 filing summary across all firms for the CA. Reads the reconciled
+    per-firm GSTN JSON (the exact source the #153 templates are built from), so the numbers
+    shown here are what gets filed. Also lists the downloadable filing files."""
+    import json as _json
+    src = UPLOAD_DIR / "claude_files" / "gstr1_gstn_v2"
+    firms = []
+    if src.exists():
+        for fp in sorted(src.glob("GSTR1_*.json")):
+            try:
+                firms.append(_ca_firm_summary(_json.loads(fp.read_text())))
+            except Exception:
+                continue
+    firms.sort(key=lambda f: f["output_gst"], reverse=True)
+    group = {
+        "output_gst": round(sum(f["output_gst"] for f in firms), 2),
+        "taxable_value": round(sum(f["taxable_value"] for f in firms), 2),
+        "firms": len(firms),
+    }
+    files = await db.claude_files.find(
+        {"ca_visible": True, "deleted_at": None},
+        {"_id": 0, "number": 1, "filename": 1, "note": 1, "size_bytes": 1},
+    ).sort("number", 1).to_list(100)
+    period = firms[0]["period"] if firms else None
+    return {"success": True, "period": period, "group": group, "firms": firms, "files": files}
+
+
+@api_router.get("/ca/files/{number}/download")
+async def ca_download_file(number: int, user: dict = Depends(require_roles(["ca", "admin"]))):
+    """CA-scoped download — serves ONLY claude_files explicitly tagged ca_visible
+    (the curated GST filing set), never the full claude_files library."""
+    record = await db.claude_files.find_one(
+        {"number": number, "ca_visible": True, "deleted_at": None}, {"_id": 0}
+    )
+    if not record:
+        raise HTTPException(status_code=404, detail=f"File #{number} not available")
+    disk_filename = (record.get("disk_filename") or "").strip()
+    if not disk_filename or "/" in disk_filename or "\\" in disk_filename or ".." in disk_filename:
+        raise HTTPException(status_code=400, detail="Invalid stored filename")
+    disk_path = UPLOAD_DIR / "claude_files" / disk_filename
+    if not disk_path.exists():
+        raise HTTPException(status_code=410, detail=f"File #{number} bytes missing on disk")
+    raw_name = record.get("filename") or f"file-{number}"
+    safe_name = "".join(ch for ch in str(raw_name) if ch.isprintable() and ch not in '"\r\n')[:200] or f"file-{number}"
+    raw_mime = (record.get("mime_type") or "").lower().strip()
+    media_type = raw_mime or "application/octet-stream"
+    return FileResponse(path=str(disk_path), media_type=media_type, filename=safe_name)
 
 
 @api_router.post("/admin/gst-audit/import")
@@ -60803,7 +63446,7 @@ async def _pratibha_customer_360(query: str, allow_finance: bool = False) -> dic
 
     tq = {"customer_phone": prx} if phone else {"customer_name": rx}
     out["tickets"] = {"count": await db.tickets.count_documents(tq), "recent": []}
-    async for t in db.tickets.find(tq, {"_id": 0, "ticket_number": 1, "status": 1, "issue_description": 1,
+    for t in await db.tickets.find(tq, {"_id": 0, "ticket_number": 1, "status": 1, "issue_description": 1,
                                         "sla_breached": 1}).sort("created_at", -1).limit(4):
         out["tickets"]["recent"].append({"ticket": t.get("ticket_number"), "status": t.get("status"),
                                          "sla_breached": t.get("sla_breached"), "issue": (t.get("issue_description") or "")[:60]})
@@ -61381,9 +64024,13 @@ async def _pratibha_handle_approval_reply(m) -> bool:
     # decision == yes
     reply_attachments = None  # the shipping-label PDF, attached to the confirmation when booked
     if appr.get("ship_fields"):
-        # Founder-confirmed courier booking → book via Bigship.
+        # Confirmed courier booking → book via Bigship. Reverse pickups register the customer's
+        # address as a pickup warehouse and ship to the Meerut warehouse; forward ships to the customer.
         try:
-            resp = await _pratibha_book_shipment(appr["ship_fields"], appr.get("ctx") or {})
+            if appr["ship_fields"].get("is_reverse_pickup"):
+                resp = await _pratibha_book_reverse_pickup(appr["ship_fields"], appr.get("ctx") or {})
+            else:
+                resp = await _pratibha_book_shipment(appr["ship_fields"], appr.get("ctx") or {})
             if getattr(resp, "success", False) and getattr(resp, "awb_number", None):
                 _cost = getattr(resp, "shipping_cost", None)
                 ok, result = True, (f"Booked ✓  Tracking ID (AWB): {resp.awb_number} ({getattr(resp, 'courier_name', None) or 'courier'})."
@@ -61608,10 +64255,30 @@ def _pr_norm_subject(s: str) -> str:
     return s.strip()
 
 
+# Critical/urgent detector — Pratibha only chases follow-ups on threads that match
+# (complaints, legal, safety, payment, escalations). Extra keywords via env.
+_PR_CRITICAL_RX = re.compile(
+    r"\b(urgent|asap|immediately|emergency|critical|high[\s-]*priority|escalat|"
+    r"legal|notice|court|lawyer|advocate|consumer\s+forum|"
+    r"complaint|not\s+working|does\s*n[o']?t\s+work|dead|faulty|burnt|burning|smoke|fire|"
+    r"safety|shock|hazard|blast|explod|"
+    r"refund|penalty|overdue|payment\s+(pending|due|not\s+received)|warranty\s+claim|"
+    r"stuck|stranded|not\s+(received|delivered)|missing\s+(parcel|order|shipment))\b", re.I)
+
+
+def _pr_is_critical(subject: str, context: str = "") -> bool:
+    t = f"{subject or ''} {context or ''}".lower()
+    if _PR_CRITICAL_RX.search(t):
+        return True
+    extra = email_agent.cfg().get("followup_critical_keywords") or []
+    return any(k in t for k in extra)
+
+
 async def _pratibha_track_followup(sent_msgid, subject, to_list, cc_list, references, context):
     """Record an outbound email so Pratibha can chase a response. Only tracks when an
     INTERNAL (@musclegrid.in) person is a direct (To) recipient — i.e. the expected actor —
-    so customer acknowledgements don't spawn nags. Reminders only ever go to internal staff."""
+    so customer acknowledgements don't spawn nags. Reminders only ever go to internal staff.
+    With followup_critical_only (default ON), only CRITICAL/urgent threads are chased."""
     c = email_agent.cfg()
     if not c.get("followup_enabled", True):
         return
@@ -61621,6 +64288,8 @@ async def _pratibha_track_followup(sent_msgid, subject, to_list, cc_list, refere
     internal_to = internal(to_list)
     if not internal_to:
         return  # no internal actor on the To line → nothing to chase
+    if c.get("followup_critical_only", True) and not _pr_is_critical(subject, context):
+        return  # routine thread — only chase critical/urgent ones
     recips = list(dict.fromkeys(internal_to + internal(cc_list)))
     now_dt = datetime.now(timezone.utc)
     now = now_dt.isoformat()
@@ -61896,6 +64565,9 @@ async def scheduled_pratibha_pickup_chase():
         parts.append("\n".join(
             f"• {p.get('order_id')} · AWB {p.get('awb_number')} — {p.get('flag_reason','')}" for p in flags))
     parts.append(f"\n{len(still)} pending in total. I'll keep reminding every 2 hours till they're cleared.\n\nPratibha, MuscleGrid")
+    if not email_agent.employee_send_allowed_now(email_agent.cfg(), [PICKUP_CHASE_OWNER]):
+        logger.info("Pratibha pickup chase: holding %d parcels until working hours (quiet hours / Sunday)", len(still))
+        return
     try:
         await email_agent.send_reply_all(
             [PICKUP_CHASE_OWNER], [], f"Pickup pending — {len(still)} parcels still not collected",
@@ -61905,6 +64577,160 @@ async def scheduled_pratibha_pickup_chase():
         logger.info(f"Pratibha pickup chase: reminded Aman of {len(still)} pending")
     except Exception as e:
         logger.error(f"Pratibha pickup chase digest failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Repair-loop agent (Phase 1) — drives the service-repair lifecycle:
+#   reverse-pickup delivered → received_at_factory → assign technician (with
+#   complaint + repair brief) → follow up until repaired.
+# Read-mostly + notify only. NO shipping/label actions here — the ship-back is
+# a separate, human-approved step (Phase 2). Gated OFF by default so it can be
+# deployed dark and switched on per-environment.
+# ---------------------------------------------------------------------------
+REPAIR_LOOP_ENABLED = os.environ.get("REPAIR_LOOP_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+REPAIR_LOOP_NUDGE_HOURS = int(os.environ.get("REPAIR_LOOP_NUDGE_HOURS", "24") or 24)
+REPAIR_LOOP_AGENT = {"id": "repair_agent", "first_name": "Repair", "last_name": "Agent", "role": "system"}
+
+
+def _repair_brief(t: dict) -> str:
+    """A clear, deterministic brief for the technician: what to repair + the
+    customer's complaint. (LLM polish is a later phase; a template is reliable.)"""
+    product = t.get("product_name") or t.get("device_type") or "the unit"
+    complaint = (t.get("issue_description") or "").strip() or "No complaint text on file."
+    lines = [f"Product: {product}"]
+    if t.get("serial_number"):
+        lines.append(f"Serial: {t['serial_number']}")
+    lines.append(f"Customer complaint: {complaint}")
+    if t.get("diagnosis"):
+        lines.append(f"Prior diagnosis: {t['diagnosis']}")
+    lines.append("Action: diagnose & repair, then mark the ticket repaired in the app.")
+    return "\n".join(lines)
+
+
+async def _courier_delivered(awb: str) -> bool:
+    """Best-effort: has this reverse-pickup AWB been delivered to the workshop?
+    Uses Delhivery unified-tracking; any error / non-Delhivery AWB → False (no action)."""
+    if not awb:
+        return False
+    try:
+        trk = await fetch_delhivery_tracking(awb)
+        return (trk or {}).get("state") == "delivered"
+    except Exception as e:
+        logger.debug(f"repair-loop tracking lookup failed for {awb}: {e}")
+        return False
+
+
+async def scheduled_repair_loop():
+    """Phase 1 orchestrator (every 30 min). Advances service tickets + warranty
+    claims on external signals; notifies/follow-ups only. Off unless REPAIR_LOOP_ENABLED."""
+    if not REPAIR_LOOP_ENABLED:
+        return
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+
+    # 1) Reverse pickup delivered to workshop → received_at_factory.
+    for t in await db.tickets.find(
+        {"status": {"$in": ["label_uploaded", "pickup_scheduled"]}, "pickup_tracking": {"$nin": [None, ""]}},
+        {"_id": 0},
+    ).to_list(200):
+        if not await _courier_delivered(t.get("pickup_tracking")):
+            continue
+        ok, _ = StateMachine.validate_transition("ticket", t["status"], "received_at_factory", is_admin=True)
+        if not ok:
+            continue
+        await db.tickets.update_one(
+            {"id": t["id"]},
+            {"$set": {"status": "received_at_factory", "received_at": now, "updated_at": now,
+                      "repair_loop.received_at": now}},
+        )
+        await add_ticket_history(
+            t["id"], f"Reverse pickup {t.get('pickup_tracking')} delivered to workshop — auto-advanced to received_at_factory",
+            REPAIR_LOOP_AGENT, {"awb": t.get("pickup_tracking"), "action_type": "repair_loop"},
+        )
+        await create_notification(
+            title="Parcel received at workshop",
+            message=f"Ticket {t.get('ticket_number')} parcel delivered — ready to assign a technician.",
+            notification_type="service", link="/supervisor/tickets",
+            target_roles=["supervisor", "admin"], priority="normal",
+        )
+
+    # 2) received_at_factory + unassigned → auto-assign technician + brief + notify.
+    for t in await db.tickets.find(
+        {"status": "received_at_factory", "assigned_to": {"$in": [None, ""]}}, {"_id": 0},
+    ).to_list(200):
+        try:
+            uid, name = await _auto_assign_agent("service_agent", t.get("firm_id"))
+        except Exception as e:
+            logger.warning(f"repair-loop assign failed for {t.get('id')}: {e}")
+            uid, name = None, None
+        if not uid:
+            continue
+        brief = _repair_brief(t)
+        upd = {"assigned_to": uid, "assigned_to_name": name, "auto_assigned": True, "updated_at": now,
+               "repair_loop.brief": brief, "repair_loop.assigned_at": now,
+               "repair_loop.last_nudge_at": now, "repair_loop.nudge_count": 0}
+        ok, _ = StateMachine.validate_transition("ticket", "received_at_factory", "assigned_to_technician", is_admin=True)
+        if ok:
+            upd["status"] = "assigned_to_technician"
+        await db.tickets.update_one({"id": t["id"]}, {"$set": upd})
+        await add_ticket_history(
+            t["id"], f"Auto-assigned to technician {name}", REPAIR_LOOP_AGENT,
+            {"action_type": "repair_loop", "assigned_to": uid},
+        )
+        msg = (f"🔧 New repair assigned — {t.get('ticket_number')}\n{brief}")
+        await create_notification(
+            title="New repair assigned", message=msg, notification_type="service",
+            link="/technician/tickets", target_user_ids=[uid], priority="high",
+        )
+        await send_whatsapp_notify(uid, msg)  # best-effort; no-op if not enabled/opted-in
+
+    # 3) Assigned & in repair → follow up the technician until marked repaired.
+    cutoff = (now_dt - timedelta(hours=REPAIR_LOOP_NUDGE_HOURS)).isoformat()
+    for t in await db.tickets.find(
+        {"status": {"$in": ["assigned_to_technician", "in_repair", "in_progress"]},
+         "assigned_to": {"$nin": [None, ""]}}, {"_id": 0},
+    ).to_list(300):
+        rl = t.get("repair_loop", {}) or {}
+        if not rl.get("last_nudge_at"):
+            # First time the loop has seen this ticket (e.g. a pre-existing backlog
+            # ticket when the agent is first switched on, or one assigned outside the
+            # loop). Seed a baseline instead of nudging, so enabling the agent never
+            # fires a burst on the existing backlog. It becomes due one cadence later.
+            await db.tickets.update_one(
+                {"id": t["id"]}, {"$set": {"repair_loop.last_nudge_at": now, "repair_loop.nudge_count": 0}},
+            )
+            continue
+        if rl["last_nudge_at"] > cutoff:
+            continue
+        n = (rl.get("nudge_count", 0) or 0) + 1
+        await db.tickets.update_one(
+            {"id": t["id"]}, {"$set": {"repair_loop.last_nudge_at": now, "repair_loop.nudge_count": n}},
+        )
+        product = t.get("product_name") or t.get("device_type") or "the unit"
+        msg = (f"⏰ Repair pending ({n}) — {t.get('ticket_number')} ({product}). "
+               f"Please update the ticket once repaired.")
+        await create_notification(
+            title="Repair pending", message=msg, notification_type="service",
+            link="/technician/tickets", target_user_ids=[t["assigned_to"]], priority="normal",
+        )
+        await send_whatsapp_notify(t["assigned_to"], msg)
+
+    # 4) Warranty claims: defective unit delivered to workshop → stamp received + notify.
+    for cl in await db.warranty_claims.find(
+        {"reverse_pickup_initiated": True, "defective_unit_received_at": {"$in": [None, ""]},
+         "reverse_pickup_tracking_id": {"$nin": [None, ""]}}, {"_id": 0},
+    ).to_list(200):
+        if not await _courier_delivered(cl.get("reverse_pickup_tracking_id")):
+            continue
+        await db.warranty_claims.update_one(
+            {"id": cl["id"]}, {"$set": {"defective_unit_received_at": now, "updated_at": now}},
+        )
+        await create_notification(
+            title="Warranty unit received",
+            message=f"Claim {cl.get('claim_number')} — defective unit delivered to workshop. Ready to inspect/repair.",
+            notification_type="warranty", link="/admin/warranty-claims",
+            target_roles=["supervisor", "admin"], priority="normal",
+        )
 
 
 async def scheduled_pratibha_followups():
@@ -61927,6 +64753,10 @@ async def scheduled_pratibha_followups():
         await db.pratibha_wa_reminders.update_one({"id": r["id"]}, {"$set": {"status": "sent", "sent_at": now}})
 
     async for f in db.pratibha_followups.find({"status": "open"}, {"_id": 0}):
+        # Critical-only: retire routine threads already being tracked so they stop nagging.
+        if c.get("followup_critical_only", True) and not _pr_is_critical(f.get("subject", ""), f.get("context", "")):
+            await db.pratibha_followups.update_one({"id": f["id"]}, {"$set": {"status": "closed_non_critical"}})
+            continue
         # Per-record cadence: ticket follow-ups chase every 30 min; default threads use followup_hours.
         cad_min = f.get("cadence_minutes") or (cadence_h * 60)
         cutoff = (now_dt - timedelta(minutes=cad_min)).isoformat()
@@ -61948,6 +64778,8 @@ async def scheduled_pratibha_followups():
                 logger.error(f"Pratibha follow-up escalation failed: {e}")
             await db.pratibha_followups.update_one({"id": f["id"]}, {"$set": {"status": "escalated", "escalated_at": now}})
             continue
+        if not email_agent.employee_send_allowed_now(c, recips):
+            continue  # quiet hours / Sunday — chase employees only in working hours; retry next run
         n = f.get("reminder_count", 0) + 1
         body = (f"Gentle reminder ({n}/{maxr}) — still awaiting a response on \"{f.get('subject')}\".\n\n"
                 + (f"{f.get('context')}\n\n" if f.get("context") else "")
@@ -62104,7 +64936,7 @@ async def _pratibha_build_digest(include_finance: bool) -> str:
     L += ["SERVICE TICKETS",
           f"  Open: {open_n}   SLA-breached: {sla_n}   Escalated: {esc_n}   Open >7 days: {aged_n}"]
     top = []
-    async for t in db.tickets.find(esc_q, {"_id": 0, "ticket_number": 1, "customer_name": 1,
+    for t in await db.tickets.find(esc_q, {"_id": 0, "ticket_number": 1, "customer_name": 1,
             "issue_description": 1, "created_at": 1}).sort("created_at", 1).limit(5):
         age = (now - _pr_parse_iso(t.get("created_at"))).days
         top.append(f"   - {t.get('ticket_number')} ({age}d) {t.get('customer_name') or ''} — "
@@ -62896,7 +65728,7 @@ async def _pratibha_crm_brief(sender: str, body: str, subject: str = "", from_na
         if who.get("name"):
             tq["$or"].append({"customer_name": {"$regex": re.escape(who["name"]), "$options": "i"}})
         tix = []
-        async for t in db.tickets.find(tq, {"_id": 0, "ticket_number": 1, "status": 1, "issue_description": 1}
+        for t in await db.tickets.find(tq, {"_id": 0, "ticket_number": 1, "status": 1, "issue_description": 1}
                                        ).sort("created_at", -1).limit(3):
             tix.append(f"{t.get('ticket_number')} [{t.get('status')}] {(t.get('issue_description') or '')[:50]}")
         if tix:
@@ -62916,7 +65748,7 @@ async def _pratibha_crm_brief(sender: str, body: str, subject: str = "", from_na
             lines.append(f"No CRM customer/lead master match. Phone(s) in the email: {', '.join(email_phones)}.")
             for p in email_phones[:2]:
                 prx = {"$regex": re.escape(p) + "$"}
-                async for t in db.tickets.find({"customer_phone": prx},
+                for t in await db.tickets.find({"customer_phone": prx},
                         {"_id": 0, "ticket_number": 1, "status": 1, "issue_description": 1}
                         ).sort("created_at", -1).limit(2):
                     lines.append(f"  ↳ ticket for {p}: {t.get('ticket_number')} [{t.get('status')}] "
@@ -62979,7 +65811,8 @@ async def _pratibha_triage_to_shweta(m: dict, sender: str, summary: str):
             # technician service policy) in the pre-draft too — same as the main customer-reply path.
             guide = await _pratibha_guidance(m.get("subject", ""), m.get("body", ""), "")
             ctx = "\n\n".join([p for p in [guide, ("CRM context:\n" + brief if brief else "")] if p])[:4800]
-            d = await pratibha_brain.draft_customer(sender, m.get("subject", ""), m.get("body", ""), context=ctx)
+            d = await pratibha_brain.draft_customer(sender, m.get("subject", ""), m.get("body", ""), context=ctx,
+                                                    recipient_name=m.get("from_name") or "")
             proposed = (d.get("reply") or "").strip()
         except Exception as e:
             logger.warning(f"Pratibha triage pre-draft failed: {e}")
@@ -63053,6 +65886,61 @@ async def _pratibha_wa_asks_today() -> int:
     return await db.pratibha_wa_drafts.count_documents({"created_at": {"$gte": cut}})
 
 
+# Auto-send only SAFE acknowledgements/info replies; HOLD anything that commits money or an action.
+PRATIBHA_AUTOSEND_SAFE = (os.environ.get("PRATIBHA_AUTOSEND_SAFE", "true").lower() == "true")
+_PR_AUTOSEND_HOLD_RX = re.compile(
+    r"refund|replace|replacement|\bcancel|credit\s*note|compensat|discount|coupon|waiver|"
+    r"free\s*of\s*cost|return\s*pick|pick\s*up|₹\s*\d|\brs\.?\s*\d|\binr\b|rupees|"
+    r"warranty\s*(approv|grant|accept)|reship|re-ship|resend.*product", re.I)
+
+
+def _pratibha_draft_autosafe(draft_doc) -> bool:
+    """True only for safe, no-commitment replies (acknowledgements / info). Any mention of money,
+    refund, replacement, cancellation or a required attachment -> HOLD for Shweta's approval."""
+    if draft_doc.get("requires_attachment"):
+        return False
+    txt = (draft_doc.get("draft") or "").strip()
+    if not txt or not (draft_doc.get("customer_email") or ""):
+        return False
+    return not bool(_PR_AUTOSEND_HOLD_RX.search(txt))
+
+
+async def _pratibha_send_draft_now(draft_doc, by_label="Pratibha (auto-sent: safe reply)") -> bool:
+    """Send a pending customer-email draft to the customer now (text only — no WA attachment handling).
+    Marks the draft + inbox as sent. Returns True on success."""
+    if draft_doc.get("requires_attachment"):
+        return False
+    cust = (draft_doc.get("customer_email") or "").lower()
+    if not cust:
+        return False
+    now = datetime.now(timezone.utc).isoformat()
+    subj = draft_doc.get("subject") or ""
+    if not subj.lower().startswith("re:"):
+        subj = f"Re: {subj}"
+    to_c = [draft_doc.get("customer_email")]
+    cc_c = list(dict.fromkeys(
+        [a for a in (draft_doc.get("orig_to", []) + draft_doc.get("orig_cc", []))
+         if a and a.lower() != cust and not a.lower().endswith("@musclegrid.in")]
+        + ["service@musclegrid.in"]))  # keep service@ visibly in copy on every auto-sent reply
+    body_out = pratibha_brain._scrub_internal_emails(draft_doc.get("draft", ""))
+    try:
+        _mid = await email_agent.send_reply_all(to_c, cc_c, subj, body_out,
+                                                draft_doc.get("orig_message_id") or "", draft_doc.get("orig_references", "") or "",
+                                                add_standing=True)
+    except Exception as e:
+        logger.error(f"Pratibha auto-send failed for {cust}: {e}")
+        return False
+    if not _mid:  # send was HELD (e.g. quiet hours), not delivered — do NOT mark sent
+        logger.info(f"Pratibha auto-send held (not delivered) for {cust}")
+        return False
+    await db.pratibha_wa_drafts.update_one({"id": draft_doc["id"]},
+        {"$set": {"status": "sent", "sent_at": now, "auto_sent": True, "sent_by": by_label}})
+    if draft_doc.get("email_id"):
+        await db.email_agent_inbox.update_one({"id": draft_doc["email_id"]}, {"$set": {
+            "status": "replied", "sent_reply": body_out, "replied_at": now, "replied_by_name": by_label}})
+    return True
+
+
 async def _pratibha_wa_ask_shweta(m: dict, draft: str, brief: str, email_id: str,
                                   backlog: bool = False, age: str = ""):
     """WhatsApp Shweta (in Hinglish) a drafted customer reply for approval, and remember the thread
@@ -63072,6 +65960,13 @@ async def _pratibha_wa_ask_shweta(m: dict, draft: str, brief: str, email_id: str
         "orig_references": m.get("references", ""), "orig_to": m.get("to", []), "orig_cc": m.get("cc", []),
         "draft": draft, "brief": (brief or "")[:3000], "status": "awaiting_shweta", "round": 1,
         "source": "backlog" if backlog else "live", "created_at": datetime.now(timezone.utc).isoformat()})
+    # Auto-send SAFE acknowledgements/info replies straight to the customer; only HOLD the
+    # money/commitment ones for Shweta. Drains the approval backlog automatically.
+    if PRATIBHA_AUTOSEND_SAFE:
+        _doc = await db.pratibha_wa_drafts.find_one({"ref": ref}, {"_id": 0})
+        if _doc and _pratibha_draft_autosafe(_doc) and await _pratibha_send_draft_now(_doc):
+            logger.info(f"[autosend] safe draft {ref} ({_doc.get('customer_email')}) auto-sent; not asking Shweta")
+            return ref
     name = m.get("from_name") or m.get("from_addr")
     if backlog:
         intro = (f"Hello mam 🙏 ye email abhi tak *unanswered* pada hai ({age or 'kuch din purana'}).\n\n"
@@ -63091,10 +65986,29 @@ async def _pratibha_wa_ask_shweta(m: dict, draft: str, brief: str, email_id: str
     return ref
 
 
-async def _pratibha_backlog_next(days: int = 15):
-    """Find the next unanswered customer email (last `days`), read the customer's full history
-    (mailbox + CRM tickets/warranties), draft a reply, and WhatsApp Shweta one-by-one."""
+def _email_age_days(date_hdr: str):
+    """Age in days of an email from its RFC-2822 Date header; None if unparseable."""
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(date_hdr)
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
+    except Exception:
+        return None
+
+
+async def _pratibha_backlog_next(days: int = None, min_age_days: float = None):
+    """Find the next email that's gone unanswered for at least `min_age_days` (within the last
+    `days`), read the customer's full history (mailbox + CRM tickets/warranties), draft a reply,
+    and WhatsApp Shweta one-by-one. Defaults come from config (window 15d, min-age 2d)."""
     c = email_agent.cfg()
+    if days is None:
+        days = c.get("backlog_window_days", 15)
+    if min_age_days is None:
+        min_age_days = c.get("backlog_min_age_days", 2)
     if not (c.get("wa_approval") and c.get("wa_manager")):
         return {"error": "WhatsApp approval not configured"}
     # Don't pile up — only one backlog item in flight at a time.
@@ -63109,6 +66023,11 @@ async def _pratibha_backlog_next(days: int = 15):
         fa = (it.get("from_addr") or "").lower()
         if not fa or _pratibha_is_automated(fa) or email_agent.is_trigger_sender(fa, ["@musclegrid.in"]):
             continue
+        # The "not replied for 2 days" rule — skip anything still fresh (it gets a chance to be
+        # answered first; if it's urgent it was already raised live).
+        agedays = _email_age_days(it.get("date", ""))
+        if agedays is not None and agedays < min_age_days:
+            continue
         # already asked / sent / skipped for this sender? don't repeat.
         if await db.pratibha_wa_drafts.find_one(
                 {"customer_email": fa, "status": {"$in": ["sent", "skipped", "awaiting_shweta"]}}, {"_id": 1}):
@@ -63120,15 +66039,31 @@ async def _pratibha_backlog_next(days: int = 15):
         brief = await _pratibha_crm_brief(fa, it.get("body", ""), it.get("subject", ""), it.get("from_name", ""))
         guide = await _pratibha_guidance(it.get("subject", ""), it.get("body", ""), "")
         ctx = "\n\n".join([p for p in [guide, ("CRM context:\n" + brief if brief else "")] if p])[:4800]
-        dr = await pratibha_brain.draft_customer(fa, it.get("subject", ""), it.get("body", ""), context=ctx)
+        dr = await pratibha_brain.draft_customer(fa, it.get("subject", ""), it.get("body", ""), context=ctx,
+                                                 recipient_name=it.get("from_name") or "")
         draft = (dr.get("reply") or "").strip()
         if not draft:
             continue
         m = {"from_addr": fa, "from_name": it.get("from_name"), "subject": it.get("subject"),
              "message_id": it.get("message_id"), "references": it.get("references", ""), "to": [c["email"]], "cc": []}
-        ref = await _pratibha_wa_ask_shweta(m, draft, brief, it.get("message_id"), backlog=True, age=it.get("date", ""))
+        age_label = f"{int(agedays)} din se pending" if agedays else (it.get("date", "") or "")
+        ref = await _pratibha_wa_ask_shweta(m, draft, brief, it.get("message_id"), backlog=True, age=age_label)
         return {"asked": ref, "customer": fa, "subject": it.get("subject")}
     return {"done": True}  # nothing left to ask
+
+
+async def scheduled_pratibha_backlog_sweep():
+    """Daily kick of the 2-day unanswered-email sweep — surfaces the oldest still-unanswered email
+    to Shweta. It then self-chains (next one after she approves/skips), so the day's backlog drains
+    one-at-a-time at her pace. No-op unless WhatsApp approval is configured."""
+    try:
+        c = email_agent.cfg()
+        if not (c.get("wa_approval") and c.get("wa_manager")):
+            return
+        res = await _pratibha_backlog_next()  # config defaults: window 15d, min-age 2d
+        logger.info(f"Pratibha 2-day backlog sweep: {res}")
+    except Exception as e:
+        logger.error(f"Pratibha scheduled backlog sweep failed: {e}")
 
 
 async def _wa_remember_turn(user_number: str, user_text: str, assistant_text: str):
@@ -63326,7 +66261,8 @@ async def _pratibha_wa_orchestrate(message):
         "payment": lambda: _pratibha_wa_payment(message),
         "dispatch_done": lambda: _pratibha_wa_dispatch_reply(message),
         "main_group": lambda: _pratibha_wa_group_admin(message),
-        "draft_approval": lambda: _pratibha_wa_draft_reply(message.from_number, message.text),
+        "draft_approval": lambda: _pratibha_wa_draft_reply(message.from_number, message.text,
+            getattr(message, "is_group", False), getattr(message, "quoted_message", None)),
         "shipping": lambda: _pratibha_wa_shipping(message),
     }
     h = handlers.get(skill)
@@ -63687,7 +66623,7 @@ async def scheduled_pratibha_sla_watch():
     recent_cut = (now - timedelta(days=fresh_days)).isoformat()
     q = {**base, "sla_due": {"$gte": recent_cut}, "sla_chase_count": {"$not": {"$gte": cap}}}
     due = []
-    async for t in db.tickets.find(
+    for t in await db.tickets.find(
             q, {"_id": 0, "ticket_number": 1, "status": 1, "customer_name": 1, "sla_due": 1,
                 "assigned_to_name": 1, "sla_chase_reminded_at": 1}).sort("sla_due", 1):
         if (t.get("sla_chase_reminded_at") or "") > cooldown:
@@ -63996,12 +66932,23 @@ async def _pratibha_capture_wa_note(note: str, draft_doc: dict, from_number: str
     logger.info(f"Pratibha memorized WA note from Shweta (owner={owner_hint or 'founder'}): {note[:60]}")
 
 
-async def _pratibha_wa_draft_reply(from_number: str, text: str):
+async def _pratibha_wa_draft_reply(from_number: str, text: str, is_group: bool = False, quoted=None):
     """If Shweta is replying on WhatsApp to a pending drafted email, act on it (send/revise/ask) and
     return the Hinglish message to send back to her. Returns None if not applicable (let the normal
     WhatsApp brain handle it)."""
     c = email_agent.cfg()
     if not c.get("wa_manager"):
+        return None
+    # The FOUNDER (Pawan) is NOT the draft approver — that's the manager (Shweta). Without this,
+    # any pending "awaiting_shweta" draft would hijack Pawan's casual messages into the approval
+    # dialog (addressing him as "mam"). His messages must go to his own chat assistant instead.
+    if re.sub(r"\D", "", str(from_number or "").split("@")[0]) in _pr_founder_wa_digits():
+        logger.info(f"[draft_reply] founder {from_number} excluded from approval flow -> chat brain")
+        return None
+    # In a GROUP, only act when explicitly addressed ("Pratibha …") or when replying TO her message —
+    # otherwise casual Pawan<->Shweta chatter ("send kr do") would hijack a random pending draft and
+    # fire off a customer email. Group approvals must be unambiguous. (DMs are unaffected.)
+    if is_group and not (re.search(r"pratibha|pratiba", text or "", re.I) or quoted):
         return None
     # Accept the approver via the reply allowlist — Shweta messages from her @lid (192157…), which
     # differs from her phone number, so a phone-only match would (and did) miss her "Send".
@@ -64397,9 +67344,10 @@ async def _pratibha_update_sku_dims(sku_code: str, dims: dict) -> bool:
 
 
 async def _pratibha_dupe_shipment(phone, pincode, amount, hours=48):
-    """Has Pratibha already booked a near-identical shipment recently? (the ₹6L incident pattern)."""
+    """Has Pratibha already SUCCESSFULLY booked a near-identical shipment recently? (the ₹6L incident
+    pattern). Only counts records with a real AWB — failed/rejected attempts must not block a re-try."""
     cut = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
-    q = {"created_at": {"$gte": cut}, "phone": str(phone)}
+    q = {"created_at": {"$gte": cut}, "phone": str(phone), "awb": {"$nin": [None, ""]}}
     if pincode:
         q["pincode"] = str(pincode)
     return await db.pratibha_shipments.find_one(q, {"_id": 0, "awb": 1, "created_at": 1})
@@ -64561,6 +67509,75 @@ async def _pratibha_book_shipment(fields: dict, ctx: dict):
         "shipping_cost": getattr(resp, "shipping_cost", None),
         "success": getattr(resp, "success", None), "by": ctx.get("from_addr"),
         "created_at": datetime.now(timezone.utc).isoformat()})
+    return resp
+
+
+# ---- Reverse pickup: Bigship has no native reverse, so we register the CUSTOMER's house as a pickup
+# warehouse and book a normal shipment from there TO the MuscleGrid Meerut warehouse (the consignee). ---
+RP_RETURN = {
+    "first_name": os.environ.get("REVERSE_PICKUP_RETURN_NAME", "MuscleGrid Warehouse"),
+    "phone": os.environ.get("REVERSE_PICKUP_RETURN_PHONE", "9899716917"),
+    "address_line1": os.environ.get("REVERSE_PICKUP_RETURN_ADDR1", "213, Vishwakarma Estates"),
+    "address_line2": os.environ.get("REVERSE_PICKUP_RETURN_ADDR2", "Bagpat Road"),
+    "city": os.environ.get("REVERSE_PICKUP_RETURN_CITY", "Meerut"),
+    "state": os.environ.get("REVERSE_PICKUP_RETURN_STATE", "Uttar Pradesh"),
+    "pincode": os.environ.get("REVERSE_PICKUP_RETURN_PINCODE", "250002"),
+}
+
+
+async def _bigship_create_warehouse(name, address_line1, address_line2, landmark, pincode, city, state, person, phone):
+    """Register a Bigship pickup warehouse at an arbitrary (customer) address. Returns the new
+    warehouse_id, or None. Creating a warehouse is FREE — no shipment is booked here."""
+    token = await get_bigship_token()
+    payload = {"warehouse_name": (name or "Pickup")[:40], "address_line1": (address_line1 or "")[:50],
+               "address_line2": (address_line2 or "")[:50], "address_landmark": (landmark or address_line2 or "")[:50],
+               "address_pincode": str(pincode or "").strip(), "address_city": city or "", "address_state": state or "",
+               "contact_person": (person or "Customer")[:40],
+               "contact_number_primary": re.sub(r"\D", "", str(phone or ""))[-10:]}
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(f"{BIGSHIP_API_URL}/warehouse/add", json=payload,
+                              headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
+        try:
+            d = r.json()
+        except Exception:
+            d = {}
+        wid = (d.get("data") or {}).get("warehouse_id")
+        if r.status_code < 400 and wid:
+            return int(wid)
+        logger.error(f"Bigship warehouse create failed [{r.status_code}]: {r.text[:400]}")
+        return None
+
+
+async def _pratibha_book_reverse_pickup(rp: dict, ctx: dict):
+    """Reverse pickup: register the CUSTOMER's address as a Bigship warehouse (pickup), then book a
+    shipment FROM there TO the MuscleGrid Meerut warehouse. `rp` carries the customer's pickup details
+    + product/value. Returns the shipment response (AWB + label)."""
+    from types import SimpleNamespace
+    cust_name = f"{rp.get('first_name','')} {rp.get('last_name','')}".strip() or "Customer"
+    wid = await _bigship_create_warehouse(
+        name=f"RP {cust_name} {rp.get('pincode','')}".strip(),
+        address_line1=rp.get("address_line1", ""), address_line2=rp.get("address_line2", ""),
+        landmark=rp.get("landmark", ""), pincode=rp.get("pincode", ""),
+        city=rp.get("city", ""), state=rp.get("state", ""), person=cust_name, phone=rp.get("phone", ""))
+    if not wid:
+        return SimpleNamespace(success=False, message="Could not register the customer's pickup point on Bigship.")
+    fields = {
+        "shipment_type": "b2c", "warehouse_id": wid,
+        "first_name": RP_RETURN["first_name"], "last_name": "", "phone": RP_RETURN["phone"],
+        "address_line1": RP_RETURN["address_line1"], "address_line2": RP_RETURN["address_line2"],
+        "city": RP_RETURN["city"], "state": RP_RETURN["state"], "pincode": RP_RETURN["pincode"],
+        "product_name": rp.get("product_name") or "Returned product",
+        "quantity": int(rp.get("quantity") or 1),
+        "invoice_amount": float(rp.get("invoice_amount") or 0) or 100.0,
+        "payment_type": "Prepaid", "cod_amount": 0,
+        "invoice_number": (rp.get("order_id") or f"RP-{uuid.uuid4().hex[:8].upper()}"),
+        "weight_kg": float(rp.get("weight_kg") or 5.0),
+    }
+    resp = await _pratibha_book_shipment(fields, ctx)
+    try:
+        resp.pickup_warehouse_id = wid
+    except Exception:
+        pass
     return resp
 
 
@@ -64771,6 +67788,17 @@ async def process_email_agent_inbox() -> dict:
                     and not _pratibha_is_automated(sender)):
                 tr = await pratibha_brain.triage_inbound(m.get("subject", ""), m.get("body", ""), sender)
                 if tr.get("needs_owner"):
+                    # Quiet mode for Shweta (default ON): a routine, non-urgent business email is
+                    # recorded but NOT messaged to her in real time. The 2-day unanswered backlog
+                    # sweep surfaces it later if it's still unanswered. Only URGENT/critical emails
+                    # reach her live. Toggle with EMAIL_AGENT_WA_LIVE_URGENT_ONLY=false.
+                    if c.get("wa_live_urgent_only", True) and not tr.get("urgent"):
+                        doc.update({"triggered": False, "category": "triage", "model_ok": True,
+                                    "status": "observed_quiet", "needs_owner": True, "urgent": False,
+                                    "triage_summary": tr.get("summary")})
+                        await db.email_agent_inbox.insert_one(doc)
+                        observed += 1
+                        continue
                     # 1) Email triage as before — ask Shweta whom to assign (with CRM brief).
                     ref = await _pratibha_triage_to_shweta(m, sender, tr.get("summary", ""))
                     # 2) ALSO WhatsApp Shweta a Hinglish draft for quick approval — capped per day.
@@ -64786,7 +67814,7 @@ async def process_email_agent_inbox() -> dict:
                         else:
                             logger.info("Pratibha WhatsApp draft-ask daily cap reached — email triage only.")
                     doc.update({"triggered": False, "category": "triage", "model_ok": True,
-                                "status": "triaged" if ref else "observed",
+                                "status": "triaged" if ref else "observed", "urgent": bool(tr.get("urgent")),
                                 "triage_summary": tr.get("summary"), "assign_ref": ref, "wa_ref": waref})
                     await db.email_agent_inbox.insert_one(doc)
                     observed += 1
@@ -64925,6 +67953,52 @@ async def process_email_agent_inbox() -> dict:
         #     SHIPPING allowlist (separate from finance — defaults to all @musclegrid.in staff).
         #     Auto-books ONLY clean+complete+high-confidence+non-duplicate requests under the
         #     daily cap; otherwise holds for review (never books on doubt). ---
+        # ---- REVERSE PICKUP (any @musclegrid.in team member): collect the product FROM the customer ----
+        if (use_claude and c.get("allow_reverse_pickup", True)
+                and email_agent.is_finance_sender(sender, c.get("reverse_pickup_senders", []))
+                and (kind == "action" or has_images)):
+            _rsh = await pratibha_brain.extract_shipment(m.get("subject", ""), m.get("body", ""), m.get("attachments"))
+            _rp = _rsh.get("params") or {}
+            if _rsh.get("is_shipment") and _rp.get("is_reverse_pickup"):
+                doc.update({"category": "shipping", "model_ok": True, "internal_only": True, "reply_to": [sender]})
+                _missing = [k for k in ["first_name", "phone", "address_line1", "city", "state", "pincode"] if not _rp.get(k)]
+                if _missing:
+                    doc["draft_reply"] = (f"Reverse pickup ke liye thoda aur chahiye 🙏 — missing: {', '.join(_missing)}. "
+                                          "Customer ka naam, phone aur poora pickup address bhej dijiye.")
+                    doc["status"] = "needs_review"
+                    if c["auto_send"]:
+                        try:
+                            await email_agent.send_reply_all([sender], [], subj, f"{doc['draft_reply']}\n\nPratibha, MuscleGrid",
+                                                             m.get("message_id") or "", m.get("references", ""), add_standing=False)
+                        except Exception as e:
+                            doc["send_error"] = str(e)
+                else:
+                    rp_fields = {"first_name": _rp.get("first_name"), "last_name": _rp.get("last_name", ""),
+                                 "phone": _rp.get("phone"), "address_line1": _rp.get("address_line1"),
+                                 "address_line2": _rp.get("address_line2", ""), "landmark": _rp.get("landmark", ""),
+                                 "city": _rp.get("city"), "state": _rp.get("state"), "pincode": _rp.get("pincode"),
+                                 "product_name": _rp.get("product_name") or "Returned product",
+                                 "quantity": _rp.get("quantity") or 1, "invoice_amount": _rp.get("invoice_amount") or 0,
+                                 "order_id": _rp.get("order_id"), "is_reverse_pickup": True}
+                    summary = ("REVERSE PICKUP (courier collects FROM the customer):\n"
+                               f"Customer: {rp_fields['first_name']} {rp_fields.get('last_name','')} · {rp_fields['phone']}\n"
+                               f"Pickup from: {rp_fields['address_line1']} {rp_fields.get('address_line2','')}, "
+                               f"{rp_fields['city']} {rp_fields['state']} - {rp_fields['pincode']}\n"
+                               f"Product: {rp_fields['product_name']} x{rp_fields['quantity']}\n"
+                               "→ Returns to the MuscleGrid Meerut warehouse.")
+                    fctx = {"from_addr": sender, "subject": subj, "message_id": m.get("message_id"),
+                            "references": m.get("references", "")}
+                    appr = await _pratibha_request_ship_approval(rp_fields, summary, fctx, warn="This is a REVERSE pickup. ")
+                    doc.update({"status": "awaiting_approval", "approval_ref": appr.get("ref"),
+                                "draft_reply": f"Reverse pickup confirm karu? Reply YES.\n{summary}"})
+                await db.email_agent_inbox.insert_one(doc)
+                asyncio.create_task(create_notification(
+                    title="🔄 Pratibha reverse pickup", message=doc.get("status", "reverse pickup"),
+                    notification_type="warning", link="/admin/email-agent", priority="high",
+                    target_roles=["admin", "dispatcher"], created_by_name="Pratibha", data={"email_id": doc["id"]}))
+                continue
+            # not a reverse pickup → fall through to forward shipping / general brain
+
         if (use_claude and c.get("allow_shipping", True)
                 and email_agent.is_finance_sender(sender, c.get("shipping_senders", c.get("finance_senders", [])))
                 and (kind == "action" or has_images)):
@@ -65408,6 +68482,7 @@ class ShipmentCreateRequest(BaseModel):
     # Optional
     amazon_order_id: Optional[str] = None
     ewaybill_number: str = ""
+    ewaybill_document_base64: Optional[str] = None  # Base64 PDF of the e-way bill (required by Bigship for B2B > ₹50K)
     invoice_document_base64: Optional[str] = None  # Base64 PDF (optional - auto-generated if not provided)
 
 
@@ -65684,11 +68759,18 @@ async def create_shipment_for_agent(
         pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
         payload["order_detail"]["document_detail"]["invoice_document_file"] = f"data:application/pdf;base64,{pdf_base64}"
     
-    # B2B e-way bill validation
+    # B2B e-way bill validation + document attachment (Bigship requires both the number and the PDF)
     if shipment_category == "b2b" and request.invoice_amount > 50000:
         if not request.ewaybill_number:
             raise HTTPException(status_code=400, detail="E-way bill number is required for B2B shipments over ₹50,000")
-    
+        if not request.ewaybill_document_base64:
+            raise HTTPException(status_code=400, detail="E-way bill document (PDF) is required for B2B shipments over ₹50,000")
+    if request.ewaybill_document_base64:
+        _eb = request.ewaybill_document_base64
+        if not _eb.startswith("data:"):
+            _eb = f"data:application/pdf;base64,{_eb}"
+        payload["order_detail"]["document_detail"]["ewaybill_document_file"] = _eb
+
     # Create shipment
     endpoint = "/order/add/heavy" if shipment_category == "b2b" else "/order/add/single"
     
@@ -70960,6 +74042,706 @@ async def process_all_browser_orders(
     return {"results": [r.__dict__ for r in results], "firm_id": agent.firm_id, "firm_name": agent.firm_name}
 
 
+def _kommo_extract_message(body) -> Optional[dict]:
+    """Normalize a Kommo chat-message webhook payload into a flat message dict, or
+    None if this payload isn't a chat message. Tolerant of the several shapes a
+    Kommo Salesbot 'send request' step can produce (message nested or flat)."""
+    if not isinstance(body, dict):
+        return None
+    m = body.get("message") if isinstance(body.get("message"), dict) else body
+
+    def _first(d, keys):
+        for k in keys:
+            v = d.get(k) if isinstance(d, dict) else None
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+            if v not in (None, "", {}, []):
+                return v
+        return None
+
+    text = _first(m, ("text", "body", "message", "msg", "content"))
+    if not isinstance(text, str) or not text.strip():
+        return None
+    direction = str(_first(m, ("direction", "type")) or "incoming").lower()
+    direction = "outgoing" if direction in ("out", "outgoing", "outbound", "manager", "sent") else "incoming"
+    return {
+        "text": text.strip(),
+        "phone": _first(m, ("phone", "from", "contact_phone", "msisdn")) or _first(body, ("phone",)),
+        "name": _first(m, ("name", "contact_name", "author", "sender_name")),
+        "chat_id": _first(m, ("chat_id", "conversation_id", "talk_id", "chat")) or _first(body, ("chat_id", "talk_id")),
+        "message_id": _first(m, ("message_id", "id", "msgid")),
+        "direction": direction,
+        "ts": _first(m, ("created_at", "timestamp", "time", "date")),
+    }
+
+
+@api_router.post("/kommo/webhook")
+async def kommo_webhook(request: Request):
+    """Receiver for Kommo webhooks / AI-agent / Salesbot 'send request' steps. Auth via
+    ?key=<KOMMO_WEBHOOK_SECRET>. LOG-ONLY mode: stores every payload in kommo_webhook_log (so we can
+    see exactly what Kommo sends and shape the real integration), links to a lead by phone in our DB,
+    and returns ONLY a non-PII summary (which fields arrived). No customer data is returned."""
+    if request.query_params.get("key", "") != os.environ.get("KOMMO_WEBHOOK_SECRET", "__unset__"):
+        raise HTTPException(status_code=403, detail="invalid key")
+    raw = await request.body()
+    try:
+        body = await request.json()
+    except Exception:
+        try:
+            from urllib.parse import parse_qsl
+            body = dict(parse_qsl(raw.decode("utf-8", "replace")))
+        except Exception:
+            body = {"raw": raw.decode("utf-8", "replace")[:5000]}
+    import re as _re
+    phones = _re.findall(r'(?<!\d)(?:\+?91)?([6-9]\d{9})(?!\d)', json.dumps(body))
+    phone = phones[0] if phones else None
+    rec = {"id": str(uuid.uuid4()), "received_at": datetime.now(timezone.utc).isoformat(),
+           "phone": phone, "content_type": request.headers.get("content-type", ""), "payload": body}
+    # LOG-ONLY test mode: link to a lead in our DB (stored, not returned) but return ONLY a
+    # non-PII summary of what arrived. No customer data goes back in the response.
+    if phone:
+        lead = await db.leads.find_one({"phone": phone}, {"_id": 0, "id": 1})
+        if lead:
+            rec["lead_id"] = lead.get("id")
+    await db.kommo_webhook_log.insert_one(rec)
+
+    # If this payload is a chat message, store it as a structured, readable record
+    # in db.kommo_messages (the raw log is kept for debugging unrecognized shapes).
+    stored_msg = False
+    msg = _kommo_extract_message(body)
+    if msg:
+        msg_phone = msg.get("phone") or phone
+        digits = _re.sub(r"\D", "", str(msg_phone))[-10:] if msg_phone else None
+        doc = {
+            "id": str(uuid.uuid4()),
+            "received_at": rec["received_at"],
+            "ts": msg.get("ts") or rec["received_at"],
+            "direction": msg["direction"],
+            "text": msg["text"],
+            "phone": digits,
+            "contact_name": msg.get("name"),
+            "kommo_chat_id": msg.get("chat_id"),
+            "kommo_message_id": str(msg["message_id"]) if msg.get("message_id") else None,
+            "lead_id": rec.get("lead_id"),
+            "source": "kommo_webhook",
+            "raw_log_id": rec["id"],
+        }
+        if digits:
+            party = await db.parties.find_one({"phone": {"$regex": _re.escape(digits) + "$"}}, {"_id": 0, "id": 1})
+            if party:
+                doc["party_id"] = party["id"]
+        # Dedup on Kommo's message id when present (Salesbot may retry).
+        dup = doc["kommo_message_id"] and await db.kommo_messages.find_one(
+            {"kommo_message_id": doc["kommo_message_id"]}, {"_id": 1})
+        if not dup:
+            await db.kommo_messages.insert_one(doc)
+            stored_msg = True
+
+    keys = list(body.keys()) if isinstance(body, dict) else ["<non-dict>"]
+    return {"ok": True, "phone_detected": bool(phone), "lead_matched": bool(rec.get("lead_id")),
+            "message_stored": stored_msg, "fields_received": keys[:50], "stored_id": rec["id"]}
+
+
+@api_router.get("/admin/kommo/threads")
+async def kommo_threads(user: dict = Depends(require_roles(["admin"]))):
+    """Recent Kommo chat threads (one row per contact phone, newest first)."""
+    pipeline = [
+        {"$match": {"phone": {"$nin": [None, ""]}}},
+        {"$sort": {"ts": -1}},
+        {"$group": {"_id": "$phone", "last_text": {"$first": "$text"}, "last_at": {"$first": "$ts"},
+                    "last_direction": {"$first": "$direction"}, "contact_name": {"$first": "$contact_name"},
+                    "lead_id": {"$first": "$lead_id"}, "count": {"$sum": 1}}},
+        {"$sort": {"last_at": -1}},
+        {"$limit": 100},
+    ]
+    rows = await db.kommo_messages.aggregate(pipeline).to_list(100)
+    return {"threads": [
+        {"phone": r["_id"], "contact_name": r.get("contact_name"), "last_text": r.get("last_text"),
+         "last_at": r.get("last_at"), "last_direction": r.get("last_direction"),
+         "messages": r.get("count"), "lead_id": r.get("lead_id")}
+        for r in rows
+    ]}
+
+
+@api_router.get("/admin/kommo/chats/{phone}")
+async def kommo_chat_thread(phone: str, user: dict = Depends(require_roles(["admin"]))):
+    """Full Kommo chat thread for one contact (by phone), oldest-first."""
+    digits = re.sub(r"\D", "", phone)[-10:]
+    msgs = await db.kommo_messages.find({"phone": digits}, {"_id": 0}).sort("ts", 1).to_list(1000)
+    return {"phone": digits, "count": len(msgs), "messages": msgs}
+
+
+# Pratibha auto-reply on WhatsApp Cloud inbound. Real Claude reply (not preset),
+# with guardrails: opt-out honoured, sensitive topics escalated to a human, and
+# fail-safe to a human if the model is unsure. Off unless PRATIBHA_WA_AUTOREPLY.
+PRATIBHA_WA_AUTOREPLY = os.environ.get("PRATIBHA_WA_AUTOREPLY", "").strip().lower() in ("1", "true", "yes", "on")
+_WA_OPTOUT_WORDS = {"stop", "unsubscribe", "stop messaging", "band karo", "band kardo", "opt out"}
+_WA_ESCALATE_WORDS = ("refund", "money back", "return it", "complaint", "complain", "legal", "lawyer",
+                      "consumer court", "broken", "not working", "replace", "fraud", "cheat", "scam", "angry")
+
+
+# Real Bigship pickup booking is gated so the agent can be tested without spend.
+PRATIBHA_PICKUP_LIVE = os.environ.get("PRATIBHA_PICKUP_LIVE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+async def _wa_customer_info(digits: str) -> dict:
+    """Read tool: the customer's warranty + latest service ticket (for the agent to be accurate)."""
+    rgx = {"$regex": re.escape(digits) + "$"}
+    info = {"phone": digits}
+    w = await db.warranties.find_one({"phone": rgx}, {"_id": 0, "product_name": 1, "device_type": 1,
+                                                      "warranty_end_date": 1, "status": 1, "serial_number": 1})
+    if w:
+        info["warranty"] = {"product": w.get("product_name") or w.get("device_type"), "serial": w.get("serial_number"),
+                            "status": w.get("status"), "valid_to": (w.get("warranty_end_date") or "")[:10]}
+    tk = await db.tickets.find_one({"customer_phone": rgx}, {"_id": 0, "ticket_number": 1, "status": 1,
+                                                             "product_name": 1, "issue_description": 1}, sort=[("created_at", -1)])
+    if tk:
+        info["recent_ticket"] = {"number": tk.get("ticket_number"), "status": tk.get("status"),
+                                 "product": tk.get("product_name"), "issue": (tk.get("issue_description") or "")[:200]}
+    return info
+
+
+async def _wa_tool_search_knowledge(query: str, series: str = "") -> dict:
+    """Read tool: search the KB (4k+ FAQs) + the Titan/Focus user manuals for the issue."""
+    q = (query or "").strip()
+    if not q:
+        return {"kb": [], "manual": {}}
+    words = re.findall(r"[a-zA-Z]{3,}", q)[:4] or [q]
+    kb_or = []
+    for w in words:
+        rx = {"$regex": re.escape(w), "$options": "i"}
+        kb_or += [{"question": rx}, {"answer": rx}, {"keywords": rx}]
+    kb = await db.kb_articles.find({"$or": kb_or}, {"_id": 0, "question": 1, "answer": 1, "model_name": 1}).limit(5).to_list(5)
+    out = {"kb": [{"q": a.get("question"), "a": (a.get("answer") or "")[:600], "model": a.get("model_name")} for a in kb]}
+    s = (series or "").strip().lower()
+    if s in ("titan", "focus"):
+        man_or = [{"text": {"$regex": re.escape(w), "$options": "i"}} for w in words]
+        pages = await db.product_manuals.find({"series": s, "$or": man_or}, {"_id": 0, "page": 1, "text": 1}).limit(4).to_list(4)
+        out["manual"] = {"series": s, "manual_loaded": await db.product_manuals.count_documents({"series": s}) > 0,
+                         "pages": [{"page": p["page"], "excerpt": (p.get("text") or "")[:1400]} for p in pages]}
+    return out
+
+
+async def _wa_send_to_manager(text: str, fallback_desc: str = "") -> tuple:
+    """Send to the manager — group in business hours, founder DM off-hours. Retry; on failure, in-app
+    fallback so nothing is lost. Returns (ok, asked_via)."""
+    off = _pratibha_wa_quiet_now()
+    target = _pr_founder_wa_target() if off else await _pr_wa_target(_pr_founder_wa_target())
+    asked_via = "founder_dm" if off else "group"
+    res = None
+    for attempt in range(3):
+        try:
+            res = await send_whatsapp_message(target, text, force=True)
+        except Exception as e:
+            res = {"error": str(e)}
+        if isinstance(res, dict) and not res.get("error") and not res.get("held"):
+            break
+        logger.warning(f"manager send attempt {attempt + 1} failed: {res}")
+        await asyncio.sleep(2)
+    ok = isinstance(res, dict) and not res.get("error")
+    if not ok and fallback_desc:
+        await create_notification(title="⚠️ Couldn't reach manager on WhatsApp", message=fallback_desc,
+                                  notification_type="whatsapp", link="/admin", target_roles=["admin"], priority="high")
+    return ok, asked_via
+
+
+async def _wa_tool_ask_manager(digits: str, name: str, summary: str, question: str) -> dict:
+    """Action tool: escalate a decision to Pawan/Shweta. One open decision per customer (no spam)."""
+    if await db.repair_decisions.find_one({"customer_phone": digits, "status": "open"}, {"_id": 1}):
+        return {"status": "already_pending", "note": "You already asked the manager and are awaiting their reply — just reassure the customer, don't ask again."}
+    ref = uuid.uuid4().hex[:6].upper()
+    did = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    info = await _wa_customer_info(digits)
+    product = (info.get("warranty") or {}).get("product") or (info.get("recent_ticket") or {}).get("product") or ""
+    tkn = (info.get("recent_ticket") or {}).get("number") or ""
+    await db.repair_decisions.insert_one({
+        "id": did, "ref": ref, "customer_phone": digits, "customer_name": name, "product": product,
+        "ticket_number": tkn, "summary": summary, "question": question, "status": "open", "created_at": now})
+    msg = (f"\U0001f6e0️ *Decision needed* [{ref}]\n{summary or (name + ' needs a decision')}\n\n"
+           f"Reply: *repair* / *replace* / *angad*" + (f"\n({question})" if question else ""))
+    ok, asked_via = await _wa_send_to_manager(
+        msg, fallback_desc=f"Pratibha couldn't reach the WhatsApp group/DM. {summary}. Decide repair/replace/call for {name} ({digits}).")
+    await db.repair_decisions.update_one({"id": did}, {"$set": {"group_notified": ok, "asked_via": asked_via}})
+    return {"status": "asked", "asked_via": asked_via, "delivered": ok,
+            "note": "Tell the customer (Hinglish) you've checked with the team and will update them — do NOT promise an outcome."}
+
+
+async def _wa_tool_arrange_pickup(digits: str, name: str, inp: dict) -> dict:
+    """Action tool: book the reverse pickup (→ 213 Vishwakarma). Guarded: needs a manager-approved repair."""
+    dec = await db.repair_decisions.find_one(
+        {"customer_phone": digits, "status": "resolved", "decision": "repair"}, sort=[("resolved_at", -1)])
+    if not dec:
+        return {"error": "No manager-approved repair for this customer yet. Use ask_manager first."}
+    if await db.repair_pickups.find_one({"customer_phone": digits, "status": "booked"}, {"_id": 1}):
+        return {"error": "A pickup is already booked for this customer."}
+    pincode = re.sub(r"\D", "", str(inp.get("pincode") or ""))
+    phone = re.sub(r"\D", "", str(inp.get("contact_phone") or digits))[-10:]
+    if len(pincode) != 6 or len(phone) != 10 or not inp.get("address_line1"):
+        return {"error": "Need a full address: address_line1, city, state, 6-digit pincode, 10-digit contact phone."}
+    rp = {"first_name": name or "Customer", "last_name": "", "phone": phone,
+          "address_line1": str(inp.get("address_line1"))[:50], "address_line2": "", "landmark": "",
+          "pincode": pincode, "city": str(inp.get("city") or ""), "state": str(inp.get("state") or ""),
+          "product_name": dec.get("product") or "Unit for repair", "quantity": 1,
+          "weight_kg": float(inp.get("weight_kg") or 5), "order_id": dec.get("ticket_number") or "", "invoice_amount": 100.0}
+    now = datetime.now(timezone.utc).isoformat()
+    pdoc = {"id": str(uuid.uuid4()), "customer_phone": digits, "customer_name": name,
+            "ticket_number": dec.get("ticket_number"), "address": rp, "created_at": now}
+    if not PRATIBHA_PICKUP_LIVE:
+        awb = "SIM-" + uuid.uuid4().hex[:8].upper()
+        pdoc.update({"status": "booked", "awb": awb, "simulated": True})
+        await db.repair_pickups.insert_one(pdoc)
+        return {"success": True, "awb": awb, "simulated": True,
+                "note": "SIMULATED booking (PRATIBHA_PICKUP_LIVE off). Tell the customer pickup is arranged."}
+    try:
+        resp = await _pratibha_book_reverse_pickup(rp, {})
+    except Exception as e:
+        return {"error": f"Bigship booking failed: {e}"}
+    awb = getattr(resp, "awb_number", None) or (resp.get("awb_number") if isinstance(resp, dict) else None)
+    if getattr(resp, "success", True) is False or not awb:
+        return {"error": getattr(resp, "message", None) or "Pickup booking failed; ops will arrange manually."}
+    pdoc.update({"status": "booked", "awb": awb, "label_url": getattr(resp, "label_url", None)})
+    await db.repair_pickups.insert_one(pdoc)
+    if dec.get("ticket_number"):
+        await db.tickets.update_one({"ticket_number": dec["ticket_number"]},
+                                    {"$set": {"pickup_tracking": awb, "pickup_courier": "Bigship", "updated_at": now}})
+    return {"success": True, "awb": awb, "note": "Pickup booked. Tell the customer (Hinglish) the pickup is arranged."}
+
+
+async def _wa_tool_notify_technician(digits: str, name: str, message: str) -> dict:
+    """Action tool: WhatsApp the technician Gaurav, and open/track a repair job so his reply
+    (time estimate / 'done') flows back to the customer."""
+    g = (await db.users.find_one({"role": "service_agent", "first_name": {"$regex": "gaurav", "$options": "i"}})
+         or await db.users.find_one({"role": "service_agent"}))
+    if not g:
+        return {"error": "No technician found."}
+    num = re.sub(r"\D", "", str(g.get("whatsapp_number") or g.get("phone") or ""))[-10:]
+    now = datetime.now(timezone.utc).isoformat()
+    dec = await db.repair_decisions.find_one(
+        {"customer_phone": digits, "status": "resolved", "decision": "repair"}, sort=[("resolved_at", -1)])
+    pj = await db.repair_pickups.find_one({"customer_phone": digits, "status": "booked"}, sort=[("created_at", -1)])
+    tkn = (dec or {}).get("ticket_number") or (pj or {}).get("ticket_number") or ""
+    product = (dec or {}).get("product") or ""
+    job = await db.repair_jobs.find_one({"customer_phone": digits, "status": {"$in": ["awaiting_estimate", "in_repair"]}})
+    if not job:
+        await db.repair_jobs.insert_one({
+            "id": str(uuid.uuid4()), "customer_phone": digits, "customer_name": name, "ticket_number": tkn,
+            "product": product, "technician_id": g["id"], "technician_name": g.get("first_name"),
+            "technician_phone": num, "status": "awaiting_estimate", "last_msg": message,
+            "last_nudge_at": now, "nudge_count": 0, "created_at": now})
+    else:
+        await db.repair_jobs.update_one({"id": job["id"]}, {"$set": {"last_msg": message, "last_nudge_at": now, "technician_phone": num}})
+    if len(num) != 10:
+        await create_notification(title="Repair — message for Gaurav", message=message,
+                                  notification_type="service", target_user_ids=[g["id"]], priority="high")
+        return {"sent": "in_app", "note": "Technician has no WhatsApp number; sent in-app instead."}
+    res = await send_whatsapp_message("91" + num, message, force=True)
+    return {"sent": "whatsapp", "to_technician": g.get("first_name"),
+            "delivered": isinstance(res, dict) and not res.get("error"),
+            "note": "Job tracked — his reply (time/'done') will come back to you."}
+
+
+def _wa_support_executor(digits: str, name: str):
+    async def ex(tool: str, inp: dict) -> dict:
+        if tool == "get_customer_info":
+            return await _wa_customer_info(digits)
+        if tool == "search_knowledge":
+            return await _wa_tool_search_knowledge(inp.get("query", ""), inp.get("series", ""))
+        if tool == "ask_manager":
+            return await _wa_tool_ask_manager(digits, name, inp.get("summary", ""), inp.get("question", ""))
+        if tool == "arrange_pickup":
+            return await _wa_tool_arrange_pickup(digits, name, inp)
+        if tool == "notify_technician":
+            return await _wa_tool_notify_technician(digits, name, inp.get("message", ""))
+        return {"error": f"unknown tool {tool}"}
+    return ex
+
+
+async def _wa_build_situation(digits: str, name: str) -> str:
+    info = await _wa_customer_info(digits)
+    parts = [f"Customer phone: {digits}" + (f", name: {name}" if name else " (name unknown)")]
+    if info.get("warranty"):
+        parts.append(f"Warranty: {json.dumps(info['warranty'], default=str)}")
+    if info.get("recent_ticket"):
+        parts.append(f"Latest ticket: {json.dumps(info['recent_ticket'], default=str)}")
+    if await db.repair_decisions.find_one({"customer_phone": digits, "status": "open"}, {"_id": 1}):
+        parts.append("STATE: You have ALREADY escalated to the manager and are AWAITING their reply. Reassure the customer briefly; do NOT escalate again.")
+    else:
+        rdec = await db.repair_decisions.find_one(
+            {"customer_phone": digits, "status": "resolved", "decision": "repair"}, sort=[("resolved_at", -1)])
+        if rdec:
+            if await db.repair_pickups.find_one({"customer_phone": digits, "status": "booked"}, {"_id": 1}):
+                parts.append("STATE: Repair pickup already booked. Reassure / keep them informed.")
+            else:
+                parts.append("STATE: Manager APPROVED a REPAIR. If you don't yet have the pickup address, ask for it "
+                             "(with pincode) + a contact number; once you have it, call arrange_pickup.")
+    return "\n".join(parts)
+
+
+_wa_agent_locks = {}
+
+
+async def _wa_agent_respond(digits: str, contact_name: str = "", manager_note: str = "", latest_image: dict = None):
+    """Run the support agent over this customer's conversation and send its reply.
+    Serialized per customer (no interleaving), and each reply is time-anchored right after the
+    message(s) it answers so rapid back-and-forth never scrambles the transcript."""
+    lock = _wa_agent_locks.get(digits)
+    if lock is None:
+        lock = asyncio.Lock()
+        _wa_agent_locks[digits] = lock
+    async with lock:  # one turn at a time per customer — the cause of the re-asking loop
+        rgx = {"$regex": re.escape(digits) + "$"}
+        lead = await db.leads.find_one({"phone": rgx}, {"_id": 0, "name": 1, "customer_name": 1})
+        name = contact_name or (lead or {}).get("name") or (lead or {}).get("customer_name") or ""
+        msgs = await db.whatsapp_cloud_messages.find(
+            {"phone": digits}, {"_id": 0, "direction": 1, "text": 1, "received_at": 1}).sort("received_at", 1).to_list(60)
+        # Dedup: if the last thing in the log is already OUR reply (an earlier queued turn handled
+        # everything), don't reply again — unless this call carries a fresh photo or manager note.
+        if msgs and msgs[-1].get("direction") == "outgoing" and not latest_image and not manager_note:
+            return
+        last_in_ra = max((m.get("received_at") for m in msgs
+                          if m.get("direction") == "incoming" and m.get("received_at")), default=None)
+        conv = []
+        for m in msgs[-14:]:
+            c = (m.get("text") or "").strip()
+            if c:
+                conv.append({"role": "user" if m.get("direction") == "incoming" else "assistant", "content": c})
+        while conv and conv[0]["role"] == "assistant":
+            conv.pop(0)
+        while conv and conv[-1]["role"] == "assistant":
+            conv.pop()
+        if latest_image and conv and conv[-1]["role"] == "user" and latest_image.get("b64"):
+            cap = conv[-1]["content"] if isinstance(conv[-1]["content"], str) else "[photo]"
+            mime = latest_image.get("mime") or "image/jpeg"
+            src = {"type": "base64", "media_type": mime, "data": latest_image["b64"]}
+            block = {"type": "document", "source": src} if mime == "application/pdf" else {"type": "image", "source": src}
+            conv[-1]["content"] = [block, {"type": "text", "text": cap or "[customer sent this photo]"}]
+        if manager_note:
+            conv.append({"role": "user", "content": f"[Internal system note (not from the customer): {manager_note}]"})
+        if not conv:
+            return
+        situation = await _wa_build_situation(digits, name)
+        # Router: keep the expensive Opus brain for the turns that need it — a photo to read (vision),
+        # a manager re-invoke (escalation), or a message triage flags as a real problem. Everything else
+        # (greetings, acks, status, address capture) runs on cheap Haiku. Same agent, same tools — just the brain.
+        if latest_image or manager_note:
+            tier, brain = "hard", pratibha_brain.support_model()
+        else:
+            tier = await pratibha_brain.support_triage(conv)
+            brain = pratibha_brain.support_model() if tier == "hard" else pratibha_brain.model()
+        res = await pratibha_brain.support_agent(conv, situation, _wa_support_executor(digits, name), brain=brain)
+        reply = (res or {}).get("reply", "").strip()
+        if not res.get("model_ok") or not reply:
+            await create_notification(title="WhatsApp needs a human",
+                                      message=f"Agent couldn't respond to {digits}.", notification_type="whatsapp",
+                                      link="/admin", target_roles=["admin", "call_support"], priority="high")
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        # Anchor the reply's sort key right after the latest message it answers, so a slow reply
+        # can't appear AFTER a newer inbound and make the next turn think it was never answered.
+        reply_ra = now
+        if last_in_ra:
+            try:
+                reply_ra = (datetime.fromisoformat(last_in_ra) + timedelta(milliseconds=1)).isoformat()
+            except (ValueError, TypeError):
+                reply_ra = now
+        sent = await whatsapp_cloud.send_text(digits, reply)
+        if sent.get("wamid"):
+            await db.whatsapp_cloud_messages.insert_one({
+                "id": str(uuid.uuid4()), "direction": "outgoing", "phone": digits, "text": reply,
+                "msg_type": "text", "wamid": sent["wamid"], "ts": now, "received_at": reply_ra,
+                "source": "whatsapp_cloud", "kind": "pratibha_agent", "tier": tier, "brain": brain})
+
+
+async def _wa_handle_media(digits: str, contact_name: str, media_id: str, mime: str):
+    """A customer sent a photo/document — download it and let the agent SEE it (vision)."""
+    if not (PRATIBHA_WA_AUTOREPLY and pratibha_brain.available() and whatsapp_cloud.enabled()):
+        return
+    if await db.whatsapp_optouts.find_one({"phone": digits}, {"_id": 1}):
+        return
+    media = await whatsapp_cloud.download_media(media_id)
+    if not media or not media.get("bytes"):
+        await whatsapp_cloud.send_text(digits, "Photo theek se nahi mili \U0001f614 kya aap dobara bhej sakte hain?")
+        return
+    import base64
+    b64 = base64.b64encode(media["bytes"]).decode()
+    await _wa_agent_respond(digits, contact_name, latest_image={"b64": b64, "mime": media.get("mime") or mime})
+
+
+async def _pratibha_wa_autoreply(phone: str, text: str, contact_name: str = ""):
+    """Generate + send a real Claude reply to an inbound WhatsApp message, safely."""
+    if not (PRATIBHA_WA_AUTOREPLY and pratibha_brain.available() and whatsapp_cloud.enabled()):
+        return
+    t = (text or "").strip()
+    if not t:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    digits = re.sub(r"\D", "", phone)[-10:]
+    low = t.lower()
+
+    # Opt-out: honour and stop.
+    if low in _WA_OPTOUT_WORDS:
+        await db.whatsapp_optouts.update_one({"phone": digits}, {"$set": {"phone": digits, "opted_out_at": now}}, upsert=True)
+        await whatsapp_cloud.send_text(digits, "Got it — you won't get further messages from us here. Reply anytime if you need help. \U0001f64f")
+        return
+    if await db.whatsapp_optouts.find_one({"phone": digits}, {"_id": 1}):
+        return  # previously opted out
+
+    # Hand the whole conversation to the agent — it decides what to say and what to do.
+    await _wa_agent_respond(digits, contact_name)
+
+
+async def _pratibha_raise_repair_decision(customer_phone: str, customer_name: str = "", product: str = "", ticket_number: str = ""):
+    """Gate 1: ask the internal WhatsApp group whether to repair / replace / ask Angad.
+    Single-in-flight PER CUSTOMER (no spam) — if a decision is already open for this
+    customer, do nothing. Sends ONE message to the main group, then waits for a reply."""
+    if await db.repair_decisions.find_one({"customer_phone": customer_phone, "status": "open"}, {"_id": 1}):
+        return False
+    ref = uuid.uuid4().hex[:6].upper()
+    did = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    await db.repair_decisions.insert_one({
+        "id": did, "ref": ref, "customer_phone": customer_phone,
+        "customer_name": customer_name, "product": product, "ticket_number": ticket_number,
+        "status": "open", "group_notified": False, "created_at": now,
+    })
+    who = customer_name or customer_phone
+    prod = f" on *{product}*" if product else ""
+    tkn = f" (ticket {ticket_number})" if ticket_number else ""
+    msg = (f"\U0001f6e0️ *Decision needed* [{ref}]\n"
+           f"{who} ({customer_phone}) is asking for a *replacement*{prod}{tkn}.\n\n"
+           f"How should I proceed? Reply with one word:\n"
+           f"• *repair* — arrange pickup & repair\n"
+           f"• *replace* — start a replacement\n"
+           f"• *angad* — ask Angad to call them now")
+    # During business hours → ask the GROUP. Off-hours → DM the founder directly so we
+    # don't ping the whole group at night (the reply handler accepts DM replies too).
+    off_hours = _pratibha_wa_quiet_now()
+    target = _pr_founder_wa_target() if off_hours else await _pr_wa_target(_pr_founder_wa_target())
+    asked_via = "founder_dm" if off_hours else "group"
+    # Resilient send: the bridge can briefly be unreachable. Retry, and if it still
+    # fails, DON'T leave a silent dead-end — alert staff in-app so the escalation isn't lost.
+    res = None
+    for attempt in range(3):
+        try:
+            res = await send_whatsapp_message(target, msg, force=True)
+        except Exception as e:
+            res = {"error": str(e)}
+        if isinstance(res, dict) and not res.get("error") and not res.get("held"):
+            break
+        logger.warning(f"repair decision [{ref}] {asked_via} send attempt {attempt + 1} failed: {res}")
+        await asyncio.sleep(2)
+    ok = isinstance(res, dict) and not res.get("error")
+    await db.repair_decisions.update_one(
+        {"id": did}, {"$set": {"group_notified": ok, "asked_via": asked_via, "group_send_result": str(res)[:200]}})
+    if not ok:
+        await create_notification(
+            title="⚠️ WhatsApp group ask failed — decide manually",
+            message=(f"Couldn't reach the WhatsApp group to ask about {who} ({customer_phone}) "
+                     f"wanting a replacement{prod}. Please decide: repair / replace / call."),
+            notification_type="whatsapp", link="/admin", target_roles=["admin"], priority="high")
+    return ok
+
+
+async def _pratibha_wa_decision_reply(message):
+    """Catch an AUTHORISED (Pawan/Shweta) reply to an open Gate-1 decision and route it.
+    Returns a group acknowledgement string, or None to let other handlers run."""
+    if not _wa_reply_allowed(getattr(message, "from_number", "")):
+        return None
+    text = (getattr(message, "text", "") or "").strip().lower()
+    if not text:
+        return None
+    if "angad" in text:
+        choice = "angad"
+    elif "replace" in text or "replacement" in text:
+        choice = "replace"
+    elif "repair" in text:
+        choice = "repair"
+    else:
+        return None  # not a decision word → fall through to other handlers
+    dec = await db.repair_decisions.find_one({"status": "open"}, sort=[("created_at", -1)])
+    if not dec:
+        return None
+    now = datetime.now(timezone.utc).isoformat()
+    await db.repair_decisions.update_one(
+        {"id": dec["id"]},
+        {"$set": {"status": "resolved", "decision": choice, "decided_by": message.from_number, "resolved_at": now}})
+
+    cust_phone = dec.get("customer_phone")
+    cust_name = dec.get("customer_name") or "the customer"
+    product = dec.get("product") or ""
+    tkn = dec.get("ticket_number") or ""
+    prod_s = f" ({product})" if product else ""
+    tk_s = f" ticket {tkn}" if tkn else ""
+
+    # Deterministic staff side-effects per decision (the customer-facing message is the AGENT's job).
+    if choice == "angad":
+        sup = (await db.users.find_one({"role": "supervisor", "first_name": {"$regex": "angad", "$options": "i"}})
+               or await db.users.find_one({"role": "supervisor"}))
+        if sup:
+            await create_notification(
+                title="\U0001f4de Call customer now",
+                message=f"{cust_name} ({cust_phone}){prod_s}{(' —'+tk_s) if tkn else ''} — please call them immediately.",
+                notification_type="service", link="/supervisor/tickets", target_user_ids=[sup["id"]], priority="high")
+        manager_note = "The manager decided: ASK ANGAD to call the customer. Tell the customer (Hinglish) that our team lead will call them shortly to sort it out."
+    elif choice == "replace":
+        await create_notification(
+            title="Replacement approved",
+            message=f"Replacement approved for {cust_name} ({cust_phone}){prod_s}{(' —'+tk_s) if tkn else ''}. Proceed with replacement dispatch.",
+            notification_type="service", link="/admin/warranty-claims",
+            target_roles=["admin", "accountant", "supervisor"], priority="high")
+        manager_note = "The manager APPROVED a replacement. Tell the customer (Hinglish) the good news; the team will share next steps. Do not ask for a pickup address."
+    else:  # repair → flag the ticket into the pickup flow; the agent collects the address & books.
+        tdoc = None
+        if tkn:
+            tdoc = await db.tickets.find_one({"ticket_number": tkn})
+        if not tdoc and cust_phone:
+            tdoc = await db.tickets.find_one(
+                {"customer_phone": {"$regex": re.escape(cust_phone[-10:]) + "$"}}, sort=[("created_at", -1)])
+        if tdoc:
+            ok, _ = StateMachine.validate_transition("ticket", tdoc.get("status"), "awaiting_label", is_admin=True)
+            if ok:
+                await db.tickets.update_one({"id": tdoc["id"]}, {"$set": {"status": "awaiting_label", "updated_at": now}})
+                await add_ticket_history(tdoc["id"], f"Repair approved via WhatsApp ({message.from_number})",
+                                         REPAIR_LOOP_AGENT, {"action_type": "repair_decision"})
+        manager_note = ("The manager APPROVED a REPAIR. Ask the customer (Hinglish) for their full pickup address "
+                        "(with pincode) and a contact number so we can arrange the pickup.")
+
+    # Hand off to the agent to craft + send the customer message and take next steps.
+    if cust_phone:
+        try:
+            await _wa_agent_respond(cust_phone, cust_name, manager_note=manager_note)
+        except Exception as e:
+            logger.warning(f"agent re-invoke after decision failed: {e}")
+    return f"\U0001f44d Decision noted: *{choice}* for {cust_name}."
+
+
+async def _pratibha_wa_technician_reply(message):
+    """Catch the TECHNICIAN's (Gaurav's) WhatsApp reply about an open repair job, interpret it,
+    and flow it back to the customer (via the agent). Returns an ack to Gaurav, or None."""
+    frm = re.sub(r"\D", "", getattr(message, "from_number", "") or "")[-10:]
+    if len(frm) != 10:
+        return None
+    job = await db.repair_jobs.find_one(
+        {"technician_phone": frm, "status": {"$in": ["awaiting_estimate", "in_repair"]}}, sort=[("created_at", -1)])
+    if not job:
+        return None
+    text = (getattr(message, "text", "") or "").strip()
+    if not text:
+        return None
+    interp = await pratibha_brain.interpret_technician_reply(text)
+    kind, eta = interp.get("kind"), interp.get("eta")
+    now = datetime.now(timezone.utc).isoformat()
+    cust_phone = job.get("customer_phone")
+    cust_name = job.get("customer_name") or "the customer"
+    product = job.get("product") or "unit"
+
+    if kind == "estimate" and eta:
+        await db.repair_jobs.update_one({"id": job["id"]}, {"$set": {"status": "in_repair", "eta": eta, "eta_at": now}})
+        if cust_phone:
+            await _wa_agent_respond(cust_phone, cust_name, manager_note=(
+                f"The technician says the repair of the {product} will take {eta}. Give the customer a professional "
+                f"Hinglish update that repair has started and the estimated time is {eta}."))
+        return f"Noted — customer ko {eta} ka update de diya. \U0001f64f"
+
+    if kind == "done":
+        await db.repair_jobs.update_one({"id": job["id"]}, {"$set": {"status": "repaired", "repaired_at": now}})
+        await create_notification(
+            title="✅ Repair done — ready to ship back",
+            message=f"{cust_name} ({cust_phone}) {product} ticket {job.get('ticket_number')} — repaired by technician. Decide ship-back: PREPAID or COD (labour ₹?).",
+            notification_type="service", link="/operations/courier-tracking",
+            target_roles=["admin", "accountant"], priority="high")
+        if cust_phone:
+            await _wa_agent_respond(cust_phone, cust_name, manager_note=(
+                "The technician has CONFIRMED the repair is done. Give the customer a professional Hinglish update "
+                "that their unit is repaired and we'll arrange to send it back shortly. Do not quote any charge yet."))
+        return "Repair complete noted. Ship-back arrange kar rahe hain. \U0001f64f"
+
+    if kind == "problem":
+        await _wa_send_to_manager(
+            f"⚠️ Technician reported a problem on {cust_name}'s {product} (ticket {job.get('ticket_number')}): {interp.get('note') or text}",
+            fallback_desc=f"Technician flagged a repair problem for {cust_name} ({cust_phone}).")
+        return "Theek hai, maine ye Pawan sir ko bata diya. \U0001f64f"
+
+    return None  # greeting/unclear — let other handlers/brain decide
+
+
+@api_router.get("/whatsapp/cloud/webhook")
+async def whatsapp_cloud_verify(request: Request):
+    """Meta webhook verification (GET): echo hub.challenge when the verify token matches."""
+    from starlette.responses import PlainTextResponse
+    p = request.query_params
+    vt = whatsapp_cloud.verify_token()
+    if p.get("hub.mode") == "subscribe" and vt and p.get("hub.verify_token") == vt:
+        return PlainTextResponse(p.get("hub.challenge", ""))
+    raise HTTPException(status_code=403, detail="verification failed")
+
+
+@api_router.post("/whatsapp/cloud/webhook")
+async def whatsapp_cloud_webhook(request: Request):
+    """Inbound customer messages + delivery/read statuses from the WhatsApp Cloud API.
+    Stores conversation in db.whatsapp_cloud_messages (linked to lead/party by phone)."""
+    try:
+        body = await request.json()
+    except Exception:
+        return {"ok": True}
+    now = datetime.now(timezone.utc).isoformat()
+    stored = 0
+    for entry in (body.get("entry") or []):
+        for ch in (entry.get("changes") or []):
+            val = ch.get("value") or {}
+            names = {c.get("wa_id"): (c.get("profile") or {}).get("name") for c in (val.get("contacts") or [])}
+            for m in (val.get("messages") or []):
+                wa_from = m.get("from")
+                digits = re.sub(r"\D", "", wa_from or "")[-10:]
+                mtype = m.get("type")
+                text = None
+                media_id = None
+                media_mime = None
+                if mtype == "text":
+                    text = (m.get("text") or {}).get("body")
+                elif mtype == "button":
+                    text = (m.get("button") or {}).get("text")
+                elif mtype == "interactive":
+                    inter = m.get("interactive") or {}
+                    text = ((inter.get("button_reply") or inter.get("list_reply") or {})).get("title")
+                elif mtype in ("image", "document"):
+                    media = m.get(mtype) or {}
+                    media_id = media.get("id")
+                    media_mime = media.get("mime_type")
+                    text = media.get("caption") or (media.get("filename") if mtype == "document" else "") or f"[{mtype}]"
+                doc = {
+                    "id": str(uuid.uuid4()), "direction": "incoming", "wa_from": wa_from,
+                    "phone": digits, "contact_name": names.get(wa_from), "text": text,
+                    "msg_type": mtype, "media_id": media_id, "wamid": m.get("id"), "ts": m.get("timestamp") or now,
+                    "received_at": now, "source": "whatsapp_cloud",
+                }
+                if digits:
+                    lead = await db.leads.find_one({"phone": {"$regex": re.escape(digits) + "$"}}, {"_id": 0, "id": 1})
+                    if lead:
+                        doc["lead_id"] = lead["id"]
+                    party = await db.parties.find_one({"phone": {"$regex": re.escape(digits) + "$"}}, {"_id": 0, "id": 1})
+                    if party:
+                        doc["party_id"] = party["id"]
+                dup = doc["wamid"] and await db.whatsapp_cloud_messages.find_one(
+                    {"wamid": doc["wamid"], "direction": "incoming"}, {"_id": 1})
+                if not dup:
+                    await db.whatsapp_cloud_messages.insert_one(doc)
+                    stored += 1
+                    # Real Claude reply (guardrailed) — fire async so we still 200 fast.
+                    import asyncio
+                    if text and mtype in ("text", "button", "interactive"):
+                        asyncio.create_task(_pratibha_wa_autoreply(digits, text, names.get(wa_from)))
+                    elif mtype in ("image", "document") and media_id:
+                        asyncio.create_task(_wa_handle_media(digits, names.get(wa_from), media_id, media_mime or "image/jpeg"))
+            for s in (val.get("statuses") or []):
+                await db.whatsapp_cloud_messages.update_one(
+                    {"wamid": s.get("id")},
+                    {"$set": {"status": s.get("status"), "status_at": s.get("timestamp") or now}},
+                )
+    return {"ok": True, "stored": stored}
+
+
 class AICommandRequest(BaseModel):
     command: str
     conversation_history: Optional[List[dict]] = None
@@ -72277,6 +76059,27 @@ class EmailAgentSend(BaseModel):
     body: str  # the (possibly edited) reply to send
 
 
+@api_router.get("/admin/pratibha/pending-drafts")
+async def pratibha_pending_drafts(user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Customer-email replies Pratibha has drafted and is waiting for Shweta to approve on WhatsApp.
+    A large backlog here is why ambiguous 'send' messages could fire random emails."""
+    def _age_days(iso):
+        try:
+            return max(0, (datetime.now(timezone.utc) - datetime.fromisoformat((iso or "").replace("Z", "+00:00"))).days)
+        except Exception:
+            return None
+    rows = []
+    async for d in db.pratibha_wa_drafts.find(
+            {"status": "awaiting_shweta"},
+            {"_id": 0, "ref": 1, "customer_name": 1, "customer_email": 1, "subject": 1, "created_at": 1, "draft": 1}
+            ).sort("created_at", -1):
+        rows.append({"ref": d.get("ref"), "customer_name": d.get("customer_name"),
+                     "customer_email": d.get("customer_email"), "subject": d.get("subject"),
+                     "created_at": d.get("created_at"), "age_days": _age_days(d.get("created_at")),
+                     "preview": (d.get("draft") or "")[:200]})
+    return {"count": len(rows), "drafts": rows}
+
+
 @api_router.get("/admin/accounting-drafts")
 async def list_accounting_drafts(status: str = "pending_review",
                                  user: dict = Depends(require_roles(["admin", "accountant"]))):
@@ -72414,8 +76217,48 @@ async def get_whatsapp_ai():
     return _whatsapp_ai
 
 
-async def send_whatsapp_message(to: str, message: str):
-    """Send a WhatsApp message via the bridge"""
+def _pratibha_wa_quiet_now() -> bool:
+    """True when a PROACTIVE WhatsApp message should be HELD right now — i.e. it's outside India
+    business hours (default Mon–Sat 10:00–20:00 IST). Times are evaluated in IST. Tunable via
+    PRATIBHA_WA_QUIET_HOURS / PRATIBHA_WA_WORK_START_HOUR / _END_HOUR / PRATIBHA_WA_QUIET_SUNDAY."""
+    if os.environ.get("PRATIBHA_WA_QUIET_HOURS", "true").lower() != "true":
+        return False
+    try:
+        c = email_agent.cfg()
+        now = email_agent._now_local(c)  # IST (Asia/Kolkata)
+        start = int(os.environ.get("PRATIBHA_WA_WORK_START_HOUR", str(c.get("work_start_hour", 10))))
+        end = int(os.environ.get("PRATIBHA_WA_WORK_END_HOUR", str(c.get("work_end_hour", 20))))
+        sunday_quiet = os.environ.get("PRATIBHA_WA_QUIET_SUNDAY",
+                                      "true" if c.get("quiet_sunday", True) else "false").lower() == "true"
+        if sunday_quiet and now.weekday() == 6:  # Sunday
+            return True
+        return not (start <= now.hour < end)
+    except Exception:
+        return False
+
+
+async def send_whatsapp_message(to: str, message: str, force: bool = False):
+    """Send a WhatsApp message via the bridge.
+
+    Pratibha's PROACTIVE messages are held outside India business hours (IST) and auto-flushed at
+    the start of the next business day, so she doesn't ping the team at night / on Sunday. Pass
+    force=True for transactional or interactive sends that must go regardless of the hour —
+    customer-facing messages, admin manual sends, replies, and the morning flush itself."""
+    if not force and _pratibha_wa_quiet_now():
+        try:
+            import hashlib
+            now_iso = datetime.now(timezone.utc).isoformat()
+            key = hashlib.sha1(f"{to}|{message}".encode("utf-8")).hexdigest()
+            await db.pratibha_wa_outbox.update_one(
+                {"dedup_key": key, "status": "queued"},
+                {"$setOnInsert": {"queued_at": now_iso},
+                 "$set": {"to": to, "message": message, "dedup_key": key,
+                          "status": "queued", "updated_at": now_iso}},
+                upsert=True)
+            logger.info("WhatsApp proactive msg held (outside India business hours) — queued for next business day")
+            return {"held": True, "queued": True}
+        except Exception as e:
+            logger.error(f"WA outbox queue failed, sending anyway: {e}")
     import httpx
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -72427,6 +76270,32 @@ async def send_whatsapp_message(to: str, message: str):
     except Exception as e:
         logger.error(f"WhatsApp send error: {e}")
         return {"error": str(e)}
+
+
+async def scheduled_wa_outbox_flush():
+    """Send any WhatsApp messages that were held overnight, once India business hours resume.
+    No-op while still outside hours (e.g. Sunday) so the queue waits for the next business day."""
+    try:
+        if _pratibha_wa_quiet_now():
+            return
+        items = await db.pratibha_wa_outbox.find({"status": "queued"}, {"_id": 0}).sort("queued_at", 1).to_list(300)
+        sent = 0
+        for it in items:
+            try:
+                res = await send_whatsapp_message(it["to"], it["message"], force=True)
+                if isinstance(res, dict) and res.get("error"):
+                    continue  # bridge issue — leave queued, retry next run
+                await db.pratibha_wa_outbox.update_one(
+                    {"dedup_key": it["dedup_key"], "status": "queued"},
+                    {"$set": {"status": "sent", "sent_at": datetime.now(timezone.utc).isoformat()}})
+                sent += 1
+                await asyncio.sleep(1.0)  # pace the morning catch-up
+            except Exception as e:
+                logger.error(f"WA outbox flush item failed: {e}")
+        if sent:
+            logger.info(f"WhatsApp outbox flush: delivered {sent} held message(s)")
+    except Exception as e:
+        logger.error(f"WA outbox flush failed: {e}")
 
 
 async def send_whatsapp_media(to: str, caption: str, attachment: dict):
@@ -72538,6 +76407,26 @@ async def whatsapp_message_webhook(data: dict, request: Request):
             await _wa_remember_turn(conv_key, message.text, wa_grp)
             return {"reply": wa_grp}
 
+        # Authorised (Pawan/Shweta) reply to an open repair/replace/Angad decision (Gate 1).
+        try:
+            wa_dec = await _pratibha_wa_decision_reply(message)
+        except Exception as e:
+            logger.error(f"WA decision-reply handling failed: {e}")
+            wa_dec = None
+        if wa_dec is not None:
+            await _wa_remember_turn(conv_key, message.text, wa_dec)
+            return {"reply": wa_dec}
+
+        # Technician (Gaurav) replying about an open repair job — interpret + update the customer.
+        try:
+            wa_tech = await _pratibha_wa_technician_reply(message)
+        except Exception as e:
+            logger.error(f"WA technician-reply handling failed: {e}")
+            wa_tech = None
+        if wa_tech is not None:
+            await _wa_remember_turn(conv_key, message.text, wa_tech)
+            return {"reply": wa_tech}
+
         # "dispatched <REF>" — close a money-in-goods-not-shipped watch.
         try:
             wa_disp = await _pratibha_wa_dispatch_reply(message)
@@ -72566,7 +76455,8 @@ async def whatsapp_message_webhook(data: dict, request: Request):
         wa_draft = None
         if not message.has_media:
             try:
-                wa_draft = await _pratibha_wa_draft_reply(message.from_number, message.text)
+                wa_draft = await _pratibha_wa_draft_reply(message.from_number, message.text,
+                    getattr(message, "is_group", False), getattr(message, "quoted_message", None))
             except Exception as e:
                 logger.error(f"WA draft-approval handling failed: {e}")
                 wa_draft = None
@@ -72642,8 +76532,8 @@ async def whatsapp_send(
     
     if not to or not message:
         return {"success": False, "error": "Missing 'to' or 'message'"}
-    
-    result = await send_whatsapp_message(to, message)
+
+    result = await send_whatsapp_message(to, message, force=True)  # explicit admin action — send now
     return {"success": "error" not in result, **result}
 
 
@@ -74631,6 +78521,14 @@ class MarketplaceOrderCreate(BaseModel):
     shipping_city: str = Field(..., min_length=1, max_length=80)
     shipping_state: str = Field(..., min_length=1, max_length=80)
     shipping_pincode: str = Field(..., min_length=4, max_length=12)
+    payment_method: str = Field("cod", pattern="^(cod|razorpay)$")
+    coupon_code: Optional[str] = None
+
+
+class RazorpayVerifyInput(BaseModel):
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
 
 
 def _mp_num(v) -> float:
@@ -74671,30 +78569,75 @@ async def _marketplace_pricing_and_stock():
     return price_by_sku, stock_by_sku
 
 
-def _shape_marketplace_product(ds: dict, dp: dict, stock: int, full: bool) -> dict:
-    images = [i for i in (ds.get("images") or []) if isinstance(i, str)]
-    image = ds.get("image_url") or (images[0] if images else None)
+# Consumer storefront is driven by master_skus (which hold the real retail
+# price/MRP/GST), enriched with a product_datasheet (image/specs) when one
+# matches. Only finished-goods categories are sold to customers.
+_FINISHED_CATS = ("inverter", "battery", "stabilizer", "solar", "ups")
+
+
+def _sku_price(ms: dict) -> float:
+    return _mp_num(ms.get("selling_price")) or _mp_num(ms.get("mrp"))
+
+
+def _is_sellable_sku(ms: dict) -> bool:
+    cat = str(ms.get("category", "")).lower()
+    return (ms.get("is_active", True) and _sku_price(ms) > 0
+            and any(c in cat for c in _FINISHED_CATS))
+
+
+def _norm_name(s) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(s or "").lower())
+
+
+async def _marketplace_ds_index():
+    """master_sku_id -> datasheet AND normalized-name -> datasheet (for images/specs)."""
+    by_sku, by_name = {}, {}
+    async for ds in db.product_datasheets.find({"is_active": {"$ne": False}}, {"_id": 0}):
+        if ds.get("master_sku_id"):
+            by_sku[ds["master_sku_id"]] = ds
+        nm = _norm_name(ds.get("model_name"))
+        if nm:
+            by_name.setdefault(nm, ds)
+    return by_sku, by_name
+
+
+def _ds_for_sku(ms: dict, by_sku: dict, by_name: dict):
+    return by_sku.get(ms["id"]) or by_name.get(_norm_name(ms.get("name")))
+
+
+async def _sku_stock(msid: str) -> int:
+    serials = await db.finished_good_serials.count_documents({"master_sku_id": msid, "status": "in_stock"})
+    sku = await db.skus.find_one({"master_sku_id": msid, "active": True}, {"_id": 0, "stock_quantity": 1})
+    return serials + int((sku or {}).get("stock_quantity") or 0)
+
+
+def _shape_marketplace_product(ms: dict, ds, stock: int, full: bool) -> dict:
+    ds = ds or {}
+    # Prefer the master SKU's own image (set in the CRM); fall back to a
+    # matched datasheet's Amazon image.
+    ms_images = [i for i in (ms.get("images") or []) if isinstance(i, str)]
+    ds_images = [i for i in (ds.get("images") or []) if isinstance(i, str)]
+    images = ms_images or ds_images
+    image = ms.get("image_url") or (ms_images[0] if ms_images else None) \
+        or ds.get("image_url") or (ds_images[0] if ds_images else None)
     item = {
-        "id": ds["id"],
-        "name": ds.get("model_name", ""),
+        "id": ms["id"],
+        "name": ms.get("name", ""),
         "subtitle": ds.get("subtitle"),
-        "category": ds.get("category", ""),
+        "category": (ms.get("category") or ds.get("category") or "").title(),
         "image": image,
-        "price": _mp_num(dp.get("mrp")),
-        "gst_rate": _mp_num(dp.get("gst_rate")) or 18,
-        "in_stock": stock > 0,
+        "price": _sku_price(ms),
+        "mrp": _mp_num(ms.get("mrp")),
+        "gst_rate": _mp_num(ms.get("gst_rate")) or 18,
+        "in_stock": True,  # finished goods are made-to-order / COD; team fulfils
         "stock_available": stock,
     }
     if full:
         item["images"] = images
-        item["warranty"] = ds.get("warranty")
-        item["features"] = [
-            f for f in (ds.get("features") or []) if isinstance(f, str)
-        ]
+        item["warranty"] = ds.get("warranty") or "2 Years"
+        item["features"] = [f for f in (ds.get("features") or []) if isinstance(f, str)]
         item["specifications"] = ds.get("specifications") or {}
-        item["certifications"] = [
-            c for c in (ds.get("certifications") or []) if isinstance(c, str)
-        ]
+        item["certifications"] = [c for c in (ds.get("certifications") or []) if isinstance(c, str)] or ["BIS", "ISO 9001"]
     return item
 
 
@@ -74703,8 +78646,12 @@ def _shape_marketplace_order(o: dict) -> dict:
         "id": o.get("id"),
         "order_number": o.get("order_number"),
         "items": o.get("items", []),
+        "subtotal": o.get("subtotal", o.get("total", 0)),
+        "discount": o.get("discount", 0),
+        "coupon_code": o.get("coupon_code"),
         "total": o.get("total", 0),
         "payment_method": o.get("payment_method", "cod"),
+        "payment_status": o.get("payment_status"),
         "status": o.get("status", "placed"),
         "shipping": o.get("shipping", {}),
         "created_at": o.get("created_at"),
@@ -74713,36 +78660,25 @@ def _shape_marketplace_order(o: dict) -> dict:
 
 
 async def _load_marketplace_product(product_id: str):
-    """Returns (datasheet, dealer_product, stock), or None if not sellable."""
-    ds = await db.product_datasheets.find_one(
-        {"id": product_id, "is_active": {"$ne": False}}, {"_id": 0}
-    )
-    if not ds or not ds.get("master_sku_id"):
+    """Returns (master_sku, datasheet_or_None, stock), or None if not sellable."""
+    ms = await db.master_skus.find_one({"id": product_id}, {"_id": 0})
+    if not ms or not _is_sellable_sku(ms):
         return None
-    msid = ds["master_sku_id"]
-    dp = await db.dealer_products.find_one(
-        {"master_sku_id": msid, "is_active": True},
-        {"_id": 0, "mrp": 1, "gst_rate": 1},
-    )
-    if not dp or not dp.get("mrp"):
-        return None
-    serial_count = await db.finished_good_serials.count_documents(
-        {"master_sku_id": msid, "status": "in_stock"}
-    )
-    sku = await db.skus.find_one(
-        {"master_sku_id": msid, "active": True}, {"_id": 0, "stock_quantity": 1}
-    )
-    stock = serial_count + int((sku or {}).get("stock_quantity") or 0)
-    return ds, dp, stock
+    by_sku, by_name = await _marketplace_ds_index()
+    ds = _ds_for_sku(ms, by_sku, by_name)
+    stock = await _sku_stock(ms["id"])
+    return ms, ds, stock
 
 
 @api_router.get("/marketplace/categories")
 async def list_marketplace_categories(user: dict = Depends(get_current_user)):
-    """Distinct product categories available in the storefront."""
-    cats = await db.product_datasheets.distinct(
-        "category", {"is_active": {"$ne": False}}
-    )
-    return {"categories": sorted(c for c in cats if isinstance(c, str) and c)}
+    """Distinct finished-goods categories available in the storefront."""
+    skus = await db.master_skus.find(
+        {"is_active": {"$ne": False}},
+        {"_id": 0, "category": 1, "selling_price": 1, "mrp": 1, "is_active": 1},
+    ).to_list(800)
+    cats = sorted({(ms.get("category") or "").title() for ms in skus if _is_sellable_sku(ms)})
+    return {"categories": [c for c in cats if c]}
 
 
 @api_router.get("/marketplace/products")
@@ -74752,26 +78688,20 @@ async def list_marketplace_products(
     sort: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):
-    """Storefront catalogue — datasheets with a priced, active dealer product."""
-    query: dict = {"is_active": {"$ne": False}}
-    if category and category not in ("all", ""):
-        query["category"] = category
-    if q and q.strip():
-        rx = {"$regex": re.escape(q.strip()), "$options": "i"}
-        query["$or"] = [{"model_name": rx}, {"subtitle": rx}]
-    datasheets = await db.product_datasheets.find(query, {"_id": 0}).to_list(500)
-    price_by_sku, stock_by_sku = await _marketplace_pricing_and_stock()
+    """Storefront catalogue — finished-goods master SKUs with a retail price."""
+    skus = await db.master_skus.find({"is_active": {"$ne": False}}, {"_id": 0}).to_list(800)
+    by_sku, by_name = await _marketplace_ds_index()
+    ql = (q or "").strip().lower()
     products = []
-    for ds in datasheets:
-        msid = ds.get("master_sku_id")
-        dp = price_by_sku.get(msid) if msid else None
-        if not dp:
+    for ms in skus:
+        if not _is_sellable_sku(ms):
             continue
-        products.append(
-            _shape_marketplace_product(
-                ds, dp, stock_by_sku.get(msid, 0), full=False
-            )
-        )
+        cat = (ms.get("category") or "").title()
+        if category and category not in ("all", "") and cat.lower() != category.lower():
+            continue
+        if ql and ql not in (ms.get("name", "").lower()):
+            continue
+        products.append(_shape_marketplace_product(ms, _ds_for_sku(ms, by_sku, by_name), 0, full=False))
     if sort == "price_asc":
         products.sort(key=lambda p: p["price"])
     elif sort == "price_desc":
@@ -74789,8 +78719,8 @@ async def get_marketplace_product(
     loaded = await _load_marketplace_product(product_id)
     if not loaded:
         raise HTTPException(status_code=404, detail="Product not available")
-    ds, dp, stock = loaded
-    return _shape_marketplace_product(ds, dp, stock, full=True)
+    ms, ds, stock = loaded
+    return _shape_marketplace_product(ms, ds, stock, full=True)
 
 
 @api_router.post("/marketplace/orders")
@@ -74798,9 +78728,15 @@ async def create_marketplace_order(
     payload: MarketplaceOrderCreate,
     user: dict = Depends(get_current_user),
 ):
-    """Place a Cash-on-Delivery order. Prices are recomputed server-side."""
+    """Place a marketplace order (COD or online). Prices recomputed server-side."""
     if not payload.items:
         raise HTTPException(status_code=400, detail="Your cart is empty")
+    pay_method = payload.payment_method or "cod"
+    if pay_method == "razorpay" and not RAZORPAY_ENABLED:
+        raise HTTPException(
+            status_code=400,
+            detail="Online payment is unavailable right now. Please choose Cash on Delivery.",
+        )
     order_items = []
     total = 0.0
     for line in payload.items:
@@ -74810,18 +78746,21 @@ async def create_marketplace_order(
                 status_code=400,
                 detail="A product in your cart is no longer available",
             )
-        ds, dp, _stock = loaded
-        price = _mp_num(dp.get("mrp"))
+        ms, _ds, _stock = loaded
+        price = _sku_price(ms)
         line_total = round(price * line.quantity, 2)
         total += line_total
         order_items.append({
-            "product_id": ds["id"],
-            "name": ds.get("model_name", ""),
+            "product_id": ms["id"],
+            "name": ms.get("name", ""),
             "price": price,
-            "gst_rate": _mp_num(dp.get("gst_rate")) or 18,
+            "gst_rate": _mp_num(ms.get("gst_rate")) or 18,
             "quantity": line.quantity,
             "line_total": line_total,
         })
+    subtotal = round(total, 2)
+    discount, coupon_code = await _coupon_discount(payload.coupon_code, subtotal)
+    total = round(subtotal - discount, 2)
     now = datetime.now(timezone.utc).isoformat()
     order_id = str(uuid.uuid4())
     full_name = (
@@ -74834,8 +78773,14 @@ async def create_marketplace_order(
         "customer_id": user["id"],
         "customer_name": full_name,
         "items": order_items,
+        "subtotal": subtotal,
+        "discount": discount,
+        "coupon_code": coupon_code,
         "total": round(total, 2),
-        "payment_method": "cod",
+        "payment_method": pay_method,
+        # COD is payable on delivery (no online step); razorpay starts unpaid
+        # and is confirmed after signature verification.
+        "payment_status": "paid_on_delivery" if pay_method == "cod" else "pending",
         "status": "placed",
         "shipping": {
             "name": payload.shipping_name.strip(),
@@ -74902,6 +78847,3099 @@ async def cancel_marketplace_order(
         },
     )
     return {"message": "Order cancelled"}
+
+
+# Status order → how far along the fulfilment timeline an order is.
+_MP_TRACK_STEPS = [
+    ("placed", "Order placed"),
+    ("confirmed", "Confirmed"),
+    ("shipped", "Shipped"),
+    ("delivered", "Delivered"),
+]
+_MP_STATUS_INDEX = {
+    "placed": 0, "pending": 0, "new": 0,
+    "confirmed": 1, "processing": 1, "packed": 1, "ready_for_dispatch": 1,
+    "shipped": 2, "dispatched": 2, "in_transit": 2, "out_for_delivery": 2,
+    "delivered": 3, "completed": 3,
+}
+
+
+@api_router.get("/marketplace/orders/{order_id}/tracking")
+async def track_marketplace_order(
+    order_id: str, user: dict = Depends(get_current_user)
+):
+    """Customer-facing tracking for their own marketplace order.
+
+    Always returns a status timeline derived from the order status, and — when
+    an AWB has been attached (directly or via a linked dispatch) — enriches it
+    with live Delhivery scans (preferring the board cache the poller maintains).
+    """
+    order = await db.marketplace_orders.find_one(
+        {"id": order_id, "customer_id": user["id"]}, {"_id": 0}
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    status = (order.get("status") or "placed").lower()
+    cancelled = status in ("cancelled", "canceled")
+    reached = _MP_STATUS_INDEX.get(status, 0)
+    timeline = [
+        {
+            "key": key,
+            "label": label,
+            "done": (not cancelled) and i <= reached,
+            "current": (not cancelled) and i == reached,
+        }
+        for i, (key, label) in enumerate(_MP_TRACK_STEPS)
+    ]
+
+    # Resolve an AWB from the order itself or a linked dispatch.
+    awb = order.get("awb") or order.get("tracking_number")
+    courier = order.get("courier")
+    if not awb:
+        dispatch = await db.dispatches.find_one(
+            {"marketplace_order_id": order_id}, {"_id": 0}
+        )
+        if dispatch:
+            awb = dispatch.get("tracking_number") or dispatch.get("awb")
+            courier = courier or dispatch.get("courier")
+
+    tracking = None
+    if awb:
+        cached = await db.delhivery_tracking.find_one({"awb": awb}, {"_id": 0})
+        if cached and cached.get("tracking"):
+            tracking = cached["tracking"]
+        else:
+            try:
+                tracking = await fetch_delhivery_tracking(awb)
+            except Exception as e:
+                logger.info(f"marketplace tracking fetch failed for {awb}: {e}")
+
+    return {
+        "order_id": order_id,
+        "order_number": order.get("order_number"),
+        "status": order.get("status"),
+        "cancelled": cancelled,
+        "timeline": timeline,
+        "awb": awb,
+        "courier": courier,
+        "tracking": tracking,
+    }
+
+
+@api_router.post("/marketplace/orders/{order_id}/payment/razorpay")
+async def create_marketplace_razorpay_order(
+    order_id: str, user: dict = Depends(get_current_user)
+):
+    """Create a Razorpay order for an existing pending marketplace order."""
+    if not RAZORPAY_ENABLED:
+        raise HTTPException(status_code=503, detail="Online payment is not configured")
+    order = await db.marketplace_orders.find_one(
+        {"id": order_id, "customer_id": user["id"]}, {"_id": 0}
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("payment_status") == "paid":
+        raise HTTPException(status_code=400, detail="This order is already paid")
+    amount_paise = int(round(float(order.get("total") or 0) * 100))
+    if amount_paise <= 0:
+        raise HTTPException(status_code=400, detail="Invalid order amount")
+    try:
+        rzp_order = razorpay_client.order.create({
+            "amount": amount_paise,
+            "currency": "INR",
+            "receipt": order.get("order_number") or order_id,
+            "payment_capture": 1,
+            "notes": {"marketplace_order_id": order_id, "customer_id": user["id"]},
+        })
+    except Exception as e:
+        logger.error(f"Razorpay order create failed for {order_id}: {e}")
+        raise HTTPException(status_code=502, detail="Could not start payment")
+    await db.marketplace_orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "razorpay_order_id": rzp_order["id"],
+            "payment_method": "razorpay",
+            "payment_status": "pending",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+    return {
+        "razorpay_order_id": rzp_order["id"],
+        "key_id": RAZORPAY_KEY_ID,
+        "amount": amount_paise,
+        "currency": "INR",
+        "order_number": order.get("order_number"),
+        "prefill": {
+            "name": order.get("customer_name") or "",
+            "email": user.get("email") or "",
+            "contact": (order.get("shipping") or {}).get("phone") or user.get("phone") or "",
+        },
+    }
+
+
+@api_router.post("/marketplace/orders/{order_id}/payment/verify")
+async def verify_marketplace_payment(
+    order_id: str,
+    body: RazorpayVerifyInput,
+    user: dict = Depends(get_current_user),
+):
+    """Verify a Razorpay payment signature and mark the order paid."""
+    if not RAZORPAY_ENABLED:
+        raise HTTPException(status_code=503, detail="Online payment is not configured")
+    order = await db.marketplace_orders.find_one(
+        {"id": order_id, "customer_id": user["id"]}, {"_id": 0}
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("payment_status") == "paid":
+        raise HTTPException(status_code=400, detail="This order is already paid")
+    # The signature must be for THIS order's Razorpay order (else a valid
+    # signature from a cheap order could confirm an expensive one).
+    if body.razorpay_order_id != order.get("razorpay_order_id"):
+        raise HTTPException(status_code=400, detail="Payment does not match this order")
+    # A payment id can only settle one order.
+    if await db.marketplace_orders.find_one({"razorpay_payment_id": body.razorpay_payment_id}, {"_id": 1}):
+        raise HTTPException(status_code=400, detail="This payment has already been used")
+    try:
+        razorpay_client.utility.verify_payment_signature({
+            "razorpay_order_id": body.razorpay_order_id,
+            "razorpay_payment_id": body.razorpay_payment_id,
+            "razorpay_signature": body.razorpay_signature,
+        })
+    except Exception as e:
+        logger.warning(f"Razorpay signature verify failed for {order_id}: {e}")
+        raise HTTPException(status_code=400, detail="Payment verification failed")
+    now = datetime.now(timezone.utc).isoformat()
+    await db.marketplace_orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "payment_method": "razorpay",
+            "payment_status": "paid",
+            "razorpay_payment_id": body.razorpay_payment_id,
+            "status": "confirmed",
+            "paid_at": now,
+            "updated_at": now,
+        }},
+    )
+    return {"success": True, "order_number": order.get("order_number"), "status": "confirmed"}
+
+
+# ---------------------------------------------------------------------------
+# Plans — AMC (per-product) + Power Club membership (account-wide). Purchased
+# yearly via the same Razorpay flow as marketplace orders.
+# ---------------------------------------------------------------------------
+PLANS_CATALOG = [
+    {"id": "basic_amc", "type": "amc", "tier": "basic", "name": "Basic AMC",
+     "price": 999, "currency": "INR", "period": "yearly", "per_product": True,
+     "visits_per_year": 1,
+     "description": "Annual maintenance for one product.",
+     "perks": ["1 service visit per year", "Priority phone support", "Annual health check"],
+     "active": True},
+    {"id": "premium_amc", "type": "amc", "tier": "premium", "name": "Premium AMC",
+     "price": 1999, "currency": "INR", "period": "yearly", "per_product": True,
+     "visits_per_year": 2,
+     "description": "Comprehensive cover for one product.",
+     "perks": ["2 service visits per year", "Parts labour covered", "Priority service", "Phone + chat support"],
+     "active": True},
+    {"id": "power_club", "type": "membership", "tier": "power_club", "name": "Power Club",
+     "price": 2999, "currency": "INR", "period": "yearly", "per_product": False,
+     "visits_per_year": 1,
+     "description": "Premium membership across all your MuscleGrid products.",
+     "perks": ["Priority service SLA", "1 free annual checkup", "+1 year extended warranty",
+               "10% off the store", "Exclusive member offers"],
+     "active": True},
+    {"id": "power_protect", "type": "protection", "tier": "protect", "name": "Power Protect",
+     "price": 1499, "currency": "INR", "period": "yearly", "per_product": True,
+     "visits_per_year": 1,
+     "description": "Damage & surge protection for one product.",
+     "perks": ["Accidental damage cover", "Voltage surge protection", "1 free repair per year", "Fast replacement"],
+     "active": True},
+]
+
+
+async def _ensure_plans_seed():
+    if await db.plans.count_documents({}) == 0:
+        await db.plans.insert_many([dict(p) for p in PLANS_CATALOG])
+        return
+    # Backfill structured fields onto plans seeded before they existed
+    # (idempotent — only sets visits_per_year where it's missing).
+    for p in PLANS_CATALOG:
+        await db.plans.update_one(
+            {"id": p["id"], "visits_per_year": {"$exists": False}},
+            {"$set": {"visits_per_year": p["visits_per_year"]}},
+        )
+
+
+@api_router.get("/plans")
+async def list_plans(user: dict = Depends(get_current_user)):
+    """The AMC + membership plan catalog."""
+    await _ensure_plans_seed()
+    plans = await db.plans.find({"active": {"$ne": False}}, {"_id": 0}).to_list(50)
+    return {"plans": plans}
+
+
+class PlanPurchaseInput(BaseModel):
+    warranty_id: Optional[str] = None
+
+
+@api_router.post("/plans/{plan_id}/purchase")
+async def purchase_plan(plan_id: str, body: PlanPurchaseInput, user: dict = Depends(get_current_user)):
+    """Start a Razorpay purchase for an AMC (per product) or the membership."""
+    if not RAZORPAY_ENABLED:
+        raise HTTPException(status_code=503, detail="Online payment is not configured")
+    await _ensure_plans_seed()
+    plan = await db.plans.find_one({"id": plan_id, "active": {"$ne": False}}, {"_id": 0})
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    warranty = None
+    if plan["type"] == "amc":
+        if not body.warranty_id:
+            raise HTTPException(status_code=400, detail="Choose the product this AMC is for")
+        warranty = await db.warranties.find_one({"id": body.warranty_id, "customer_id": user["id"]}, {"_id": 0})
+        if not warranty:
+            raise HTTPException(status_code=404, detail="Product not found")
+    amount_paise = int(round(float(plan["price"]) * 100))
+    pid = str(uuid.uuid4())
+    number = await _format_daily_number("MG-AMC")
+    try:
+        rzp_order = razorpay_client.order.create({
+            "amount": amount_paise, "currency": "INR", "receipt": number, "payment_capture": 1,
+            "notes": {"purchase_id": pid, "customer_id": user["id"], "plan_id": plan_id},
+        })
+    except Exception as e:
+        logger.error(f"Razorpay plan order failed for {plan_id}: {e}")
+        raise HTTPException(status_code=502, detail="Could not start payment")
+    now = datetime.now(timezone.utc).isoformat()
+    await db.plan_purchases.insert_one({
+        "id": pid, "purchase_number": number, "customer_id": user["id"],
+        "plan_id": plan_id, "plan_type": plan["type"], "plan_name": plan["name"],
+        "price": plan["price"], "warranty_id": body.warranty_id,
+        "status": "pending", "payment_status": "pending",
+        "razorpay_order_id": rzp_order["id"], "created_at": now, "updated_at": now,
+    })
+    return {
+        "purchase_id": pid, "razorpay_order_id": rzp_order["id"], "key_id": RAZORPAY_KEY_ID,
+        "amount": amount_paise, "currency": "INR", "plan_name": plan["name"],
+        "prefill": {"name": f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+                    "email": user.get("email") or "", "contact": user.get("phone") or ""},
+    }
+
+
+@api_router.post("/plans/purchase/{purchase_id}/verify")
+async def verify_plan_payment(purchase_id: str, body: RazorpayVerifyInput, user: dict = Depends(get_current_user)):
+    """Verify the Razorpay signature and activate the plan/membership."""
+    if not RAZORPAY_ENABLED:
+        raise HTTPException(status_code=503, detail="Online payment is not configured")
+    p = await db.plan_purchases.find_one({"id": purchase_id, "customer_id": user["id"]}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Purchase not found")
+    if p.get("status") == "active" or p.get("payment_status") == "paid":
+        raise HTTPException(status_code=400, detail="This purchase is already paid")
+    if body.razorpay_order_id != p.get("razorpay_order_id"):
+        raise HTTPException(status_code=400, detail="Payment does not match this purchase")
+    if await db.plan_purchases.find_one({"razorpay_payment_id": body.razorpay_payment_id}, {"_id": 1}):
+        raise HTTPException(status_code=400, detail="This payment has already been used")
+    try:
+        razorpay_client.utility.verify_payment_signature({
+            "razorpay_order_id": body.razorpay_order_id,
+            "razorpay_payment_id": body.razorpay_payment_id,
+            "razorpay_signature": body.razorpay_signature,
+        })
+    except Exception as e:
+        logger.warning(f"Plan payment verify failed for {purchase_id}: {e}")
+        raise HTTPException(status_code=400, detail="Payment verification failed")
+    now = datetime.now(timezone.utc)
+    valid_to = (now + timedelta(days=365)).isoformat()
+    await db.plan_purchases.update_one(
+        {"id": purchase_id},
+        {"$set": {"payment_status": "paid", "status": "active",
+                  "razorpay_payment_id": body.razorpay_payment_id,
+                  "paid_at": now.isoformat(), "valid_from": now.isoformat(),
+                  "valid_to": valid_to, "updated_at": now.isoformat()}},
+    )
+    plan = await db.plans.find_one({"id": p["plan_id"]}, {"_id": 0}) or {}
+    if plan.get("type") == "membership":
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {"membership": {"tier": plan.get("tier", "power_club"),
+                                     "plan_id": plan["id"], "valid_to": valid_to}}},
+        )
+        title, msg = "Power Club activated 🎉", "Your Power Club membership is now active for 1 year."
+    else:
+        title, msg = "AMC activated", f"Your {p.get('plan_name')} is active for 1 year."
+    await create_notification(title=title, message=msg, notification_type="amc",
+                              link="/plans", target_user_ids=[user["id"]],
+                              data={"purchase_id": purchase_id, "plan_id": p["plan_id"]})
+    return {"success": True, "purchase_number": p.get("purchase_number"), "valid_to": valid_to}
+
+
+@api_router.get("/me/plans")
+async def my_plans(user: dict = Depends(get_current_user)):
+    """The customer's active AMC purchases + membership."""
+    purchases = await db.plan_purchases.find(
+        {"customer_id": user["id"], "status": "active"}, {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    # Enrich each active purchase with its covered-visit counts so callers (home
+    # screen, plans list) can show "visits remaining" without an extra round-trip.
+    plan_visits = {
+        p["id"]: int(p.get("visits_per_year", 0) or 0)
+        for p in await db.plans.find({}, {"_id": 0, "id": 1, "visits_per_year": 1}).to_list(50)
+    }
+    for pp in purchases:
+        included = plan_visits.get(pp.get("plan_id"), 0)
+        used = len(await _plan_visits_for(pp["id"]))
+        pp["visits_included"] = included
+        pp["visits_used"] = used
+        pp["visits_remaining"] = max(0, included - used)
+    fresh = await db.users.find_one({"id": user["id"]}, {"_id": 0, "membership": 1})
+    membership = (fresh or {}).get("membership")
+    if membership and membership.get("valid_to", "") < datetime.now(timezone.utc).isoformat():
+        membership = None  # expired
+    return {"purchases": purchases, "membership": membership}
+
+
+def _plan_days_remaining(valid_to: Optional[str]) -> Optional[int]:
+    """Whole days left until valid_to (negative if expired), or None if unset."""
+    if not valid_to:
+        return None
+    try:
+        end = datetime.fromisoformat(valid_to.replace("Z", "+00:00"))
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        return (end - datetime.now(timezone.utc)).days
+    except (ValueError, TypeError):
+        return None
+
+
+async def _plan_visits_for(purchase_id: str):
+    """Service visits booked against a plan purchase (newest first), excluding cancelled."""
+    return await db.appointments.find(
+        {"plan_purchase_id": purchase_id, "status": {"$ne": "cancelled"}}, {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+
+
+@api_router.get("/me/plans/{purchase_id}")
+async def my_plan_detail(purchase_id: str, user: dict = Depends(get_current_user)):
+    """Coverage detail for one purchased plan: perks, validity, visits used/remaining,
+    the covered product, and the list of booked service visits."""
+    p = await db.plan_purchases.find_one(
+        {"id": purchase_id, "customer_id": user["id"]}, {"_id": 0}
+    )
+    if not p:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    plan = await db.plans.find_one({"id": p["plan_id"]}, {"_id": 0}) or {}
+    visits_included = int(plan.get("visits_per_year", 0) or 0)
+    visits = await _plan_visits_for(purchase_id)
+    visits_used = len(visits)
+    product = None
+    if p.get("warranty_id"):
+        w = await db.warranties.find_one(
+            {"id": p["warranty_id"]}, {"_id": 0, "product_name": 1, "device_type": 1, "serial_number": 1}
+        )
+        if w:
+            product = {
+                "name": w.get("product_name") or w.get("device_type"),
+                "serial_number": w.get("serial_number"),
+            }
+    days_remaining = _plan_days_remaining(p.get("valid_to"))
+    return {
+        "purchase": p,
+        "plan": {
+            "id": plan.get("id"), "name": plan.get("name"), "type": plan.get("type"),
+            "description": plan.get("description"), "perks": plan.get("perks", []),
+            "visits_per_year": visits_included,
+        },
+        "product": product,
+        "visits_included": visits_included,
+        "visits_used": visits_used,
+        "visits_remaining": max(0, visits_included - visits_used),
+        "days_remaining": days_remaining,
+        "expired": days_remaining is not None and days_remaining < 0,
+        "visits": visits,
+    }
+
+
+class PlanVisitInput(BaseModel):
+    date: str
+    time_slot: str
+    notes: Optional[str] = None
+
+
+@api_router.post("/me/plans/{purchase_id}/book-visit")
+async def book_plan_visit(purchase_id: str, body: PlanVisitInput, user: dict = Depends(get_current_user)):
+    """Redeem an active AMC/protection plan for a covered service visit. Creates a
+    normal appointment (so it lands in the ops/supervisor queue) tagged with the
+    plan, and counts against the plan's included visits."""
+    p = await db.plan_purchases.find_one(
+        {"id": purchase_id, "customer_id": user["id"]}, {"_id": 0}
+    )
+    if not p:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    if p.get("status") != "active" or p.get("payment_status") != "paid":
+        raise HTTPException(status_code=400, detail="This plan is not active")
+    days_remaining = _plan_days_remaining(p.get("valid_to"))
+    if days_remaining is not None and days_remaining < 0:
+        raise HTTPException(status_code=400, detail="This plan has expired. Please renew to book a visit.")
+
+    plan = await db.plans.find_one({"id": p["plan_id"]}, {"_id": 0}) or {}
+    visits_included = int(plan.get("visits_per_year", 0) or 0)
+    visits_used = len(await _plan_visits_for(purchase_id))
+    if visits_used >= visits_included:
+        raise HTTPException(
+            status_code=400,
+            detail=f"You've used all {visits_included} covered visit(s) for this plan.",
+        )
+
+    # Slot must be free (same rule as a normal appointment booking).
+    if await db.appointments.find_one(
+        {"date": body.date, "time_slot": body.time_slot, "status": {"$in": ["pending", "confirmed"]}},
+        {"_id": 1},
+    ):
+        raise HTTPException(status_code=400, detail="This slot is already booked")
+
+    supervisor = await db.users.find_one({"role": "supervisor"}, {"_id": 0})
+    if not supervisor:
+        raise HTTPException(status_code=404, detail="No service supervisor available right now")
+
+    # Covered product: the plan's product if AMC/protection, else the customer's
+    # first approved warranty (membership checkup is account-wide).
+    warranty_id = p.get("warranty_id")
+    if not warranty_id:
+        w = await db.warranties.find_one(
+            {"$or": [{"customer_id": user["id"]}, {"user_id": user["id"]}], "status": "approved"},
+            {"_id": 0, "id": 1},
+        )
+        warranty_id = w.get("id") if w else None
+
+    start = body.time_slot.split(":")
+    try:
+        end_minutes = int(start[0]) * 60 + int(start[1]) + 30
+    except (ValueError, IndexError):
+        raise HTTPException(status_code=400, detail="Invalid time slot")
+    end_time = f"{end_minutes // 60:02d}:{end_minutes % 60:02d}"
+
+    now = datetime.now(timezone.utc).isoformat()
+    appt_id = str(uuid.uuid4())
+    await db.appointments.insert_one({
+        "id": appt_id,
+        "customer_id": user["id"],
+        "customer_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+        "customer_phone": user.get("phone", ""),
+        "customer_email": user.get("email", ""),
+        "supervisor_id": supervisor["id"],
+        "supervisor_name": f"{supervisor.get('first_name','')} {supervisor.get('last_name','')}".strip(),
+        "date": body.date,
+        "time_slot": body.time_slot,
+        "end_time": end_time,
+        "reason": f"{p.get('plan_name')} covered visit" + (f" — {body.notes.strip()}" if body.notes else ""),
+        "warranty_id": warranty_id,
+        "plan_purchase_id": purchase_id,
+        "plan_name": p.get("plan_name"),
+        "source": "amc_plan",
+        "status": "pending",
+        "notes": body.notes,
+        "created_at": now,
+        "updated_at": now,
+    })
+
+    await create_notification(
+        title="Service visit booked",
+        message=f"Your {p.get('plan_name')} covered visit is booked for {body.date} {body.time_slot}.",
+        notification_type="amc", link=f"/plans/{purchase_id}", target_user_ids=[user["id"]],
+        data={"appointment_id": appt_id, "purchase_id": purchase_id},
+    )
+    return {
+        "success": True,
+        "appointment_id": appt_id,
+        "visits_remaining": max(0, visits_included - visits_used - 1),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Power calculator — recommend the smallest fitting inverter + battery.
+# ---------------------------------------------------------------------------
+def _spec_number(specs: dict, keywords) -> float:
+    """Pull the first numeric power/capacity (normalized to base unit) from a
+    product's free-form specifications dict, for keys matching `keywords`."""
+    for k, v in (specs or {}).items():
+        if any(kw in str(k).lower() for kw in keywords):
+            m = re.search(r"([\d.]+)\s*(kva|kw|va|w|ah|mah)?", str(v).lower())
+            if m:
+                n = float(m.group(1))
+                unit = m.group(2) or ""
+                if unit in ("kva", "kw"):
+                    n *= 1000
+                elif unit == "mah":
+                    n /= 1000
+                return n
+    return 0.0
+
+
+def _name_capacity(name, units) -> float:
+    """Pull a capacity number out of a SKU name (e.g. '4.2KW' -> 4200, '120AH' -> 120)."""
+    s = str(name or "").lower()
+    for u in units:
+        m = re.search(r"([\d.]+)\s*" + u, s)
+        if m:
+            n = float(m.group(1))
+            if u in ("kva", "kw"):
+                n *= 1000
+            return n
+    return 0.0
+
+
+def _recommend_sku_shape(ms: dict, cap: float, unit: str, by_sku: dict, by_name: dict) -> dict:
+    ds = _ds_for_sku(ms, by_sku, by_name) or {}
+    imgs = ds.get("images") or []
+    return {
+        "id": ms["id"],  # a marketplace product id, so the buy link resolves
+        "name": ms.get("name"),
+        "category": (ms.get("category") or "").title(),
+        "image": ds.get("image_url") or (imgs[0] if imgs else None),
+        "rating": f"{cap:g} {unit}",
+    }
+
+
+@api_router.get("/calculator/recommend")
+async def calculator_recommend(va: float = 0, ah: float = 0, user: dict = Depends(get_current_user)):
+    """Smallest buyable inverter meeting `va` and battery meeting `ah` from the storefront."""
+    result = {"inverter": None, "battery": None}
+    skus = await db.master_skus.find({"is_active": {"$ne": False}}, {"_id": 0}).to_list(800)
+    by_sku, by_name = await _marketplace_ds_index()
+    if va and va > 0:
+        cands = [(c, m) for m in skus if _is_sellable_sku(m) and "inverter" in str(m.get("category", "")).lower()
+                 and (c := _name_capacity(m.get("name"), ["kva", "kw", "va"])) >= va]
+        cands.sort(key=lambda x: x[0])
+        if cands:
+            result["inverter"] = _recommend_sku_shape(cands[0][1], cands[0][0], "VA", by_sku, by_name)
+    if ah and ah > 0:
+        cands = [(c, m) for m in skus if _is_sellable_sku(m) and "batter" in str(m.get("category", "")).lower()
+                 and (c := _name_capacity(m.get("name"), ["ah"])) >= ah]
+        cands.sort(key=lambda x: x[0])
+        if cands:
+            result["battery"] = _recommend_sku_shape(cands[0][1], cands[0][0], "Ah", by_sku, by_name)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Care hub — per-product health score from maintenance / warranty / tickets.
+# ---------------------------------------------------------------------------
+@api_router.get("/care/overview")
+async def care_overview(user: dict = Depends(get_current_user)):
+    ws = await db.warranties.find({"customer_id": user["id"]}, {"_id": 0}).to_list(100)
+    out = []
+    for w in ws:
+        score = 100
+        due = 0
+        for t in await _ensure_maintenance_tasks(w):
+            st = _maintenance_status(t["due_date"])
+            if st == "overdue":
+                score -= 15
+                due += 1
+            elif st == "due_soon":
+                due += 1
+        end = _parse_dt(w.get("warranty_end_date"))
+        wstatus = "active"
+        if end:
+            days = (end - datetime.now(timezone.utc)).days
+            if days < 0:
+                score -= 25
+                wstatus = "expired"
+            elif days <= 30:
+                score -= 10
+                wstatus = "expiring"
+        tcount = 0
+        if w.get("serial_number"):
+            tcount = await db.tickets.count_documents({
+                "customer_id": user["id"], "serial_number": w["serial_number"],
+                "status": {"$nin": ["resolved", "closed", "completed", "cancelled"]},
+            })
+        score = max(0, min(100, score - 10 * tcount))
+        out.append({
+            "warranty_id": w["id"],
+            "product_name": w.get("product_name") or w.get("device_type"),
+            "device_type": w.get("device_type"),
+            "serial_number": w.get("serial_number"),
+            "score": score,
+            "band": "good" if score >= 80 else ("fair" if score >= 50 else "attention"),
+            "due_count": due,
+            "warranty_status": wstatus,
+            "open_tickets": tcount,
+        })
+    overall = round(sum(p["score"] for p in out) / len(out)) if out else None
+    return {"overall": overall, "products": out}
+
+
+# ---------------------------------------------------------------------------
+# Trade-in / buyback — instant indicative quote + doorstep-pickup request.
+# ---------------------------------------------------------------------------
+_BUYBACK_BASE = {"battery": 1800, "inverter": 1200, "ups": 800, "stabilizer": 500, "solar": 2500}
+_BUYBACK_CONDITION = {"excellent": 1.2, "good": 1.0, "fair": 0.6, "poor": 0.3}
+
+
+def _buyback_quote(device_type: str, condition: str) -> int:
+    t = (device_type or "").lower()
+    base = next((v for k, v in _BUYBACK_BASE.items() if k in t), 800)
+    return int(round(base * _BUYBACK_CONDITION.get((condition or "good").lower(), 1.0)))
+
+
+class BuybackRequestInput(BaseModel):
+    device_type: str
+    condition: str = "good"
+    product_name: Optional[str] = None
+    pincode: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@api_router.post("/buyback/request")
+async def buyback_request(body: BuybackRequestInput, user: dict = Depends(get_current_user)):
+    """Create a trade-in/buyback pickup request with an indicative quote."""
+    quote = _buyback_quote(body.device_type, body.condition)
+    now = datetime.now(timezone.utc).isoformat()
+    rid = str(uuid.uuid4())
+    number = await _format_daily_number("MG-BUY")
+    await db.buyback_requests.insert_one({
+        "id": rid, "request_number": number, "customer_id": user["id"],
+        "customer_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+        "customer_phone": user.get("phone"),
+        "device_type": body.device_type, "condition": body.condition,
+        "product_name": body.product_name, "pincode": body.pincode, "notes": body.notes,
+        "indicative_quote": quote, "status": "requested",
+        "created_at": now, "updated_at": now,
+    })
+    await create_notification(
+        title="Buyback request received",
+        message=f"We'll confirm pickup for your {body.device_type}. Indicative value ₹{quote}.",
+        notification_type="info", link="/tradein", target_user_ids=[user["id"]],
+        data={"buyback_id": rid},
+    )
+    return {"request_number": number, "indicative_quote": quote, "status": "requested"}
+
+
+@api_router.get("/buyback/quote")
+async def buyback_quote_preview(device_type: str, condition: str = "good", user: dict = Depends(get_current_user)):
+    """Indicative buyback value without creating a request."""
+    return {"indicative_quote": _buyback_quote(device_type, condition)}
+
+
+@api_router.get("/buyback/requests")
+async def buyback_list(user: dict = Depends(get_current_user)):
+    reqs = await db.buyback_requests.find(
+        {"customer_id": user["id"]}, {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    return {"requests": reqs}
+
+
+# ---------------------------------------------------------------------------
+# Battery / product end-of-life predictor — from age + type, no IoT needed.
+# ---------------------------------------------------------------------------
+def _lifespan_years(text: str) -> int:
+    t = (text or "").lower()
+    if "lithium" in t or "lifepo" in t or "li-ion" in t:
+        return 8
+    if "stabilizer" in t:
+        return 12
+    if "solar" in t and "batter" not in t:
+        return 20
+    if "inverter" in t or "ups" in t:
+        return 10
+    if "batter" in t:
+        return 4  # lead-acid / tubular
+    return 8
+
+
+@api_router.get("/products/battery-health")
+async def products_battery_health(user: dict = Depends(get_current_user)):
+    """Predicted replacement timing for each registered product."""
+    ws = await db.warranties.find({"customer_id": user["id"]}, {"_id": 0}).to_list(100)
+    now = datetime.now(timezone.utc)
+    out = []
+    for w in ws:
+        start = _parse_dt(w.get("invoice_date") or w.get("start_date") or w.get("created_at"))
+        if not start:
+            continue
+        life = _lifespan_years(f"{w.get('product_name','')} {w.get('device_type','')}")
+        age = (now - start).days / 365.25
+        pct = max(0.0, min(1.0, age / life))
+        status = "overdue" if age >= life else "replace_soon" if pct >= 0.85 else "aging" if pct >= 0.6 else "good"
+        out.append({
+            "warranty_id": w["id"],
+            "product_name": w.get("product_name") or w.get("device_type"),
+            "device_type": w.get("device_type"),
+            "age_years": round(age, 1),
+            "lifespan_years": life,
+            "pct_used": round(pct * 100),
+            "status": status,
+            "replace_by": (start + timedelta(days=int(life * 365.25))).date().isoformat(),
+        })
+    rank = {"overdue": 0, "replace_soon": 1, "aging": 2, "good": 3}
+    out.sort(key=lambda x: rank.get(x["status"], 9))
+    return {"products": out}
+
+
+# ---------------------------------------------------------------------------
+# Coupons / offers — applied at marketplace checkout.
+# ---------------------------------------------------------------------------
+COUPONS_SEED = [
+    {"code": "WELCOME10", "type": "percent", "value": 10, "max_discount": 2000, "min_order": 5000,
+     "description": "10% off your first order (max ₹2,000)", "active": True},
+    {"code": "POWER500", "type": "flat", "value": 500, "max_discount": 500, "min_order": 10000,
+     "description": "₹500 off orders over ₹10,000", "active": True},
+]
+
+
+async def _ensure_coupons_seed():
+    if await db.coupons.count_documents({}) == 0:
+        await db.coupons.insert_many([dict(c) for c in COUPONS_SEED])
+
+
+@api_router.get("/coupons")
+async def list_coupons(user: dict = Depends(get_current_user)):
+    await _ensure_coupons_seed()
+    cs = await db.coupons.find({"active": {"$ne": False}}, {"_id": 0}).to_list(50)
+    return {"coupons": cs}
+
+
+async def _coupon_discount(code: Optional[str], subtotal: float):
+    """Return (discount, normalized_code). Raises HTTPException on invalid use."""
+    if not code or not code.strip():
+        return 0.0, None
+    await _ensure_coupons_seed()
+    c = await db.coupons.find_one({"code": code.upper().strip(), "active": {"$ne": False}}, {"_id": 0})
+    if not c:
+        raise HTTPException(status_code=400, detail="Invalid coupon code")
+    if subtotal < float(c.get("min_order") or 0):
+        raise HTTPException(status_code=400, detail=f"Coupon needs a minimum order of ₹{int(c.get('min_order') or 0)}")
+    disc = subtotal * c["value"] / 100 if c["type"] == "percent" else float(c["value"])
+    if c.get("max_discount"):
+        disc = min(disc, float(c["max_discount"]))
+    return round(min(disc, subtotal), 2), c["code"]
+
+
+# ---------------------------------------------------------------------------
+# Group-buy — neighbours buy together; price drops as more people join.
+# ---------------------------------------------------------------------------
+GROUPBUY_TIERS = [{"min": 1, "off": 0}, {"min": 3, "off": 5}, {"min": 5, "off": 10}, {"min": 10, "off": 15}]
+
+
+def _groupbuy_off(n: int) -> int:
+    off = 0
+    for t in GROUPBUY_TIERS:
+        if n >= t["min"]:
+            off = t["off"]
+    return off
+
+
+def _shape_group_buy(g: dict, uid: Optional[str] = None) -> dict:
+    n = len(g.get("members", []))
+    off = _groupbuy_off(n)
+    nxt = next((t for t in GROUPBUY_TIERS if t["min"] > n), None)
+    return {
+        "id": g["id"], "product_id": g["product_id"], "product_name": g.get("product_name"),
+        "image": g.get("image"), "base_price": g.get("base_price"),
+        "members": n, "discount_percent": off,
+        "current_price": round(float(g.get("base_price") or 0) * (1 - off / 100)),
+        "target": g.get("target"), "next_tier": nxt, "status": g.get("status"),
+        "joined": (uid in g.get("members", [])) if uid else False,
+        "expires_at": g.get("expires_at"),
+    }
+
+
+class GroupBuyCreate(BaseModel):
+    product_id: str
+    target: int = 5
+
+
+@api_router.post("/group-buys")
+async def create_group_buy(body: GroupBuyCreate, user: dict = Depends(get_current_user)):
+    loaded = await _load_marketplace_product(body.product_id)
+    if not loaded:
+        raise HTTPException(status_code=404, detail="Product not available")
+    ms, ds, _stock = loaded
+    now = datetime.now(timezone.utc)
+    gid = str(uuid.uuid4())
+    shaped = _shape_marketplace_product(ms, ds, 0, full=False)
+    doc = {
+        "id": gid, "product_id": body.product_id, "product_name": ms.get("name"),
+        "image": shaped.get("image"), "base_price": _sku_price(ms),
+        "creator_id": user["id"], "target": max(2, int(body.target)),
+        "members": [user["id"]], "status": "open", "tiers": GROUPBUY_TIERS,
+        "expires_at": (now + timedelta(days=7)).isoformat(), "created_at": now.isoformat(),
+    }
+    await db.group_buys.insert_one(doc)
+    return _shape_group_buy(doc, user["id"])
+
+
+@api_router.post("/group-buys/{gid}/join")
+async def join_group_buy(gid: str, user: dict = Depends(get_current_user)):
+    g = await db.group_buys.find_one({"id": gid}, {"_id": 0})
+    if not g:
+        raise HTTPException(status_code=404, detail="Group buy not found")
+    if g.get("status") != "open":
+        raise HTTPException(status_code=400, detail="This group buy has closed")
+    await db.group_buys.update_one({"id": gid}, {"$addToSet": {"members": user["id"]}})
+    g = await db.group_buys.find_one({"id": gid}, {"_id": 0})
+    return _shape_group_buy(g, user["id"])
+
+
+@api_router.get("/group-buys/{gid}")
+async def get_group_buy(gid: str, user: dict = Depends(get_current_user)):
+    g = await db.group_buys.find_one({"id": gid}, {"_id": 0})
+    if not g:
+        raise HTTPException(status_code=404, detail="Group buy not found")
+    return _shape_group_buy(g, user["id"])
+
+
+@api_router.get("/group-buys")
+async def list_group_buys(user: dict = Depends(get_current_user)):
+    gs = await db.group_buys.find({"status": "open"}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    return {"group_buys": [_shape_group_buy(g, user["id"]) for g in gs]}
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp updates — opt-in; sends via the Node bridge when enabled.
+# (Groundwork: gated off until WA_NOTIFY_ENABLED + the bridge can message
+# arbitrary customers. whatsapp-web.js to many unknown numbers risks bans —
+# the production path is the WhatsApp Business API.)
+# ---------------------------------------------------------------------------
+WA_NOTIFY_ENABLED = os.environ.get("WA_NOTIFY_ENABLED", "").lower() in ("1", "true", "yes")
+WA_BRIDGE_URL = os.environ.get("WA_BRIDGE_URL", "http://127.0.0.1:3011")
+
+
+class WhatsAppPrefs(BaseModel):
+    opt_in: bool
+    whatsapp_number: Optional[str] = None
+
+
+@api_router.post("/auth/whatsapp-prefs")
+async def set_whatsapp_prefs(body: WhatsAppPrefs, user: dict = Depends(get_current_user)):
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"whatsapp_opt_in": body.opt_in, "whatsapp_number": body.whatsapp_number or user.get("phone")}},
+    )
+    return {"success": True, "opt_in": body.opt_in}
+
+
+async def send_whatsapp_notify(user_id: str, message: str):
+    """Best-effort WhatsApp update to an opted-in customer. No-op unless enabled."""
+    if not WA_NOTIFY_ENABLED:
+        return
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "whatsapp_opt_in": 1, "whatsapp_number": 1, "phone": 1})
+    if not u or not u.get("whatsapp_opt_in"):
+        return
+    num = u.get("whatsapp_number") or u.get("phone")
+    if not num:
+        return
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=8.0) as c:
+            await c.post(f"{WA_BRIDGE_URL}/send", json={"number": num, "message": message})
+    except Exception as e:
+        logger.warning(f"WhatsApp notify failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Backup readiness — how long the customer's products can carry a home.
+# (Live load-shedding schedules need a DISCOM data feed; this is the capacity
+# assessment that pairs with it.)
+# ---------------------------------------------------------------------------
+def _backup_capacity_wh(w: dict) -> float:
+    text = f"{w.get('product_name','')} {w.get('device_type','')}"
+    ah = _name_capacity(text, ["ah"])
+    v = _name_capacity(text, ["v"]) or 12
+    if ah > 0:
+        return ah * v * 0.8  # usable energy
+    if "batter" in text.lower():
+        return 1200.0  # sensible default for an unlabelled battery
+    return 0.0
+
+
+@api_router.get("/backup-readiness")
+async def backup_readiness(user: dict = Depends(get_current_user)):
+    ws = await db.warranties.find({"customer_id": user["id"]}, {"_id": 0}).to_list(100)
+    total_wh = sum(_backup_capacity_wh(w) for w in ws)
+    typical_load = 400  # W — fans, lights, TV, router, fridge cycling
+    hours = round(total_wh / typical_load, 1) if total_wh > 0 else 0
+    return {
+        "total_capacity_wh": round(total_wh),
+        "typical_load_w": typical_load,
+        "backup_hours": hours,
+        "battery_count": sum(1 for w in ws if "batter" in f"{w.get('device_type','')}".lower()),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Zoho Desk — READ-ONLY mirror of the helpdesk tickets inside the CRM.
+# Tickets are imported for reference/visibility only; nothing here ever
+# actions or mutates a Zoho ticket.
+# ---------------------------------------------------------------------------
+ZOHO_DESK_DC = os.environ.get("ZOHO_DESK_DC", "in")
+
+
+async def _zoho_desk_access_token():
+    import httpx
+    async with httpx.AsyncClient(timeout=25.0) as c:
+        r = await c.post(f"https://accounts.zoho.{ZOHO_DESK_DC}/oauth/v2/token", data={
+            "grant_type": "refresh_token",
+            "client_id": os.environ.get("ZOHO_DESK_CLIENT_ID", ""),
+            "client_secret": os.environ.get("ZOHO_DESK_CLIENT_SECRET", ""),
+            "refresh_token": os.environ.get("ZOHO_DESK_REFRESH_TOKEN", ""),
+        })
+    return r.json().get("access_token")
+
+
+def _shape_zoho_ticket(t: dict) -> dict:
+    ct = t.get("contact") or {}
+    name = " ".join(x for x in [ct.get("firstName"), ct.get("lastName")] if x).strip()
+    return {
+        "id": t["id"], "ticket_number": t.get("ticketNumber"), "subject": t.get("subject"),
+        "status": t.get("status"), "status_type": t.get("statusType"), "priority": t.get("priority"),
+        "channel": t.get("channel"), "email": t.get("email") or ct.get("email"),
+        "phone": t.get("phone") or ct.get("phone"), "contact_name": name or None,
+        "assignee_id": t.get("assigneeId"), "department_id": t.get("departmentId"),
+        "category": t.get("category"), "due_date": t.get("dueDate"), "closed_time": t.get("closedTime"),
+        "created_time": t.get("createdTime"), "modified_time": t.get("modifiedTime"),
+        "web_url": t.get("webUrl"), "source": "zoho_desk", "raw": t,
+        "synced_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def sync_zoho_desk_tickets(max_pages: int = 400) -> int:
+    """Pull all Zoho Desk tickets into db.zoho_tickets (upsert by id)."""
+    if not os.environ.get("ZOHO_DESK_REFRESH_TOKEN"):
+        return 0
+    from pymongo import UpdateOne
+    import httpx
+    access = await _zoho_desk_access_token()
+    if not access:
+        logger.warning("Zoho Desk sync: could not obtain access token")
+        return 0
+    org = os.environ.get("ZOHO_DESK_ORG_ID", "")
+    base = f"https://desk.zoho.{ZOHO_DESK_DC}/api/v1"
+    hdr = {"Authorization": f"Zoho-oauthtoken {access}", "orgId": org}
+    total = 0; frm = 0; page = 0
+    async with httpx.AsyncClient(timeout=30.0) as c:
+        while page < max_pages:
+            page += 1
+            r = await c.get(f"{base}/tickets?from={frm}&limit=100&include=contacts", headers=hdr)
+            if r.status_code != 200:
+                logger.warning(f"Zoho Desk sync page {page}: HTTP {r.status_code}")
+                break
+            rows = (r.json() or {}).get("data") or []
+            if not rows:
+                break
+            await db.zoho_tickets.bulk_write(
+                [UpdateOne({"id": t["id"]}, {"$set": _shape_zoho_ticket(t)}, upsert=True) for t in rows],
+                ordered=False,
+            )
+            total += len(rows); frm += 100
+            if len(rows) < 100:
+                break
+    logger.info(f"Zoho Desk sync: upserted {total} tickets")
+    return total
+
+
+async def scheduled_zoho_desk_sync():
+    try:
+        await sync_zoho_desk_tickets()
+    except Exception as e:
+        logger.warning(f"Scheduled Zoho Desk sync failed: {e}")
+
+
+@api_router.get("/admin/zoho-tickets")
+async def list_zoho_tickets(
+    status: Optional[str] = None, q: Optional[str] = None, page: int = 1, limit: int = 50,
+    user: dict = Depends(require_roles(["admin", "supervisor", "call_support"])),
+):
+    """Read-only list of imported Zoho Desk tickets, with status + search filters."""
+    query: dict = {}
+    if status and status not in ("all", ""):
+        query["status"] = status
+    if q and q.strip():
+        rx = {"$regex": re.escape(q.strip()), "$options": "i"}
+        query["$or"] = [{"ticket_number": rx}, {"subject": rx}, {"contact_name": rx}, {"email": rx}, {"phone": rx}]
+    limit = max(1, min(limit, 100))
+    skip = max(0, (page - 1) * limit)
+    total = await db.zoho_tickets.count_documents(query)
+    rows = await db.zoho_tickets.find(query, {"_id": 0, "raw": 0}).sort("modified_time", -1).skip(skip).limit(limit).to_list(limit)
+    statuses = await db.zoho_tickets.distinct("status")
+    last = await db.zoho_tickets.find({}, {"_id": 0, "synced_at": 1}).sort("synced_at", -1).limit(1).to_list(1)
+    return {"tickets": rows, "total": total, "page": page, "limit": limit,
+            "statuses": sorted([s for s in statuses if s]),
+            "last_synced": (last[0].get("synced_at") if last else None)}
+
+
+@api_router.get("/admin/zoho-tickets/{ticket_id}")
+async def get_zoho_ticket(ticket_id: str, user: dict = Depends(require_roles(["admin", "supervisor", "call_support"]))):
+    """Full read-only detail (all imported fields + raw payload) for one Zoho ticket."""
+    t = await db.zoho_tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not t:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    return t
+
+
+@api_router.post("/admin/zoho-tickets/sync")
+async def trigger_zoho_sync(user: dict = Depends(require_roles(["admin"]))):
+    """Manually pull the latest from Zoho Desk now."""
+    n = await sync_zoho_desk_tickets()
+    return {"synced": n}
+
+
+# ---------------------------------------------------------------------------
+# Zoho Forms — READ-ONLY archive of exported form submissions (db.zoho_form_entries).
+# Imported from CSV exports (Zoho subscriptions cancelled; this is the archive).
+# ---------------------------------------------------------------------------
+@api_router.get("/admin/zoho-forms/summary")
+async def zoho_forms_summary(user: dict = Depends(require_roles(["admin", "supervisor", "call_support"]))):
+    """The list of archived forms with their entry counts + columns."""
+    pipeline = [
+        {"$group": {"_id": "$form", "count": {"$sum": 1},
+                    "columns": {"$first": "$columns"}, "file": {"$first": "$form_file"}}},
+        {"$sort": {"_id": 1}},
+    ]
+    forms = [{"form": d["_id"], "count": d["count"], "columns": d.get("columns") or [], "file": d.get("file")}
+             async for d in db.zoho_form_entries.aggregate(pipeline)]
+    total = await db.zoho_form_entries.count_documents({})
+    return {"forms": forms, "total": total}
+
+
+@api_router.get("/admin/zoho-forms/entries")
+async def zoho_forms_entries(
+    form: str, q: Optional[str] = None, page: int = 1, limit: int = 50,
+    user: dict = Depends(require_roles(["admin", "supervisor", "call_support"])),
+):
+    """Read-only entries for one archived form, with search + pagination."""
+    query: dict = {"form": form}
+    if q and q.strip():
+        query["search_blob"] = {"$regex": re.escape(q.strip().lower())}
+    limit = max(1, min(limit, 200))
+    skip = max(0, (page - 1) * limit)
+    total = await db.zoho_form_entries.count_documents(query)
+    rows = await db.zoho_form_entries.find(query, {"_id": 0, "search_blob": 0}).skip(skip).limit(limit).to_list(limit)
+    cols = rows[0].get("columns") if rows else []
+    return {"entries": rows, "total": total, "columns": cols, "page": page, "limit": limit, "form": form}
+
+
+# Battery-team payees — the people who BUILD the batteries (Angad + Ajeet),
+# paid directly via bank (mostly the Electronics Bay account), NOT through the
+# supervisor_payables tracker (which shows ₹0 paid). Founder-confirmed identities.
+# Ajeet's UPI payments sit under a mislabelled party, so we also match his UPI handle.
+BATTERY_TEAM_PAYEES = [
+    {"name": "Angad Singh", "party_ids": ["06ee6a6c-572b-432a-940a-a8351e4b600c"], "narration": []},
+    {"name": "Ajeet Singh", "party_ids": ["93245918-8659-4e63-8922-507ba943d097"], "narration": ["AJEETK30371"]},
+]
+
+
+async def _battery_team_payments():
+    """Sum bank payments (party_ledger debits) to each battery-team member."""
+    def _n(v):
+        try:
+            return float(v or 0)
+        except Exception:
+            return 0.0
+    out = []
+    for p in BATTERY_TEAM_PAYEES:
+        ors = [{"party_id": pid} for pid in p["party_ids"]] + \
+              [{"narration": {"$regex": n, "$options": "i"}} for n in p["narration"]]
+        rows = await db.party_ledger.find({"$or": ors}, {"_id": 0, "debit": 1, "credit": 1}).to_list(100000)
+        paid = sum(_n(r.get("debit")) for r in rows)
+        recv = sum(_n(r.get("credit")) for r in rows)
+        out.append({"name": p["name"], "paid": round(paid), "received_back": round(recv),
+                    "net": round(paid - recv), "entries": len(rows)})
+    return out
+
+
+async def _battery_team_bank_paid():
+    """Bank payments to the battery team. Roster members (Angad + the workers
+    under him: Sachin, Arjun, Rohit) use account-VERIFIED salary attribution
+    stored on db.employees. Ajeet isn't in the onboarding roster, so he's
+    matched by name in the raw narrations."""
+    out = []
+    async for e in db.employees.find({"battery_team": True},
+                                     {"_id": 0, "name": 1, "salary_received": 1, "salary_payments": 1,
+                                      "salary_first": 1, "salary_last": 1}).sort("salary_received", -1):
+        out.append({"name": e["name"], "paid": e.get("salary_received") or 0,
+                    "payments": e.get("salary_payments") or 0,
+                    "first": e.get("salary_first"), "last": e.get("salary_last")})
+    # Ajeet — not in the employee roster; name-match across statements.
+    aj = {"name": "Ajeet Singh", "paid": 0.0, "payments": 0, "first": None, "last": None}
+    async for s in db.bank_statements.find({}, {"_id": 0, "transactions": 1}):
+        for t in (s.get("transactions") or []):
+            try:
+                dr = float(t.get("debit") or 0)
+            except Exception:
+                dr = 0.0
+            if dr > 0 and "AJEET" in str(t.get("description", "")).upper():
+                aj["paid"] += dr; aj["payments"] += 1
+                d = t.get("transaction_date")
+                if d:
+                    aj["first"] = min(aj["first"], d) if aj["first"] else d
+                    aj["last"] = max(aj["last"], d) if aj["last"] else d
+    aj["paid"] = round(aj["paid"])
+    out.append(aj)
+    # Fold in manual (cash / other-account) payments recorded outside the bank feed.
+    manual = {}
+    async for mp in db.battery_team_manual_payments.find({}, {"_id": 0}):
+        try:
+            manual[mp.get("person")] = manual.get(mp.get("person"), 0) + float(mp.get("amount") or 0)
+        except Exception:
+            pass
+    for m in out:
+        extra = manual.pop(m["name"], 0)
+        if extra:
+            m["manual"] = round(extra)
+            m["paid"] = round(m["paid"] + extra)
+    for name, amt in manual.items():
+        out.append({"name": name, "paid": round(amt), "manual": round(amt), "payments": 0, "first": None, "last": None})
+    return sorted(out, key=lambda x: -x["paid"])
+
+
+# ---------------------------------------------------------------------------
+# Supervisor production report — how many NEW serialized batteries each
+# supervisor built (anchored on unique serials in supervisor_payables,
+# condition="New"; repaired units are excluded — never counted/paid).
+# Pay is reconciled against ACTUAL bank payments to the battery team.
+# ---------------------------------------------------------------------------
+@api_router.get("/admin/supervisor-production")
+async def supervisor_production_report(
+    from_date: Optional[str] = None, to_date: Optional[str] = None, supervisor: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "supervisor", "accountant", "call_support"])),
+):
+    from collections import defaultdict, Counter
+    import re as _re
+
+    # Battery SKUs — reliable master_skus.category field (includes the
+    # "Smart with Active Balancer" packs; excludes inverters/solar).
+    bat_skus = {m["id"] async for m in db.master_skus.find({"category": "Battery"}, {"_id": 0, "id": 1})}
+
+    def battery_rate(name):
+        n = str(name or "").lower()
+        for v in _re.findall(r"(\d+\.?\d*)\s*v", n):
+            fv = float(v)
+            if 47 <= fv <= 53:   # 48V / 51V / 51.2V
+                return 2000
+            if 23 <= fv <= 26:   # 24V / 25.6V
+                return 1500
+            if fv <= 13:         # 12V — rate not set
+                return 0
+        return 0
+
+    # Refund netting: serial → Order ID (Battery Order Sheet) → amazon_refunds.
+    refunded_orders = {str(r["amazon_order_id"]).strip()
+                       async for r in db.amazon_refunds.find({}, {"_id": 0, "amazon_order_id": 1})
+                       if r.get("amazon_order_id")}
+    serial2order = {}
+    async for e in db.zoho_form_entries.find({"form": "Battery Order Sheet"}, {"_id": 0, "fields": 1}):
+        f = e["fields"]
+        s = (f.get("Dispatch Battery Serial Number") or "").strip()
+        o = str(f.get("Order ID") or "").strip()
+        if s and o:
+            serial2order[s] = o
+
+    def is_refunded(serial):
+        o = serial2order.get((serial or "").strip())
+        return bool(o) and o in refunded_orders
+
+    # Anchor on the SERIAL MASTER (finished_good_serials), battery category only.
+    fg = await db.finished_good_serials.find({}, {"_id": 0}).to_list(200000)
+    fg = [d for d in fg if d.get("master_sku_id") in bat_skus]
+
+    serials = set()
+    by_model = defaultdict(set)
+    cond_count = Counter()
+    rate_split = Counter()
+    owed = payable = repaired = refunded = norate = 0
+    for d in fg:
+        s = d.get("serial_number")
+        if s:
+            serials.add(s)
+        cond = str(d.get("condition") or "").strip().lower()
+        if cond == "repaired":
+            repaired += 1; cond_count["repaired"] += 1; continue
+        cond_count["new" if cond == "new" else "untagged"] += 1
+        if is_refunded(s):
+            refunded += 1; continue
+        r = battery_rate(d.get("master_sku_name"))
+        payable += 1; owed += r
+        if r:
+            rate_split[r] += 1
+        else:
+            norate += 1
+        by_model[d.get("master_sku_name") or "—"].add(s)
+
+    # Paid — from RAW bank statements (Angad + Ajeet salary debits).
+    team = await _battery_team_bank_paid()
+    paid_bank = sum(t["paid"] for t in team)
+
+    return {
+        "total_batteries": len(serials),
+        "new_tagged": cond_count.get("new", 0),
+        "untagged": cond_count.get("untagged", 0),
+        "repaired_excluded": repaired,
+        "refunded": refunded,
+        "payable_batteries": payable,
+        "rate_2000": rate_split.get(2000, 0),
+        "rate_1500": rate_split.get(1500, 0),
+        "norate": norate,
+        "owed": round(owed),
+        "team_payments": team,
+        "paid_bank": round(paid_bank),
+        "outstanding": round(owed - paid_bank),
+        "by_sku": sorted([{"sku": k, "batteries": len(v)} for k, v in by_model.items()], key=lambda x: -x["batteries"]),
+    }
+
+
+@api_router.get("/admin/employees")
+async def list_employees(q: Optional[str] = None, user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Employee master imported from the Employee Onboarding form."""
+    query: dict = {}
+    if q and q.strip():
+        rx = {"$regex": re.escape(q.strip()), "$options": "i"}
+        query["$or"] = [{"name": rx}, {"phone": rx}, {"account_number": rx}, {"email": rx}]
+    rows = await db.employees.find(query, {"_id": 0, "raw": 0}).sort("name", 1).to_list(2000)
+    return {"employees": rows, "total": await db.employees.count_documents({})}
+
+
+async def _mark_marketplace_order_paid(rzp_order_id: str, payment_id: str) -> bool:
+    """Idempotently mark the marketplace order for a Razorpay order id as paid."""
+    if not rzp_order_id:
+        return False
+    order = await db.marketplace_orders.find_one(
+        {"razorpay_order_id": rzp_order_id}, {"_id": 0, "id": 1, "payment_status": 1}
+    )
+    if not order:
+        return False
+    if order.get("payment_status") == "paid":
+        return True  # already reconciled (client verify or an earlier webhook)
+    now = datetime.now(timezone.utc).isoformat()
+    await db.marketplace_orders.update_one(
+        {"id": order["id"]},
+        {"$set": {
+            "payment_method": "razorpay",
+            "payment_status": "paid",
+            "razorpay_payment_id": payment_id,
+            "status": "confirmed",
+            "paid_at": now,
+            "updated_at": now,
+            "paid_via_webhook": True,
+        }},
+    )
+    return True
+
+
+@api_router.post("/webhooks/razorpay")
+async def razorpay_webhook(request: Request):
+    """Razorpay payment webhook — the reliable backstop when a client never
+    returns to call /payment/verify (app closed, lost network, async method).
+
+    Hard-disabled until RAZORPAY_WEBHOOK_SECRET is configured. Verifies the
+    X-Razorpay-Signature HMAC over the raw body before trusting any event.
+    """
+    if not RAZORPAY_WEBHOOK_SECRET:
+        raise HTTPException(status_code=503, detail="Webhook not configured")
+    raw = await request.body()
+    sent_sig = request.headers.get("X-Razorpay-Signature", "")
+    expected = hmac.new(
+        RAZORPAY_WEBHOOK_SECRET.encode(), raw, hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(expected, sent_sig):
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    try:
+        body = json.loads(raw)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid payload")
+
+    event = body.get("event")
+    payload = body.get("payload") or {}
+    payment = (payload.get("payment") or {}).get("entity") or {}
+    order_entity = (payload.get("order") or {}).get("entity") or {}
+
+    if event in ("payment.captured", "payment.authorized"):
+        rzp_order_id = payment.get("order_id")
+        await _mark_marketplace_order_paid(rzp_order_id, payment.get("id"))
+    elif event == "order.paid":
+        rzp_order_id = order_entity.get("id") or payment.get("order_id")
+        await _mark_marketplace_order_paid(rzp_order_id, payment.get("id"))
+    # Unhandled events are acknowledged so Razorpay stops retrying.
+
+    return {"status": "ok"}
+
+
+# ============================================================================
+# SOLAR SAMRAT — open-industry solar community super-app
+# ----------------------------------------------------------------------------
+# Standalone product (separate brand + mobile app) but the MuscleGrid CRM is its
+# ADMIN / CONTROL PLANE: founder approves members, moderates content, and runs
+# the leaderboard from /admin/solar-samrat. Phase 1 = Community + Verified
+# profiles + Leads/RFQ + AI quote tool + the Samrat status/rank system. No
+# marketplace checkout / escrow yet (Phase 2). All endpoints under /api/samrat.
+# ============================================================================
+
+SAMRAT_ROLES = ["dealer", "distributor", "epc", "brand", "customer"]
+SAMRAT_CATEGORIES = [
+    "Solar Panels", "Inverters", "Batteries", "Lithium Batteries",
+    "Mounting Structure", "Cables & BOS", "Solar Lights", "Solar Pumps",
+    "Charge Controllers", "Accessories",
+]
+# Rank ladder (royalty progression) keyed on lifetime Crowns.
+SAMRAT_RANKS = [
+    ("Sipahi", 0),       # soldier — new member
+    ("Sardar", 100),     # chief
+    ("Raja", 500),       # king
+    ("Maharaja", 1500),  # great king
+    ("Samrat", 5000),    # emperor — top tier
+]
+# Crown reward rules (reference + used by award helpers as the network grows).
+SAMRAT_CROWN_RULES = {
+    "verified": 50,          # business verification approved
+    "profile_complete": 20,  # full profile
+    "answer_upvote": 2,      # per upvote on an answer
+    "best_answer": 15,
+    "helpful_post": 5,
+    "lead_response": 10,
+    "deal_closed": 50,
+    "referral": 30,
+    "daily_streak": 1,
+}
+
+
+def _samrat_rank(crowns: int) -> str:
+    name = SAMRAT_RANKS[0][0]
+    for rank_name, threshold in SAMRAT_RANKS:
+        if crowns >= threshold:
+            name = rank_name
+    return name
+
+
+def _samrat_next_rank(crowns: int):
+    """Return (next_rank_name, crowns_needed) or (None, 0) if already Samrat."""
+    for rank_name, threshold in SAMRAT_RANKS:
+        if crowns < threshold:
+            return rank_name, threshold - crowns
+    return None, 0
+
+
+async def _samrat_award_crowns(member_id: str, delta: int, reason: str, by: str = None):
+    """Atomically adjust a member's Crowns, recompute rank, and append a ledger row."""
+    m = await db.samrat_members.find_one({"id": member_id}, {"_id": 0, "crowns": 1})
+    if not m:
+        return None
+    new_total = max(0, int(m.get("crowns", 0)) + int(delta))
+    now = datetime.now(timezone.utc).isoformat()
+    await db.samrat_members.update_one(
+        {"id": member_id},
+        {"$set": {"crowns": new_total, "rank": _samrat_rank(new_total), "updated_at": now}},
+    )
+    await db.samrat_crown_ledger.insert_one({
+        "id": str(uuid.uuid4()),
+        "member_id": member_id,
+        "delta": int(delta),
+        "reason": reason,
+        "balance": new_total,
+        "by": by,
+        "created_at": now,
+    })
+    return new_total
+
+
+def _samrat_profile_complete(doc: dict) -> bool:
+    needed = ["business_name", "owner_name", "phone", "role", "gstin", "city", "state", "categories"]
+    return all(doc.get(k) for k in needed)
+
+
+# ---- Member-facing (used by the Solar Samrat app; auth = any logged-in user) ----
+
+class SamratApplyInput(BaseModel):
+    business_name: str
+    owner_name: str
+    phone: str
+    email: Optional[str] = None
+    role: str  # dealer|distributor|epc|brand|customer
+    gstin: Optional[str] = None
+    pan: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+    years_in_business: Optional[int] = None
+    categories: Optional[List[str]] = None
+    logo_url: Optional[str] = None
+    proof_url: Optional[str] = None
+
+
+@api_router.post("/samrat/apply")
+async def samrat_apply(payload: SamratApplyInput, user: dict = Depends(get_current_user)):
+    """Create or update the caller's Solar Samrat membership application.
+
+    Status starts `pending` (account) + `pending` (verification). The founder
+    approves from the CRM admin tab, which flips both to active/verified.
+    """
+    role = (payload.role or "").strip().lower()
+    if role not in SAMRAT_ROLES:
+        raise HTTPException(status_code=400, detail=f"role must be one of {SAMRAT_ROLES}")
+    now = datetime.now(timezone.utc).isoformat()
+    existing = await db.samrat_members.find_one({"user_id": user["id"]}, {"_id": 0, "id": 1})
+    base = payload.dict()
+    base["role"] = role
+    base["categories"] = [c for c in (payload.categories or []) if c]
+    if existing:
+        await db.samrat_members.update_one(
+            {"id": existing["id"]}, {"$set": {**base, "updated_at": now}}
+        )
+        member_id = existing["id"]
+    else:
+        member_id = str(uuid.uuid4())
+        await db.samrat_members.insert_one({
+            "id": member_id,
+            "user_id": user["id"],
+            **base,
+            "status": "pending",
+            "verification": "pending",
+            "verification_note": None,
+            "rank": "Sipahi",
+            "crowns": 0,
+            "created_at": now,
+            "updated_at": now,
+            "verified_at": None,
+            "verified_by": None,
+        })
+    return {"member_id": member_id, "status": "pending"}
+
+
+@api_router.get("/samrat/me")
+async def samrat_me(user: dict = Depends(get_current_user)):
+    """The caller's membership + rank progress, or null if not yet applied."""
+    m = await db.samrat_members.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not m:
+        return {"member": None}
+    nxt, need = _samrat_next_rank(int(m.get("crowns", 0)))
+    m["next_rank"] = nxt
+    m["crowns_to_next"] = need
+    return {"member": m}
+
+
+@api_router.get("/samrat/meta")
+async def samrat_meta(user: dict = Depends(get_current_user)):
+    """Static catalog the app needs: roles, categories, rank ladder."""
+    return {
+        "roles": SAMRAT_ROLES,
+        "categories": SAMRAT_CATEGORIES,
+        "ranks": [{"name": n, "crowns": c} for n, c in SAMRAT_RANKS],
+        "crown_rules": SAMRAT_CROWN_RULES,
+    }
+
+
+# ---- Admin / control plane (CRM, founder-only) ----
+
+class SamratVerifyInput(BaseModel):
+    action: str  # approve | reject
+    note: Optional[str] = None
+
+
+class SamratStatusInput(BaseModel):
+    status: str  # active | suspended
+    note: Optional[str] = None
+
+
+class SamratCrownInput(BaseModel):
+    delta: int
+    reason: str
+
+
+class SamratModerateInput(BaseModel):
+    action: str  # approve | remove
+    note: Optional[str] = None
+
+
+@api_router.get("/samrat/admin/overview")
+async def samrat_admin_overview(user: dict = Depends(require_roles(["admin"]))):
+    """Headline counts for the Solar Samrat admin dashboard."""
+    members = db.samrat_members
+    by_role = {}
+    for r in SAMRAT_ROLES:
+        by_role[r] = await members.count_documents({"role": r})
+    by_state_raw = await members.aggregate([
+        {"$group": {"_id": "$state", "n": {"$sum": 1}}},
+        {"$sort": {"n": -1}}, {"$limit": 10},
+    ]).to_list(10)
+    return {
+        "members_total": await members.count_documents({}),
+        "pending_verification": await members.count_documents({"verification": "pending"}),
+        "verified": await members.count_documents({"verification": "verified"}),
+        "rejected": await members.count_documents({"verification": "rejected"}),
+        "suspended": await members.count_documents({"status": "suspended"}),
+        "by_role": by_role,
+        "by_state": [{"state": x["_id"] or "—", "count": x["n"]} for x in by_state_raw],
+        "leads_open": await db.samrat_leads.count_documents({"status": "open"}),
+        "leads_total": await db.samrat_leads.count_documents({}),
+        "posts_flagged": await db.samrat_posts.count_documents({"status": "flagged"}),
+        "posts_total": await db.samrat_posts.count_documents({}),
+    }
+
+
+@api_router.get("/samrat/admin/members")
+async def samrat_admin_members(
+    status: Optional[str] = None,
+    verification: Optional[str] = None,
+    role: Optional[str] = None,
+    q: Optional[str] = None,
+    limit: int = 200,
+    user: dict = Depends(require_roles(["admin"])),
+):
+    query: dict = {}
+    if status:
+        query["status"] = status
+    if verification:
+        query["verification"] = verification
+    if role:
+        query["role"] = role
+    if q and q.strip():
+        rx = {"$regex": re.escape(q.strip()), "$options": "i"}
+        query["$or"] = [
+            {"business_name": rx}, {"owner_name": rx}, {"phone": rx},
+            {"gstin": rx}, {"city": rx}, {"state": rx},
+        ]
+    rows = await db.samrat_members.find(query, {"_id": 0}).sort("created_at", -1).to_list(min(limit, 1000))
+    return {"members": rows, "total": await db.samrat_members.count_documents(query)}
+
+
+@api_router.get("/samrat/admin/members/{member_id}")
+async def samrat_admin_member_detail(member_id: str, user: dict = Depends(require_roles(["admin"]))):
+    m = await db.samrat_members.find_one({"id": member_id}, {"_id": 0})
+    if not m:
+        raise HTTPException(status_code=404, detail="Member not found")
+    m["crown_history"] = await db.samrat_crown_ledger.find(
+        {"member_id": member_id}, {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    m["leads"] = await db.samrat_leads.find(
+        {"member_id": member_id}, {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    return m
+
+
+@api_router.post("/samrat/admin/members/{member_id}/verify")
+async def samrat_admin_verify(member_id: str, payload: SamratVerifyInput,
+                              user: dict = Depends(require_roles(["admin"]))):
+    """Approve or reject a membership application."""
+    m = await db.samrat_members.find_one({"id": member_id}, {"_id": 0})
+    if not m:
+        raise HTTPException(status_code=404, detail="Member not found")
+    action = (payload.action or "").strip().lower()
+    now = datetime.now(timezone.utc).isoformat()
+    if action == "approve":
+        await db.samrat_members.update_one({"id": member_id}, {"$set": {
+            "verification": "verified", "status": "active",
+            "verification_note": payload.note, "verified_at": now,
+            "verified_by": user["id"], "updated_at": now,
+        }})
+        # Award the verification bonus once.
+        if m.get("verification") != "verified":
+            await _samrat_award_crowns(member_id, SAMRAT_CROWN_RULES["verified"],
+                                       "Verification approved", by=user["id"])
+            if _samrat_profile_complete(m):
+                await _samrat_award_crowns(member_id, SAMRAT_CROWN_RULES["profile_complete"],
+                                           "Complete profile", by=user["id"])
+        if m.get("user_id"):
+            await create_notification(
+                title="🎉 You're a verified Solar Samrat!",
+                message=f"{m.get('business_name','Your business')} is verified. Crowns awarded — start ruling.",
+                notification_type="success", target_user_ids=[m["user_id"]], priority="high",
+                data={"samrat": True, "member_id": member_id},
+            )
+        return {"ok": True, "verification": "verified"}
+    elif action == "reject":
+        await db.samrat_members.update_one({"id": member_id}, {"$set": {
+            "verification": "rejected", "status": "pending",
+            "verification_note": payload.note, "updated_at": now, "verified_by": user["id"],
+        }})
+        if m.get("user_id"):
+            await create_notification(
+                title="Solar Samrat — application needs attention",
+                message=payload.note or "Your verification could not be completed. Please re-check your GST/business details.",
+                notification_type="warning", target_user_ids=[m["user_id"]],
+                data={"samrat": True, "member_id": member_id},
+            )
+        return {"ok": True, "verification": "rejected"}
+    raise HTTPException(status_code=400, detail="action must be approve|reject")
+
+
+@api_router.post("/samrat/admin/members/{member_id}/status")
+async def samrat_admin_status(member_id: str, payload: SamratStatusInput,
+                              user: dict = Depends(require_roles(["admin"]))):
+    """Suspend or reactivate a member."""
+    if payload.status not in ("active", "suspended"):
+        raise HTTPException(status_code=400, detail="status must be active|suspended")
+    res = await db.samrat_members.update_one({"id": member_id}, {"$set": {
+        "status": payload.status, "status_note": payload.note,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Member not found")
+    return {"ok": True, "status": payload.status}
+
+
+@api_router.post("/samrat/admin/members/{member_id}/crowns")
+async def samrat_admin_crowns(member_id: str, payload: SamratCrownInput,
+                              user: dict = Depends(require_roles(["admin"]))):
+    """Manually adjust a member's Crowns (bonus/correction)."""
+    total = await _samrat_award_crowns(member_id, payload.delta, payload.reason, by=user["id"])
+    if total is None:
+        raise HTTPException(status_code=404, detail="Member not found")
+    return {"ok": True, "crowns": total, "rank": _samrat_rank(total)}
+
+
+@api_router.get("/samrat/admin/leads")
+async def samrat_admin_leads(status: Optional[str] = None,
+                             user: dict = Depends(require_roles(["admin"]))):
+    query = {"status": status} if status else {}
+    rows = await db.samrat_leads.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    # Decorate with the posting member's business name for the admin view.
+    ids = list({r.get("member_id") for r in rows if r.get("member_id")})
+    names = {}
+    if ids:
+        async for mm in db.samrat_members.find({"id": {"$in": ids}}, {"_id": 0, "id": 1, "business_name": 1}):
+            names[mm["id"]] = mm.get("business_name")
+    for r in rows:
+        r["member_name"] = names.get(r.get("member_id"))
+    return {"leads": rows, "total": await db.samrat_leads.count_documents(query)}
+
+
+@api_router.post("/samrat/admin/leads/{lead_id}/status")
+async def samrat_admin_lead_status(lead_id: str, payload: SamratStatusInput,
+                                   user: dict = Depends(require_roles(["admin"]))):
+    res = await db.samrat_leads.update_one({"id": lead_id}, {"$set": {
+        "status": payload.status, "updated_at": datetime.now(timezone.utc).isoformat(),
+    }})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return {"ok": True}
+
+
+@api_router.get("/samrat/admin/posts")
+async def samrat_admin_posts(status: Optional[str] = None,
+                             user: dict = Depends(require_roles(["admin"]))):
+    query = {"status": status} if status else {}
+    rows = await db.samrat_posts.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return {"posts": rows, "total": await db.samrat_posts.count_documents(query)}
+
+
+@api_router.post("/samrat/admin/posts/{post_id}/moderate")
+async def samrat_admin_moderate(post_id: str, payload: SamratModerateInput,
+                                user: dict = Depends(require_roles(["admin"]))):
+    action = (payload.action or "").strip().lower()
+    new_status = "active" if action == "approve" else "removed"
+    res = await db.samrat_posts.update_one({"id": post_id}, {"$set": {
+        "status": new_status, "moderation_note": payload.note,
+        "moderated_by": user["id"], "updated_at": datetime.now(timezone.utc).isoformat(),
+    }})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return {"ok": True, "status": new_status}
+
+
+@api_router.get("/samrat/admin/leaderboard")
+async def samrat_admin_leaderboard(state: Optional[str] = None, role: Optional[str] = None,
+                                   user: dict = Depends(require_roles(["admin"]))):
+    query: dict = {"status": "active"}
+    if state:
+        query["state"] = state
+    if role:
+        query["role"] = role
+    rows = await db.samrat_members.find(
+        query, {"_id": 0, "id": 1, "business_name": 1, "owner_name": 1, "role": 1,
+                "state": 1, "city": 1, "rank": 1, "crowns": 1}
+    ).sort("crowns", -1).to_list(100)
+    return {"leaderboard": rows}
+
+
+# ---------------------------------------------------------------------------
+# SOLAR SAMRAT — member-facing app API (open signup + the three pillars + AI)
+# ---------------------------------------------------------------------------
+
+SAMRAT_GROUPS = [
+    {"key": "residential", "name": "Residential Solar", "icon": "🏠"},
+    {"key": "ci", "name": "C&I / Commercial", "icon": "🏢"},
+    {"key": "offgrid", "name": "Off-grid & Hybrid", "icon": "🔋"},
+    {"key": "subsidy", "name": "Subsidy & Policy", "icon": "📜"},
+    {"key": "troubleshoot", "name": "Troubleshooting", "icon": "🛠️"},
+    {"key": "market", "name": "Market & Prices", "icon": "📈"},
+]
+
+
+async def _samrat_require_member(user: dict, require_verified: bool = True) -> dict:
+    """Return the caller's member doc, enforcing account state for write actions."""
+    m = await db.samrat_members.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not m:
+        raise HTTPException(status_code=403, detail="Join Solar Samrat to do this.")
+    if m.get("status") == "suspended":
+        raise HTTPException(status_code=403, detail="Your account is suspended.")
+    if require_verified and m.get("verification") != "verified":
+        raise HTTPException(status_code=403, detail="Your membership is pending verification.")
+    return m
+
+
+def _samrat_author(m: dict) -> dict:
+    return {
+        "member_id": m.get("id"), "business_name": m.get("business_name"),
+        "owner_name": m.get("owner_name"), "role": m.get("role"),
+        "rank": m.get("rank"), "crowns": m.get("crowns", 0),
+        "city": m.get("city"), "state": m.get("state"),
+    }
+
+
+async def _samrat_attach_authors(rows: list) -> list:
+    """Batch-decorate a list of docs (each with member_id) with fresh author info."""
+    ids = list({r.get("member_id") for r in rows if r.get("member_id")})
+    authors = {}
+    if ids:
+        async for m in db.samrat_members.find(
+            {"id": {"$in": ids}},
+            {"_id": 0, "id": 1, "business_name": 1, "owner_name": 1, "role": 1, "rank": 1, "city": 1, "state": 1},
+        ):
+            authors[m["id"]] = m
+    for r in rows:
+        r["author"] = authors.get(r.get("member_id"))
+    return rows
+
+
+# ---- Open signup (reuses the OTP infra; auto-creates a user) ----
+
+class SamratOtpSend(BaseModel):
+    phone: str
+    name: Optional[str] = None
+
+
+class SamratOtpVerify(BaseModel):
+    phone: str
+    otp: str
+
+
+def _clean_phone(raw: str) -> str:
+    phone = (raw or "").replace('+', '').replace(' ', '').replace('-', '')
+    if phone.startswith('91') and len(phone) > 10:
+        phone = phone[2:]
+    return phone
+
+
+@api_router.post("/samrat/auth/otp/send")
+async def samrat_otp_send(payload: SamratOtpSend):
+    """Open signup for the Solar Samrat app — creates the user on first contact."""
+    phone = _clean_phone(payload.phone)
+    if len(phone) != 10 or not phone.isdigit():
+        raise HTTPException(status_code=400, detail="Enter a valid 10-digit mobile number.")
+    user = await db.users.find_one({"phone": phone})
+    if not user:
+        now = datetime.now(timezone.utc).isoformat()
+        nm = (payload.name or "").strip()
+        await db.users.insert_one({
+            "id": str(uuid.uuid4()),
+            "email": f"{phone}@samrat.musclegrid.in",
+            "first_name": nm.split()[0] if nm else "Samrat",
+            "last_name": " ".join(nm.split()[1:]) if len(nm.split()) > 1 else "",
+            "phone": phone, "role": "customer", "password_hash": "",
+            "created_at": now, "updated_at": now,
+            "otp_user": True, "samrat_signup": True,
+        })
+    otp = generate_otp()
+    otp_store[phone] = {"otp": otp, "expiry": datetime.now(timezone.utc) + timedelta(minutes=OTP_EXPIRY_MINUTES), "attempts": 0}
+    if REVIEW_DEMO_PHONE and phone == REVIEW_DEMO_PHONE and REVIEW_DEMO_OTP:
+        otp_store[phone]["otp"] = REVIEW_DEMO_OTP
+    else:
+        await send_otp_via_fast2sms(phone, otp)
+    return {"message": "OTP sent", "phone": f"******{phone[-4:]}", "expires_in": OTP_EXPIRY_MINUTES * 60}
+
+
+@api_router.post("/samrat/auth/otp/verify")
+async def samrat_otp_verify(payload: SamratOtpVerify):
+    phone = _clean_phone(payload.phone)
+    stored = otp_store.get(phone)
+    if not stored:
+        raise HTTPException(status_code=400, detail="OTP expired or not requested.")
+    if datetime.now(timezone.utc) > stored["expiry"]:
+        del otp_store[phone]
+        raise HTTPException(status_code=400, detail="OTP has expired.")
+    if stored["attempts"] >= 3:
+        del otp_store[phone]
+        raise HTTPException(status_code=400, detail="Too many attempts. Request a new OTP.")
+    if str(stored["otp"]).strip() != str(payload.otp).strip():
+        stored["attempts"] += 1
+        raise HTTPException(status_code=400, detail=f"Invalid OTP. {3 - stored['attempts']} attempts remaining.")
+    del otp_store[phone]
+    user = await db.users.find_one({"phone": phone})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    token = create_token(user["id"], user["role"])
+    member = await db.samrat_members.find_one({"user_id": user["id"]}, {"_id": 0})
+    return {
+        "access_token": token, "token_type": "bearer",
+        "user": {"id": user["id"], "phone": phone,
+                 "name": f"{user.get('first_name','')} {user.get('last_name','')}".strip()},
+        "member": member,
+    }
+
+
+# ---- Community feed ----
+
+class SamratPostInput(BaseModel):
+    body: str
+    image_url: Optional[str] = None
+    group: Optional[str] = None
+
+
+class SamratCommentInput(BaseModel):
+    body: str
+
+
+@api_router.get("/samrat/groups")
+async def samrat_groups(user: dict = Depends(get_current_user)):
+    out = []
+    for g in SAMRAT_GROUPS:
+        out.append({**g, "posts": await db.samrat_posts.count_documents({"group": g["key"], "status": "active"})})
+    return {"groups": out}
+
+
+@api_router.get("/samrat/feed")
+async def samrat_feed(group: Optional[str] = None, limit: int = 50, user: dict = Depends(get_current_user)):
+    query = {"status": "active"}
+    if group:
+        query["group"] = group
+    rows = await db.samrat_posts.find(query, {"_id": 0}).sort("created_at", -1).to_list(min(limit, 100))
+    await _samrat_attach_authors(rows)
+    for r in rows:
+        r["like_count"] = len(r.get("liked_by") or [])
+        r["liked"] = user["id"] in (r.get("liked_by") or [])
+        r["comment_count"] = len(r.get("comments") or [])
+    return {"posts": rows}
+
+
+@api_router.post("/samrat/posts")
+async def samrat_create_post(payload: SamratPostInput, user: dict = Depends(get_current_user)):
+    m = await _samrat_require_member(user)
+    if not (payload.body or "").strip():
+        raise HTTPException(status_code=400, detail="Post cannot be empty.")
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()), "member_id": m["id"], "user_id": user["id"],
+        "body": payload.body.strip(), "image_url": payload.image_url,
+        "group": payload.group, "status": "active",
+        "liked_by": [], "comments": [], "created_at": now, "updated_at": now,
+    }
+    await db.samrat_posts.insert_one(doc)
+    await _samrat_award_crowns(m["id"], SAMRAT_CROWN_RULES["helpful_post"], "Posted to community")
+    doc.pop("_id", None)
+    doc["author"] = _samrat_author(m)
+    doc["like_count"] = 0
+    doc["comment_count"] = 0
+    return doc
+
+
+@api_router.post("/samrat/posts/{post_id}/like")
+async def samrat_like_post(post_id: str, user: dict = Depends(get_current_user)):
+    post = await db.samrat_posts.find_one({"id": post_id}, {"_id": 0, "liked_by": 1})
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    liked = user["id"] in (post.get("liked_by") or [])
+    op = "$pull" if liked else "$addToSet"
+    await db.samrat_posts.update_one({"id": post_id}, {op: {"liked_by": user["id"]}})
+    return {"liked": not liked}
+
+
+@api_router.post("/samrat/posts/{post_id}/comments")
+async def samrat_comment(post_id: str, payload: SamratCommentInput, user: dict = Depends(get_current_user)):
+    m = await _samrat_require_member(user)
+    if not (payload.body or "").strip():
+        raise HTTPException(status_code=400, detail="Comment cannot be empty.")
+    comment = {
+        "id": str(uuid.uuid4()), "member_id": m["id"],
+        "author_name": m.get("business_name"), "body": payload.body.strip(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    res = await db.samrat_posts.update_one({"id": post_id}, {"$push": {"comments": comment}})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return comment
+
+
+@api_router.get("/samrat/posts/{post_id}")
+async def samrat_post_detail(post_id: str, user: dict = Depends(get_current_user)):
+    post = await db.samrat_posts.find_one({"id": post_id}, {"_id": 0})
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    await _samrat_attach_authors([post])
+    post["like_count"] = len(post.get("liked_by") or [])
+    post["liked"] = user["id"] in (post.get("liked_by") or [])
+    return post
+
+
+# ---- Q&A ----
+
+class SamratQuestionInput(BaseModel):
+    title: str
+    body: Optional[str] = None
+    category: Optional[str] = None
+
+
+class SamratAnswerInput(BaseModel):
+    body: str
+
+
+@api_router.get("/samrat/questions")
+async def samrat_questions(limit: int = 50, user: dict = Depends(get_current_user)):
+    rows = await db.samrat_questions.find({"status": {"$ne": "removed"}}, {"_id": 0, "answers": 0}).sort("created_at", -1).to_list(min(limit, 100))
+    await _samrat_attach_authors(rows)
+    return {"questions": rows}
+
+
+@api_router.post("/samrat/questions")
+async def samrat_ask(payload: SamratQuestionInput, user: dict = Depends(get_current_user)):
+    m = await _samrat_require_member(user)
+    if not (payload.title or "").strip():
+        raise HTTPException(status_code=400, detail="Question title required.")
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()), "member_id": m["id"], "user_id": user["id"],
+        "title": payload.title.strip(), "body": (payload.body or "").strip(),
+        "category": payload.category, "status": "open", "answers": [],
+        "answer_count": 0, "best_answer_id": None, "created_at": now,
+    }
+    await db.samrat_questions.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/samrat/questions/{qid}")
+async def samrat_question_detail(qid: str, user: dict = Depends(get_current_user)):
+    q = await db.samrat_questions.find_one({"id": qid}, {"_id": 0})
+    if not q:
+        raise HTTPException(status_code=404, detail="Question not found")
+    await _samrat_attach_authors([q])
+    for a in q.get("answers") or []:
+        a["upvote_count"] = len(a.get("upvoted_by") or [])
+        a["upvoted"] = user["id"] in (a.get("upvoted_by") or [])
+    return q
+
+
+@api_router.post("/samrat/questions/{qid}/answers")
+async def samrat_answer(qid: str, payload: SamratAnswerInput, user: dict = Depends(get_current_user)):
+    m = await _samrat_require_member(user)
+    if not (payload.body or "").strip():
+        raise HTTPException(status_code=400, detail="Answer cannot be empty.")
+    answer = {
+        "id": str(uuid.uuid4()), "member_id": m["id"],
+        "author_name": m.get("business_name"), "author_rank": m.get("rank"),
+        "body": payload.body.strip(), "upvoted_by": [],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    res = await db.samrat_questions.update_one(
+        {"id": qid}, {"$push": {"answers": answer}, "$inc": {"answer_count": 1}})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Question not found")
+    return answer
+
+
+@api_router.post("/samrat/answers/{aid}/upvote")
+async def samrat_upvote(aid: str, user: dict = Depends(get_current_user)):
+    q = await db.samrat_questions.find_one({"answers.id": aid}, {"_id": 0, "id": 1, "answers": 1})
+    if not q:
+        raise HTTPException(status_code=404, detail="Answer not found")
+    ans = next((a for a in q["answers"] if a["id"] == aid), None)
+    already = user["id"] in (ans.get("upvoted_by") or [])
+    op = "$pull" if already else "$addToSet"
+    await db.samrat_questions.update_one({"answers.id": aid}, {op: {"answers.$.upvoted_by": user["id"]}})
+    if not already and ans.get("member_id"):
+        await _samrat_award_crowns(ans["member_id"], SAMRAT_CROWN_RULES["answer_upvote"], "Answer upvoted")
+    return {"upvoted": not already}
+
+
+@api_router.post("/samrat/questions/{qid}/best/{aid}")
+async def samrat_best_answer(qid: str, aid: str, user: dict = Depends(get_current_user)):
+    q = await db.samrat_questions.find_one({"id": qid}, {"_id": 0})
+    if not q:
+        raise HTTPException(status_code=404, detail="Question not found")
+    if q.get("user_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Only the asker can mark the best answer.")
+    ans = next((a for a in (q.get("answers") or []) if a["id"] == aid), None)
+    if not ans:
+        raise HTTPException(status_code=404, detail="Answer not found")
+    await db.samrat_questions.update_one({"id": qid}, {"$set": {"best_answer_id": aid, "status": "answered"}})
+    if q.get("best_answer_id") != aid and ans.get("member_id"):
+        await _samrat_award_crowns(ans["member_id"], SAMRAT_CROWN_RULES["best_answer"], "Best answer")
+    return {"ok": True, "best_answer_id": aid}
+
+
+# ---- Leads / RFQ ----
+
+class SamratLeadInput(BaseModel):
+    title: str
+    description: Optional[str] = None
+    type: Optional[str] = "rfq"   # rfq | project
+    category: Optional[str] = None
+    quantity: Optional[str] = None
+    location: Optional[str] = None
+    budget: Optional[str] = None
+    timeline: Optional[str] = None
+
+
+class SamratQuoteInput(BaseModel):
+    message: str
+    price: Optional[str] = None
+
+
+@api_router.get("/samrat/leads")
+async def samrat_list_leads(status: Optional[str] = "open", limit: int = 50, user: dict = Depends(get_current_user)):
+    query = {} if not status else {"status": status}
+    rows = await db.samrat_leads.find(query, {"_id": 0, "quotes": 0}).sort("created_at", -1).to_list(min(limit, 100))
+    await _samrat_attach_authors(rows)
+    return {"leads": rows}
+
+
+@api_router.post("/samrat/leads")
+async def samrat_create_lead(payload: SamratLeadInput, user: dict = Depends(get_current_user)):
+    m = await _samrat_require_member(user)
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()), "number": await _format_daily_number("SS-LEAD"),
+        "member_id": m["id"], "user_id": user["id"],
+        "title": payload.title.strip(), "description": (payload.description or "").strip(),
+        "type": payload.type or "rfq", "category": payload.category,
+        "quantity": payload.quantity, "location": payload.location or m.get("city"),
+        "budget": payload.budget, "timeline": payload.timeline,
+        "status": "open", "quotes": [], "created_at": now, "updated_at": now,
+    }
+    await db.samrat_leads.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/samrat/leads/{lead_id}")
+async def samrat_lead_detail(lead_id: str, user: dict = Depends(get_current_user)):
+    lead = await db.samrat_leads.find_one({"id": lead_id}, {"_id": 0})
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    await _samrat_attach_authors([lead])
+    return lead
+
+
+@api_router.post("/samrat/leads/{lead_id}/quotes")
+async def samrat_quote(lead_id: str, payload: SamratQuoteInput, user: dict = Depends(get_current_user)):
+    m = await _samrat_require_member(user)
+    quote = {
+        "id": str(uuid.uuid4()), "member_id": m["id"],
+        "business_name": m.get("business_name"), "rank": m.get("rank"),
+        "message": payload.message.strip(), "price": payload.price,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    lead = await db.samrat_leads.find_one({"id": lead_id}, {"_id": 0, "user_id": 1, "title": 1})
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    await db.samrat_leads.update_one({"id": lead_id}, {"$push": {"quotes": quote}, "$set": {"status": "quoted"}})
+    await _samrat_award_crowns(m["id"], SAMRAT_CROWN_RULES["lead_response"], "Responded to a lead")
+    if lead.get("user_id"):
+        await create_notification(
+            title="New quote on your Solar Samrat lead",
+            message=f"{m.get('business_name')} responded to '{lead.get('title')}'.",
+            notification_type="info", target_user_ids=[lead["user_id"]],
+            data={"samrat": True, "lead_id": lead_id})
+    return quote
+
+
+# ---- AI quote / system sizing (Claude) ----
+
+class SamratAiQuoteInput(BaseModel):
+    monthly_units: Optional[float] = None      # kWh/month
+    monthly_bill: Optional[float] = None       # ₹/month
+    load_kw: Optional[float] = None            # connected load
+    appliances: Optional[str] = None           # free text
+    roof_area_sqft: Optional[float] = None
+    state: Optional[str] = None
+    backup_required: Optional[bool] = False
+
+
+@api_router.post("/samrat/ai/quote")
+async def samrat_ai_quote(payload: SamratAiQuoteInput, user: dict = Depends(get_current_user)):
+    """AI rooftop sizing + BOM + PM Surya Ghar subsidy estimate (single-player hook)."""
+    facts = []
+    if payload.monthly_units: facts.append(f"Monthly consumption: {payload.monthly_units} kWh")
+    if payload.monthly_bill: facts.append(f"Monthly electricity bill: ₹{payload.monthly_bill}")
+    if payload.load_kw: facts.append(f"Connected load: {payload.load_kw} kW")
+    if payload.appliances: facts.append(f"Appliances: {payload.appliances}")
+    if payload.roof_area_sqft: facts.append(f"Roof area: {payload.roof_area_sqft} sqft")
+    if payload.state: facts.append(f"State: {payload.state}")
+    facts.append(f"Backup/battery required: {'yes' if payload.backup_required else 'no'}")
+    if not any([payload.monthly_units, payload.monthly_bill, payload.load_kw, payload.appliances]):
+        raise HTTPException(status_code=400, detail="Provide at least monthly units, bill, load, or appliances.")
+
+    system = (
+        "You are a senior Indian rooftop-solar design engineer. Given a customer's "
+        "electricity profile, size an on-grid (or hybrid if backup needed) rooftop solar "
+        "system for India. Assume ~4 peak sun-hours/day, ~1.3 kWh/day per kW installed, "
+        "₹55,000/kW typical turnkey cost. Apply the PM Surya Ghar Muft Bijli Yojana "
+        "central subsidy slabs (₹30,000/kW up to 2kW, ₹18,000/kW for the 3rd kW, capped "
+        "at ₹78,000 for 3kW+). Be realistic and conservative. Return ONLY JSON with keys: "
+        "system_size_kw (number), panel_recommendation (string), inverter_recommendation "
+        "(string), battery_recommendation (string or 'Not required'), structure (string), "
+        "estimated_cost_inr (number), subsidy_inr (number), net_cost_inr (number), "
+        "monthly_savings_inr (number), payback_years (number), monthly_units_offset (number), "
+        "summary (string, 2 sentences), assumptions (array of short strings)."
+    )
+    prompt = "Customer profile:\n" + "\n".join(f"- {f}" for f in facts)
+    result = await _claude_json(prompt, system=system, max_tokens=1100)
+    if not result:
+        raise HTTPException(status_code=503, detail="AI sizing is temporarily unavailable. Please try again.")
+    # Persist for the member's history.
+    try:
+        await db.samrat_ai_quotes.insert_one({
+            "id": str(uuid.uuid4()), "user_id": user["id"],
+            "input": payload.dict(), "result": result,
+            "created_at": datetime.now(timezone.utc).isoformat()})
+    except Exception:
+        pass
+    return result
+
+
+# ---- Public directory + leaderboard (members) ----
+
+@api_router.get("/samrat/leaderboard")
+async def samrat_public_leaderboard(state: Optional[str] = None, role: Optional[str] = None,
+                                    user: dict = Depends(get_current_user)):
+    query: dict = {"status": "active", "verification": "verified"}
+    if state: query["state"] = state
+    if role: query["role"] = role
+    rows = await db.samrat_members.find(
+        query, {"_id": 0, "id": 1, "business_name": 1, "owner_name": 1, "role": 1,
+                "state": 1, "city": 1, "rank": 1, "crowns": 1, "logo_url": 1}
+    ).sort("crowns", -1).to_list(100)
+    return {"leaderboard": rows}
+
+
+@api_router.get("/samrat/directory")
+async def samrat_directory(role: Optional[str] = None, state: Optional[str] = None,
+                           q: Optional[str] = None, user: dict = Depends(get_current_user)):
+    query: dict = {"status": "active", "verification": "verified"}
+    if role: query["role"] = role
+    if state: query["state"] = state
+    if q and q.strip():
+        rx = {"$regex": re.escape(q.strip()), "$options": "i"}
+        query["$or"] = [{"business_name": rx}, {"city": rx}, {"categories": rx}]
+    rows = await db.samrat_members.find(
+        query, {"_id": 0, "id": 1, "business_name": 1, "owner_name": 1, "role": 1,
+                "state": 1, "city": 1, "rank": 1, "crowns": 1, "categories": 1, "logo_url": 1}
+    ).sort("crowns", -1).to_list(200)
+    return {"members": rows}
+
+
+# ---------------------------------------------------------------------------
+# SOLAR SAMRAT — real-time group CHAT (the WhatsApp-group replacement)
+# Public topic/region groups + 1:1 DMs. Realtime over a WebSocket (RN-native);
+# messages sent via REST (persist + validate) then fanned out to connected
+# members. Mirrors the internal team-chat SSE pub/sub but its own registry.
+# ---------------------------------------------------------------------------
+
+SAMRAT_STARTER_GROUPS = [
+    ("all-india", "🇮🇳 All India", "The whole solar trade — open chatter"),
+    ("buy-sell", "🛒 Buy & Sell", "Stock offers, deals, surplus & demand"),
+    ("price-talk", "📈 Price Talk", "Live panel/inverter/battery price moves"),
+    ("tech-help", "🛠️ Tech Help", "Installation & troubleshooting, fast answers"),
+    ("subsidy-policy", "📜 Subsidy & Policy", "PM Surya Ghar, net-metering, DISCOM"),
+    ("tenders-projects", "🏗️ Tenders & Projects", "EPC tenders, C&I & big projects"),
+]
+_samrat_chat_seeded = False
+
+# user_id -> set[asyncio.Queue]; presence = users with a live socket.
+SAMRAT_CHAT_SUBSCRIBERS: dict = {}
+
+
+def _samrat_chat_online() -> set:
+    return {uid for uid, qs in SAMRAT_CHAT_SUBSCRIBERS.items() if qs}
+
+
+async def broadcast_samrat_chat(recipient_ids, event: dict) -> None:
+    for uid in set(recipient_ids or []):
+        for q in list(SAMRAT_CHAT_SUBSCRIBERS.get(uid, ())):
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                pass
+
+
+async def _samrat_chat_seed():
+    global _samrat_chat_seeded
+    if _samrat_chat_seeded:
+        return
+    for slug, name, topic in SAMRAT_STARTER_GROUPS:
+        if not await db.samrat_channels.find_one({"slug": slug}):
+            now = datetime.now(timezone.utc).isoformat()
+            await db.samrat_channels.insert_one({
+                "id": str(uuid.uuid4()), "slug": slug, "name": name, "topic": topic,
+                "type": "group", "is_public": True, "members": [],
+                "created_by": "system", "created_at": now, "updated_at": now,
+                "last_message": None, "last_at": now,
+            })
+    _samrat_chat_seeded = True
+
+
+async def _samrat_chat_recipients(channel: dict) -> set:
+    if channel.get("type") == "group" and channel.get("is_public"):
+        return _samrat_chat_online()
+    return set(channel.get("members") or [])
+
+
+async def _samrat_chat_unread(channel_id: str, user_id: str) -> int:
+    rd = await db.samrat_chat_reads.find_one({"channel_id": channel_id, "user_id": user_id}, {"_id": 0, "last_read_at": 1})
+    q = {"channel_id": channel_id, "user_id_sender": {"$ne": user_id}}
+    if rd and rd.get("last_read_at"):
+        q["created_at"] = {"$gt": rd["last_read_at"]}
+    return await db.samrat_messages.count_documents(q)
+
+
+async def _samrat_chat_can_access(channel: dict, user_id: str) -> bool:
+    if not channel:
+        return False
+    if channel.get("type") == "group" and channel.get("is_public"):
+        return True
+    return user_id in (channel.get("members") or [])
+
+
+def _samrat_channel_view(ch: dict, member_names: dict, me: str) -> dict:
+    v = {k: ch.get(k) for k in ("id", "slug", "name", "topic", "type", "is_public", "members", "last_message", "last_at")}
+    if ch.get("type") == "dm":
+        other = next((m for m in (ch.get("members") or []) if m != me), None)
+        v["name"] = member_names.get(other, "Member")
+        v["other_user_id"] = other
+    return v
+
+
+class SamratGroupCreate(BaseModel):
+    name: str
+    topic: Optional[str] = None
+    is_public: bool = True
+
+
+class SamratMessageInput(BaseModel):
+    body: str
+    image_url: Optional[str] = None
+
+
+@api_router.get("/samrat/chat/channels")
+async def samrat_chat_channels(user: dict = Depends(get_current_user)):
+    await _samrat_require_member(user)
+    await _samrat_chat_seed()
+    chans = await db.samrat_channels.find(
+        {"$or": [{"type": "group", "is_public": True}, {"members": user["id"]}]},
+        {"_id": 0},
+    ).sort("last_at", -1).to_list(500)
+    # Resolve DM counterpart names.
+    dm_user_ids = set()
+    for ch in chans:
+        if ch.get("type") == "dm":
+            dm_user_ids.update(ch.get("members") or [])
+    names = {}
+    if dm_user_ids:
+        async for m in db.samrat_members.find({"user_id": {"$in": list(dm_user_ids)}}, {"_id": 0, "user_id": 1, "business_name": 1}):
+            names[m["user_id"]] = m.get("business_name")
+    out = []
+    for ch in chans:
+        v = _samrat_channel_view(ch, names, user["id"])
+        v["unread"] = await _samrat_chat_unread(ch["id"], user["id"])
+        out.append(v)
+    return {"channels": out, "online": list(_samrat_chat_online())}
+
+
+@api_router.post("/samrat/chat/groups")
+async def samrat_chat_create_group(body: SamratGroupCreate, user: dict = Depends(get_current_user)):
+    m = await _samrat_require_member(user)
+    if not (body.name or "").strip():
+        raise HTTPException(status_code=400, detail="Group name required.")
+    now = datetime.now(timezone.utc).isoformat()
+    ch = {
+        "id": str(uuid.uuid4()), "slug": None, "name": body.name.strip(),
+        "topic": (body.topic or "").strip(), "type": "group", "is_public": body.is_public,
+        "members": [user["id"]], "created_by": user["id"], "created_by_member": m["id"],
+        "created_at": now, "updated_at": now, "last_message": None, "last_at": now,
+    }
+    await db.samrat_channels.insert_one(ch)
+    ch.pop("_id", None)
+    return ch
+
+
+@api_router.post("/samrat/chat/channels/{channel_id}/join")
+async def samrat_chat_join(channel_id: str, user: dict = Depends(get_current_user)):
+    await _samrat_require_member(user)
+    ch = await db.samrat_channels.find_one({"id": channel_id}, {"_id": 0})
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    await db.samrat_channels.update_one({"id": channel_id}, {"$addToSet": {"members": user["id"]}})
+    return {"ok": True}
+
+
+@api_router.post("/samrat/chat/dm/{member_id}")
+async def samrat_chat_open_dm(member_id: str, user: dict = Depends(get_current_user)):
+    await _samrat_require_member(user)
+    other = await db.samrat_members.find_one({"id": member_id}, {"_id": 0, "user_id": 1, "business_name": 1})
+    if not other or not other.get("user_id"):
+        raise HTTPException(status_code=404, detail="Member not found")
+    other_uid = other["user_id"]
+    if other_uid == user["id"]:
+        raise HTTPException(status_code=400, detail="Cannot DM yourself.")
+    dm_key = "|".join(sorted([user["id"], other_uid]))
+    existing = await db.samrat_channels.find_one({"dm_key": dm_key}, {"_id": 0})
+    if existing:
+        return existing
+    now = datetime.now(timezone.utc).isoformat()
+    ch = {
+        "id": str(uuid.uuid4()), "slug": None, "name": other.get("business_name"),
+        "topic": None, "type": "dm", "is_public": False, "dm_key": dm_key,
+        "members": [user["id"], other_uid], "created_by": user["id"],
+        "created_at": now, "updated_at": now, "last_message": None, "last_at": now,
+    }
+    await db.samrat_channels.insert_one(ch)
+    ch.pop("_id", None)
+    return ch
+
+
+@api_router.get("/samrat/chat/channels/{channel_id}/messages")
+async def samrat_chat_messages(channel_id: str, before: Optional[str] = None, limit: int = 50,
+                               user: dict = Depends(get_current_user)):
+    await _samrat_require_member(user)
+    ch = await db.samrat_channels.find_one({"id": channel_id}, {"_id": 0})
+    if not await _samrat_chat_can_access(ch, user["id"]):
+        raise HTTPException(status_code=403, detail="No access to this channel.")
+    q: dict = {"channel_id": channel_id}
+    if before:
+        q["created_at"] = {"$lt": before}
+    rows = await db.samrat_messages.find(q, {"_id": 0}).sort("created_at", -1).to_list(min(limit, 100))
+    rows.reverse()
+    return {"channel": _samrat_channel_view(ch, {}, user["id"]), "messages": rows}
+
+
+@api_router.post("/samrat/chat/channels/{channel_id}/messages")
+async def samrat_chat_send(channel_id: str, body: SamratMessageInput, user: dict = Depends(get_current_user)):
+    m = await _samrat_require_member(user)
+    ch = await db.samrat_channels.find_one({"id": channel_id}, {"_id": 0})
+    if not await _samrat_chat_can_access(ch, user["id"]):
+        raise HTTPException(status_code=403, detail="No access to this channel.")
+    if not (body.body or "").strip() and not body.image_url:
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+    now = datetime.now(timezone.utc).isoformat()
+    msg = {
+        "id": str(uuid.uuid4()), "channel_id": channel_id,
+        "member_id": m["id"], "user_id_sender": user["id"],
+        "sender_name": m.get("business_name"), "sender_rank": m.get("rank"),
+        "sender_role": m.get("role"), "body": (body.body or "").strip()[:4000],
+        "image_url": body.image_url, "created_at": now,
+    }
+    await db.samrat_messages.insert_one(msg)
+    msg.pop("_id", None)
+    brief = (msg["body"][:80] or "📷 Photo")
+    await db.samrat_channels.update_one(
+        {"id": channel_id},
+        {"$set": {"updated_at": now, "last_at": now,
+                  "last_message": {"sender": m.get("business_name"), "body": brief, "at": now}}})
+    # Anyone who posts becomes a member → they receive pushes for this channel.
+    # (Lurkers in public groups stay opt-out, which keeps high-traffic groups
+    # from spamming everyone who ever peeked in.)
+    members = list(ch.get("members") or [])
+    if user["id"] not in members:
+        members.append(user["id"])
+        await db.samrat_channels.update_one({"id": channel_id}, {"$addToSet": {"members": user["id"]}})
+    await broadcast_samrat_chat(await _samrat_chat_recipients(ch),
+                                {"type": "message", "channel_id": channel_id, "message": msg})
+    # Background push to members who are offline (no live socket). The Expo push
+    # helper honours each user's push_prefs["chat"] so users can mute globally.
+    online = _samrat_chat_online()
+    targets = [uid for uid in members if uid != user["id"] and uid not in online]
+    if targets:
+        if ch.get("type") == "dm":
+            ptitle, pbody = (m.get("business_name") or "New message"), brief
+        else:
+            ptitle, pbody = (ch.get("name") or "Group"), f"{m.get('business_name')}: {brief}"
+        await send_expo_push(
+            targets, ptitle, pbody,
+            data={"samrat": True, "chat_channel": channel_id, "link": f"/chat/{channel_id}"},
+            category="chat")
+    return msg
+
+
+@api_router.post("/samrat/chat/channels/{channel_id}/read")
+async def samrat_chat_read(channel_id: str, user: dict = Depends(get_current_user)):
+    now = datetime.now(timezone.utc).isoformat()
+    await db.samrat_chat_reads.update_one(
+        {"channel_id": channel_id, "user_id": user["id"]},
+        {"$set": {"last_read_at": now}}, upsert=True)
+    return {"ok": True}
+
+
+@app.websocket("/api/samrat/chat/ws")
+async def samrat_chat_ws(websocket: WebSocket):
+    """Realtime receive socket for the Solar Samrat app. Auth via ?token=."""
+    user = await _authenticate_ws(websocket)
+    if not user:
+        await websocket.close(code=4401)
+        return
+    member = await db.samrat_members.find_one(
+        {"user_id": user["id"], "verification": "verified", "status": "active"}, {"_id": 0, "id": 1})
+    if not member:
+        await websocket.close(code=4403)
+        return
+    await websocket.accept()
+    uid = user["id"]
+    queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+    SAMRAT_CHAT_SUBSCRIBERS.setdefault(uid, set()).add(queue)
+    try:
+        await websocket.send_json({"type": "ready"})
+
+        async def _pump():
+            while True:
+                event = await queue.get()
+                await websocket.send_json(event)
+
+        pump_task = asyncio.create_task(_pump())
+        try:
+            while True:
+                # Keep the socket alive; clients may send pings. We ignore content.
+                await websocket.receive_text()
+        finally:
+            pump_task.cancel()
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.warning(f"samrat chat ws error: {e}")
+    finally:
+        subs = SAMRAT_CHAT_SUBSCRIBERS.get(uid)
+        if subs:
+            subs.discard(queue)
+            if not subs:
+                SAMRAT_CHAT_SUBSCRIBERS.pop(uid, None)
+
+
+# ---------------------------------------------------------------------------
+# SOLAR SAMRAT — dealer business toolkit (private per-dealer)
+# Quote generator (branded PDF + shareable link) + mini-CRM (customers) +
+# sales & profit tracking. All data is scoped to the owning member/user.
+# ---------------------------------------------------------------------------
+
+SAMRAT_PUBLIC_BASE = os.environ.get("SAMRAT_PUBLIC_BASE", "https://newcrm.musclegrid.in").rstrip("/")
+
+
+class SamratCustomerInput(BaseModel):
+    name: str
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class SamratQuoteItem(BaseModel):
+    name: str
+    qty: float = 1
+    unit_price: float = 0
+    cost_price: Optional[float] = 0
+    gst_pct: Optional[float] = 0
+
+
+class SamratQuoteCreate(BaseModel):
+    customer_id: Optional[str] = None
+    customer_name: str
+    customer_phone: Optional[str] = None
+    items: List[SamratQuoteItem]
+    discount: Optional[float] = 0          # flat ₹ off
+    notes: Optional[str] = None
+    validity_days: Optional[int] = 15
+
+
+class SamratSaleInput(BaseModel):
+    customer_id: Optional[str] = None
+    customer_name: str
+    title: Optional[str] = None
+    revenue: float
+    cost: Optional[float] = 0
+    sale_date: Optional[str] = None
+    quote_id: Optional[str] = None
+
+
+def _samrat_quote_totals(items: List[dict], discount: float):
+    subtotal = sum(float(i.get("qty") or 0) * float(i.get("unit_price") or 0) for i in items)
+    gst_amount = sum(float(i.get("qty") or 0) * float(i.get("unit_price") or 0) * float(i.get("gst_pct") or 0) / 100 for i in items)
+    total_cost = sum(float(i.get("qty") or 0) * float(i.get("cost_price") or 0) for i in items)
+    disc = float(discount or 0)
+    total = round(subtotal + gst_amount - disc, 2)
+    profit = round(subtotal - disc - total_cost, 2)  # GST is pass-through, not profit
+    return {
+        "subtotal": round(subtotal, 2), "gst_amount": round(gst_amount, 2),
+        "discount_amount": round(disc, 2), "total": total,
+        "total_cost": round(total_cost, 2), "profit": profit,
+    }
+
+
+def _samrat_inr(n) -> str:
+    try:
+        return "₹" + format(float(n or 0), ",.2f")
+    except Exception:
+        return "₹0.00"
+
+
+def _samrat_quote_html(q: dict, member: dict) -> str:
+    rows = ""
+    for i in q.get("items", []):
+        amt = float(i.get("qty") or 0) * float(i.get("unit_price") or 0)
+        rows += (
+            f"<tr><td>{(i.get('name') or '')}</td>"
+            f"<td class='r'>{float(i.get('qty') or 0):g}</td>"
+            f"<td class='r'>{_samrat_inr(i.get('unit_price'))}</td>"
+            f"<td class='r'>{float(i.get('gst_pct') or 0):g}%</td>"
+            f"<td class='r'>{_samrat_inr(amt)}</td></tr>"
+        )
+    biz = member.get("business_name") or "My Business"
+    line2 = " · ".join([x for x in [member.get("city"), member.get("phone")] if x])
+    gstin = f"GSTIN: {member.get('gstin')}" if member.get("gstin") else ""
+    notes = f"<div class='notes'><b>Notes:</b><br>{q.get('notes')}</div>" if q.get("notes") else ""
+    return f"""<!doctype html><html><head><meta charset="utf-8"><style>
+      * {{ box-sizing: border-box; }} body {{ font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; color:#0B1C30; margin:0; padding:28px; }}
+      .top {{ background:#0A1729; color:#fff; padding:22px 24px; border-radius:12px; display:flex; justify-content:space-between; align-items:flex-start; }}
+      .biz {{ font-size:22px; font-weight:800; }} .sub {{ color:#A6B0C3; font-size:12px; margin-top:4px; }}
+      .badge {{ color:#F4B740; font-weight:800; font-size:13px; }}
+      .meta {{ display:flex; justify-content:space-between; margin:22px 2px; font-size:13px; }}
+      .muted {{ color:#6D7A77; }} h2 {{ font-size:13px; text-transform:uppercase; letter-spacing:.5px; color:#6D7A77; margin:0 0 4px; }}
+      table {{ width:100%; border-collapse:collapse; margin-top:8px; font-size:13px; }}
+      th {{ text-align:left; background:#F1F5F9; padding:9px; color:#475569; }} th.r, td.r {{ text-align:right; }}
+      td {{ padding:9px; border-bottom:1px solid #E2E8F0; }}
+      .totals {{ margin-top:14px; margin-left:auto; width:280px; font-size:13px; }}
+      .totals div {{ display:flex; justify-content:space-between; padding:5px 2px; }}
+      .grand {{ border-top:2px solid #0A1729; font-weight:800; font-size:16px; padding-top:8px !important; }}
+      .notes {{ margin-top:20px; font-size:12px; color:#475569; background:#F8FAFC; padding:12px; border-radius:8px; }}
+      .foot {{ margin-top:28px; text-align:center; color:#94A3B8; font-size:11px; }}
+      .gold {{ color:#9D6A00; }}
+    </style></head><body>
+      <div class="top">
+        <div><div class="biz">{biz}</div><div class="sub">{line2}</div><div class="sub">{gstin}</div></div>
+        <div style="text-align:right"><div class="badge">QUOTATION</div><div class="sub">{q.get('number','')}</div></div>
+      </div>
+      <div class="meta">
+        <div><h2>Quote for</h2><b>{q.get('customer_name','')}</b><div class="muted">{q.get('customer_phone') or ''}</div></div>
+        <div style="text-align:right"><h2>Details</h2>
+          <div class="muted">Date: {(q.get('created_at') or '')[:10]}</div>
+          <div class="muted">Valid: {q.get('validity_days',15)} days</div></div>
+      </div>
+      <table><thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">GST</th><th class="r">Amount</th></tr></thead>
+      <tbody>{rows}</tbody></table>
+      <div class="totals">
+        <div><span class="muted">Subtotal</span><span>{_samrat_inr(q.get('subtotal'))}</span></div>
+        <div><span class="muted">GST</span><span>{_samrat_inr(q.get('gst_amount'))}</span></div>
+        <div><span class="muted">Discount</span><span>- {_samrat_inr(q.get('discount_amount'))}</span></div>
+        <div class="grand"><span>Total</span><span class="gold">{_samrat_inr(q.get('total'))}</span></div>
+      </div>
+      {notes}
+      <div class="foot">Generated with <b>Solar Samrat</b> · India's solar trade network</div>
+    </body></html>"""
+
+
+# ---- Customers (mini-CRM) ----
+
+@api_router.get("/samrat/customers")
+async def samrat_customers(q: Optional[str] = None, user: dict = Depends(get_current_user)):
+    await _samrat_require_member(user)
+    query: dict = {"user_id": user["id"]}
+    if q and q.strip():
+        rx = {"$regex": re.escape(q.strip()), "$options": "i"}
+        query["$or"] = [{"name": rx}, {"phone": rx}, {"city": rx}]
+    rows = await db.samrat_customers.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return {"customers": rows}
+
+
+@api_router.post("/samrat/customers")
+async def samrat_customer_create(payload: SamratCustomerInput, user: dict = Depends(get_current_user)):
+    m = await _samrat_require_member(user)
+    if not (payload.name or "").strip():
+        raise HTTPException(status_code=400, detail="Customer name required.")
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {"id": str(uuid.uuid4()), "member_id": m["id"], "user_id": user["id"],
+           **payload.dict(), "created_at": now, "updated_at": now}
+    await db.samrat_customers.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.put("/samrat/customers/{customer_id}")
+async def samrat_customer_update(customer_id: str, payload: SamratCustomerInput, user: dict = Depends(get_current_user)):
+    await _samrat_require_member(user)
+    res = await db.samrat_customers.update_one(
+        {"id": customer_id, "user_id": user["id"]},
+        {"$set": {**payload.dict(), "updated_at": datetime.now(timezone.utc).isoformat()}})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    return {"ok": True}
+
+
+# ---- Quotes (generator + branded PDF + shareable link) ----
+
+@api_router.get("/samrat/quotes")
+async def samrat_quotes_list(status: Optional[str] = None, user: dict = Depends(get_current_user)):
+    await _samrat_require_member(user)
+    query: dict = {"user_id": user["id"]}
+    if status:
+        query["status"] = status
+    rows = await db.samrat_quotes.find(query, {"_id": 0, "items": 0}).sort("created_at", -1).to_list(500)
+    return {"quotes": rows}
+
+
+@api_router.post("/samrat/quotes")
+async def samrat_quote_create(payload: SamratQuoteCreate, user: dict = Depends(get_current_user)):
+    m = await _samrat_require_member(user)
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="Add at least one item.")
+    items = [i.dict() for i in payload.items]
+    totals = _samrat_quote_totals(items, payload.discount or 0)
+    now = datetime.now(timezone.utc).isoformat()
+    token = uuid.uuid4().hex
+    doc = {
+        "id": str(uuid.uuid4()), "number": await _format_daily_number("SS-Q"),
+        "member_id": m["id"], "user_id": user["id"],
+        "customer_id": payload.customer_id, "customer_name": payload.customer_name,
+        "customer_phone": payload.customer_phone, "items": items,
+        "discount": float(payload.discount or 0), "notes": payload.notes,
+        "validity_days": payload.validity_days or 15, **totals,
+        "status": "draft", "public_token": token, "created_at": now, "updated_at": now,
+    }
+    await db.samrat_quotes.insert_one(doc)
+    doc.pop("_id", None)
+    doc["public_url"] = f"{SAMRAT_PUBLIC_BASE}/api/samrat/q/{token}"
+    doc["pdf_url"] = f"{SAMRAT_PUBLIC_BASE}/api/samrat/q/{token}/pdf"
+    return doc
+
+
+@api_router.get("/samrat/quotes/{quote_id}")
+async def samrat_quote_detail(quote_id: str, user: dict = Depends(get_current_user)):
+    await _samrat_require_member(user)
+    q = await db.samrat_quotes.find_one({"id": quote_id, "user_id": user["id"]}, {"_id": 0})
+    if not q:
+        raise HTTPException(status_code=404, detail="Quote not found")
+    q["public_url"] = f"{SAMRAT_PUBLIC_BASE}/api/samrat/q/{q['public_token']}"
+    q["pdf_url"] = f"{SAMRAT_PUBLIC_BASE}/api/samrat/q/{q['public_token']}/pdf"
+    return q
+
+
+@api_router.post("/samrat/quotes/{quote_id}/status")
+async def samrat_quote_status(quote_id: str, payload: SamratStatusInput, user: dict = Depends(get_current_user)):
+    m = await _samrat_require_member(user)
+    status = (payload.status or "").strip().lower()
+    if status not in ("draft", "sent", "accepted", "rejected"):
+        raise HTTPException(status_code=400, detail="status must be draft|sent|accepted|rejected")
+    q = await db.samrat_quotes.find_one({"id": quote_id, "user_id": user["id"]}, {"_id": 0})
+    if not q:
+        raise HTTPException(status_code=404, detail="Quote not found")
+    now = datetime.now(timezone.utc).isoformat()
+    await db.samrat_quotes.update_one({"id": quote_id}, {"$set": {"status": status, "updated_at": now}})
+    # Accepting a quote books a sale (idempotent on quote_id).
+    if status == "accepted" and not await db.samrat_sales.find_one({"quote_id": quote_id}):
+        await db.samrat_sales.insert_one({
+            "id": str(uuid.uuid4()), "member_id": m["id"], "user_id": user["id"],
+            "customer_id": q.get("customer_id"), "customer_name": q.get("customer_name"),
+            "title": f"Quote {q.get('number')}", "revenue": q.get("subtotal", 0) - q.get("discount_amount", 0),
+            "cost": q.get("total_cost", 0), "profit": q.get("profit", 0),
+            "status": "won", "quote_id": quote_id, "sale_date": now, "created_at": now,
+        })
+    return {"ok": True, "status": status}
+
+
+@api_router.get("/samrat/q/{token}")
+async def samrat_quote_public_html(token: str):
+    """Public, no-auth professional quote page (dealer shares this link)."""
+    q = await db.samrat_quotes.find_one({"public_token": token}, {"_id": 0})
+    if not q:
+        raise HTTPException(status_code=404, detail="Quote not found")
+    member = await db.samrat_members.find_one({"id": q["member_id"]}, {"_id": 0}) or {}
+    return Response(content=_samrat_quote_html(q, member), media_type="text/html")
+
+
+@api_router.get("/samrat/q/{token}/pdf")
+async def samrat_quote_public_pdf(token: str):
+    """Public, no-auth PDF of the quote."""
+    try:
+        from weasyprint import HTML
+    except ImportError:
+        raise HTTPException(status_code=500, detail="PDF generation unavailable")
+    q = await db.samrat_quotes.find_one({"public_token": token}, {"_id": 0})
+    if not q:
+        raise HTTPException(status_code=404, detail="Quote not found")
+    member = await db.samrat_members.find_one({"id": q["member_id"]}, {"_id": 0}) or {}
+    buf = BytesIO()
+    HTML(string=_samrat_quote_html(q, member)).write_pdf(buf)
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="application/pdf",
+                             headers={"Content-Disposition": f'inline; filename="{q.get("number","quote")}.pdf"'})
+
+
+# ---- Sales & profit ----
+
+@api_router.get("/samrat/sales")
+async def samrat_sales_list(user: dict = Depends(get_current_user)):
+    await _samrat_require_member(user)
+    rows = await db.samrat_sales.find({"user_id": user["id"]}, {"_id": 0}).sort("sale_date", -1).to_list(500)
+    return {"sales": rows}
+
+
+@api_router.post("/samrat/sales")
+async def samrat_sale_create(payload: SamratSaleInput, user: dict = Depends(get_current_user)):
+    m = await _samrat_require_member(user)
+    now = datetime.now(timezone.utc).isoformat()
+    revenue = float(payload.revenue or 0)
+    cost = float(payload.cost or 0)
+    doc = {
+        "id": str(uuid.uuid4()), "member_id": m["id"], "user_id": user["id"],
+        "customer_id": payload.customer_id, "customer_name": payload.customer_name,
+        "title": payload.title, "revenue": round(revenue, 2), "cost": round(cost, 2),
+        "profit": round(revenue - cost, 2), "status": "won",
+        "quote_id": payload.quote_id, "sale_date": payload.sale_date or now, "created_at": now,
+    }
+    await db.samrat_sales.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/samrat/biz/summary")
+async def samrat_biz_summary(user: dict = Depends(get_current_user)):
+    await _samrat_require_member(user)
+    uid = user["id"]
+    sales = await db.samrat_sales.find({"user_id": uid}, {"_id": 0, "revenue": 1, "profit": 1, "cost": 1, "sale_date": 1}).to_list(2000)
+    revenue = round(sum(float(s.get("revenue") or 0) for s in sales), 2)
+    profit = round(sum(float(s.get("profit") or 0) for s in sales), 2)
+    cost = round(sum(float(s.get("cost") or 0) for s in sales), 2)
+    by_month: dict = {}
+    for s in sales:
+        mkey = (s.get("sale_date") or "")[:7]
+        if mkey:
+            b = by_month.setdefault(mkey, {"month": mkey, "revenue": 0.0, "profit": 0.0})
+            b["revenue"] += float(s.get("revenue") or 0)
+            b["profit"] += float(s.get("profit") or 0)
+    months = sorted(by_month.values(), key=lambda x: x["month"])[-6:]
+    for mo in months:
+        mo["revenue"] = round(mo["revenue"], 2)
+        mo["profit"] = round(mo["profit"], 2)
+    return {
+        "revenue": revenue, "profit": profit, "cost": cost,
+        "sales_count": len(sales),
+        "customers_count": await db.samrat_customers.count_documents({"user_id": uid}),
+        "quotes_count": await db.samrat_quotes.count_documents({"user_id": uid}),
+        "pending_quotes": await db.samrat_quotes.count_documents({"user_id": uid, "status": {"$in": ["draft", "sent"]}}),
+        "by_month": months,
+    }
+
+
+# ---------------------------------------------------------------------------
+# SOLAR SAMRAT — Money Suite: GST invoices + UPI collection + Khata ledger
+# All per-dealer/private. UPI collection generates a upi:// intent to the
+# DEALER'S OWN VPA (money goes straight to their bank — no gateway/float).
+# ---------------------------------------------------------------------------
+
+class SamratInvoiceItem(BaseModel):
+    name: str
+    hsn: Optional[str] = None
+    qty: float = 1
+    unit_price: float = 0
+    gst_pct: Optional[float] = 0
+
+
+class SamratInvoiceCreate(BaseModel):
+    customer_id: Optional[str] = None
+    customer_name: str
+    customer_phone: Optional[str] = None
+    customer_gstin: Optional[str] = None
+    place_of_supply: Optional[str] = None   # customer's state; default = dealer's (intra-state)
+    items: List[SamratInvoiceItem]
+    discount: Optional[float] = 0
+    notes: Optional[str] = None
+    quote_id: Optional[str] = None
+
+
+class SamratPaymentInput(BaseModel):
+    amount: float
+    mode: Optional[str] = "cash"            # cash | upi | bank | other
+    reference: Optional[str] = None
+    note: Optional[str] = None
+    customer_id: Optional[str] = None       # for an on-account payment (no invoice)
+
+
+class SamratUpiInput(BaseModel):
+    upi_id: str
+
+
+def _samrat_invoice_compute(items: List[dict], discount: float, intra: bool):
+    subtotal = sum(float(i.get("qty") or 0) * float(i.get("unit_price") or 0) for i in items)
+    gst = sum(float(i.get("qty") or 0) * float(i.get("unit_price") or 0) * float(i.get("gst_pct") or 0) / 100 for i in items)
+    disc = float(discount or 0)
+    cgst = sgst = igst = 0.0
+    if intra:
+        cgst = sgst = round(gst / 2, 2)
+    else:
+        igst = round(gst, 2)
+    return {
+        "subtotal": round(subtotal, 2), "gst_amount": round(gst, 2),
+        "discount_amount": round(disc, 2), "cgst": cgst, "sgst": sgst, "igst": igst,
+        "total": round(subtotal + gst - disc, 2), "intra_state": intra,
+    }
+
+
+def _samrat_upi_link(vpa: str, name: str, amount: float, note: str) -> str:
+    from urllib.parse import quote as _q
+    return (f"upi://pay?pa={_q(vpa)}&pn={_q(name or 'Solar Samrat')}"
+            f"&am={amount:.2f}&cu=INR&tn={_q(note or '')}")
+
+
+def _samrat_invoice_html(inv: dict, member: dict) -> str:
+    rows = ""
+    for i in inv.get("items", []):
+        amt = float(i.get("qty") or 0) * float(i.get("unit_price") or 0)
+        rows += (
+            f"<tr><td>{i.get('name') or ''}</td><td class='c'>{i.get('hsn') or '—'}</td>"
+            f"<td class='r'>{float(i.get('qty') or 0):g}</td>"
+            f"<td class='r'>{_samrat_inr(i.get('unit_price'))}</td>"
+            f"<td class='r'>{float(i.get('gst_pct') or 0):g}%</td>"
+            f"<td class='r'>{_samrat_inr(amt)}</td></tr>"
+        )
+    biz = member.get("business_name") or "My Business"
+    line2 = " · ".join([x for x in [member.get("city"), member.get("phone")] if x])
+    gstin = f"GSTIN: {member.get('gstin')}" if member.get("gstin") else ""
+    intra = inv.get("intra_state", True)
+    tax_rows = (
+        f"<div><span class='muted'>CGST</span><span>{_samrat_inr(inv.get('cgst'))}</span></div>"
+        f"<div><span class='muted'>SGST</span><span>{_samrat_inr(inv.get('sgst'))}</span></div>"
+        if intra else
+        f"<div><span class='muted'>IGST</span><span>{_samrat_inr(inv.get('igst'))}</span></div>"
+    )
+    due = round(float(inv.get("total", 0)) - float(inv.get("amount_paid", 0)), 2)
+    paid_stamp = "<div class='paid'>PAID</div>" if inv.get("status") == "paid" else ""
+    upi_btn = ""
+    if member.get("upi_id") and due > 0:
+        link = _samrat_upi_link(member["upi_id"], biz, due, inv.get("number", ""))
+        upi_btn = (f"<a class='pay' href=\"{link}\">Pay {_samrat_inr(due)} via UPI</a>"
+                   f"<div class='muted' style='text-align:center;margin-top:6px'>UPI: {member['upi_id']}</div>")
+    cust_gst = f"<div class='muted'>GSTIN: {inv.get('customer_gstin')}</div>" if inv.get("customer_gstin") else ""
+    return f"""<!doctype html><html><head><meta charset="utf-8"><style>
+      * {{ box-sizing:border-box; }} body {{ font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif; color:#0B1C30; margin:0; padding:26px; }}
+      .top {{ background:#0A1729; color:#fff; padding:20px 22px; border-radius:12px; display:flex; justify-content:space-between; }}
+      .biz {{ font-size:21px; font-weight:800; }} .sub {{ color:#A6B0C3; font-size:12px; margin-top:4px; }}
+      .badge {{ color:#F4B740; font-weight:800; font-size:13px; }}
+      .meta {{ display:flex; justify-content:space-between; margin:20px 2px; font-size:13px; }}
+      .muted {{ color:#6D7A77; }} h2 {{ font-size:12px; text-transform:uppercase; letter-spacing:.5px; color:#6D7A77; margin:0 0 4px; }}
+      table {{ width:100%; border-collapse:collapse; margin-top:6px; font-size:12.5px; }}
+      th {{ text-align:left; background:#F1F5F9; padding:8px; color:#475569; }} th.r,td.r {{ text-align:right; }} th.c,td.c {{ text-align:center; }}
+      td {{ padding:8px; border-bottom:1px solid #E2E8F0; }}
+      .totals {{ margin-top:12px; margin-left:auto; width:280px; font-size:13px; }}
+      .totals div {{ display:flex; justify-content:space-between; padding:4px 2px; }}
+      .grand {{ border-top:2px solid #0A1729; font-weight:800; font-size:16px; padding-top:8px !important; }}
+      .due {{ color:#B45309; font-weight:800; }}
+      .pay {{ display:block; text-align:center; background:#F4B740; color:#0A1729; font-weight:800; padding:13px; border-radius:10px; text-decoration:none; margin-top:18px; }}
+      .paid {{ display:inline-block; border:3px solid #10B981; color:#10B981; font-weight:800; padding:4px 14px; border-radius:8px; transform:rotate(-8deg); }}
+      .foot {{ margin-top:24px; text-align:center; color:#94A3B8; font-size:11px; }}
+    </style></head><body>
+      <div class="top">
+        <div><div class="biz">{biz}</div><div class="sub">{line2}</div><div class="sub">{gstin}</div></div>
+        <div style="text-align:right"><div class="badge">TAX INVOICE</div><div class="sub">{inv.get('number','')}</div><div class="sub">{(inv.get('created_at') or '')[:10]}</div></div>
+      </div>
+      <div class="meta">
+        <div><h2>Bill to</h2><b>{inv.get('customer_name','')}</b><div class="muted">{inv.get('customer_phone') or ''}</div>{cust_gst}</div>
+        <div style="text-align:right"><h2>Place of supply</h2><div class="muted">{inv.get('place_of_supply') or member.get('state') or '—'}</div>{paid_stamp}</div>
+      </div>
+      <table><thead><tr><th>Item</th><th class="c">HSN</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">GST</th><th class="r">Amount</th></tr></thead>
+      <tbody>{rows}</tbody></table>
+      <div class="totals">
+        <div><span class="muted">Taxable value</span><span>{_samrat_inr(inv.get('subtotal'))}</span></div>
+        {tax_rows}
+        <div><span class="muted">Discount</span><span>- {_samrat_inr(inv.get('discount_amount'))}</span></div>
+        <div class="grand"><span>Total</span><span>{_samrat_inr(inv.get('total'))}</span></div>
+        <div><span class="muted">Paid</span><span>{_samrat_inr(inv.get('amount_paid'))}</span></div>
+        <div><span class="due">Balance due</span><span class="due">{_samrat_inr(due)}</span></div>
+      </div>
+      {upi_btn}
+      <div class="foot">Generated with <b>Solar Samrat</b> · India's solar trade network</div>
+    </body></html>"""
+
+
+@api_router.post("/samrat/profile/upi")
+async def samrat_set_upi(payload: SamratUpiInput, user: dict = Depends(get_current_user)):
+    m = await _samrat_require_member(user)
+    await db.samrat_members.update_one({"id": m["id"]}, {"$set": {"upi_id": payload.upi_id.strip()}})
+    return {"ok": True, "upi_id": payload.upi_id.strip()}
+
+
+@api_router.get("/samrat/invoices")
+async def samrat_invoices_list(status: Optional[str] = None, user: dict = Depends(get_current_user)):
+    await _samrat_require_member(user)
+    query: dict = {"user_id": user["id"]}
+    if status:
+        query["status"] = status
+    rows = await db.samrat_invoices.find(query, {"_id": 0, "items": 0}).sort("created_at", -1).to_list(500)
+    return {"invoices": rows}
+
+
+@api_router.post("/samrat/invoices")
+async def samrat_invoice_create(payload: SamratInvoiceCreate, user: dict = Depends(get_current_user)):
+    m = await _samrat_require_member(user)
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="Add at least one item.")
+    pos = (payload.place_of_supply or m.get("state") or "").strip()
+    dealer_state = (m.get("state") or "").strip()
+    intra = (not pos) or (not dealer_state) or (pos.lower() == dealer_state.lower())
+    items = [i.dict() for i in payload.items]
+    totals = _samrat_invoice_compute(items, payload.discount or 0, intra)
+    now = datetime.now(timezone.utc).isoformat()
+    token = uuid.uuid4().hex
+    doc = {
+        "id": str(uuid.uuid4()), "number": await _format_daily_number("SS-INV"),
+        "member_id": m["id"], "user_id": user["id"],
+        "customer_id": payload.customer_id, "customer_name": payload.customer_name,
+        "customer_phone": payload.customer_phone, "customer_gstin": payload.customer_gstin,
+        "place_of_supply": pos or None, "items": items, "discount": float(payload.discount or 0),
+        "notes": payload.notes, **totals, "amount_paid": 0.0, "status": "unpaid",
+        "public_token": token, "quote_id": payload.quote_id, "created_at": now, "updated_at": now,
+    }
+    await db.samrat_invoices.insert_one(doc)
+    # Khata: booking the invoice as a debit on the customer's ledger.
+    if payload.customer_id:
+        await db.samrat_ledger.insert_one({
+            "id": str(uuid.uuid4()), "user_id": user["id"], "member_id": m["id"],
+            "customer_id": payload.customer_id, "type": "invoice", "ref": doc["number"],
+            "invoice_id": doc["id"], "amount": doc["total"], "created_at": now,
+        })
+    doc.pop("_id", None)
+    doc["public_url"] = f"{SAMRAT_PUBLIC_BASE}/api/samrat/inv/{token}"
+    doc["pdf_url"] = f"{SAMRAT_PUBLIC_BASE}/api/samrat/inv/{token}/pdf"
+    if m.get("upi_id"):
+        doc["upi_link"] = _samrat_upi_link(m["upi_id"], m.get("business_name"), doc["total"], doc["number"])
+    return doc
+
+
+@api_router.get("/samrat/invoices/{invoice_id}")
+async def samrat_invoice_detail(invoice_id: str, user: dict = Depends(get_current_user)):
+    m = await _samrat_require_member(user)
+    inv = await db.samrat_invoices.find_one({"id": invoice_id, "user_id": user["id"]}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    inv["public_url"] = f"{SAMRAT_PUBLIC_BASE}/api/samrat/inv/{inv['public_token']}"
+    inv["pdf_url"] = f"{SAMRAT_PUBLIC_BASE}/api/samrat/inv/{inv['public_token']}/pdf"
+    due = round(float(inv.get("total", 0)) - float(inv.get("amount_paid", 0)), 2)
+    if m.get("upi_id") and due > 0:
+        inv["upi_link"] = _samrat_upi_link(m["upi_id"], m.get("business_name"), due, inv.get("number"))
+    inv["payments"] = await db.samrat_ledger.find(
+        {"invoice_id": invoice_id, "type": "payment"}, {"_id": 0}).sort("created_at", 1).to_list(100)
+    return inv
+
+
+@api_router.post("/samrat/invoices/{invoice_id}/payment")
+async def samrat_invoice_payment(invoice_id: str, payload: SamratPaymentInput, user: dict = Depends(get_current_user)):
+    m = await _samrat_require_member(user)
+    inv = await db.samrat_invoices.find_one({"id": invoice_id, "user_id": user["id"]}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    amt = float(payload.amount or 0)
+    if amt <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be positive.")
+    now = datetime.now(timezone.utc).isoformat()
+    new_paid = round(float(inv.get("amount_paid", 0)) + amt, 2)
+    status = "paid" if new_paid >= float(inv.get("total", 0)) - 0.01 else "partial"
+    await db.samrat_invoices.update_one({"id": invoice_id}, {"$set": {
+        "amount_paid": new_paid, "status": status, "updated_at": now}})
+    await db.samrat_ledger.insert_one({
+        "id": str(uuid.uuid4()), "user_id": user["id"], "member_id": m["id"],
+        "customer_id": inv.get("customer_id"), "type": "payment", "ref": payload.reference,
+        "invoice_id": invoice_id, "mode": payload.mode, "note": payload.note,
+        "amount": amt, "created_at": now,
+    })
+    return {"ok": True, "amount_paid": new_paid, "status": status}
+
+
+@api_router.post("/samrat/payments")
+async def samrat_on_account_payment(payload: SamratPaymentInput, user: dict = Depends(get_current_user)):
+    """Record an on-account payment from a customer (not tied to one invoice)."""
+    m = await _samrat_require_member(user)
+    if not payload.customer_id:
+        raise HTTPException(status_code=400, detail="customer_id required")
+    amt = float(payload.amount or 0)
+    if amt <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be positive.")
+    now = datetime.now(timezone.utc).isoformat()
+    await db.samrat_ledger.insert_one({
+        "id": str(uuid.uuid4()), "user_id": user["id"], "member_id": m["id"],
+        "customer_id": payload.customer_id, "type": "payment", "ref": payload.reference,
+        "invoice_id": None, "mode": payload.mode, "note": payload.note,
+        "amount": amt, "created_at": now,
+    })
+    return {"ok": True}
+
+
+@api_router.get("/samrat/inv/{token}")
+async def samrat_invoice_public_html(token: str):
+    inv = await db.samrat_invoices.find_one({"public_token": token}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    member = await db.samrat_members.find_one({"id": inv["member_id"]}, {"_id": 0}) or {}
+    return Response(content=_samrat_invoice_html(inv, member), media_type="text/html")
+
+
+@api_router.get("/samrat/inv/{token}/pdf")
+async def samrat_invoice_public_pdf(token: str):
+    try:
+        from weasyprint import HTML
+    except ImportError:
+        raise HTTPException(status_code=500, detail="PDF generation unavailable")
+    inv = await db.samrat_invoices.find_one({"public_token": token}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    member = await db.samrat_members.find_one({"id": inv["member_id"]}, {"_id": 0}) or {}
+    buf = BytesIO()
+    HTML(string=_samrat_invoice_html(inv, member)).write_pdf(buf)
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="application/pdf",
+                             headers={"Content-Disposition": f'inline; filename="{inv.get("number","invoice")}.pdf"'})
+
+
+@api_router.get("/samrat/khata")
+async def samrat_khata(user: dict = Depends(get_current_user)):
+    """Per-customer outstanding: total billed (invoices) minus total collected."""
+    await _samrat_require_member(user)
+    uid = user["id"]
+    agg: dict = {}
+    async for e in db.samrat_ledger.find({"user_id": uid}, {"_id": 0}):
+        cid = e.get("customer_id")
+        if not cid:
+            continue
+        b = agg.setdefault(cid, {"customer_id": cid, "billed": 0.0, "collected": 0.0})
+        if e.get("type") == "invoice":
+            b["billed"] += float(e.get("amount") or 0)
+        elif e.get("type") == "payment":
+            b["collected"] += float(e.get("amount") or 0)
+    ids = list(agg.keys())
+    names = {}
+    if ids:
+        async for c in db.samrat_customers.find({"id": {"$in": ids}}, {"_id": 0, "id": 1, "name": 1, "phone": 1}):
+            names[c["id"]] = c
+    out = []
+    total_out = 0.0
+    for cid, v in agg.items():
+        outstanding = round(v["billed"] - v["collected"], 2)
+        total_out += outstanding
+        c = names.get(cid, {})
+        out.append({**v, "billed": round(v["billed"], 2), "collected": round(v["collected"], 2),
+                    "outstanding": outstanding, "customer_name": c.get("name", "Customer"),
+                    "customer_phone": c.get("phone")})
+    out.sort(key=lambda x: x["outstanding"], reverse=True)
+    return {"khata": out, "total_outstanding": round(total_out, 2)}
+
+
+@api_router.get("/samrat/khata/{customer_id}")
+async def samrat_khata_ledger(customer_id: str, user: dict = Depends(get_current_user)):
+    await _samrat_require_member(user)
+    cust = await db.samrat_customers.find_one({"id": customer_id, "user_id": user["id"]}, {"_id": 0})
+    entries = await db.samrat_ledger.find(
+        {"user_id": user["id"], "customer_id": customer_id}, {"_id": 0}).sort("created_at", 1).to_list(1000)
+    balance = 0.0
+    for e in entries:
+        balance += float(e.get("amount") or 0) if e.get("type") == "invoice" else -float(e.get("amount") or 0)
+        e["balance"] = round(balance, 2)
+    entries.reverse()  # newest first for display
+    return {"customer": cust, "entries": entries, "outstanding": round(balance, 2)}
 
 
 app.include_router(api_router)
