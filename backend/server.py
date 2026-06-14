@@ -74510,8 +74510,24 @@ async def _wa_handle_media(digits: str, contact_name: str, media_id: str, mime: 
         await whatsapp_cloud.send_text(digits, "Photo theek se nahi mili \U0001f614 kya aap dobara bhej sakte hain?")
         return
     import base64
+    mt = media.get("mime") or mime or "image/jpeg"
     b64 = base64.b64encode(media["bytes"]).decode()
-    await _wa_agent_respond(digits, contact_name, latest_image={"b64": b64, "mime": media.get("mime") or mime})
+    # Attach the photo to the customer's latest ticket (esp. useful for stabilizer photos that ops needs).
+    try:
+        tkt = await db.tickets.find_one({"customer_phone": {"$regex": re.escape(digits) + "$"}}, sort=[("created_at", -1)])
+        if tkt:
+            ext = ".pdf" if "pdf" in mt else (".png" if "png" in mt else ".jpg")
+            rel, _st = await storage_upload(file_data=media["bytes"], folder="tickets",
+                                            original_filename=f"whatsapp{ext}", filename_prefix=tkt["id"])
+            url = f"/api/files/{rel}"
+            await db.tickets.update_one({"id": tkt["id"]}, {"$push": {"attachments": {
+                "url": url, "type": mt, "source": "whatsapp_customer",
+                "uploaded_at": datetime.now(timezone.utc).isoformat()}}})
+            await add_ticket_history(tkt["id"], "Customer sent a photo on WhatsApp (attached)",
+                                     REPAIR_LOOP_AGENT, {"action_type": "customer_photo", "url": url})
+    except Exception as e:
+        logger.warning(f"could not attach WhatsApp photo to ticket: {e}")
+    await _wa_agent_respond(digits, contact_name, latest_image={"b64": b64, "mime": mt})
 
 
 async def _pratibha_wa_autoreply(phone: str, text: str, contact_name: str = ""):
@@ -74601,6 +74617,8 @@ async def _pratibha_wa_decision_reply(message):
         choice = "angad"
     elif "replace" in text or "replacement" in text:
         choice = "replace"
+    elif "pcb" in text:
+        choice = "pcb"
     elif "repair" in text:
         choice = "repair"
     else:
@@ -74637,6 +74655,16 @@ async def _pratibha_wa_decision_reply(message):
             notification_type="service", link="/admin/warranty-claims",
             target_roles=["admin", "accountant", "supervisor"], priority="high")
         manager_note = "The manager APPROVED a replacement. Tell the customer (Hinglish) the good news; the team will share next steps. Do not ask for a pickup address."
+    elif choice == "pcb":  # stabilizer: dispatch the replacement PCB to the customer first
+        await create_notification(
+            title="\U0001f527 Dispatch stabilizer PCB",
+            message=f"Approved: dispatch a replacement PCB to {cust_name} ({cust_phone}){prod_s}{(' —'+tk_s) if tkn else ''}. If it doesn't resolve, we'll reverse-pickup the unit.",
+            notification_type="service", link="/operations/courier-shipping",
+            target_roles=["admin", "accountant", "supervisor"], priority="high")
+        manager_note = ("The manager APPROVED dispatching the replacement PCB. Tell the customer (Hinglish) that we are "
+                        "sending a replacement PCB which usually fixes the issue, and to fit it (or have an electrician fit it) "
+                        "and let us know if the problem is resolved. If it's still not resolved after the PCB, we'll arrange a "
+                        "pickup of the stabilizer for repair. Do NOT ask for a pickup address now.")
     else:  # repair → flag the ticket into the pickup flow; the agent collects the address & books.
         tdoc = None
         if tkn:
@@ -74779,23 +74807,31 @@ async def _pratibha_wa_shipback_reply(message):
             message=f"Pickup address missing for {sb.get('customer_name')} ({sb.get('customer_phone')}); book the {pay} return shipment manually.",
             target_roles=["admin", "accountant"], priority="high")
         return "Pickup address nahi mila — ops ko manually book karne ko bola."
-    try:
-        resp = await _pratibha_book_shipback(dest, sb.get("product"), sb.get("weight_kg") or 5, pay,
-                                             cod_amount, sb.get("ticket_number") or "")
-    except Exception as e:
-        resp = None
-        logger.warning(f"ship-back booking error: {e}")
-    awb = getattr(resp, "awb_number", None) or (resp.get("awb_number") if isinstance(resp, dict) else None)
-    if not awb or getattr(resp, "success", True) is False:
-        await db.repair_shipbacks.update_one({"id": sb["id"]}, {"$set": {"status": "book_failed", "resolved_at": now}})
-        await create_notification(
-            title="⚠️ Ship-back booking failed", notification_type="service", link="/operations/courier-tracking",
-            message=f"Couldn't book the {pay} return for {sb.get('customer_name')} ({sb.get('customer_phone')}). Book manually.",
-            target_roles=["admin", "accountant"], priority="high")
-        return f"Ship-back booking fail hua — ops ko bata diya. ({getattr(resp, 'message', '') or 'Bigship error'})"
+    # SIM toggle (same flag as the pickup): when off, simulate the AWB so a test never dispatches a
+    # real return courier. When live, book the real Bigship return.
+    simulated = not PRATIBHA_PICKUP_LIVE
+    label_url = None
+    if simulated:
+        awb = "SBSIM-" + uuid.uuid4().hex[:8].upper()
+    else:
+        try:
+            resp = await _pratibha_book_shipback(dest, sb.get("product"), sb.get("weight_kg") or 5, pay,
+                                                 cod_amount, sb.get("ticket_number") or "")
+        except Exception as e:
+            resp = None
+            logger.warning(f"ship-back booking error: {e}")
+        awb = getattr(resp, "awb_number", None) or (resp.get("awb_number") if isinstance(resp, dict) else None)
+        label_url = getattr(resp, "label_url", None)
+        if not awb or getattr(resp, "success", True) is False:
+            await db.repair_shipbacks.update_one({"id": sb["id"]}, {"$set": {"status": "book_failed", "resolved_at": now}})
+            await create_notification(
+                title="⚠️ Ship-back booking failed", notification_type="service", link="/operations/courier-tracking",
+                message=f"Couldn't book the {pay} return for {sb.get('customer_name')} ({sb.get('customer_phone')}). Book manually.",
+                target_roles=["admin", "accountant"], priority="high")
+            return f"Ship-back booking fail hua — ops ko bata diya. ({getattr(resp, 'message', '') or 'Bigship error'})"
     await db.repair_shipbacks.update_one({"id": sb["id"]}, {"$set": {
-        "status": "booked", "payment_mode": pay, "cod_amount": cod_amount, "awb": awb,
-        "label_url": getattr(resp, "label_url", None), "decided_by": message.from_number, "resolved_at": now}})
+        "status": "booked", "payment_mode": pay, "cod_amount": cod_amount, "awb": awb, "simulated": simulated,
+        "label_url": label_url, "decided_by": message.from_number, "resolved_at": now}})
     if sb.get("ticket_number"):
         await db.tickets.update_one({"ticket_number": sb["ticket_number"]}, {"$set": {
             "return_tracking": awb, "return_courier": "Bigship", "return_payment": pay,

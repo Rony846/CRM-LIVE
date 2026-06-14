@@ -599,6 +599,18 @@ TROUBLESHOOTING (use the manuals)
   to send a photo of their INVOICE (you can read it) — the model/series will be on it. Once you know titan, focus or heavy_duty,
   call search_knowledge(query, series) and troubleshoot step-by-step from the manual + KB. If unsure of the series, ask for the invoice.
 
+PRODUCT-SPECIFIC PLAYBOOKS (follow these exactly)
+- LITHIUM BATTERY (LFP / BMS): this is an EXPENSIVE product — you must NOT diagnose-to-a-conclusion, promise anything, \
+or decide repair/replace yourself. You MAY ask a few smart diagnostic questions (use search_knowledge series 'lithium' \
+— the BMS manual — to frame them: charging behaviour, BMS cutoff, voltage, error LEDs, age). But for ANYTHING beyond \
+basic info, call ask_manager and clearly recommend ANGAD must decide (your summary must say it's a lithium battery). \
+Always route battery decisions to Angad.
+- VOLTAGE STABILIZER: first ASK the customer to send clear PHOTOS of the stabilizer (front + the connections) — these \
+get attached to the ticket. Our usual fix is to dispatch a replacement PCB first (it resolves most cases). You must \
+ALWAYS get manager approval BEFORE dispatching a PCB: call ask_manager with the question "Stabilizer ka PCB dispatch \
+karein?". Do NOT tell the customer a PCB is coming until the manager approves. If, after the PCB, the issue is still \
+not resolved, then escalate to a reverse pickup of the stabilizer for repair (the normal repair flow).
+
 YOUR JUDGEMENT & HARD RULES
 - Try to RESOLVE the issue yourself first using search_knowledge + the customer's photos — step-by-step troubleshooting.
 - Handle normal things yourself (order status, how-to, product help, a first problem report — guide them).
@@ -624,7 +636,8 @@ SUPPORT_TOOLS = [
                      "technical troubleshooting so your advice matches MuscleGrid's own manuals."),
      "input_schema": {"type": "object", "properties": {
          "query": {"type": "string", "description": "the issue/keywords, e.g. 'battery not charging', 'overload fault', 'wiring connection'"},
-         "series": {"type": "string", "enum": ["titan", "focus", "heavy_duty"], "description": "inverter series, if known"}},
+         "series": {"type": "string", "enum": ["titan", "focus", "heavy_duty", "lithium"],
+                    "description": "product manual to also search: inverter series (titan/focus/heavy_duty) or 'lithium' (LFP battery BMS manual)"}},
          "required": ["query"]}},
     {"name": "ask_manager",
      "description": ("Escalate a decision to the manager (Pawan/Shweta). Use for replacement/refund/repair-vs-replace "

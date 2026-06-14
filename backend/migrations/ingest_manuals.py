@@ -25,6 +25,7 @@ MANUALS = [
     ("titan", os.path.join(HERE, "..", "uploads/claude_files/164_titan_series_user_manual.pdf")),
     ("focus", os.path.join(HERE, "..", "uploads/claude_files/165_focus_series_user_manual.pdf")),
     ("heavy_duty", os.path.join(HERE, "..", "uploads/claude_files/166_user_manual_for_heavy_duty_series_3_6kw-6_2KW.pdf")),
+    ("lithium", os.path.join(HERE, "..", "uploads/claude_files/167_MG_USER_MANUAL_LFP__2_.pdf")),
 ]
 PROMPT = ("This is ONE page of a MuscleGrid inverter user manual. Transcribe ALL text on the page accurately "
           "(headings, specs, steps, tables, warnings). ALSO describe any wiring diagrams / figures / connection "
