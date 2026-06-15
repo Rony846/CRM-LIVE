@@ -73005,8 +73005,13 @@ async def admin_whatsapp_chat_thread(phone: str, current_user: dict = Depends(ge
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     digits = re.sub(r"\D", "", phone)[-10:]
     msgs = await db.whatsapp_cloud_messages.find(
-        {"phone": digits}, {"_id": 0, "direction": 1, "text": 1, "received_at": 1, "ts": 1,
-                            "kind": 1, "brain": 1, "tier": 1, "msg_type": 1}).sort("received_at", 1).to_list(800)
+        {"phone": digits}, {"_id": 0, "direction": 1, "text": 1, "received_at": 1, "ts": 1, "kind": 1,
+                            "brain": 1, "tier": 1, "msg_type": 1, "media_url": 1, "media_type": 1}).sort("received_at", 1).to_list(800)
+    # Sign media URLs so the browser can load them in <img>/<video> without a bearer token.
+    for m in msgs:
+        if m.get("media_url"):
+            rel = m["media_url"].split("/api/files/", 1)[-1]
+            m["media_url"] = make_signed_file_url(rel)
     lead = await db.leads.find_one({"phone": {"$regex": re.escape(digits) + "$"}},
                                    {"_id": 0, "name": 1, "customer_name": 1})
     return {"phone": digits, "name": (lead or {}).get("name") or (lead or {}).get("customer_name") or "", "messages": msgs}
@@ -74932,35 +74937,58 @@ async def _wa_agent_respond(digits: str, contact_name: str = "", manager_note: s
                 "source": "whatsapp_cloud", "kind": "pratibha_agent", "tier": tier, "brain": brain})
 
 
-async def _wa_handle_media(digits: str, contact_name: str, media_id: str, mime: str):
-    """A customer sent a photo/document — download it and let the agent SEE it (vision)."""
+_WA_MEDIA_EXT = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif",
+                 "application/pdf": ".pdf", "video/mp4": ".mp4", "video/3gpp": ".3gp",
+                 "audio/ogg": ".ogg", "audio/mpeg": ".mp3", "audio/mp4": ".m4a", "audio/amr": ".amr"}
+
+
+async def _wa_handle_media(digits: str, contact_name: str, media_id: str, mime: str, mtype: str = "image"):
+    """A customer sent media (photo / PDF / video / audio). Download + store it so it's viewable in the
+    chat AND on the ticket. Images and PDFs are shown to the agent (vision); video/audio can't be 'seen',
+    so the agent is told to acknowledge and ask for a photo if it needs to see the problem."""
     if not (PRATIBHA_WA_AUTOREPLY and pratibha_brain.available() and whatsapp_cloud.enabled()):
         return
     if await db.whatsapp_optouts.find_one({"phone": digits}, {"_id": 1}):
         return
     media = await whatsapp_cloud.download_media(media_id)
     if not media or not media.get("bytes"):
-        await whatsapp_cloud.send_text(digits, "Photo theek se nahi mili \U0001f614 kya aap dobara bhej sakte hain?")
+        await whatsapp_cloud.send_text(digits, "File theek se nahi mili \U0001f614 kya aap dobara bhej sakte hain?")
         return
     import base64
-    mt = media.get("mime") or mime or "image/jpeg"
-    b64 = base64.b64encode(media["bytes"]).decode()
-    # Attach the photo to the customer's latest ticket (esp. useful for stabilizer photos that ops needs).
+    mt = media.get("mime") or mime or "application/octet-stream"
+    ext = _WA_MEDIA_EXT.get(mt) or ("." + (mt.split("/")[-1].split(";")[0] or "bin"))
+    now = datetime.now(timezone.utc).isoformat()
+    # Store the file so it's viewable in the chat + on the ticket — regardless of whether a ticket exists.
+    url = None
+    try:
+        rel, _st = await storage_upload(file_data=media["bytes"], folder="tickets",
+                                        original_filename=f"wa{ext}", filename_prefix=digits)
+        url = f"/api/files/{rel}"
+    except Exception as e:
+        logger.warning(f"WhatsApp media store failed: {e}")
+    # Tag the inbound message with the viewable URL + type so the chat view can render it.
+    if url:
+        await db.whatsapp_cloud_messages.update_one(
+            {"phone": digits, "media_id": media_id, "direction": "incoming"},
+            {"$set": {"media_url": url, "media_type": mt}})
+    # Also attach to the customer's latest ticket (ops).
     try:
         tkt = await db.tickets.find_one({"customer_phone": {"$regex": re.escape(digits) + "$"}}, sort=[("created_at", -1)])
-        if tkt:
-            ext = ".pdf" if "pdf" in mt else (".png" if "png" in mt else ".jpg")
-            rel, _st = await storage_upload(file_data=media["bytes"], folder="tickets",
-                                            original_filename=f"whatsapp{ext}", filename_prefix=tkt["id"])
-            url = f"/api/files/{rel}"
+        if tkt and url:
             await db.tickets.update_one({"id": tkt["id"]}, {"$push": {"attachments": {
-                "url": url, "type": mt, "source": "whatsapp_customer",
-                "uploaded_at": datetime.now(timezone.utc).isoformat()}}})
-            await add_ticket_history(tkt["id"], "Customer sent a photo on WhatsApp (attached)",
-                                     REPAIR_LOOP_AGENT, {"action_type": "customer_photo", "url": url})
+                "url": url, "type": mt, "source": "whatsapp_customer", "uploaded_at": now}}})
+            await add_ticket_history(tkt["id"], f"Customer sent a {mtype} on WhatsApp (attached)",
+                                     REPAIR_LOOP_AGENT, {"action_type": "customer_media", "url": url})
     except Exception as e:
-        logger.warning(f"could not attach WhatsApp photo to ticket: {e}")
-    await _wa_agent_respond(digits, contact_name, latest_image={"b64": b64, "mime": mt})
+        logger.warning(f"could not attach WhatsApp media to ticket: {e}")
+    # Vision for images/PDFs; for video/audio the agent can't view it — note it so it reacts sensibly.
+    if "image" in mt or "pdf" in mt:
+        b64 = base64.b64encode(media["bytes"]).decode()
+        await _wa_agent_respond(digits, contact_name, latest_image={"b64": b64, "mime": mt})
+    else:
+        await _wa_agent_respond(digits, contact_name, manager_note=(
+            f"The customer sent a {mtype} file, which you cannot open/watch. Acknowledge you received it; if you need "
+            f"to see the problem, politely ask them to send a clear PHOTO instead."))
 
 
 async def _pratibha_wa_autoreply(phone: str, text: str, contact_name: str = ""):
@@ -75480,7 +75508,7 @@ async def whatsapp_cloud_webhook(request: Request):
                 elif mtype == "interactive":
                     inter = m.get("interactive") or {}
                     text = ((inter.get("button_reply") or inter.get("list_reply") or {})).get("title")
-                elif mtype in ("image", "document"):
+                elif mtype in ("image", "document", "video", "audio", "voice", "sticker"):
                     media = m.get(mtype) or {}
                     media_id = media.get("id")
                     media_mime = media.get("mime_type")
@@ -75507,8 +75535,8 @@ async def whatsapp_cloud_webhook(request: Request):
                     import asyncio
                     if text and mtype in ("text", "button", "interactive"):
                         asyncio.create_task(_pratibha_wa_autoreply(digits, text, names.get(wa_from)))
-                    elif mtype in ("image", "document") and media_id:
-                        asyncio.create_task(_wa_handle_media(digits, names.get(wa_from), media_id, media_mime or "image/jpeg"))
+                    elif mtype in ("image", "document", "video", "audio", "voice", "sticker") and media_id:
+                        asyncio.create_task(_wa_handle_media(digits, names.get(wa_from), media_id, media_mime or "", mtype))
             for s in (val.get("statuses") or []):
                 await db.whatsapp_cloud_messages.update_one(
                     {"wamid": s.get("id")},

@@ -18,6 +18,7 @@ const brainLabel = (m) => {
 export default function AdminWhatsAppChats() {
   const { token } = useAuth();
   const headers = { Authorization: `Bearer ${token}` };
+  const fileBase = API.replace(/\/api\/?$/, ''); // media_url already starts with /api/files
   const [convos, setConvos] = useState([]);
   const [active, setActive] = useState(null);
   const [thread, setThread] = useState(null);
@@ -104,7 +105,19 @@ export default function AdminWhatsAppChats() {
                           {bl && <Badge variant="outline" className={`${bl.cls} text-[10px] px-1.5 py-0`}>{bl.name}</Badge>}
                           <span className="text-slate-500 text-[10px]">{fmt(m.received_at || m.ts)}</span>
                         </div>
-                        <div className="whitespace-pre-wrap">{m.text}</div>
+                        {m.media_url && (
+                          (m.media_type || '').startsWith('image')
+                            ? <img src={`${fileBase}${m.media_url}`} alt="attachment" className="rounded-lg max-h-64 mb-1 block" />
+                            : (m.media_type || '').startsWith('video')
+                              ? <video src={`${fileBase}${m.media_url}`} controls className="rounded-lg max-h-64 mb-1 block w-full" />
+                              : (m.media_type || '').startsWith('audio')
+                                ? <audio src={`${fileBase}${m.media_url}`} controls className="mb-1 block w-full" />
+                                : <a href={`${fileBase}${m.media_url}`} target="_blank" rel="noreferrer"
+                                     className="inline-flex items-center gap-1 text-amber-400 underline mb-1">📄 Open file</a>
+                        )}
+                        {m.text && !/^\[(image|video|document|audio|voice|sticker)\]$/i.test(m.text.trim()) && (
+                          <div className="whitespace-pre-wrap">{m.text}</div>
+                        )}
                       </div>
                     </div>
                   );
