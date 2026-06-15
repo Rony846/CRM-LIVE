@@ -75148,6 +75148,42 @@ async def scheduled_sales_lead_followups():
         await db.leads.update_one({"id": ld["id"]}, {"$set": {"sales_followup_at": now}, "$inc": {"sales_followup_count": 1}})
 
 
+_MANUAL_PDFS = {
+    "titan": ("uploads/claude_files/164_titan_series_user_manual.pdf", "MuscleGrid Titan Series Manual.pdf"),
+    "focus": ("uploads/claude_files/165_focus_series_user_manual.pdf", "MuscleGrid Focus Series Manual.pdf"),
+    "heavy_duty": ("uploads/claude_files/166_user_manual_for_heavy_duty_series_3_6kw-6_2KW.pdf",
+                   "MuscleGrid Heavy Duty Series Manual.pdf"),
+    "lithium": ("uploads/claude_files/167_MG_USER_MANUAL_LFP__2_.pdf", "MuscleGrid Lithium Battery Manual.pdf"),
+}
+
+
+async def _wa_tool_send_manual(digits: str, series: str) -> dict:
+    """Send the customer the PDF user manual for their product series over WhatsApp."""
+    s = (series or "").strip().lower()
+    info = _MANUAL_PDFS.get(s)
+    if not info:
+        return {"error": "No manual for that series. Known: titan, focus, heavy_duty, lithium. "
+                         "If unsure of the series, ask the customer for the invoice/model."}
+    path, fname = info
+    try:
+        with open(ROOT_DIR / path, "rb") as f:
+            data = f.read()
+    except Exception as e:
+        return {"error": f"manual file unavailable: {e}"}
+    res = await whatsapp_cloud.send_document(digits, data, fname, "application/pdf",
+                                             caption=fname.replace(".pdf", "") + " \U0001f4d8")
+    if not res.get("wamid"):
+        err = ((res.get("response") or {}).get("error") or {}).get("message") or res.get("error") or "send failed"
+        return {"error": f"Could not send the PDF: {err}"}
+    now = datetime.now(timezone.utc).isoformat()
+    await db.whatsapp_cloud_messages.insert_one({
+        "id": str(uuid.uuid4()), "direction": "outgoing", "phone": digits, "text": f"[sent user manual: {s}]",
+        "msg_type": "document", "wamid": res["wamid"], "ts": now, "received_at": now,
+        "source": "whatsapp_cloud", "kind": "manual"})
+    return {"success": True, "note": f"Sent the {s} user manual PDF. Tell the customer (Hinglish) the manual has been "
+                                     "sent on WhatsApp and offer to walk them through any step."}
+
+
 def _wa_support_executor(digits: str, name: str):
     async def ex(tool: str, inp: dict) -> dict:
         if tool == "get_customer_info":
@@ -75162,6 +75198,8 @@ def _wa_support_executor(digits: str, name: str):
             return await _wa_tool_notify_technician(digits, name, inp.get("message", ""))
         if tool == "handoff_to_sales":
             return await _wa_tool_handoff_to_sales(digits, name, inp)
+        if tool == "send_manual":
+            return await _wa_tool_send_manual(digits, inp.get("series", ""))
         return {"error": f"unknown tool {tool}"}
     return ex
 
@@ -75414,8 +75452,8 @@ async def _pratibha_wa_decision_reply(message):
     text = (getattr(message, "text", "") or "").strip().lower()
     if not text:
         return None
-    if "angad" in text:
-        choice = "angad"
+    if "angad" in text or "call" in text or "callback" in text:
+        choice = "angad"  # "call" = have the supervisor (Angad) call the customer
     elif "replace" in text or "replacement" in text:
         choice = "replace"
     elif "pcb" in text:

@@ -590,6 +590,9 @@ WHAT YOU CAN DO (tools — use your judgement on when)
 - notify_technician: WhatsApp the technician (Gaurav) in Hinglish.
 - handoff_to_sales: the customer wants to BUY/purchase, wants a price/quote, or wants to become a dealer — call this to log a \
 sales lead + alert the sales team, then tell them sales will contact them. You are SUPPORT, not sales — never quote prices or sell.
+- send_manual: send the customer the actual PDF user manual for their series. If they ask for the manual/guide, CALL THIS and \
+send the PDF directly — never tell them to download it from the website or that it's "in our records". If you don't know the \
+series, find it (get_customer_info / invoice photo) or ask, then send.
 
 PHOTOS (you can SEE)
 - You can SEE images the customer sends — wiring, damage, the unit, the serial sticker, or their INVOICE. Look carefully.
@@ -675,6 +678,13 @@ SUPPORT_TOOLS = [
          "city": {"type": "string", "description": "customer's city/location, if mentioned"},
          "summary": {"type": "string", "description": "one line in English: what the customer wants"}},
          "required": ["product_interest"]}},
+    {"name": "send_manual",
+     "description": ("Send the customer the actual PDF user manual for their product series, on WhatsApp. "
+                     "Use this whenever they ask for the manual/guide, or when the manual would help them fix it "
+                     "themselves. You CAN send the PDF directly — never tell them to download it from the website."),
+     "input_schema": {"type": "object", "properties": {
+         "series": {"type": "string", "enum": ["titan", "focus", "heavy_duty", "lithium"]}},
+         "required": ["series"]}},
 ]
 
 
