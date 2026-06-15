@@ -74946,6 +74946,31 @@ async def _wa_tool_ask_manager(digits: str, name: str, summary: str, question: s
             "note": "Tell the customer (Hinglish) you've checked with the team and will update them — do NOT promise an outcome."}
 
 
+PICKUP_SCHEDULED_TEMPLATE = os.environ.get("PICKUP_SCHEDULED_TEMPLATE", "pickup_scheduled").strip()
+REPAIR_DISPATCHED_TEMPLATE = os.environ.get("REPAIR_DISPATCHED_TEMPLATE", "repair_dispatched").strip()
+
+
+async def _wa_notify_or_template(digits: str, name: str, agent_note: str, template: str, params: list, kind: str):
+    """Tell a customer something: free-text via Kalpana if they're inside the 24h window, else fall back to
+    an approved template (works even days later). Records the template send. Used for pickup/ship-back updates."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    in_window = await db.whatsapp_cloud_messages.find_one(
+        {"phone": digits, "direction": "incoming", "received_at": {"$gte": cutoff}}, {"_id": 1})
+    if in_window:
+        await _wa_agent_respond(digits, name, manager_note=agent_note)
+        return
+    if not template:
+        return
+    comps = [{"type": "body", "parameters": [{"type": "text", "text": str(p)[:60]} for p in params]}]
+    res = await whatsapp_cloud.send_template(digits, template=template, components=comps)
+    if res.get("wamid"):
+        now = datetime.now(timezone.utc).isoformat()
+        await db.whatsapp_cloud_messages.insert_one({
+            "id": str(uuid.uuid4()), "direction": "outgoing", "phone": digits,
+            "text": f"[{kind} template: {template}]", "msg_type": "template", "wamid": res["wamid"],
+            "ts": now, "received_at": now, "source": "whatsapp_cloud", "kind": kind})
+
+
 async def _wa_tool_arrange_pickup(digits: str, name: str, inp: dict) -> dict:
     """Action tool: book the reverse pickup (→ 213 Vishwakarma). Guarded: needs a manager-approved repair."""
     dec = await db.repair_decisions.find_one(
@@ -75702,12 +75727,17 @@ async def _pratibha_wa_shipback_reply(message):
             "return_cod_amount": cod_amount, "updated_at": now}})
     cust_phone = sb.get("customer_phone")
     if cust_phone:
+        prod = sb.get("product") or "unit"
         pay_note = (f"It is COD — the customer must pay ₹{cod_amount:,.0f} to the courier on delivery."
                     if pay == "COD" else "It is prepaid — no charge to the customer.")
-        await _wa_agent_respond(cust_phone, sb.get("customer_name") or "", manager_note=(
-            f"The repaired {sb.get('product') or 'unit'} has been SHIPPED BACK to the customer via Bigship, "
-            f"tracking/AWB {awb}. {pay_note} Give the customer a warm, professional Hinglish update: their repaired "
-            f"unit is on the way, share the AWB {awb}" + (f", and mention the ₹{cod_amount:,.0f} COD to pay on delivery." if pay == "COD" else ".")))
+        # Ship-back happens days after pickup → the customer is usually OUTSIDE the 24h window, so this
+        # falls back to the repair_dispatched template (free-text via Kalpana only if they're in-window).
+        await _wa_notify_or_template(
+            cust_phone, sb.get("customer_name") or "",
+            agent_note=(f"The repaired {prod} has been SHIPPED BACK to the customer via Bigship, tracking/AWB {awb}. "
+                        f"{pay_note} Give a warm Hinglish update: repaired unit is on the way, share AWB {awb}"
+                        + (f", and ₹{cod_amount:,.0f} COD on delivery." if pay == "COD" else ".")),
+            template=REPAIR_DISPATCHED_TEMPLATE, params=[prod, awb], kind="repair_dispatched")
     return f"\U0001f44d Ship-back booked: {pay}{(' ₹' + format(cod_amount, ',.0f')) if pay == 'COD' else ''}, AWB {awb}."
 
 
