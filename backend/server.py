@@ -72945,7 +72945,8 @@ async def omnidim_post_call(request: Request):
 async def admin_omnidim_calls(limit: int = 100, skip: int = 0, phone: str = "", needs_help: bool = False,
                               current_user: dict = Depends(get_current_user)):
     """Admin call log of Omnidim voice-agent calls (newest first). List view omits raw payload + transcript."""
-    require_roles(current_user, ["admin"])
+    if current_user.get("role") not in ("admin",):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
     q = {}
     if phone:
         p = re.sub(r"\D", "", phone)[-10:]
@@ -72965,7 +72966,8 @@ async def admin_omnidim_calls(limit: int = 100, skip: int = 0, phone: str = "", 
 @api_router.get("/admin/omnidim-calls/{call_id}")
 async def admin_omnidim_call_detail(call_id: str, current_user: dict = Depends(get_current_user)):
     """Full detail for one call including the transcript (raw payload excluded)."""
-    require_roles(current_user, ["admin"])
+    if current_user.get("role") not in ("admin",):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
     d = await db.omnidim_calls.find_one({"id": call_id}, {"_id": 0, "raw": 0})
     if not d:
         raise HTTPException(status_code=404, detail="Call not found")
@@ -72976,7 +72978,8 @@ async def admin_omnidim_call_detail(call_id: str, current_user: dict = Depends(g
 async def admin_whatsapp_chats(limit: int = 200, current_user: dict = Depends(get_current_user)):
     """Customer WhatsApp conversations (the Cloud-API threads where Pratibha/Kalpana talk to customers),
     grouped by phone with the latest message — newest conversation first."""
-    require_roles(current_user, ["admin", "call_support"])
+    if current_user.get("role") not in ("admin", "call_support"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
     rows = await db.whatsapp_cloud_messages.aggregate([
         {"$addFields": {"_when": {"$ifNull": ["$received_at", "$ts"]}}},
         {"$sort": {"_when": 1}},
@@ -72998,7 +73001,8 @@ async def admin_whatsapp_chats(limit: int = 200, current_user: dict = Depends(ge
 @api_router.get("/admin/whatsapp-chats/{phone}")
 async def admin_whatsapp_chat_thread(phone: str, current_user: dict = Depends(get_current_user)):
     """Full bot↔customer WhatsApp thread for one phone (oldest→newest), with which brain answered each turn."""
-    require_roles(current_user, ["admin", "call_support"])
+    if current_user.get("role") not in ("admin", "call_support"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
     digits = re.sub(r"\D", "", phone)[-10:]
     msgs = await db.whatsapp_cloud_messages.find(
         {"phone": digits}, {"_id": 0, "direction": 1, "text": 1, "received_at": 1, "ts": 1,
@@ -75356,7 +75360,8 @@ async def _pratibha_wa_omnidim_reply(message):
 @api_router.get("/admin/omnidim-outreach")
 async def admin_omnidim_outreach_list(status: str = "pending_review", current_user: dict = Depends(get_current_user)):
     """Review the Omnidim proactive-outreach queue (pending by default)."""
-    require_roles(current_user, ["admin"])
+    if current_user.get("role") not in ("admin",):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
     docs = await db.omnidim_outreach.find({"status": status}, {"_id": 0}).sort("created_at", -1).limit(500).to_list(500)
     counts = {d["_id"]: d["n"] async for d in db.omnidim_outreach.aggregate(
         [{"$group": {"_id": "$status", "n": {"$sum": 1}}}])}
@@ -75366,7 +75371,8 @@ async def admin_omnidim_outreach_list(status: str = "pending_review", current_us
 @api_router.post("/admin/omnidim-outreach/send")
 async def admin_omnidim_outreach_send(payload: dict = Body(default={}), current_user: dict = Depends(get_current_user)):
     """Approve + send the pending Omnidim outreach batch (founder review action)."""
-    require_roles(current_user, ["admin"])
+    if current_user.get("role") not in ("admin",):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
     r = await _omnidim_send_pending(limit=int(payload.get("limit", 200)))
     return {"ok": True, "result": r}
 
