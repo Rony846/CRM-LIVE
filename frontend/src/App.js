@@ -133,6 +133,7 @@ import AdminIncentives from './pages/incentives/AdminIncentives';
 // Payroll & Attendance Pages
 import AdminPayroll from './pages/admin/AdminPayroll';
 import AdminOmnidimCalls from './pages/admin/AdminOmnidimCalls';
+import AdminWhatsAppChats from './pages/admin/AdminWhatsAppChats';
 import AdminAttendance from './pages/admin/AdminAttendance';
 import MyAttendance from './pages/employee/MyAttendance';
 
@@ -717,6 +718,11 @@ function App() {
           <Route path="/admin/omnidim-calls" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <AdminOmnidimCalls />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/whatsapp-chats" element={
+            <ProtectedRoute allowedRoles={['admin', 'call_support']}>
+              <AdminWhatsAppChats />
             </ProtectedRoute>
           } />
           <Route path="/admin/zoho-tickets" element={

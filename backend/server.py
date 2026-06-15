@@ -72972,6 +72972,42 @@ async def admin_omnidim_call_detail(call_id: str, current_user: dict = Depends(g
     return d
 
 
+@api_router.get("/admin/whatsapp-chats")
+async def admin_whatsapp_chats(limit: int = 200, current_user: dict = Depends(get_current_user)):
+    """Customer WhatsApp conversations (the Cloud-API threads where Pratibha/Kalpana talk to customers),
+    grouped by phone with the latest message — newest conversation first."""
+    require_roles(current_user, ["admin", "call_support"])
+    rows = await db.whatsapp_cloud_messages.aggregate([
+        {"$addFields": {"_when": {"$ifNull": ["$received_at", "$ts"]}}},
+        {"$sort": {"_when": 1}},
+        {"$group": {"_id": "$phone", "messages": {"$sum": 1}, "last_text": {"$last": "$text"},
+                    "last_at": {"$last": "$_when"}, "last_dir": {"$last": "$direction"}}},
+        {"$sort": {"last_at": -1}}, {"$limit": max(1, min(limit, 500))},
+    ]).to_list(500)
+    out = []
+    for r in rows:
+        ph = r["_id"]
+        lead = await db.leads.find_one({"phone": {"$regex": re.escape(ph or "") + "$"}},
+                                       {"_id": 0, "name": 1, "customer_name": 1})
+        out.append({"phone": ph, "name": (lead or {}).get("name") or (lead or {}).get("customer_name") or "",
+                    "messages": r["messages"], "last_text": r.get("last_text"),
+                    "last_at": r.get("last_at"), "last_dir": r.get("last_dir")})
+    return {"count": len(out), "conversations": out}
+
+
+@api_router.get("/admin/whatsapp-chats/{phone}")
+async def admin_whatsapp_chat_thread(phone: str, current_user: dict = Depends(get_current_user)):
+    """Full bot↔customer WhatsApp thread for one phone (oldest→newest), with which brain answered each turn."""
+    require_roles(current_user, ["admin", "call_support"])
+    digits = re.sub(r"\D", "", phone)[-10:]
+    msgs = await db.whatsapp_cloud_messages.find(
+        {"phone": digits}, {"_id": 0, "direction": 1, "text": 1, "received_at": 1, "ts": 1,
+                            "kind": 1, "brain": 1, "tier": 1, "msg_type": 1}).sort("received_at", 1).to_list(800)
+    lead = await db.leads.find_one({"phone": {"$regex": re.escape(digits) + "$"}},
+                                   {"_id": 0, "name": 1, "customer_name": 1})
+    return {"phone": digits, "name": (lead or {}).get("name") or (lead or {}).get("customer_name") or "", "messages": msgs}
+
+
 @api_router.get("/leads")
 async def get_leads(
     status: Optional[str] = None,

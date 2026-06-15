@@ -118,6 +118,7 @@ const adminNavGroups = [
       { label: 'All Tickets', icon: Ticket, path: '/admin/tickets' },
       { label: 'Call Center', icon: Phone, path: '/calls' },
       { label: 'Omnidim Calls', icon: Phone, path: '/admin/omnidim-calls' },
+      { label: 'Customer WhatsApp', icon: MessageSquare, path: '/admin/whatsapp-chats' },
       { label: 'Sales Leads', icon: Users, path: '/leads' },
       { label: 'Repairs', icon: Wrench, path: '/admin/repairs' },
       { label: 'Customers', icon: Users, path: '/admin/customers' },
