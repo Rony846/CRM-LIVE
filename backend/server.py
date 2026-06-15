@@ -1088,6 +1088,17 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # SLA recovery: queue proactive follow-ups for open, SLA-breached tickets (founder reviews → "send sla").
+        scheduler.add_job(
+            scheduled_sla_outreach_scan,
+            IntervalTrigger(hours=int(os.environ.get("SLA_OUTREACH_SCAN_HOURS", "6"))),
+            id="sla_outreach_scan",
+            name="SLA recovery → proactive WhatsApp follow-up (queued for review)",
+            replace_existing=True,
+            misfire_grace_time=600,
+            max_instances=1,
+        )
+
         scheduler.start()
         logger.info(
             f"Scheduled jobs started: SLA breach (30min), Payment verification (1hr), "
@@ -75861,6 +75872,161 @@ async def admin_omnidim_outreach_send(payload: dict = Body(default={}), current_
     return {"ok": True, "result": r}
 
 
+# ===================== SLA recovery → proactive WhatsApp follow-up =====================
+# Any open ticket that has breached its SLA → reach out to the customer to recover/resolve it.
+# Held for founder review (reply "send sla"). On send we open the chat (template outside the 24h
+# window, else a free-form Kalpana opener); when the customer replies, the normal Kalpana auto-reply
+# takes over — and get_customer_info already surfaces their ticket/issue/series/invoice context.
+SLA_OUTREACH_ENABLED = os.environ.get("SLA_OUTREACH_ENABLED", "true").lower() == "true"
+SLA_OUTREACH_TEMPLATE = os.environ.get("SLA_OUTREACH_TEMPLATE", "").strip()  # approved Meta template, e.g. service_followup
+SLA_OUTREACH_MAX_PER_SCAN = int(os.environ.get("SLA_OUTREACH_MAX_PER_SCAN", "40"))
+SLA_OUTREACH_COOLDOWN_DAYS = int(os.environ.get("SLA_OUTREACH_COOLDOWN_DAYS", "7"))
+SLA_CLOSED_STATUSES = {"closed", "resolved", "resolved_on_call", "closed_by_agent", "repair_completed",
+                       "cancelled", "delivered", "completed"}
+
+
+async def scheduled_sla_outreach_scan():
+    """Queue proactive recovery follow-ups for OPEN, SLA-breached tickets. Held for founder review;
+    nothing is sent to a customer here."""
+    if not SLA_OUTREACH_ENABLED:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    q = {"status": {"$nin": list(SLA_CLOSED_STATUSES)}, "customer_phone": {"$nin": [None, ""]},
+         "$or": [{"sla_breached": True}, {"sla_due": {"$lt": now, "$ne": None}}]}
+    tickets = await db.tickets.find(q, {"_id": 0, "ticket_number": 1, "customer_phone": 1, "customer_name": 1,
+                                        "product_name": 1, "issue_description": 1, "status": 1,
+                                        "assigned_to_name": 1, "sla_due": 1}).sort("sla_due", 1).limit(300).to_list(300)
+    cooldown = (datetime.now(timezone.utc) - timedelta(days=SLA_OUTREACH_COOLDOWN_DAYS)).isoformat()
+    new = 0
+    for t in tickets:
+        digits = re.sub(r"\D", "", str(t.get("customer_phone") or ""))[-10:]
+        if len(digits) != 10 or (t.get("issue_description") or "").strip().lower() == "test":
+            continue
+        if await _is_internal_number(digits):
+            continue
+        if await db.whatsapp_optouts.find_one({"phone": digits}, {"_id": 1}):
+            continue
+        if await db.sla_outreach.find_one({"ticket_number": t.get("ticket_number")}, {"_id": 1}):
+            continue
+        if await db.sla_outreach.find_one({"customer_phone": digits, "status": "sent", "sent_at": {"$gte": cooldown}}, {"_id": 1}):
+            continue
+        await db.sla_outreach.insert_one({
+            "id": str(uuid.uuid4()), "ticket_number": t.get("ticket_number"), "customer_phone": digits,
+            "customer_name": t.get("customer_name") or "", "product": t.get("product_name"),
+            "issue": (t.get("issue_description") or "")[:300], "status_at_scan": t.get("status"),
+            "assigned_to_name": t.get("assigned_to_name"), "status": "pending_review", "created_at": now})
+        new += 1
+        if new >= SLA_OUTREACH_MAX_PER_SCAN:
+            break
+    pending = await db.sla_outreach.count_documents({"status": "pending_review"})
+    if new and pending:
+        await _wa_send_to_manager(
+            f"⏰ *SLA recovery* — {pending} customer(s) with a breached/overdue service ticket need follow-up. "
+            f"Reply *review sla* to see them, or *send sla* to message them (Kalpana resolves on their reply).",
+            fallback_desc=f"{pending} SLA-breached tickets pending proactive WhatsApp recovery.")
+
+
+async def _sla_send_one(doc: dict) -> str:
+    digits = doc["customer_phone"]
+    name = doc.get("customer_name") or ""
+    first = name.split()[0] if name else ""
+    tkt = doc.get("ticket_number") or ""
+    now = datetime.now(timezone.utc).isoformat()
+    if await db.whatsapp_optouts.find_one({"phone": digits}, {"_id": 1}):
+        await db.sla_outreach.update_one({"id": doc["id"]}, {"$set": {"status": "skipped", "skip_reason": "opted_out"}})
+        return "skipped"
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    in_window = await db.whatsapp_cloud_messages.find_one(
+        {"phone": digits, "direction": "incoming", "received_at": {"$gte": cutoff}}, {"_id": 1})
+    if in_window:
+        opener = (f"Namaste{(' ' + first) if first else ' ji'} \U0001f64f Main Kalpana, MuscleGrid support se. Aapka service "
+                  f"issue{(' (ticket ' + tkt + ')') if tkt else ''} abhi tak resolve nahi hua — iske liye sorry. Abhi free "
+                  f"hain? Yahin reply kijiye, main turant help kar deti hoon.")
+        res = await whatsapp_cloud.send_text(digits, opener)
+        ok = bool(res.get("wamid"))
+        if res.get("wamid"):
+            await db.whatsapp_cloud_messages.insert_one({
+                "id": str(uuid.uuid4()), "direction": "outgoing", "phone": digits, "text": opener, "msg_type": "text",
+                "wamid": res["wamid"], "ts": now, "received_at": now, "source": "whatsapp_cloud", "kind": "sla_outreach"})
+        channel = "freeform"
+    else:
+        if not SLA_OUTREACH_TEMPLATE:
+            await db.sla_outreach.update_one({"id": doc["id"]}, {"$set": {"status": "blocked_no_template"}})
+            return "blocked_no_template"
+        comps = [{"type": "body", "parameters": [{"type": "text", "text": first or "ji"},
+                                                 {"type": "text", "text": (tkt or "your ticket")[:40]}]}]
+        res = await whatsapp_cloud.send_template(digits, template=SLA_OUTREACH_TEMPLATE, components=comps)
+        ok = bool(res.get("ok"))
+        if res.get("wamid"):
+            await db.whatsapp_cloud_messages.insert_one({
+                "id": str(uuid.uuid4()), "direction": "outgoing", "phone": digits,
+                "text": f"[SLA follow-up template: {SLA_OUTREACH_TEMPLATE}]", "msg_type": "template",
+                "wamid": res["wamid"], "ts": now, "received_at": now, "source": "whatsapp_cloud", "kind": "sla_outreach"})
+        channel = "template"
+    st = "sent" if ok else "send_failed"
+    await db.sla_outreach.update_one({"id": doc["id"]}, {"$set": {"status": st, "channel": channel, "sent_at": now}})
+    return st
+
+
+async def _sla_send_pending(limit: int = 100) -> dict:
+    docs = await db.sla_outreach.find({"status": "pending_review"}).sort("created_at", 1).limit(limit).to_list(limit)
+    tally = {"sent": 0, "blocked": 0, "failed": 0, "skipped": 0, "total": len(docs)}
+    for d in docs:
+        try:
+            st = await _sla_send_one(d)
+        except Exception as e:
+            logger.warning(f"SLA outreach send failed for {d.get('customer_phone')}: {e}")
+            st = "send_failed"
+        tally["sent" if st == "sent" else "blocked" if st == "blocked_no_template"
+              else "skipped" if st == "skipped" else "failed"] += 1
+        await asyncio.sleep(1)
+    return tally
+
+
+async def _pratibha_wa_sla_reply(message):
+    """Founder WhatsApp control for SLA recovery: 'review sla' / 'send sla'."""
+    if not _wa_reply_allowed(getattr(message, "from_number", "")):
+        return None
+    low = (getattr(message, "text", "") or "").strip().lower()
+    if "sla" not in low:
+        return None
+    if "review" in low or "list" in low:
+        docs = await db.sla_outreach.find({"status": "pending_review"}).sort("created_at", 1).limit(20).to_list(20)
+        total = await db.sla_outreach.count_documents({"status": "pending_review"})
+        if not docs:
+            return "Koi pending SLA follow-up nahi hai abhi. \U0001f44d"
+        lines = [f"{i+1}. {(d.get('customer_name') or d['customer_phone'])} ({d['customer_phone']}) — "
+                 f"{d.get('ticket_number')} — {d.get('status_at_scan')}" + (f" — {d.get('product')}" if d.get('product') else "")
+                 for i, d in enumerate(docs)]
+        more = f"\n…+{total - len(docs)} more" if total > len(docs) else ""
+        return f"⏰ *SLA recovery ({total})*\n" + "\n".join(lines) + more + "\n\nReply *send sla* to message them."
+    if any(w in low for w in ("send", "approve", "bhej", "yes", "haan")):
+        r = await _sla_send_pending()
+        blk = f", {r['blocked']} blocked (template not set)" if r.get("blocked") else ""
+        return (f"✅ SLA recovery: {r['sent']} texted, {r['failed']} failed{blk}. "
+                f"Jaise hi customer reply karega, Kalpana resolve karna shuru kar degi.")
+    return None
+
+
+@api_router.get("/admin/sla-outreach")
+async def admin_sla_outreach_list(status: str = "pending_review", current_user: dict = Depends(get_current_user)):
+    """Review the SLA-recovery outreach queue."""
+    if current_user.get("role") not in ("admin", "call_support"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    docs = await db.sla_outreach.find({"status": status}, {"_id": 0}).sort("created_at", -1).limit(500).to_list(500)
+    counts = {d["_id"]: d["n"] async for d in db.sla_outreach.aggregate([{"$group": {"_id": "$status", "n": {"$sum": 1}}}])}
+    return {"status": status, "count": len(docs), "by_status": counts, "items": docs}
+
+
+@api_router.post("/admin/sla-outreach/send")
+async def admin_sla_outreach_send(payload: dict = Body(default={}), current_user: dict = Depends(get_current_user)):
+    """Approve + send the pending SLA-recovery batch."""
+    if current_user.get("role") not in ("admin",):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    r = await _sla_send_pending(limit=int(payload.get("limit", 200)))
+    return {"ok": True, "result": r}
+
+
 @api_router.get("/whatsapp/cloud/webhook")
 async def whatsapp_cloud_verify(request: Request):
     """Meta webhook verification (GET): echo hub.challenge when the verify token matches."""
@@ -77631,6 +77797,16 @@ async def whatsapp_message_webhook(data: dict, request: Request):
         if wa_omni is not None:
             await _wa_remember_turn(conv_key, message.text, wa_omni)
             return {"reply": wa_omni}
+
+        # Founder control for SLA recovery ("review sla" / "send sla").
+        try:
+            wa_sla = await _pratibha_wa_sla_reply(message)
+        except Exception as e:
+            logger.error(f"WA sla-outreach handling failed: {e}")
+            wa_sla = None
+        if wa_sla is not None:
+            await _wa_remember_turn(conv_key, message.text, wa_sla)
+            return {"reply": wa_sla}
 
         # Technician (Gaurav) replying about an open repair job — interpret + update the customer.
         try:
