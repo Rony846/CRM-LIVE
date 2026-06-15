@@ -1099,6 +1099,20 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Proactive reminder flows (dark until enabled + template approved).
+        scheduler.add_job(
+            scheduled_feedback_requests, IntervalTrigger(hours=int(os.environ.get("FEEDBACK_SCAN_HOURS", "6"))),
+            id="feedback_requests", name="Post-resolution feedback request",
+            replace_existing=True, misfire_grace_time=600, max_instances=1)
+        scheduler.add_job(
+            scheduled_warranty_reminders, IntervalTrigger(hours=int(os.environ.get("WARRANTY_SCAN_HOURS", "12"))),
+            id="warranty_reminders", name="Warranty-expiry reminder",
+            replace_existing=True, misfire_grace_time=600, max_instances=1)
+        scheduler.add_job(
+            scheduled_amc_visit_reminders, IntervalTrigger(hours=int(os.environ.get("AMC_SCAN_HOURS", "6"))),
+            id="amc_visit_reminders", name="AMC service-visit reminder",
+            replace_existing=True, misfire_grace_time=600, max_instances=1)
+
         scheduler.start()
         logger.info(
             f"Scheduled jobs started: SLA breach (30min), Payment verification (1hr), "
@@ -74950,17 +74964,17 @@ PICKUP_SCHEDULED_TEMPLATE = os.environ.get("PICKUP_SCHEDULED_TEMPLATE", "pickup_
 REPAIR_DISPATCHED_TEMPLATE = os.environ.get("REPAIR_DISPATCHED_TEMPLATE", "repair_dispatched").strip()
 
 
-async def _wa_notify_or_template(digits: str, name: str, agent_note: str, template: str, params: list, kind: str):
+async def _wa_notify_or_template(digits: str, name: str, agent_note: str, template: str, params: list, kind: str) -> bool:
     """Tell a customer something: free-text via Kalpana if they're inside the 24h window, else fall back to
-    an approved template (works even days later). Records the template send. Used for pickup/ship-back updates."""
+    an approved template (works even days later). Records the template send. Returns True if it went out."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
     in_window = await db.whatsapp_cloud_messages.find_one(
         {"phone": digits, "direction": "incoming", "received_at": {"$gte": cutoff}}, {"_id": 1})
     if in_window:
         await _wa_agent_respond(digits, name, manager_note=agent_note)
-        return
+        return True
     if not template:
-        return
+        return False
     comps = [{"type": "body", "parameters": [{"type": "text", "text": str(p)[:60]} for p in params]}]
     res = await whatsapp_cloud.send_template(digits, template=template, components=comps)
     if res.get("wamid"):
@@ -74969,6 +74983,8 @@ async def _wa_notify_or_template(digits: str, name: str, agent_note: str, templa
             "id": str(uuid.uuid4()), "direction": "outgoing", "phone": digits,
             "text": f"[{kind} template: {template}]", "msg_type": "template", "wamid": res["wamid"],
             "ts": now, "received_at": now, "source": "whatsapp_cloud", "kind": kind})
+        return True
+    return False
 
 
 async def _wa_tool_arrange_pickup(digits: str, name: str, inp: dict) -> dict:
@@ -76053,6 +76069,110 @@ async def admin_sla_outreach_send(payload: dict = Body(default={}), current_user
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     r = await _sla_send_pending(limit=int(payload.get("limit", 200)))
     return {"ok": True, "result": r}
+
+
+# ---- Proactive reminder flows (feedback / warranty / AMC). Each ships DARK (enable flag default off);
+# turn on once its template is approved. All skip internal/opt-out, dedup per record, cap per scan. ----
+FEEDBACK_REQUEST_ENABLED = os.environ.get("FEEDBACK_REQUEST_ENABLED", "false").lower() == "true"
+FEEDBACK_REQUEST_TEMPLATE = os.environ.get("FEEDBACK_REQUEST_TEMPLATE", "feedback_request").strip()
+FEEDBACK_LOOKBACK_HOURS = int(os.environ.get("FEEDBACK_LOOKBACK_HOURS", "48"))
+WARRANTY_REMINDER_ENABLED = os.environ.get("WARRANTY_REMINDER_ENABLED", "false").lower() == "true"
+WARRANTY_REMINDER_TEMPLATE = os.environ.get("WARRANTY_REMINDER_TEMPLATE", "warranty_reminder").strip()
+WARRANTY_REMINDER_DAYS = int(os.environ.get("WARRANTY_REMINDER_DAYS", "15"))
+AMC_REMINDER_ENABLED = os.environ.get("AMC_REMINDER_ENABLED", "false").lower() == "true"
+AMC_REMINDER_TEMPLATE = os.environ.get("AMC_REMINDER_TEMPLATE", "amc_visit_reminder").strip()
+AMC_REMINDER_DAYS = int(os.environ.get("AMC_REMINDER_DAYS", "1"))
+_RESOLVED_TICKET_STATUSES = ("resolved", "resolved_on_call", "repair_completed", "closed", "closed_by_agent")
+
+
+async def scheduled_feedback_requests():
+    """After a ticket is resolved, ask the customer how the service was (CSAT). One per ticket."""
+    if not FEEDBACK_REQUEST_ENABLED:
+        return
+    cut = (datetime.now(timezone.utc) - timedelta(hours=FEEDBACK_LOOKBACK_HOURS)).isoformat()
+    q = {"status": {"$in": list(_RESOLVED_TICKET_STATUSES)}, "updated_at": {"$gte": cut},
+         "feedback_requested_at": {"$exists": False}, "customer_phone": {"$nin": [None, ""]}}
+    sent = 0
+    for t in await db.tickets.find(q, {"_id": 0, "id": 1, "customer_phone": 1, "customer_name": 1}).limit(40).to_list(40):
+        digits = re.sub(r"\D", "", str(t.get("customer_phone") or ""))[-10:]
+        now = datetime.now(timezone.utc).isoformat()
+        if len(digits) != 10 or await _is_internal_number(digits) or await db.whatsapp_optouts.find_one({"phone": digits}, {"_id": 1}):
+            await db.tickets.update_one({"id": t["id"]}, {"$set": {"feedback_requested_at": "skipped"}})
+            continue
+        first = (t.get("customer_name") or "").split()[0] if t.get("customer_name") else ""
+        ok = await _wa_notify_or_template(
+            digits, t.get("customer_name") or "",
+            agent_note="The customer's issue was just resolved. Send ONE short, warm Hinglish line asking how the service "
+                       "was / if everything is working now. Friendly, no sign-off.",
+            template=FEEDBACK_REQUEST_TEMPLATE, params=[first or "ji"], kind="feedback_request")
+        await db.tickets.update_one({"id": t["id"]}, {"$set": {"feedback_requested_at": now}})
+        sent += 1 if ok else 0
+        await asyncio.sleep(1)
+    if sent:
+        logger.info(f"Feedback requests sent: {sent}")
+
+
+async def scheduled_warranty_reminders():
+    """Remind customers whose warranty expires within WARRANTY_REMINDER_DAYS. One per warranty."""
+    if not WARRANTY_REMINDER_ENABLED:
+        return
+    today = datetime.now(timezone.utc).date()
+    horizon = (today + timedelta(days=WARRANTY_REMINDER_DAYS)).isoformat()
+    q = {"warranty_end_date": {"$gte": today.isoformat(), "$lte": horizon}, "phone": {"$nin": [None, ""]},
+         "warranty_reminder_at": {"$exists": False}, "status": {"$ne": "cancelled"}}
+    sent = 0
+    for w in await db.warranties.find(q, {"_id": 0, "id": 1, "phone": 1, "product_name": 1, "device_type": 1,
+                                          "warranty_end_date": 1, "first_name": 1}).limit(40).to_list(40):
+        digits = re.sub(r"\D", "", str(w.get("phone") or ""))[-10:]
+        now = datetime.now(timezone.utc).isoformat()
+        if len(digits) != 10 or await _is_internal_number(digits) or await db.whatsapp_optouts.find_one({"phone": digits}, {"_id": 1}):
+            await db.warranties.update_one({"id": w["id"]}, {"$set": {"warranty_reminder_at": "skipped"}})
+            continue
+        try:
+            days = (datetime.fromisoformat(w["warranty_end_date"]).date() - today).days
+        except (ValueError, TypeError):
+            days = WARRANTY_REMINDER_DAYS
+        prod = w.get("product_name") or w.get("device_type") or "product"
+        ok = await _wa_notify_or_template(
+            digits, w.get("first_name") or "",
+            agent_note=f"This customer's warranty on their {prod} expires in {days} days. Send a short friendly Hinglish "
+                       f"reminder and offer help/renewal.",
+            template=WARRANTY_REMINDER_TEMPLATE, params=[prod, f"{days} din"], kind="warranty_reminder")
+        await db.warranties.update_one({"id": w["id"]}, {"$set": {"warranty_reminder_at": now}})
+        sent += 1 if ok else 0
+        await asyncio.sleep(1)
+    if sent:
+        logger.info(f"Warranty reminders sent: {sent}")
+
+
+async def scheduled_amc_visit_reminders():
+    """Remind customers of an upcoming AMC/service visit (within AMC_REMINDER_DAYS). One per appointment."""
+    if not AMC_REMINDER_ENABLED:
+        return
+    today = datetime.now(timezone.utc).date()
+    upper = (today + timedelta(days=AMC_REMINDER_DAYS)).isoformat()
+    q = {"date": {"$gte": today.isoformat(), "$lte": upper}, "customer_phone": {"$nin": [None, ""]},
+         "reminder_sent_at": {"$exists": False}, "status": {"$nin": ["completed", "cancelled"]}}
+    sent = 0
+    for a in await db.appointments.find(q, {"_id": 0, "id": 1, "customer_phone": 1, "customer_name": 1,
+                                            "date": 1, "time_slot": 1}).limit(40).to_list(40):
+        digits = re.sub(r"\D", "", str(a.get("customer_phone") or ""))[-10:]
+        now = datetime.now(timezone.utc).isoformat()
+        if len(digits) != 10 or await _is_internal_number(digits) or await db.whatsapp_optouts.find_one({"phone": digits}, {"_id": 1}):
+            await db.appointments.update_one({"id": a["id"]}, {"$set": {"reminder_sent_at": "skipped"}})
+            continue
+        first = (a.get("customer_name") or "").split()[0] if a.get("customer_name") else ""
+        when = (a.get("date") or "") + (f" {a.get('time_slot')}" if a.get("time_slot") else "")
+        ok = await _wa_notify_or_template(
+            digits, a.get("customer_name") or "",
+            agent_note=f"Remind the customer (friendly Hinglish) that their AMC service visit is on {when}; ask them to "
+                       f"confirm or reschedule.",
+            template=AMC_REMINDER_TEMPLATE, params=[first or "ji", when], kind="amc_visit_reminder")
+        await db.appointments.update_one({"id": a["id"]}, {"$set": {"reminder_sent_at": now}})
+        sent += 1 if ok else 0
+        await asyncio.sleep(1)
+    if sent:
+        logger.info(f"AMC visit reminders sent: {sent}")
 
 
 @api_router.get("/whatsapp/cloud/webhook")
