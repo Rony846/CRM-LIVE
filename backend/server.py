@@ -799,6 +799,18 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Repair arrival → Gaurav: when a reverse-pickup is delivered to the Meerut service centre,
+        # auto-notify the technician to start the repair (closes the manual arrival-trigger gap).
+        scheduler.add_job(
+            scheduled_repair_arrival_check,
+            IntervalTrigger(minutes=int(os.environ.get("REPAIR_ARRIVAL_INTERVAL_MIN", "30"))),
+            id="repair_arrival_check",
+            name="Repair pickup arrival → notify technician",
+            replace_existing=True,
+            misfire_grace_time=300,
+            max_instances=1,
+        )
+
         # Pratibha follow-up reminders — every 30 min, check open sent-email threads and
         # nudge internal recipients past the cadence, escalating to the founder after the cap.
         scheduler.add_job(
@@ -62906,6 +62918,59 @@ async def scheduled_bigship_tracking():
     if polled:
         logger.info(f"Bigship tracking: polled={polled} updated={updated} terminal={terminal} "
                     f"failed={failed} of {len(docs)} active")
+
+
+REPAIR_ARRIVAL_ENABLED = os.environ.get("REPAIR_ARRIVAL_ENABLED", "true").lower() == "true"
+
+
+async def scheduled_repair_arrival_check():
+    """Close the arrival→Gaurav gap autonomously: when a reverse-pickup is DELIVERED to the Meerut
+    service centre, the repaired-for unit has arrived → open the repair job, WhatsApp the technician,
+    and tell the customer it reached us. Polls each booked pickup's Bigship AWB; fires once (then the
+    pickup is marked 'arrived'). Booted off the same Bigship tracking switch + pacing."""
+    if not (REPAIR_ARRIVAL_ENABLED and BIGSHIP_TRACKING_ENABLED and BIGSHIP_USER_ID):
+        return
+    pickups = await db.repair_pickups.find(
+        {"status": "booked", "awb": {"$nin": [None, ""]}}).sort("created_at", 1).to_list(40)
+    for p in pickups:
+        awb = str(p.get("awb") or "")
+        digits = p.get("customer_phone")
+        if not digits or awb.upper().startswith(("SIM-", "SBSIM-")):  # test/sim AWBs aren't trackable
+            continue
+        # already in repair (or repaired)? don't re-notify — just retire the pickup from the check.
+        if await db.repair_jobs.find_one(
+                {"customer_phone": digits, "status": {"$in": ["awaiting_estimate", "in_repair", "repaired"]}}, {"_id": 1}):
+            await db.repair_pickups.update_one({"id": p["id"]}, {"$set": {"status": "arrived"}})
+            continue
+        try:
+            data = await _bigship_track_one(awb)
+        except RuntimeError:
+            logger.warning("repair arrival check: Bigship 429 — backing off until next interval")
+            break
+        except Exception:
+            data = None
+        if data is None:
+            await asyncio.sleep(BIGSHIP_POLL_DELAY)
+            continue
+        st = _bigship_status_str(data)
+        now = datetime.now(timezone.utc).isoformat()
+        await db.repair_pickups.update_one({"id": p["id"]}, {"$set": {"pickup_status": st, "last_tracked": now}})
+        if "delivered" in (st or "").lower():
+            name = p.get("customer_name") or ""
+            product = (p.get("address") or {}).get("product_name") or "unit"
+            await _wa_tool_notify_technician(digits, name, (
+                f"Gaurav ji, {name or 'customer'} ka {product} repair ke liye service centre pe aa gaya hai "
+                f"(AWB {awb}). Aap dekh kar bata dijiye — kitna time lagega repair me?"))
+            await db.repair_pickups.update_one({"id": p["id"]}, {"$set": {"status": "arrived", "arrived_at": now}})
+            try:
+                await _wa_agent_respond(digits, name, manager_note=(
+                    f"The customer's {product} has REACHED our Meerut service centre. The technician has ALREADY been "
+                    f"notified by the system — do NOT call any tool and do NOT message the technician again. ONLY send the "
+                    f"customer a short, professional Hinglish update that their unit reached us safely and repair is "
+                    f"starting; we'll share the time estimate shortly."))
+            except Exception as e:
+                logger.warning(f"repair arrival customer update failed: {e}")
+        await asyncio.sleep(BIGSHIP_POLL_DELAY)
 
 
 # States that will never progress further — used to retire parcels off the board.
