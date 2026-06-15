@@ -74,7 +74,9 @@ import {
   ScrollText,
   ShieldAlert,
   Boxes,
-  MapPin
+  MapPin,
+  Crown,
+  Sun
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -115,10 +117,20 @@ const adminNavGroups = [
     items: [
       { label: 'All Tickets', icon: Ticket, path: '/admin/tickets' },
       { label: 'Call Center', icon: Phone, path: '/calls' },
+      { label: 'Omnidim Calls', icon: Phone, path: '/admin/omnidim-calls' },
       { label: 'Sales Leads', icon: Users, path: '/leads' },
       { label: 'Repairs', icon: Wrench, path: '/admin/repairs' },
       { label: 'Customers', icon: Users, path: '/admin/customers' },
       { label: 'Warranties', icon: Shield, path: '/admin/warranties' },
+      { label: 'Zoho Desk', icon: Ticket, path: '/admin/zoho-tickets' },
+      { label: 'Zoho Forms', icon: FileText, path: '/admin/zoho-forms' },
+    ]
+  },
+  {
+    label: 'Solar Samrat',
+    icon: Crown,
+    items: [
+      { label: 'Samrat Admin', icon: Crown, path: '/admin/solar-samrat' },
     ]
   },
   {
@@ -153,6 +165,7 @@ const adminNavGroups = [
       { label: 'Incoming Queue', icon: Inbox, path: '/accountant/incoming-queue' },
       { label: 'Inventory', icon: Package, path: '/accountant/inventory' },
       { label: 'Production', icon: Factory, path: '/accountant/production' },
+      { label: 'Battery Production', icon: Factory, path: '/admin/supervisor-production' },
       { label: 'Pending Fulfillment', icon: Clock, path: '/accountant/pending-fulfillment' },
       { label: 'Dispatch Queue', icon: Truck, path: '/view/dispatch-queue', viewOnly: true },
     ]
@@ -192,6 +205,7 @@ const adminNavGroups = [
       { label: 'TDS Management', icon: Calculator, path: '/finance/tds' },
       { label: 'GST / HSN', icon: FileText, path: '/finance/gst-hsn' },
       { label: 'GST Audit', icon: ShieldAlert, path: '/finance/gst-audit' },
+      { label: 'Amazon Unmapped', icon: Package, path: '/admin/amazon-unmapped' },
       { label: 'Bank Match', icon: Scale, path: '/finance/reconciliation' },
       { label: 'E-commerce Recon', icon: ShoppingCart, path: '/finance/ecommerce-reconciliation' },
       { label: 'Import Costing', icon: Ship, path: '/finance/import-costing' },
@@ -222,6 +236,7 @@ const adminNavGroups = [
     icon: UserCog,
     items: [
       { label: 'Salary & Payroll', icon: DollarSign, path: '/admin/payroll' },
+      { label: 'Employees', icon: Users, path: '/admin/employees' },
       { label: 'Attendance', icon: CalendarDays, path: '/admin/attendance' },
       { label: 'Incentives', icon: TrendingUp, path: '/admin/incentives' },
       { label: 'Users', icon: UserPlus, path: '/admin/users' },
@@ -292,6 +307,7 @@ const accountantNavGroups = [
       { label: 'TDS Management', icon: Calculator, path: '/finance/tds' },
       { label: 'GST / HSN', icon: FileText, path: '/finance/gst-hsn' },
       { label: 'GST Audit', icon: ShieldAlert, path: '/finance/gst-audit' },
+      { label: 'Amazon Unmapped', icon: Package, path: '/admin/amazon-unmapped' },
       { label: 'Bank Match', icon: Scale, path: '/finance/reconciliation' },
       { label: 'Sales Register', icon: FileText, path: '/accountant/sales' },
       { label: 'Purchase Register', icon: ShoppingCart, path: '/accountant/purchases' },
@@ -327,6 +343,7 @@ const accountantNavGroups = [
       { label: 'Inventory', icon: Package, path: '/accountant/inventory' },
       { label: 'Serial Numbers', icon: Hash, path: '/inventory/serial-numbers' },
       { label: 'Production', icon: Factory, path: '/accountant/production' },
+      { label: 'Battery Production', icon: Factory, path: '/admin/supervisor-production' },
       { label: 'Pending Fulfillment', icon: Clock, path: '/accountant/pending-fulfillment' },
       { label: 'Master SKUs', icon: Box, path: '/admin/master-sku' },
       { label: 'Product Datasheets', icon: FileText, path: '/admin/product-datasheets' },
@@ -385,6 +402,7 @@ const roleNavItems = {
     { label: 'Knowledge Base', icon: BookOpen, path: '/admin/knowledge-base' },
     { label: 'Warranties', icon: Shield, path: '/supervisor/warranties' },
     { label: 'Production', icon: Factory, path: '/supervisor/production' },
+    { label: 'Dispatch Battery', icon: Truck, path: '/supervisor/dispatch-tasks' },
     { label: 'Calendar', icon: Clock, path: '/supervisor/calendar' },
     { label: 'Dispatch Queue', icon: Package, path: '/view/dispatch-queue', viewOnly: true },
     { label: 'Pending Fulfillment', icon: Clock, path: '/view/pending-fulfillment', viewOnly: true },
@@ -394,6 +412,7 @@ const roleNavItems = {
     { label: 'Dashboard', icon: LayoutDashboard, path: '/technician' },
     { label: 'Repair Queue', icon: Wrench, path: '/technician/queue' },
     { label: 'Production', icon: Factory, path: '/technician/production' },
+    { label: 'Dispatch Inverter', icon: Truck, path: '/technician/dispatch-tasks' },
     { label: 'My Repairs', icon: ClipboardList, path: '/technician/my-repairs' },
     { label: 'Dispatch Queue', icon: Package, path: '/view/dispatch-queue', viewOnly: true },
     { label: 'Pending Fulfillment', icon: Clock, path: '/view/pending-fulfillment', viewOnly: true },
@@ -403,6 +422,7 @@ const roleNavItems = {
     { label: 'Dashboard', icon: LayoutDashboard, path: '/technician' },
     { label: 'Repair Queue', icon: Wrench, path: '/technician/queue' },
     { label: 'Production', icon: Factory, path: '/technician/production' },
+    { label: 'Dispatch Inverter', icon: Truck, path: '/technician/dispatch-tasks' },
     { label: 'My Repairs', icon: ClipboardList, path: '/technician/my-repairs' },
     { label: 'Dispatch Queue', icon: Package, path: '/view/dispatch-queue', viewOnly: true },
     { label: 'Pending Fulfillment', icon: Clock, path: '/view/pending-fulfillment', viewOnly: true },

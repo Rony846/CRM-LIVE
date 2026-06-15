@@ -72928,6 +72928,37 @@ async def omnidim_post_call(request: Request):
             "issue": issue, "urgency": urgency, "queued_outreach": bool(queued)}
 
 
+@api_router.get("/admin/omnidim-calls")
+async def admin_omnidim_calls(limit: int = 100, skip: int = 0, phone: str = "", needs_help: bool = False,
+                              current_user: dict = Depends(get_current_user)):
+    """Admin call log of Omnidim voice-agent calls (newest first). List view omits raw payload + transcript."""
+    require_roles(current_user, ["admin"])
+    q = {}
+    if phone:
+        p = re.sub(r"\D", "", phone)[-10:]
+        if p:
+            q["phone"] = {"$regex": re.escape(p) + "$"}
+    if needs_help:
+        q["technical_issue"] = {"$nin": [None, ""]}
+    total = await db.omnidim_calls.count_documents(q)
+    lim = max(1, min(limit, 200))
+    docs = await db.omnidim_calls.find(q, {"_id": 0, "raw": 0, "transcript": 0}).sort(
+        "received_at", -1).skip(max(0, skip)).limit(lim).to_list(lim)
+    by_sentiment = {d["_id"]: d["n"] async for d in db.omnidim_calls.aggregate(
+        [{"$group": {"_id": "$sentiment", "n": {"$sum": 1}}}])}
+    return {"total": total, "count": len(docs), "items": docs, "by_sentiment": by_sentiment}
+
+
+@api_router.get("/admin/omnidim-calls/{call_id}")
+async def admin_omnidim_call_detail(call_id: str, current_user: dict = Depends(get_current_user)):
+    """Full detail for one call including the transcript (raw payload excluded)."""
+    require_roles(current_user, ["admin"])
+    d = await db.omnidim_calls.find_one({"id": call_id}, {"_id": 0, "raw": 0})
+    if not d:
+        raise HTTPException(status_code=404, detail="Call not found")
+    return d
+
+
 @api_router.get("/leads")
 async def get_leads(
     status: Optional[str] = None,

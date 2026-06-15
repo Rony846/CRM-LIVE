@@ -22,6 +22,8 @@ import CallSupportInbox from './pages/support/CallSupportInbox';
 import EmailTicketInbox from './pages/support/EmailTicketInbox';
 import ServiceAgentDashboard from './pages/service/ServiceAgentDashboard';
 import AccountantDashboard from './pages/accountant/AccountantDashboard';
+import CADashboard from './pages/ca/CADashboard';
+import LawyerDashboard from './pages/legal/LawyerDashboard';
 import DispatcherDashboard from './pages/dispatcher/DispatcherDashboard';
 import DispatcherTVMode from './pages/dispatcher/DispatcherTVMode';
 import AdminDashboard from './pages/admin/AdminDashboard';
@@ -57,6 +59,11 @@ import SupervisorCalendar from './pages/supervisor/SupervisorCalendar';
 import AdminSKUManagement from './pages/admin/AdminSKUManagement';
 import AdminFirms from './pages/admin/AdminFirms';
 import AdminMasterSKU from './pages/admin/AdminMasterSKU';
+import AdminZohoTickets from './pages/admin/AdminZohoTickets';
+import AdminZohoForms from './pages/admin/AdminZohoForms';
+import AdminSupervisorProduction from './pages/admin/AdminSupervisorProduction';
+import AdminEmployees from './pages/admin/AdminEmployees';
+import AdminSolarSamrat from './pages/admin/AdminSolarSamrat';
 import StockReports from './pages/admin/StockReports';
 import CustomerAppointments from './pages/customer/CustomerAppointments';
 import AccountantInventory from './pages/accountant/AccountantInventory';
@@ -71,6 +78,7 @@ import PartyLedger from './pages/accountant/PartyLedger';
 import Payments from './pages/accountant/Payments';
 import AccountingReports from './pages/accountant/AccountingReports';
 import GSTAudit from './pages/finance/GSTAudit';
+import UnmappedAmazonSkus from './pages/admin/UnmappedAmazonSkus';
 import ReconciliationMatch from './pages/finance/ReconciliationMatch';
 import CreditNotes from './pages/accountant/CreditNotes';
 import ReconciliationReports from './pages/accountant/ReconciliationReports';
@@ -78,6 +86,7 @@ import ExpensesDashboard from './pages/accountant/ExpensesDashboard';
 import SerialNumbersManagement from './pages/inventory/SerialNumbersManagement';
 import SupervisorProduction from './pages/supervisor/SupervisorProduction';
 import TechnicianProduction from './pages/technician/TechnicianProduction';
+import DispatchTasks from './pages/dispatch/DispatchTasks';
 import AmazonOrders from './pages/operations/AmazonOrders';
 import SkuWeights from './pages/admin/SkuWeights';
 import EmailAgent from './pages/admin/EmailAgent';
@@ -123,6 +132,7 @@ import AdminIncentives from './pages/incentives/AdminIncentives';
 
 // Payroll & Attendance Pages
 import AdminPayroll from './pages/admin/AdminPayroll';
+import AdminOmnidimCalls from './pages/admin/AdminOmnidimCalls';
 import AdminAttendance from './pages/admin/AdminAttendance';
 import MyAttendance from './pages/employee/MyAttendance';
 
@@ -272,7 +282,9 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
       dispatcher: '/dispatcher',
       gate: '/gate',
       admin: '/admin',
-      dealer: '/dealer'
+      dealer: '/dealer',
+      ca: '/ca',
+      lawyer: '/legal'
     };
     return <Navigate to={dashboardRoutes[user.role] || '/login'} replace />;
   }
@@ -306,7 +318,9 @@ const RoleRedirect = () => {
     dispatcher: '/dispatcher',
     gate: '/gate',
     admin: '/admin',
-    dealer: '/dealer'
+    dealer: '/dealer',
+    ca: '/ca',
+    lawyer: '/legal'
   };
 
   return <Navigate to={dashboardRoutes[user.role] || '/login'} replace />;
@@ -448,6 +462,11 @@ function App() {
               <SupervisorCalendar />
             </ProtectedRoute>
           } />
+          <Route path="/supervisor/dispatch-tasks" element={
+            <ProtectedRoute allowedRoles={['supervisor', 'admin']}>
+              <DispatchTasks />
+            </ProtectedRoute>
+          } />
           <Route path="/supervisor/*" element={
             <ProtectedRoute allowedRoles={['supervisor', 'admin']}>
               <SupervisorDashboard />
@@ -458,6 +477,11 @@ function App() {
           <Route path="/technician" element={
             <ProtectedRoute allowedRoles={['service_agent', 'technician', 'admin']}>
               <TechnicianDashboard />
+            </ProtectedRoute>
+          } />
+          <Route path="/technician/dispatch-tasks" element={
+            <ProtectedRoute allowedRoles={['service_agent', 'technician', 'admin']}>
+              <DispatchTasks />
             </ProtectedRoute>
           } />
           <Route path="/technician/*" element={
@@ -476,6 +500,20 @@ function App() {
             </ProtectedRoute>
           } />
           
+          {/* CA Portal (read-only GST filing view for external chartered accountant) */}
+          <Route path="/ca" element={
+            <ProtectedRoute allowedRoles={['ca', 'admin']}>
+              <CADashboard />
+            </ProtectedRoute>
+          } />
+
+          {/* Legal Portal (read-only flagged-orders view for external lawyer) */}
+          <Route path="/legal" element={
+            <ProtectedRoute allowedRoles={['lawyer', 'admin']}>
+              <LawyerDashboard />
+            </ProtectedRoute>
+          } />
+
           {/* Accountant Routes */}
           <Route path="/accountant" element={
             <ProtectedRoute allowedRoles={['accountant', 'admin']}>
@@ -674,6 +712,36 @@ function App() {
           <Route path="/admin/master-sku" element={
             <ProtectedRoute allowedRoles={['admin', 'accountant']}>
               <AdminMasterSKU />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/omnidim-calls" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminOmnidimCalls />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/zoho-tickets" element={
+            <ProtectedRoute allowedRoles={['admin', 'supervisor', 'call_support']}>
+              <AdminZohoTickets />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/zoho-forms" element={
+            <ProtectedRoute allowedRoles={['admin', 'supervisor', 'call_support']}>
+              <AdminZohoForms />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/supervisor-production" element={
+            <ProtectedRoute allowedRoles={['admin', 'supervisor', 'accountant']}>
+              <AdminSupervisorProduction />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/employees" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <AdminEmployees />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/solar-samrat" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminSolarSamrat />
             </ProtectedRoute>
           } />
           <Route path="/admin/product-datasheets" element={
@@ -1041,6 +1109,11 @@ function App() {
           <Route path="/verify-dealer/:token" element={<VerifyDealer />} />
           
           {/* Admin Dealer Management */}
+          <Route path="/admin/amazon-unmapped" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <UnmappedAmazonSkus />
+            </ProtectedRoute>
+          } />
           <Route path="/admin/dealers" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <DealerManagement />
