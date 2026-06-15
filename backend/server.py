@@ -75717,7 +75717,7 @@ async def _pratibha_wa_shipback_reply(message):
 # review (reply "send omnidim"). On send we just OPEN the chat (template if outside the 24h window,
 # else a free-form opener); when the customer replies, the existing Kalpana auto-reply takes over.
 OMNIDIM_OUTREACH_ENABLED = os.environ.get("OMNIDIM_OUTREACH_ENABLED", "true").lower() == "true"
-OMNIDIM_OUTREACH_TEMPLATE = os.environ.get("OMNIDIM_OUTREACH_TEMPLATE", "").strip()  # approved Meta template (cold-text)
+OMNIDIM_OUTREACH_TEMPLATE = os.environ.get("OMNIDIM_OUTREACH_TEMPLATE", "service_followup").strip()  # shared Meta template
 OMNIDIM_OUTREACH_MAX_PER_SCAN = int(os.environ.get("OMNIDIM_OUTREACH_MAX_PER_SCAN", "50"))
 OMNIDIM_OUTREACH_COOLDOWN_DAYS = int(os.environ.get("OMNIDIM_OUTREACH_COOLDOWN_DAYS", "21"))
 OMNIDIM_CLOSED_STATUSES = {"closed", "closed_by_agent", "resolved", "resolved_on_call",
@@ -75792,21 +75792,20 @@ async def _omnidim_send_one(doc: dict) -> str:
         channel = "freeform"
     else:  # outside the window → must use an approved template
         if not OMNIDIM_OUTREACH_TEMPLATE:
-            await db.omnidim_outreach.update_one({"id": doc["id"]}, {"$set": {"status": "blocked_no_template"}})
-            return "blocked_no_template"
-        comps = [{"type": "body", "parameters": [{"type": "text", "text": first or "ji"},
-                                                 {"type": "text", "text": (doc.get("product") or "your product")[:40]}]}]
+            return "blocked_no_template"  # leave pending_review so it sends once the template is live
+        comps = [{"type": "body", "parameters": [{"type": "text", "text": first or "ji"}]}]
         res = await whatsapp_cloud.send_template(digits, template=OMNIDIM_OUTREACH_TEMPLATE, components=comps)
         ok = bool(res.get("ok"))
         if res.get("wamid"):
             await db.whatsapp_cloud_messages.insert_one({
                 "id": str(uuid.uuid4()), "direction": "outgoing", "phone": digits,
-                "text": f"[omnidim outreach template: {OMNIDIM_OUTREACH_TEMPLATE}]", "msg_type": "template",
+                "text": f"[outreach template: {OMNIDIM_OUTREACH_TEMPLATE}]", "msg_type": "template",
                 "wamid": res["wamid"], "ts": now, "received_at": now, "source": "whatsapp_cloud", "kind": "omnidim_outreach"})
         channel = "template"
-    status = "sent" if ok else "send_failed"
-    await db.omnidim_outreach.update_one({"id": doc["id"]}, {"$set": {"status": status, "channel": channel, "sent_at": now}})
-    return status
+    if ok:
+        await db.omnidim_outreach.update_one({"id": doc["id"]}, {"$set": {"status": "sent", "channel": channel, "sent_at": now}})
+        return "sent"
+    return "failed"  # leave pending_review so it retries (e.g. once Meta approves the template)
 
 
 async def _omnidim_send_pending(limit: int = 100) -> dict:
@@ -75878,7 +75877,7 @@ async def admin_omnidim_outreach_send(payload: dict = Body(default={}), current_
 # window, else a free-form Kalpana opener); when the customer replies, the normal Kalpana auto-reply
 # takes over — and get_customer_info already surfaces their ticket/issue/series/invoice context.
 SLA_OUTREACH_ENABLED = os.environ.get("SLA_OUTREACH_ENABLED", "true").lower() == "true"
-SLA_OUTREACH_TEMPLATE = os.environ.get("SLA_OUTREACH_TEMPLATE", "").strip()  # approved Meta template, e.g. service_followup
+SLA_OUTREACH_TEMPLATE = os.environ.get("SLA_OUTREACH_TEMPLATE", "service_followup").strip()  # shared Meta template
 SLA_OUTREACH_MAX_PER_SCAN = int(os.environ.get("SLA_OUTREACH_MAX_PER_SCAN", "40"))
 SLA_OUTREACH_COOLDOWN_DAYS = int(os.environ.get("SLA_OUTREACH_COOLDOWN_DAYS", "7"))
 SLA_CLOSED_STATUSES = {"closed", "resolved", "resolved_on_call", "closed_by_agent", "repair_completed",
@@ -75951,10 +75950,8 @@ async def _sla_send_one(doc: dict) -> str:
         channel = "freeform"
     else:
         if not SLA_OUTREACH_TEMPLATE:
-            await db.sla_outreach.update_one({"id": doc["id"]}, {"$set": {"status": "blocked_no_template"}})
-            return "blocked_no_template"
-        comps = [{"type": "body", "parameters": [{"type": "text", "text": first or "ji"},
-                                                 {"type": "text", "text": (tkt or "your ticket")[:40]}]}]
+            return "blocked_no_template"  # leave pending_review so it sends once the template is live
+        comps = [{"type": "body", "parameters": [{"type": "text", "text": first or "ji"}]}]
         res = await whatsapp_cloud.send_template(digits, template=SLA_OUTREACH_TEMPLATE, components=comps)
         ok = bool(res.get("ok"))
         if res.get("wamid"):
@@ -75963,9 +75960,10 @@ async def _sla_send_one(doc: dict) -> str:
                 "text": f"[SLA follow-up template: {SLA_OUTREACH_TEMPLATE}]", "msg_type": "template",
                 "wamid": res["wamid"], "ts": now, "received_at": now, "source": "whatsapp_cloud", "kind": "sla_outreach"})
         channel = "template"
-    st = "sent" if ok else "send_failed"
-    await db.sla_outreach.update_one({"id": doc["id"]}, {"$set": {"status": st, "channel": channel, "sent_at": now}})
-    return st
+    if ok:
+        await db.sla_outreach.update_one({"id": doc["id"]}, {"$set": {"status": "sent", "channel": channel, "sent_at": now}})
+        return "sent"
+    return "failed"  # leave pending_review so it retries (e.g. once Meta approves the template)
 
 
 async def _sla_send_pending(limit: int = 100) -> dict:
