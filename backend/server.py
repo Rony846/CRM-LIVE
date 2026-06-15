@@ -74290,8 +74290,51 @@ _WA_ESCALATE_WORDS = ("refund", "money back", "return it", "complaint", "complai
 PRATIBHA_PICKUP_LIVE = os.environ.get("PRATIBHA_PICKUP_LIVE", "").strip().lower() in ("1", "true", "yes", "on")
 
 
+# Auto-detect the manual SERIES from a product/model string so the agent knows which manual to use
+# WITHOUT asking the customer for an invoice. Keyword rules first (your catalog names the series, e.g.
+# "MG Titan Series…", "…Heavy Duty…", "…Lithium…"); then a catalog-derived model-code map for bare codes.
+_PRODUCT_SERIES_RULES = [
+    ("titan", ("titan",)),
+    ("focus", ("focus",)),
+    ("heavy_duty", ("heavy duty", "heavy-duty", "heay duty")),
+    ("lithium", ("lithium", "lifepo4", "lifepo", "lfp", "thunder pro")),
+    ("stabilizer", ("stabiliz", "servo", "voltage stabil", "kva")),
+]
+_SERIES_MAP_CACHE = None  # {model_code_lower: series}, loaded once from db.product_series_map
+
+
+def _series_from_keywords(text: str):
+    s = (text or "").lower()
+    if not s:
+        return None
+    for series, kws in _PRODUCT_SERIES_RULES:
+        if any(k in s for k in kws):
+            return series
+    return None
+
+
+async def _resolve_product_series(text: str):
+    """Return the manual series (titan/focus/heavy_duty/lithium/stabilizer) for a product/model string,
+    or None when it's a line we have no manual for (caller then asks the customer for the invoice)."""
+    kw = _series_from_keywords(text)
+    if kw:
+        return kw
+    global _SERIES_MAP_CACHE
+    if _SERIES_MAP_CACHE is None:
+        _SERIES_MAP_CACHE = {}
+        async for d in db.product_series_map.find({}, {"_id": 0, "key": 1, "series": 1}):
+            if d.get("key") and d.get("series"):
+                _SERIES_MAP_CACHE[str(d["key"]).lower()] = d["series"]
+    s = (text or "").lower()
+    for key, series in _SERIES_MAP_CACHE.items():  # match a bare model code embedded in the text
+        if key and len(key) >= 5 and key in s:
+            return series
+    return None
+
+
 async def _wa_customer_info(digits: str) -> dict:
-    """Read tool: the customer's warranty + latest service ticket (for the agent to be accurate)."""
+    """Read tool: the customer's warranty + latest service ticket (for the agent to be accurate).
+    Also resolves the product SERIES so the agent can pull the right manual without asking for an invoice."""
     rgx = {"$regex": re.escape(digits) + "$"}
     info = {"phone": digits}
     w = await db.warranties.find_one({"phone": rgx}, {"_id": 0, "product_name": 1, "device_type": 1,
@@ -74304,6 +74347,10 @@ async def _wa_customer_info(digits: str) -> dict:
     if tk:
         info["recent_ticket"] = {"number": tk.get("ticket_number"), "status": tk.get("status"),
                                  "product": tk.get("product_name"), "issue": (tk.get("issue_description") or "")[:200]}
+    prod = (info.get("recent_ticket") or {}).get("product") or (info.get("warranty") or {}).get("product") or ""
+    series = await _resolve_product_series(prod)
+    if series:
+        info["series"] = series
     return info
 
 
@@ -74320,7 +74367,7 @@ async def _wa_tool_search_knowledge(query: str, series: str = "") -> dict:
     kb = await db.kb_articles.find({"$or": kb_or}, {"_id": 0, "question": 1, "answer": 1, "model_name": 1}).limit(5).to_list(5)
     out = {"kb": [{"q": a.get("question"), "a": (a.get("answer") or "")[:600], "model": a.get("model_name")} for a in kb]}
     s = (series or "").strip().lower()
-    if s in ("titan", "focus"):
+    if s in ("titan", "focus", "heavy_duty", "lithium"):
         man_or = [{"text": {"$regex": re.escape(w), "$options": "i"}} for w in words]
         pages = await db.product_manuals.find({"series": s, "$or": man_or}, {"_id": 0, "page": 1, "text": 1}).limit(4).to_list(4)
         out["manual"] = {"series": s, "manual_loaded": await db.product_manuals.count_documents({"series": s}) > 0,
@@ -74470,6 +74517,12 @@ async def _wa_build_situation(digits: str, name: str) -> str:
         parts.append(f"Warranty: {json.dumps(info['warranty'], default=str)}")
     if info.get("recent_ticket"):
         parts.append(f"Latest ticket: {json.dumps(info['recent_ticket'], default=str)}")
+    if info.get("series") == "stabilizer":
+        parts.append("Detected product type: STABILIZER — follow the stabilizer playbook (ask for photos → PCB-first with "
+                     "manager approval). Do NOT ask the customer for an invoice to identify it.")
+    elif info.get("series"):
+        parts.append(f"Detected product series: {info['series']} — for troubleshooting call search_knowledge with "
+                     f"series='{info['series']}' to use that manual. Do NOT ask the customer for an invoice; the series is known.")
     if await db.repair_decisions.find_one({"customer_phone": digits, "status": "open"}, {"_id": 1}):
         parts.append("STATE: You have ALREADY escalated to the manager and are AWAITING their reply. Reassure the customer briefly; do NOT escalate again.")
     else:
