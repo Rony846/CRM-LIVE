@@ -73014,7 +73014,59 @@ async def admin_whatsapp_chat_thread(phone: str, current_user: dict = Depends(ge
             m["media_url"] = make_signed_file_url(rel)
     lead = await db.leads.find_one({"phone": {"$regex": re.escape(digits) + "$"}},
                                    {"_id": 0, "name": 1, "customer_name": 1})
-    return {"phone": digits, "name": (lead or {}).get("name") or (lead or {}).get("customer_name") or "", "messages": msgs}
+    return {"phone": digits, "name": (lead or {}).get("name") or (lead or {}).get("customer_name") or "",
+            "messages": msgs, "bot_paused": await _wa_agent_paused(digits)}
+
+
+WHATSAPP_TAKEOVER_HOURS = int(os.environ.get("WHATSAPP_TAKEOVER_HOURS", "6"))
+
+
+async def _wa_agent_paused(digits: str) -> bool:
+    """True if the bot is paused for this customer (a human has taken the chat over)."""
+    doc = await db.whatsapp_control.find_one({"phone": digits}, {"_id": 0, "paused_until": 1})
+    pu = (doc or {}).get("paused_until") or ""
+    return bool(pu) and pu > datetime.now(timezone.utc).isoformat()
+
+
+@api_router.post("/admin/whatsapp-chats/{phone}/send")
+async def admin_whatsapp_send(phone: str, payload: dict = Body(default={}), current_user: dict = Depends(get_current_user)):
+    """Staff manual reply to a customer (free-text, valid inside the 24h window). Auto-pauses the bot for
+    this customer so the bot and the human don't both reply."""
+    if current_user.get("role") not in ("admin", "call_support"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    digits = re.sub(r"\D", "", phone)[-10:]
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Message text is required")
+    res = await whatsapp_cloud.send_text(digits, text)
+    if not res.get("wamid"):
+        err = ((res.get("response") or {}).get("error") or {})
+        raise HTTPException(status_code=400, detail=("WhatsApp send failed: " + (err.get("message")
+                            or "the customer may be outside the 24-hour window — they must message first")))
+    now = datetime.now(timezone.utc).isoformat()
+    who = f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip() or "Staff"
+    await db.whatsapp_cloud_messages.insert_one({
+        "id": str(uuid.uuid4()), "direction": "outgoing", "phone": digits, "text": text, "msg_type": "text",
+        "wamid": res["wamid"], "ts": now, "received_at": now, "source": "whatsapp_cloud",
+        "kind": "human", "by": who, "by_id": current_user.get("id")})
+    until = (datetime.now(timezone.utc) + timedelta(hours=WHATSAPP_TAKEOVER_HOURS)).isoformat()
+    await db.whatsapp_control.update_one({"phone": digits}, {"$set": {
+        "phone": digits, "paused_until": until, "paused_by": who, "updated_at": now}}, upsert=True)
+    return {"ok": True, "wamid": res["wamid"], "bot_paused": True}
+
+
+@api_router.post("/admin/whatsapp-chats/{phone}/bot")
+async def admin_whatsapp_bot_toggle(phone: str, payload: dict = Body(default={}), current_user: dict = Depends(get_current_user)):
+    """Pause/resume the bot for one customer. paused=true → a human handles it; paused=false → bot resumes."""
+    if current_user.get("role") not in ("admin", "call_support"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    digits = re.sub(r"\D", "", phone)[-10:]
+    now = datetime.now(timezone.utc).isoformat()
+    paused = bool(payload.get("paused"))
+    until = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat() if paused else ""
+    await db.whatsapp_control.update_one({"phone": digits}, {"$set": {
+        "phone": digits, "paused_until": until, "updated_at": now}}, upsert=True)
+    return {"ok": True, "paused": paused}
 
 
 @api_router.get("/leads")
@@ -74981,6 +75033,8 @@ async def _wa_handle_media(digits: str, contact_name: str, media_id: str, mime: 
                                      REPAIR_LOOP_AGENT, {"action_type": "customer_media", "url": url})
     except Exception as e:
         logger.warning(f"could not attach WhatsApp media to ticket: {e}")
+    if await _wa_agent_paused(digits):
+        return  # human is handling — media is stored + on the ticket, but the bot stays quiet
     # Vision for images/PDFs; for video/audio the agent can't view it — note it so it reacts sensibly.
     if "image" in mt or "pdf" in mt:
         b64 = base64.b64encode(media["bytes"]).decode()
@@ -75009,6 +75063,8 @@ async def _pratibha_wa_autoreply(phone: str, text: str, contact_name: str = ""):
         return
     if await db.whatsapp_optouts.find_one({"phone": digits}, {"_id": 1}):
         return  # previously opted out
+    if await _wa_agent_paused(digits):
+        return  # a human has taken over this chat — bot stays quiet
 
     # Hand the whole conversation to the agent — it decides what to say and what to do.
     await _wa_agent_respond(digits, contact_name)
