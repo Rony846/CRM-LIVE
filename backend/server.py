@@ -74745,6 +74745,47 @@ async def _wa_tool_notify_technician(digits: str, name: str, message: str) -> di
             "note": "Job tracked — his reply (time/'done') will come back to you."}
 
 
+async def _wa_tool_handoff_to_sales(digits: str, name: str, inp: dict) -> dict:
+    """Sales handoff: the customer wants to BUY. Create or enrich a sales lead + alert the sales team.
+    One handoff per customer per day (no spam). Returns a note for the agent."""
+    now = datetime.now(timezone.utc).isoformat()
+    today = now[:10]
+    product = (inp.get("product_interest") or "").strip() or "MuscleGrid products"
+    city = (inp.get("city") or "").strip()
+    summary = (inp.get("summary") or "").strip()
+    lead = await db.leads.find_one({"phone": {"$regex": re.escape(digits) + "$"}})
+    if lead and str(lead.get("sales_handoff_at") or "")[:10] == today:
+        return {"status": "already_handed",
+                "note": "Already passed to sales today — just reassure the customer that sales will contact them; do not hand off again."}
+    note = (f"WhatsApp {today}: SALES inquiry via support line — wants: {product}."
+            + (f" Location: {city}." if city else "") + (f" {summary}" if summary else ""))
+    interaction = {"id": str(uuid.uuid4()), "type": "whatsapp", "channel": "whatsapp_cloud",
+                   "note": f"Sales inquiry: {product}" + (f" ({city})" if city else ""), "at": now, "by": "pratibha_agent"}
+    if lead:
+        new_notes = ((lead.get("notes") or "").strip() + ("\n\n" if lead.get("notes") else "") + note).strip()
+        status = lead.get("status") if lead.get("status") in ("converted", "won", "lost") else "new"
+        await db.leads.update_one({"id": lead["id"]}, {
+            "$set": {"product_interest": product, "notes": new_notes, "status": status,
+                     "sales_handoff_at": now, "updated_at": now},
+            "$push": {"interactions": interaction}})
+        lead_id, created = lead["id"], False
+    else:
+        lead_id = str(uuid.uuid4())
+        await db.leads.insert_one({
+            "id": lead_id, "phone": digits, "name": name or "", "email": "", "product_interest": product,
+            "source": "whatsapp_support", "status": "new", "notes": note, "city": city,
+            "assigned_to": None, "assigned_to_name": None, "follow_up_date": None,
+            "interactions": [interaction], "sales_handoff_at": now,
+            "created_by": "pratibha_agent", "created_at": now, "updated_at": now})
+        created = True
+    await create_notification(
+        title="\U0001f6d2 New sales lead (WhatsApp)",
+        message=f"{name or digits} wants {product}" + (f" — {city}" if city else "") + ". Routed from support; please follow up.",
+        notification_type="lead_created", link="/leads", target_roles=["admin", "call_support"], priority="high")
+    return {"success": True, "lead_id": lead_id, "created": created,
+            "note": "Sales lead saved + sales team alerted. Tell the customer (Hinglish) our sales team will contact them shortly. Do not quote prices."}
+
+
 def _wa_support_executor(digits: str, name: str):
     async def ex(tool: str, inp: dict) -> dict:
         if tool == "get_customer_info":
@@ -74757,6 +74798,8 @@ def _wa_support_executor(digits: str, name: str):
             return await _wa_tool_arrange_pickup(digits, name, inp)
         if tool == "notify_technician":
             return await _wa_tool_notify_technician(digits, name, inp.get("message", ""))
+        if tool == "handoff_to_sales":
+            return await _wa_tool_handoff_to_sales(digits, name, inp)
         return {"error": f"unknown tool {tool}"}
     return ex
 
