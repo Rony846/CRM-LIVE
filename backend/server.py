@@ -1043,6 +1043,18 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Omnidim proactive follow-up: scan voice-agent tickets for unresolved customers, queue them
+        # for founder review (nothing is sent to a customer without "send omnidim" / the admin action).
+        scheduler.add_job(
+            scheduled_omnidim_outreach_scan,
+            IntervalTrigger(hours=int(os.environ.get("OMNIDIM_OUTREACH_SCAN_HOURS", "4"))),
+            id="omnidim_outreach_scan",
+            name="Omnidim → proactive WhatsApp follow-up (queued for review)",
+            replace_existing=True,
+            misfire_grace_time=600,
+            max_instances=1,
+        )
+
         scheduler.start()
         logger.info(
             f"Scheduled jobs started: SLA breach (30min), Payment verification (1hr), "
@@ -74965,6 +74977,165 @@ async def _pratibha_wa_shipback_reply(message):
     return f"\U0001f44d Ship-back booked: {pay}{(' ₹' + format(cod_amount, ',.0f')) if pay == 'COD' else ''}, AWB {awb}."
 
 
+# ===================== Omnidim → proactive WhatsApp follow-up =====================
+# The Omnidim voice agent logs tickets into the CRM (source=omnidim_voice_agent). This scans those
+# for customers with an UNRESOLVED issue and queues a proactive WhatsApp follow-up — HELD for founder
+# review (reply "send omnidim"). On send we just OPEN the chat (template if outside the 24h window,
+# else a free-form opener); when the customer replies, the existing Kalpana auto-reply takes over.
+OMNIDIM_OUTREACH_ENABLED = os.environ.get("OMNIDIM_OUTREACH_ENABLED", "true").lower() == "true"
+OMNIDIM_OUTREACH_TEMPLATE = os.environ.get("OMNIDIM_OUTREACH_TEMPLATE", "").strip()  # approved Meta template (cold-text)
+OMNIDIM_OUTREACH_MAX_PER_SCAN = int(os.environ.get("OMNIDIM_OUTREACH_MAX_PER_SCAN", "50"))
+OMNIDIM_OUTREACH_COOLDOWN_DAYS = int(os.environ.get("OMNIDIM_OUTREACH_COOLDOWN_DAYS", "21"))
+OMNIDIM_CLOSED_STATUSES = {"closed", "closed_by_agent", "resolved", "resolved_on_call",
+                           "repair_completed", "cancelled", "delivered", "completed"}
+
+
+async def scheduled_omnidim_outreach_scan():
+    """Queue proactive follow-ups for Omnidim-call customers whose ticket is still open. Held for
+    founder review (pending_review); nothing is sent to a customer here."""
+    if not OMNIDIM_OUTREACH_ENABLED:
+        return
+    q = {"source": "omnidim_voice_agent", "status": {"$nin": list(OMNIDIM_CLOSED_STATUSES)},
+         "customer_phone": {"$nin": [None, ""]}}
+    tickets = await db.tickets.find(q, {"_id": 0, "ticket_number": 1, "status": 1, "customer_phone": 1,
+                                        "product_name": 1, "issue_description": 1, "created_at": 1}
+                                    ).sort("created_at", -1).limit(300).to_list(300)
+    cooldown = (datetime.now(timezone.utc) - timedelta(days=OMNIDIM_OUTREACH_COOLDOWN_DAYS)).isoformat()
+    new = 0
+    for t in tickets:
+        digits = re.sub(r"\D", "", str(t.get("customer_phone") or ""))[-10:]
+        if len(digits) != 10:
+            continue
+        if await db.whatsapp_optouts.find_one({"phone": digits}, {"_id": 1}):
+            continue
+        if await db.omnidim_outreach.find_one({"ticket_number": t.get("ticket_number")}, {"_id": 1}):
+            continue  # already queued/handled for this ticket
+        if await db.omnidim_outreach.find_one(
+                {"customer_phone": digits, "status": "sent", "sent_at": {"$gte": cooldown}}, {"_id": 1}):
+            continue  # contacted recently — don't pester
+        lead = await db.leads.find_one({"phone": {"$regex": re.escape(digits) + "$"}},
+                                       {"_id": 0, "name": 1, "customer_name": 1})
+        name = (lead or {}).get("name") or (lead or {}).get("customer_name") or ""
+        await db.omnidim_outreach.insert_one({
+            "id": str(uuid.uuid4()), "ticket_number": t.get("ticket_number"), "customer_phone": digits,
+            "customer_name": name, "product": t.get("product_name"), "issue": (t.get("issue_description") or "")[:300],
+            "ticket_status": t.get("status"), "status": "pending_review",
+            "created_at": datetime.now(timezone.utc).isoformat()})
+        new += 1
+        if new >= OMNIDIM_OUTREACH_MAX_PER_SCAN:
+            break
+    pending = await db.omnidim_outreach.count_documents({"status": "pending_review"})
+    if new and pending:
+        await _wa_send_to_manager(
+            f"\U0001f4de *Omnidim follow-ups* — {pending} customer(s) called the voice agent and still have an OPEN issue. "
+            f"Reply *review omnidim* to see the list, or *send omnidim* to text them (sirf opening message — jab wo reply "
+            f"karein to Kalpana sambhal legi).",
+            fallback_desc=f"{pending} Omnidim customers pending proactive WhatsApp follow-up — review in /admin.")
+
+
+async def _omnidim_send_one(doc: dict) -> str:
+    """Open the WhatsApp chat with one queued customer. Returns the new outreach status."""
+    digits = doc["customer_phone"]
+    name = doc.get("customer_name") or ""
+    first = name.split()[0] if name else ""
+    now = datetime.now(timezone.utc).isoformat()
+    if await db.whatsapp_optouts.find_one({"phone": digits}, {"_id": 1}):
+        await db.omnidim_outreach.update_one({"id": doc["id"]}, {"$set": {"status": "skipped", "skip_reason": "opted_out"}})
+        return "skipped"
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    in_window = await db.whatsapp_cloud_messages.find_one(
+        {"phone": digits, "direction": "incoming", "received_at": {"$gte": cutoff}}, {"_id": 1})
+    if in_window:  # 24h customer-service window open → free-form opener (no template needed)
+        prod = f" ({doc.get('product')})" if doc.get("product") else ""
+        opener = (f"Namaste{(' ' + first) if first else ' ji'} \U0001f64f Main Kalpana, MuscleGrid support se. Aapne recently "
+                  f"humein call kiya tha{prod}. Aapki problem ab tak resolve hui ya nahi? Yahin reply kijiye — main turant help karti hoon.")
+        res = await whatsapp_cloud.send_text(digits, opener)
+        ok = bool(res.get("wamid"))
+        if res.get("wamid"):
+            await db.whatsapp_cloud_messages.insert_one({
+                "id": str(uuid.uuid4()), "direction": "outgoing", "phone": digits, "text": opener, "msg_type": "text",
+                "wamid": res["wamid"], "ts": now, "received_at": now, "source": "whatsapp_cloud", "kind": "omnidim_outreach"})
+        channel = "freeform"
+    else:  # outside the window → must use an approved template
+        if not OMNIDIM_OUTREACH_TEMPLATE:
+            await db.omnidim_outreach.update_one({"id": doc["id"]}, {"$set": {"status": "blocked_no_template"}})
+            return "blocked_no_template"
+        comps = [{"type": "body", "parameters": [{"type": "text", "text": first or "ji"},
+                                                 {"type": "text", "text": (doc.get("product") or "your product")[:40]}]}]
+        res = await whatsapp_cloud.send_template(digits, template=OMNIDIM_OUTREACH_TEMPLATE, components=comps)
+        ok = bool(res.get("ok"))
+        if res.get("wamid"):
+            await db.whatsapp_cloud_messages.insert_one({
+                "id": str(uuid.uuid4()), "direction": "outgoing", "phone": digits,
+                "text": f"[omnidim outreach template: {OMNIDIM_OUTREACH_TEMPLATE}]", "msg_type": "template",
+                "wamid": res["wamid"], "ts": now, "received_at": now, "source": "whatsapp_cloud", "kind": "omnidim_outreach"})
+        channel = "template"
+    status = "sent" if ok else "send_failed"
+    await db.omnidim_outreach.update_one({"id": doc["id"]}, {"$set": {"status": status, "channel": channel, "sent_at": now}})
+    return status
+
+
+async def _omnidim_send_pending(limit: int = 100) -> dict:
+    """Send all (or up to `limit`) reviewed-and-approved outreach openers, paced."""
+    docs = await db.omnidim_outreach.find({"status": "pending_review"}).sort("created_at", 1).limit(limit).to_list(limit)
+    tally = {"sent": 0, "blocked": 0, "failed": 0, "skipped": 0, "total": len(docs)}
+    for d in docs:
+        try:
+            st = await _omnidim_send_one(d)
+        except Exception as e:
+            logger.warning(f"omnidim outreach send failed for {d.get('customer_phone')}: {e}")
+            st = "send_failed"
+        tally["sent" if st == "sent" else "blocked" if st == "blocked_no_template"
+              else "skipped" if st == "skipped" else "failed"] += 1
+        await asyncio.sleep(1)  # gentle pacing so we don't burst the WhatsApp API
+    return tally
+
+
+async def _pratibha_wa_omnidim_reply(message):
+    """Founder WhatsApp control for Omnidim outreach: 'review omnidim' (see the list) / 'send omnidim'
+    (approve + text the pending batch). Returns a reply string, or None to fall through."""
+    if not _wa_reply_allowed(getattr(message, "from_number", "")):
+        return None
+    low = (getattr(message, "text", "") or "").strip().lower()
+    if "omnidim" not in low:
+        return None
+    if "review" in low or "list" in low:
+        docs = await db.omnidim_outreach.find({"status": "pending_review"}).sort("created_at", 1).limit(20).to_list(20)
+        total = await db.omnidim_outreach.count_documents({"status": "pending_review"})
+        if not docs:
+            return "Koi pending Omnidim follow-up nahi hai abhi. \U0001f44d"
+        lines = [f"{i+1}. {(d.get('customer_name') or d['customer_phone'])} ({d['customer_phone']}) — "
+                 f"{d.get('ticket_status')}" + (f" — {d.get('product')}" if d.get('product') else "")
+                 for i, d in enumerate(docs)]
+        more = f"\n…+{total - len(docs)} more" if total > len(docs) else ""
+        return (f"\U0001f4cb *Omnidim follow-ups ({total})*\n" + "\n".join(lines) + more +
+                "\n\nReply *send omnidim* to text them.")
+    if any(w in low for w in ("send", "approve", "haan", "bhej", "yes")):
+        r = await _omnidim_send_pending()
+        blk = f", {r['blocked']} blocked (template not set)" if r.get("blocked") else ""
+        return (f"✅ Omnidim outreach: {r['sent']} texted, {r['failed']} failed{blk}. "
+                f"Jaise hi customer reply karega, Kalpana help start kar degi.")
+    return None
+
+
+@api_router.get("/admin/omnidim-outreach")
+async def admin_omnidim_outreach_list(status: str = "pending_review", current_user: dict = Depends(get_current_user)):
+    """Review the Omnidim proactive-outreach queue (pending by default)."""
+    require_roles(current_user, ["admin"])
+    docs = await db.omnidim_outreach.find({"status": status}, {"_id": 0}).sort("created_at", -1).limit(500).to_list(500)
+    counts = {d["_id"]: d["n"] async for d in db.omnidim_outreach.aggregate(
+        [{"$group": {"_id": "$status", "n": {"$sum": 1}}}])}
+    return {"status": status, "count": len(docs), "by_status": counts, "items": docs}
+
+
+@api_router.post("/admin/omnidim-outreach/send")
+async def admin_omnidim_outreach_send(payload: dict = Body(default={}), current_user: dict = Depends(get_current_user)):
+    """Approve + send the pending Omnidim outreach batch (founder review action)."""
+    require_roles(current_user, ["admin"])
+    r = await _omnidim_send_pending(limit=int(payload.get("limit", 200)))
+    return {"ok": True, "result": r}
+
+
 @api_router.get("/whatsapp/cloud/webhook")
 async def whatsapp_cloud_verify(request: Request):
     """Meta webhook verification (GET): echo hub.challenge when the verify token matches."""
@@ -76725,6 +76896,16 @@ async def whatsapp_message_webhook(data: dict, request: Request):
         if wa_sb is not None:
             await _wa_remember_turn(conv_key, message.text, wa_sb)
             return {"reply": wa_sb}
+
+        # Founder control for Omnidim proactive outreach ("review omnidim" / "send omnidim").
+        try:
+            wa_omni = await _pratibha_wa_omnidim_reply(message)
+        except Exception as e:
+            logger.error(f"WA omnidim-outreach handling failed: {e}")
+            wa_omni = None
+        if wa_omni is not None:
+            await _wa_remember_turn(conv_key, message.text, wa_omni)
+            return {"reply": wa_omni}
 
         # Technician (Gaurav) replying about an open repair job — interpret + update the customer.
         try:
