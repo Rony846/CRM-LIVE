@@ -74859,6 +74859,13 @@ async def _wa_customer_info(digits: str) -> dict:
     series = await _resolve_product_series(prod)
     if series:
         info["series"] = series
+    # Is the customer's invoice on file? (a purchase invoice on a sales_order, or one attached to a ticket)
+    has_inv = bool(await db.sales_orders.find_one({"phone": rgx, "invoice_url": {"$nin": [None, ""]}}, {"_id": 1}))
+    if not has_inv:
+        has_inv = bool(await db.tickets.find_one({"customer_phone": rgx, "$or": [
+            {"invoice_number": {"$nin": [None, "", "None"]}}, {"invoice_file": {"$nin": [None, ""]}},
+            {"service_invoice": {"$nin": [None, ""]}}]}, {"_id": 1}))
+    info["has_invoice"] = has_inv
     return info
 
 
@@ -75211,12 +75218,19 @@ async def _wa_build_situation(digits: str, name: str) -> str:
         parts.append(f"Warranty: {json.dumps(info['warranty'], default=str)}")
     if info.get("recent_ticket"):
         parts.append(f"Latest ticket: {json.dumps(info['recent_ticket'], default=str)}")
+    if info.get("has_invoice"):
+        parts.append("Invoice: ON FILE for this customer.")
+    else:
+        parts.append("Invoice: NOT on file. For ANY service/support request, ask the customer to send a clear photo/PDF of "
+                     "their MuscleGrid invoice (you can read it) and wait for it before booking repair/replacement/warranty. "
+                     "A SALES/purchase inquiry does NOT need an invoice — never ask a sales lead for one.")
     if info.get("series") == "stabilizer":
         parts.append("Detected product type: STABILIZER — follow the stabilizer playbook (ask for photos → PCB-first with "
-                     "manager approval). Do NOT ask the customer for an invoice to identify it.")
+                     "manager approval).")
     elif info.get("series"):
         parts.append(f"Detected product series: {info['series']} — for troubleshooting call search_knowledge with "
-                     f"series='{info['series']}' to use that manual. Do NOT ask the customer for an invoice; the series is known.")
+                     f"series='{info['series']}' to use that manual. (Series is already known — you don't need the invoice "
+                     f"just to identify it, but still follow the invoice rule above before any repair/replacement/warranty.)")
     if await db.repair_decisions.find_one({"customer_phone": digits, "status": "open"}, {"_id": 1}):
         parts.append("STATE: You have ALREADY escalated to the manager and are AWAITING their reply. Reassure the customer briefly; do NOT escalate again.")
     else:
