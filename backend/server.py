@@ -51312,6 +51312,37 @@ def _call_is_short(duration) -> bool:
     return 0 < d < MISSED_CALL_SHORT_SECS
 
 
+_INTERNAL_NUMS = {"set": None}
+_INTERNAL_STAFF_ROLES = ("admin", "call_support", "supervisor", "service_agent", "accountant",
+                         "dispatcher", "gate", "ca", "lawyer")
+
+
+async def _internal_numbers() -> set:
+    """Cached set of staff/agent phone numbers (last-10) that must NOT receive a customer missed-call
+    WhatsApp — the agent allowlist, staff CRM users, and Smartflo agent numbers. Reload on restart."""
+    if _INTERNAL_NUMS["set"] is None:
+        nums = {re.sub(r"\D", "", x)[-10:] for x in os.environ.get("WHATSAPP_AGENT_ALLOWLIST", "").split(",")
+                if len(re.sub(r"\D", "", x)) >= 10}
+        async for u in db.users.find({"role": {"$in": list(_INTERNAL_STAFF_ROLES)}},
+                                     {"_id": 0, "phone": 1, "whatsapp_number": 1}):
+            for v in (u.get("phone"), u.get("whatsapp_number")):
+                d = re.sub(r"\D", "", str(v or ""))[-10:]
+                if len(d) == 10:
+                    nums.add(d)
+        async for a in db.smartflo_agents.find({}, {"_id": 0, "phone": 1, "smartflo_agent_number": 1}):
+            for v in (a.get("phone"), a.get("smartflo_agent_number")):
+                d = re.sub(r"\D", "", str(v or ""))[-10:]
+                if len(d) == 10:
+                    nums.add(d)
+        _INTERNAL_NUMS["set"] = nums
+        logger.info(f"Loaded {len(nums)} internal numbers (excluded from missed-call WhatsApp)")
+    return _INTERNAL_NUMS["set"]
+
+
+async def _is_internal_number(digits10: str) -> bool:
+    return digits10 in await _internal_numbers()
+
+
 async def send_missed_call_whatsapp(phone_number: str, call_type: str = "missed", bypass_dedup: bool = False):
     """On a missed call, WhatsApp the caller via the bridge so they can be helped
     without calling back. Off unless MISSED_CALL_WA_ENABLED. Dedup-guarded per
@@ -51326,6 +51357,8 @@ async def send_missed_call_whatsapp(phone_number: str, call_type: str = "missed"
     clean = re.sub(r"\D", "", phone_number or "")[-10:]
     if len(clean) != 10 or not clean.isdigit():
         return {"skipped": "bad_number"}
+    if await _is_internal_number(clean):
+        return {"skipped": "internal_staff"}  # don't text our own staff/agents
     if not bypass_dedup:
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=MISSED_CALL_WA_DEDUP_MIN)).isoformat()
         if await db.missed_call_wa_logs.find_one({"phone": clean, "sent_at": {"$gte": cutoff}}, {"_id": 1}):
@@ -51394,6 +51427,8 @@ async def scheduled_missed_call_reconcile():
         if len(clean) != 10 or clean in seen:
             continue
         seen.add(clean)
+        if await _is_internal_number(clean):
+            continue  # staff/agent number — never message internally
         if await db.whatsapp_optouts.find_one({"phone": clean}, {"_id": 1}):
             continue
         logs = await db.missed_call_wa_logs.find(
