@@ -1041,6 +1041,17 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Smartflo webhook health: alert the founder if calls are being rejected (401) or none arrive for hours.
+        scheduler.add_job(
+            scheduled_smartflo_webhook_health,
+            IntervalTrigger(minutes=int(os.environ.get("SMARTFLO_HEALTH_MIN", "30"))),
+            id="smartflo_webhook_health",
+            name="Smartflo webhook health watchdog",
+            replace_existing=True,
+            misfire_grace_time=300,
+            max_instances=1,
+        )
+
         # Sales lead follow-up: chase the assigned salesperson (Sakshi/Amit) about open leads with no progress.
         scheduler.add_job(
             scheduled_sales_lead_followups,
@@ -51390,6 +51401,39 @@ async def scheduled_missed_call_reconcile():
         logger.info(f"Missed-call reconcile: recovered={recovered} flagged_for_human={flagged} of {len(seen)} callers")
 
 
+SMARTFLO_SILENCE_HOURS = int(os.environ.get("SMARTFLO_SILENCE_HOURS", "3"))
+SMARTFLO_HEALTH_REALERT_HOURS = int(os.environ.get("SMARTFLO_HEALTH_REALERT_HOURS", "6"))
+
+
+async def scheduled_smartflo_webhook_health():
+    """Alert the founder if the Smartflo call pipeline looks broken — either Smartflo is POSTING but we're
+    rejecting it (401s = missing ?secret=, the exact outage we hit) or NO events have arrived for hours
+    during business hours (telephony/webhook down). Business-hours only, de-duplicated per outage."""
+    if _pratibha_wa_quiet_now():
+        return  # don't alarm outside business hours; a quiet night isn't an outage
+    now = datetime.now(timezone.utc)
+    h = await db.webhook_health.find_one({"key": "smartflo"}) or {}
+    if (h.get("last_alert_at") or "") > (now - timedelta(hours=SMARTFLO_HEALTH_REALERT_HOURS)).isoformat():
+        return  # already alerted recently
+    last_401 = h.get("last_401_at") or ""
+    last_ok = h.get("last_ok_at") or ""
+    recent_401 = last_401 > (now - timedelta(minutes=45)).isoformat()
+    silent = last_ok < (now - timedelta(hours=SMARTFLO_SILENCE_HOURS)).isoformat()
+    alert = None
+    if recent_401:
+        alert = (f"⚠️ Smartflo webhook is REJECTING calls (401) — events are arriving WITHOUT the secret, so call "
+                 f"logging, screen-pop and missed-call WhatsApp are dropping them. Fix: add "
+                 f"?secret=<SMARTFLO_WEBHOOK_SECRET> to EVERY Smartflo webhook event URL.")
+    elif silent:
+        when = (last_ok[:16].replace("T", " ") + " UTC") if last_ok else "a long time"
+        alert = (f"⚠️ No Smartflo call events received since {when} (>{SMARTFLO_SILENCE_HOURS}h during business hours). "
+                 f"Possible telephony/webhook outage — incoming calls + missed-call WhatsApp may be down.")
+    if alert:
+        await _wa_send_to_manager(alert, fallback_desc="Smartflo webhook health alert.")
+        await db.webhook_health.update_one({"key": "smartflo"}, {"$set": {"last_alert_at": now.isoformat()}}, upsert=True)
+        logger.warning(f"Smartflo health alert sent: {alert[:80]}")
+
+
 # =============================================================================
 # Screen-pop pub/sub — in-memory fan-out of inbound-call events to subscribed agents
 # =============================================================================
@@ -53412,8 +53456,11 @@ async def smartflo_webhook(request: Request):
                        bool(request.headers.get("x-webhook-secret")),
                        bool(request.query_params.get("secret") or request.query_params.get("token")),
                        (supplied[:10] + "…") if len(supplied) > 10 else supplied)
+        await db.webhook_health.update_one({"key": "smartflo"}, {
+            "$set": {"last_401_at": datetime.now(timezone.utc).isoformat()}, "$inc": {"count_401": 1}}, upsert=True)
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
     now = datetime.now(timezone.utc)
+    await db.webhook_health.update_one({"key": "smartflo"}, {"$set": {"last_ok_at": now.isoformat()}}, upsert=True)
 
     try:
         # Get the raw JSON body
