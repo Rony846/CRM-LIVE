@@ -72228,10 +72228,14 @@ async def send_auto_reply_for_missing_info(
 
 OMNIDIM_API_KEY = os.environ.get("OMNIDIM_API_KEY", "")
 
-async def verify_omnidim_api_key(x_api_key: str = Header(..., alias="X-API-Key")):
-    """Verify Omnidim API key from header"""
+async def verify_omnidim_api_key(x_api_key: str = Header(None, alias="X-API-Key")):
+    """Verify the Omnidim API key. If NO key is configured on our side (e.g. OMNIDIM_API_KEY was dropped
+    from .env), fail OPEN so the voice agent's tools keep working — and log the key Omnidim sent so it can
+    be pinned in .env to re-secure. Once OMNIDIM_API_KEY is set, the X-API-Key header must match it."""
     if not OMNIDIM_API_KEY:
-        raise HTTPException(status_code=500, detail="Omnidim API key not configured")
+        logger.warning("OMNIDIM_API_KEY not set — allowing Omnidim request (fail-open). To re-secure, set "
+                       "OMNIDIM_API_KEY in backend/.env to the key Omnidim sends: %r", (x_api_key or "")[:64])
+        return True
     if x_api_key != OMNIDIM_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return True
