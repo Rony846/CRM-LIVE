@@ -73040,7 +73040,15 @@ async def get_leads(
         ]
     
     total = await db.leads.count_documents(query)
-    leads = await db.leads.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+    # Sort by LAST ACTIVITY (updated_at, falling back to created_at) so a customer who contacts
+    # again — or any freshly handed-off/enriched lead — rises to the top.
+    leads = await db.leads.aggregate([
+        {"$match": query},
+        {"$addFields": {"_activity": {"$ifNull": ["$updated_at", "$created_at"]}}},
+        {"$sort": {"_activity": -1}},
+        {"$skip": skip}, {"$limit": limit},
+        {"$project": {"_id": 0, "_activity": 0}},
+    ]).to_list(limit)
     
     # Get stats
     stats = {
@@ -74782,8 +74790,21 @@ async def _wa_tool_handoff_to_sales(digits: str, name: str, inp: dict) -> dict:
         title="\U0001f6d2 New sales lead (WhatsApp)",
         message=f"{name or digits} wants {product}" + (f" — {city}" if city else "") + ". Routed from support; please follow up.",
         notification_type="lead_created", link="/leads", target_roles=["admin", "call_support"], priority="high")
+    # Post the lead to the main WhatsApp group — point-to-point, customer details + need only, no extra text.
+    group = await _pr_get_main_group()
+    if group:
+        glines = ["\U0001f6d2 Sales Lead", f"Name: {name or '-'}", f"Phone: {digits}"]
+        if city:
+            glines.append(f"City: {city}")
+        glines.append(f"Needs: {product}")
+        if summary and summary.strip().lower() not in product.lower():
+            glines.append(f"Detail: {summary}")
+        try:
+            await send_whatsapp_message(group, "\n".join(glines), force=True)
+        except Exception as e:
+            logger.warning(f"sales lead group message failed: {e}")
     return {"success": True, "lead_id": lead_id, "created": created,
-            "note": "Sales lead saved + sales team alerted. Tell the customer (Hinglish) our sales team will contact them shortly. Do not quote prices."}
+            "note": "Sales lead saved + sales team alerted (CRM + WhatsApp group). Tell the customer (Hinglish) our sales team will contact them shortly. Do not quote prices."}
 
 
 def _wa_support_executor(digits: str, name: str):
