@@ -67751,6 +67751,20 @@ async def _bigship_create_warehouse(name, address_line1, address_line2, landmark
         return None
 
 
+def _bigship_consignee_name(first: str, last: str = ""):
+    """Bigship requires a consignee last_name of 3–25 letters (alphabets/dots/spaces). Split or
+    substitute so a missing/short last name never 400s the booking."""
+    f = re.sub(r"[^A-Za-z. ]", "", (first or "").strip())
+    l = re.sub(r"[^A-Za-z. ]", "", (last or "").strip())
+    if len(l) < 3:
+        parts = f.split()
+        if len(parts) > 1 and len(" ".join(parts[1:])) >= 3:
+            f, l = parts[0], " ".join(parts[1:])
+        else:
+            l = "Customer"
+    return (f or "Customer")[:25], l[:25]
+
+
 async def _pratibha_book_reverse_pickup(rp: dict, ctx: dict):
     """Reverse pickup: register the CUSTOMER's address as a Bigship warehouse (pickup), then book a
     shipment FROM there TO the MuscleGrid Meerut warehouse. `rp` carries the customer's pickup details
@@ -67764,9 +67778,10 @@ async def _pratibha_book_reverse_pickup(rp: dict, ctx: dict):
         city=rp.get("city", ""), state=rp.get("state", ""), person=cust_name, phone=rp.get("phone", ""))
     if not wid:
         return SimpleNamespace(success=False, message="Could not register the customer's pickup point on Bigship.")
+    rf, rl = _bigship_consignee_name(RP_RETURN["first_name"], RP_RETURN.get("last_name", ""))
     fields = {
         "shipment_type": "b2c", "warehouse_id": wid,
-        "first_name": RP_RETURN["first_name"], "last_name": "", "phone": RP_RETURN["phone"],
+        "first_name": rf, "last_name": rl, "phone": RP_RETURN["phone"],
         "address_line1": RP_RETURN["address_line1"], "address_line2": RP_RETURN["address_line2"],
         "city": RP_RETURN["city"], "state": RP_RETURN["state"], "pincode": RP_RETURN["pincode"],
         "product_name": rp.get("product_name") or "Returned product",
@@ -67775,6 +67790,9 @@ async def _pratibha_book_reverse_pickup(rp: dict, ctx: dict):
         "payment_type": "Prepaid", "cod_amount": 0,
         "invoice_number": (rp.get("order_id") or f"RP-{uuid.uuid4().hex[:8].upper()}"),
         "weight_kg": float(rp.get("weight_kg") or 5.0),
+        "length_cm": int(rp.get("length_cm") or 30),
+        "width_cm": int(rp.get("width_cm") or rp.get("breadth_cm") or 30),
+        "height_cm": int(rp.get("height_cm") or 30),
     }
     resp = await _pratibha_book_shipment(fields, ctx)
     try:
@@ -67811,9 +67829,10 @@ async def _pratibha_book_shipback(dest: dict, product_name: str, weight_kg, paym
         return SimpleNamespace(success=False, message="Could not register the Meerut return warehouse on Bigship.")
     pay = "COD" if str(payment_type).upper() == "COD" else "Prepaid"
     cod = float(cod_amount or 0) if pay == "COD" else 0
+    cf, cl = _bigship_consignee_name(dest.get("first_name"), dest.get("last_name"))
     fields = {
         "shipment_type": "b2c", "warehouse_id": wid,
-        "first_name": dest.get("first_name") or "Customer", "last_name": dest.get("last_name") or "",
+        "first_name": cf, "last_name": cl,
         "phone": re.sub(r"\D", "", str(dest.get("phone") or ""))[-10:],
         "address_line1": (dest.get("address_line1") or "")[:50], "address_line2": (dest.get("address_line2") or "")[:50],
         "city": dest.get("city") or "", "state": dest.get("state") or "", "pincode": str(dest.get("pincode") or ""),
