@@ -72764,13 +72764,105 @@ async def omnidim_create_lead(
     )
     
     logger.info(f"Omnidim lead created: {lead_id} for phone {clean_phone}")
-    
+
     return {
         "success": True,
         "lead_id": lead_id,
         "is_new": True,
         "message": f"New lead created for {lead_data.name or clean_phone}"
     }
+
+
+def _omni_find(obj, keys):
+    """Find the first non-empty value for any of `keys` anywhere in a nested dict/list (case-insensitive)."""
+    want = {k.lower() for k in keys}
+    stack = [obj]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            for k, v in cur.items():
+                if str(k).lower() in want and v not in (None, "", [], {}):
+                    return v
+            stack.extend(v for v in cur.values() if isinstance(v, (dict, list)))
+        elif isinstance(cur, list):
+            stack.extend(cur)
+    return None
+
+
+def _omni_transcript_text(t) -> str:
+    """Normalize a transcript that may be a string or a list of {role/speaker, text/content} turns."""
+    if isinstance(t, str):
+        return t
+    if isinstance(t, list):
+        out = []
+        for turn in t:
+            if isinstance(turn, dict):
+                who = turn.get("role") or turn.get("speaker") or turn.get("from") or ""
+                msg = turn.get("text") or turn.get("content") or turn.get("message") or ""
+                out.append(f"{who}: {msg}".strip(": ").strip())
+            elif isinstance(turn, str):
+                out.append(turn)
+        return "\n".join(x for x in out if x)
+    return ""
+
+
+@api_router.post("/omnidim/post-call")
+async def omnidim_post_call(request: Request):
+    """Omnidim 'post-call delivery' webhook: receives the full call JSON after EVERY call.
+    Auth via X-API-Key header OR ?token= / ?key= query (so it works even if Omnidim only lets you
+    enter a URL). Stores the raw payload + best-effort extracted fields in db.omnidim_calls, and
+    attaches the call summary/recording to the customer's most recent Omnidim ticket."""
+    secret = (os.environ.get("OMNIDIM_WEBHOOK_SECRET", "") or os.environ.get("OMNIDIM_API_KEY", "")).strip()
+    if secret:
+        supplied = (request.headers.get("X-API-Key") or request.query_params.get("token")
+                    or request.query_params.get("key") or request.query_params.get("secret") or "")
+        if supplied != secret:
+            raise HTTPException(status_code=401, detail="Invalid Omnidim webhook token")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {"_raw_text": (await request.body()).decode("utf-8", "replace")[:20000]}
+
+    phone_raw = _omni_find(payload, ["customer_phone", "phone", "phone_number", "caller", "from",
+                                     "from_number", "mobile", "to", "to_number", "callee"])
+    digits = re.sub(r"\D", "", str(phone_raw or ""))[-10:]
+    if len(digits) != 10:  # fallback: first India-style 10-digit number anywhere in the payload
+        m = re.search(r"[6-9]\d{9}", json.dumps(payload, default=str))
+        digits = m.group(0) if m else ""
+    summary = _omni_find(payload, ["summary", "call_summary", "summary_text", "conversation_summary"])
+    transcript = _omni_transcript_text(_omni_find(payload, ["transcript", "conversation", "messages", "dialog"]))
+    outcome = _omni_find(payload, ["disposition", "outcome", "call_status", "result", "status", "call_outcome"])
+    sentiment = _omni_find(payload, ["sentiment", "customer_sentiment", "mood"])
+    recording = _omni_find(payload, ["recording_url", "recording", "audio_url", "call_recording_url"])
+    duration = _omni_find(payload, ["duration", "call_duration", "duration_seconds", "talk_time"])
+    extracted = _omni_find(payload, ["extracted_variables", "variables", "extracted_data", "custom_data", "collected_data"])
+    now = datetime.now(timezone.utc).isoformat()
+
+    call_doc = {
+        "id": str(uuid.uuid4()), "phone": digits, "summary": summary,
+        "transcript": (transcript or "")[:20000], "outcome": outcome, "sentiment": sentiment,
+        "recording_url": recording, "duration": duration, "extracted": extracted,
+        "received_at": now, "source": "omnidim_post_call", "raw": payload,
+    }
+    await db.omnidim_calls.insert_one(call_doc)
+
+    # Attach the call to the customer's most recent Omnidim ticket (context for staff + Kalpana).
+    linked = None
+    if digits:
+        tk = await db.tickets.find_one(
+            {"customer_phone": {"$regex": re.escape(digits) + "$"}}, sort=[("created_at", -1)])
+        if tk:
+            linked = tk.get("ticket_number")
+            await db.tickets.update_one({"id": tk["id"]}, {"$set": {
+                "last_call_summary": (summary or "")[:1000], "last_call_recording": recording,
+                "last_call_at": now, "updated_at": now}})
+            try:
+                await add_ticket_history(tk["id"], f"Omnidim call: {(summary or outcome or 'call completed')[:160]}",
+                                         REPAIR_LOOP_AGENT, {"action_type": "omnidim_call", "recording": recording})
+            except Exception as e:
+                logger.warning(f"omnidim call history attach failed: {e}")
+    logger.info(f"Omnidim post-call stored: phone={digits or '?'} outcome={outcome} linked_ticket={linked}")
+    return {"success": True, "call_id": call_doc["id"], "phone": digits, "linked_ticket": linked}
 
 
 @api_router.get("/leads")
