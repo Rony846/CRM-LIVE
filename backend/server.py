@@ -53332,7 +53332,16 @@ async def smartflo_webhook(request: Request):
     """
     if not SMARTFLO_WEBHOOK_SECRET:
         raise HTTPException(status_code=503, detail="Smartflo webhook secret not configured")
-    if not _const_eq(request.headers.get("x-webhook-secret", ""), SMARTFLO_WEBHOOK_SECRET):
+    # Accept the secret from the X-Webhook-Secret header OR a ?secret=/?token= query param, so it works
+    # even if Smartflo can only be given a plain URL (no custom headers).
+    supplied = (request.headers.get("x-webhook-secret") or request.query_params.get("secret")
+                or request.query_params.get("token") or "")
+    if not _const_eq(supplied, SMARTFLO_WEBHOOK_SECRET):
+        logger.warning("Smartflo webhook 401 — header_present=%s query_present=%s supplied=%r (set the Smartflo "
+                       "webhook URL to include ?secret=<SMARTFLO_WEBHOOK_SECRET>, or send the X-Webhook-Secret header)",
+                       bool(request.headers.get("x-webhook-secret")),
+                       bool(request.query_params.get("secret") or request.query_params.get("token")),
+                       (supplied[:10] + "…") if len(supplied) > 10 else supplied)
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
     now = datetime.now(timezone.utc)
 
