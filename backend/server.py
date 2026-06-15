@@ -72790,13 +72790,21 @@ def _omni_find(obj, keys):
 
 
 def _omni_transcript_text(t) -> str:
-    """Normalize a transcript that may be a string or a list of {role/speaker, text/content} turns."""
+    """Normalize a transcript that may be a string (Omnidim 'full_conversation'), or a list of turns
+    in {user_query, bot_response} (Omnidim 'interactions') or {role/speaker, text/content} form."""
     if isinstance(t, str):
         return t
     if isinstance(t, list):
         out = []
         for turn in t:
             if isinstance(turn, dict):
+                if "user_query" in turn or "bot_response" in turn:  # Omnidim 'interactions'
+                    uq, br = turn.get("user_query"), turn.get("bot_response")
+                    if uq and uq is not False:
+                        out.append(f"User: {uq}")
+                    if br:
+                        out.append(f"Bot: {br}")
+                    continue
                 who = turn.get("role") or turn.get("speaker") or turn.get("from") or ""
                 msg = turn.get("text") or turn.get("content") or turn.get("message") or ""
                 out.append(f"{who}: {msg}".strip(": ").strip())
@@ -72804,6 +72812,35 @@ def _omni_transcript_text(t) -> str:
                 out.append(turn)
         return "\n".join(x for x in out if x)
     return ""
+
+
+async def _omni_maybe_queue_outreach(digits, name, product, issue, urgency, sentiment, ticket_number):
+    """From a post-call: if the customer raised a real issue, queue a REVIEW-GATED WhatsApp follow-up
+    (deduped by phone). High-urgency / negative-sentiment calls also ping the founder. Returns id or None."""
+    if not OMNIDIM_OUTREACH_ENABLED or len(digits or "") != 10 or not issue:
+        return None
+    if await db.whatsapp_optouts.find_one({"phone": digits}, {"_id": 1}):
+        return None
+    if await db.omnidim_outreach.find_one({"customer_phone": digits, "status": "pending_review"}, {"_id": 1}):
+        return None  # already waiting for review
+    cooldown = (datetime.now(timezone.utc) - timedelta(days=OMNIDIM_OUTREACH_COOLDOWN_DAYS)).isoformat()
+    if await db.omnidim_outreach.find_one(
+            {"customer_phone": digits, "status": "sent", "sent_at": {"$gte": cooldown}}, {"_id": 1}):
+        return None  # contacted recently
+    u, s = str(urgency or "").lower(), str(sentiment or "").lower()
+    high = ("high" in u or "urgent" in u or "critical" in u or s in ("negative", "frustrated", "angry", "upset"))
+    oid = str(uuid.uuid4())
+    await db.omnidim_outreach.insert_one({
+        "id": oid, "ticket_number": ticket_number, "customer_phone": digits, "customer_name": name or "",
+        "product": product, "issue": (issue or "")[:300], "ticket_status": "from_call",
+        "priority": "high" if high else "normal", "status": "pending_review", "source": "post_call",
+        "created_at": datetime.now(timezone.utc).isoformat()})
+    if high:
+        await _wa_send_to_manager(
+            f"\U0001f534 *Urgent call follow-up* — {name or digits} ({digits}) ne abhi call kiya: "
+            f"{(issue or '')[:120]}{(' [' + str(urgency) + ']') if urgency else ''}. Reply *send omnidim* to text them.",
+            fallback_desc=f"Urgent Omnidim call follow-up for {name or digits} ({digits}).")
+    return oid
 
 
 @api_router.post("/omnidim/post-call")
@@ -72823,26 +72860,44 @@ async def omnidim_post_call(request: Request):
     except Exception:
         payload = {"_raw_text": (await request.body()).decode("utf-8", "replace")[:20000]}
 
-    phone_raw = _omni_find(payload, ["customer_phone", "phone", "phone_number", "caller", "from",
-                                     "from_number", "mobile", "to", "to_number", "callee"])
+    # Customer number by call direction (outbound→to_number, inbound→from_number).
+    direction = str(_omni_find(payload, ["call_direction", "direction"]) or "").lower()
+    cust_num = (_omni_find(payload, ["to_number"]) if "out" in direction else _omni_find(payload, ["from_number"]))
+    phone_raw = cust_num or _omni_find(payload, ["customer_phone", "phone_number", "phone", "caller",
+                                                 "from_number", "to_number", "mobile", "callee"])
     digits = re.sub(r"\D", "", str(phone_raw or ""))[-10:]
     if len(digits) != 10:  # fallback: first India-style 10-digit number anywhere in the payload
         m = re.search(r"[6-9]\d{9}", json.dumps(payload, default=str))
         digits = m.group(0) if m else ""
     summary = _omni_find(payload, ["summary", "call_summary", "summary_text", "conversation_summary"])
-    transcript = _omni_transcript_text(_omni_find(payload, ["transcript", "conversation", "messages", "dialog"]))
-    outcome = _omni_find(payload, ["disposition", "outcome", "call_status", "result", "status", "call_outcome"])
+    transcript = _omni_transcript_text(_omni_find(
+        payload, ["full_conversation", "transcript", "conversation", "messages", "dialog", "interactions"]))
+    outcome = _omni_find(payload, ["disposition", "outcome", "call_status", "result", "call_outcome"])
     sentiment = _omni_find(payload, ["sentiment", "customer_sentiment", "mood"])
     recording = _omni_find(payload, ["recording_url", "recording", "audio_url", "call_recording_url"])
     duration = _omni_find(payload, ["duration", "call_duration", "duration_seconds", "talk_time"])
     extracted = _omni_find(payload, ["extracted_variables", "variables", "extracted_data", "custom_data", "collected_data"])
+
+    # Pull the structured fields Omnidim collected (ignore the demo "Test value for…" placeholders).
+    ev = extracted if isinstance(extracted, dict) else {}
+
+    def _ev(*names):
+        for k, v in ev.items():
+            if str(k).lower() in names and v and not str(v).lower().startswith("test value"):
+                return v
+        return None
+    issue = _ev("technical_issue", "issue", "problem", "complaint")
+    urgency = _ev("urgency_level", "urgency", "priority")
+    product = _ev("product_interest", "product", "product_name", "model")
+    cust_name = _ev("customer_name", "name", "caller_name")
     now = datetime.now(timezone.utc).isoformat()
 
     call_doc = {
         "id": str(uuid.uuid4()), "phone": digits, "summary": summary,
         "transcript": (transcript or "")[:20000], "outcome": outcome, "sentiment": sentiment,
         "recording_url": recording, "duration": duration, "extracted": extracted,
-        "received_at": now, "source": "omnidim_post_call", "raw": payload,
+        "technical_issue": issue, "urgency": urgency, "product": product, "customer_name": cust_name,
+        "direction": direction, "received_at": now, "source": "omnidim_post_call", "raw": payload,
     }
     await db.omnidim_calls.insert_one(call_doc)
 
@@ -72861,8 +72916,16 @@ async def omnidim_post_call(request: Request):
                                          REPAIR_LOOP_AGENT, {"action_type": "omnidim_call", "recording": recording})
             except Exception as e:
                 logger.warning(f"omnidim call history attach failed: {e}")
-    logger.info(f"Omnidim post-call stored: phone={digits or '?'} outcome={outcome} linked_ticket={linked}")
-    return {"success": True, "call_id": call_doc["id"], "phone": digits, "linked_ticket": linked}
+    # If the caller raised a real issue, queue a review-gated WhatsApp follow-up (urgent ones ping the founder).
+    queued = None
+    try:
+        queued = await _omni_maybe_queue_outreach(digits, cust_name, product, issue, urgency, sentiment, linked)
+    except Exception as e:
+        logger.warning(f"omnidim outreach queue from call failed: {e}")
+    logger.info(f"Omnidim post-call stored: phone={digits or '?'} issue={bool(issue)} urgency={urgency} "
+                f"linked_ticket={linked} queued_outreach={bool(queued)}")
+    return {"success": True, "call_id": call_doc["id"], "phone": digits, "linked_ticket": linked,
+            "issue": issue, "urgency": urgency, "queued_outreach": bool(queued)}
 
 
 @api_router.get("/leads")
