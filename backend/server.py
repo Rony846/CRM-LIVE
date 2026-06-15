@@ -1030,6 +1030,17 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Sales lead follow-up: chase the assigned salesperson (Sakshi/Amit) about open leads with no progress.
+        scheduler.add_job(
+            scheduled_sales_lead_followups,
+            IntervalTrigger(hours=int(os.environ.get("SALES_FOLLOWUP_SCAN_HOURS", "3"))),
+            id="sales_lead_followups",
+            name="Sales lead follow-up (nudge assignee until progress)",
+            replace_existing=True,
+            misfire_grace_time=600,
+            max_instances=1,
+        )
+
         # Shopify nightly reconcile — catch any order webhooks that were missed (default
         # 20:30 UTC ≈ 02:00 IST). No-op until SHOPIFY_STORE + SHOPIFY_ADMIN_TOKEN are set.
         scheduler.add_job(
@@ -74810,9 +74821,33 @@ async def _wa_tool_notify_technician(digits: str, name: str, message: str) -> di
             "note": "Job tracked — his reply (time/'done') will come back to you."}
 
 
+_SALES_ROSTER = {"list": None, "loaded": False}
+
+
+async def _get_sales_assignees():
+    """Salespeople roster (round-robin for new leads + follow-up targets). Stored in
+    db.pratibha_settings key 'sales_assignees' = [{name, phone, user_id}]."""
+    if not _SALES_ROSTER["loaded"]:
+        doc = await db.pratibha_settings.find_one({"key": "sales_assignees"}, {"_id": 0, "value": 1})
+        _SALES_ROSTER["list"] = (doc or {}).get("value") or []
+        _SALES_ROSTER["loaded"] = True
+    return _SALES_ROSTER["list"]
+
+
+async def _next_sales_assignee():
+    """Round-robin pick of the next salesperson, or None if no roster is configured."""
+    roster = await _get_sales_assignees()
+    if not roster:
+        return None
+    doc = await db.pratibha_settings.find_one({"key": "sales_rr"}, {"_id": 0, "value": 1})
+    idx = int((doc or {}).get("value") or 0)
+    await db.pratibha_settings.update_one({"key": "sales_rr"}, {"$set": {"value": idx + 1}}, upsert=True)
+    return roster[idx % len(roster)]
+
+
 async def _wa_tool_handoff_to_sales(digits: str, name: str, inp: dict) -> dict:
-    """Sales handoff: the customer wants to BUY. Create or enrich a sales lead + alert the sales team.
-    One handoff per customer per day (no spam). Returns a note for the agent."""
+    """Sales handoff: the customer wants to BUY. Create or enrich a sales lead, auto-assign it round-robin
+    between the salespeople (Sakshi/Amit), and alert them. One handoff per customer per day (no spam)."""
     now = datetime.now(timezone.utc).isoformat()
     today = now[:10]
     product = (inp.get("product_interest") or "").strip() or "MuscleGrid products"
@@ -74826,27 +74861,51 @@ async def _wa_tool_handoff_to_sales(digits: str, name: str, inp: dict) -> dict:
             + (f" Location: {city}." if city else "") + (f" {summary}" if summary else ""))
     interaction = {"id": str(uuid.uuid4()), "type": "whatsapp", "channel": "whatsapp_cloud",
                    "note": f"Sales inquiry: {product}" + (f" ({city})" if city else ""), "at": now, "by": "pratibha_agent"}
+    # Auto-assign round-robin, but keep an existing assignment if the lead already has one.
+    new_assignee = None if (lead and lead.get("assigned_to_name")) else await _next_sales_assignee()
     if lead:
         new_notes = ((lead.get("notes") or "").strip() + ("\n\n" if lead.get("notes") else "") + note).strip()
         status = lead.get("status") if lead.get("status") in ("converted", "won", "lost") else "new"
-        await db.leads.update_one({"id": lead["id"]}, {
-            "$set": {"product_interest": product, "notes": new_notes, "status": status,
-                     "sales_handoff_at": now, "updated_at": now},
-            "$push": {"interactions": interaction}})
+        setf = {"product_interest": product, "notes": new_notes, "status": status,
+                "sales_handoff_at": now, "updated_at": now}
+        if new_assignee:
+            setf.update({"assigned_to": new_assignee.get("user_id"), "assigned_to_name": new_assignee.get("name"),
+                         "assigned_phone": new_assignee.get("phone"), "assigned_at": now})
+        await db.leads.update_one({"id": lead["id"]}, {"$set": setf, "$push": {"interactions": interaction}})
         lead_id, created = lead["id"], False
+        eff = new_assignee or {"name": lead.get("assigned_to_name"), "phone": lead.get("assigned_phone"),
+                               "user_id": lead.get("assigned_to")}
     else:
         lead_id = str(uuid.uuid4())
         await db.leads.insert_one({
             "id": lead_id, "phone": digits, "name": name or "", "email": "", "product_interest": product,
             "source": "whatsapp_support", "status": "new", "notes": note, "city": city,
-            "assigned_to": None, "assigned_to_name": None, "follow_up_date": None,
-            "interactions": [interaction], "sales_handoff_at": now,
+            "assigned_to": (new_assignee or {}).get("user_id"), "assigned_to_name": (new_assignee or {}).get("name"),
+            "assigned_phone": (new_assignee or {}).get("phone"), "assigned_at": now if new_assignee else None,
+            "follow_up_date": None, "interactions": [interaction], "sales_handoff_at": now,
             "created_by": "pratibha_agent", "created_at": now, "updated_at": now})
         created = True
+        eff = new_assignee or {}
+    assignee_name = eff.get("name")
     await create_notification(
         title="\U0001f6d2 New sales lead (WhatsApp)",
-        message=f"{name or digits} wants {product}" + (f" — {city}" if city else "") + ". Routed from support; please follow up.",
-        notification_type="lead_created", link="/leads", target_roles=["admin", "call_support"], priority="high")
+        message=f"{name or digits} wants {product}" + (f" — {city}" if city else "")
+                + (f" · assigned to {assignee_name}" if assignee_name else "") + ".",
+        notification_type="lead_created", link="/leads",
+        target_user_ids=[eff["user_id"]] if eff.get("user_id") else None,
+        target_roles=None if eff.get("user_id") else ["admin", "call_support"], priority="high")
+    # WhatsApp the assigned salesperson directly with the lead.
+    ap = re.sub(r"\D", "", str(eff.get("phone") or ""))[-10:]
+    if len(ap) == 10:
+        alines = ["\U0001f6d2 New sales lead (aapko assign)", f"Name: {name or '-'}", f"Phone: {digits}"]
+        if city:
+            alines.append(f"City: {city}")
+        alines.append(f"Needs: {product}")
+        alines.append("Customer ko contact karke update dijiye.")
+        try:
+            await send_whatsapp_message("91" + ap, "\n".join(alines), force=True)
+        except Exception as e:
+            logger.warning(f"sales assignee WhatsApp failed: {e}")
     # Post the lead to the main WhatsApp group — point-to-point, customer details + need only, no extra text.
     group = await _pr_get_main_group()
     if group:
@@ -74856,12 +74915,56 @@ async def _wa_tool_handoff_to_sales(digits: str, name: str, inp: dict) -> dict:
         glines.append(f"Needs: {product}")
         if summary and summary.strip().lower() not in product.lower():
             glines.append(f"Detail: {summary}")
+        if assignee_name:
+            glines.append(f"Assigned: {assignee_name}")
         try:
             await send_whatsapp_message(group, "\n".join(glines), force=True)
         except Exception as e:
             logger.warning(f"sales lead group message failed: {e}")
-    return {"success": True, "lead_id": lead_id, "created": created,
-            "note": "Sales lead saved + sales team alerted (CRM + WhatsApp group). Tell the customer (Hinglish) our sales team will contact them shortly. Do not quote prices."}
+    return {"success": True, "lead_id": lead_id, "created": created, "assigned_to": assignee_name,
+            "note": f"Sales lead saved + assigned to {assignee_name or 'the sales team'} + alerted (CRM, WhatsApp). "
+                    "Tell the customer (Hinglish) our sales team will contact them shortly. Do not quote prices."}
+
+
+SALES_FOLLOWUP_HOURS = int(os.environ.get("SALES_FOLLOWUP_HOURS", "24"))
+SALES_FOLLOWUP_MAX = int(os.environ.get("SALES_FOLLOWUP_MAX", "3"))
+
+
+async def scheduled_sales_lead_followups():
+    """Chase the assigned salesperson (Sakshi/Amit) about OPEN leads with no progress: WhatsApp a nudge per
+    stale lead, escalate to the founder after SALES_FOLLOWUP_MAX nudges. Stops once the lead is qualified/
+    converted/lost or freshly updated."""
+    if not await _get_sales_assignees():
+        return
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=SALES_FOLLOWUP_HOURS)).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
+    q = {"assigned_phone": {"$nin": [None, ""]}, "status": {"$in": ["new", "contacted"]},
+         "$or": [{"sales_followup_at": {"$exists": False}}, {"sales_followup_at": {"$lt": cutoff}}]}
+    leads = await db.leads.find(q).sort("updated_at", 1).limit(40).to_list(40)
+    for ld in leads:
+        if str(ld.get("updated_at") or "") > cutoff:
+            continue  # progress made recently — leave it alone this cycle
+        n = int(ld.get("sales_followup_count") or 0)
+        nm = ld.get("name") or ld.get("phone")
+        prod = ld.get("product_interest") or "product"
+        if n >= SALES_FOLLOWUP_MAX:
+            if not ld.get("sales_followup_escalated"):
+                await _wa_send_to_manager(
+                    f"⚠️ Sales lead no update after {n} reminders — {nm} ({ld.get('phone')}), {prod}, "
+                    f"assigned to {ld.get('assigned_to_name')}. Please push.",
+                    fallback_desc=f"Stale sales lead {nm} assigned to {ld.get('assigned_to_name')}.")
+                await db.leads.update_one({"id": ld["id"]}, {"$set": {"sales_followup_escalated": True, "sales_followup_at": now}})
+            continue
+        ap = re.sub(r"\D", "", str(ld.get("assigned_phone") or ""))[-10:]
+        if len(ap) == 10:
+            msg = (f"\U0001f6d2 Lead follow-up [{n + 1}]\nName: {nm}\nPhone: {ld.get('phone')}\n"
+                   + (f"City: {ld.get('city')}\n" if ld.get("city") else "")
+                   + f"Needs: {prod}\nStatus: {ld.get('status')}. Kya update hai? Customer se contact hua?")
+            try:
+                await send_whatsapp_message("91" + ap, msg, force=True)
+            except Exception as e:
+                logger.warning(f"sales followup send failed: {e}")
+        await db.leads.update_one({"id": ld["id"]}, {"$set": {"sales_followup_at": now}, "$inc": {"sales_followup_count": 1}})
 
 
 def _wa_support_executor(digits: str, name: str):
