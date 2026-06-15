@@ -1030,6 +1030,17 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Missed-call WhatsApp safety net: every 20 min, re-send to any missed caller not yet reached.
+        scheduler.add_job(
+            scheduled_missed_call_reconcile,
+            IntervalTrigger(minutes=int(os.environ.get("MISSED_CALL_RECONCILE_MIN", "20"))),
+            id="missed_call_reconcile",
+            name="Missed-call WhatsApp reconcile (no caller left un-messaged)",
+            replace_existing=True,
+            misfire_grace_time=300,
+            max_instances=1,
+        )
+
         # Sales lead follow-up: chase the assigned salesperson (Sakshi/Amit) about open leads with no progress.
         scheduler.add_job(
             scheduled_sales_lead_followups,
@@ -51278,11 +51289,12 @@ MISSED_CALL_WA_ENABLED = os.environ.get("MISSED_CALL_WA_ENABLED", "").strip().lo
 MISSED_CALL_WA_DEDUP_MIN = int(os.environ.get("MISSED_CALL_WA_DEDUP_MIN", "180") or 180)
 
 
-async def send_missed_call_whatsapp(phone_number: str, call_type: str = "missed"):
+async def send_missed_call_whatsapp(phone_number: str, call_type: str = "missed", bypass_dedup: bool = False):
     """On a missed call, WhatsApp the caller via the bridge so they can be helped
     without calling back. Off unless MISSED_CALL_WA_ENABLED. Dedup-guarded per
     number so repeated missed calls don't spam. This is a transactional reply to
-    the caller's own action (lowest-risk moment to message), sent immediately."""
+    the caller's own action (lowest-risk moment to message), sent immediately.
+    `bypass_dedup` lets the reconciler retry a number that hasn't been reached yet."""
     # Channel: prefer the official WhatsApp Cloud API (template) when configured;
     # fall back to the bridge only if explicitly enabled. If neither, do nothing.
     use_cloud = whatsapp_cloud.enabled()
@@ -51291,9 +51303,10 @@ async def send_missed_call_whatsapp(phone_number: str, call_type: str = "missed"
     clean = re.sub(r"\D", "", phone_number or "")[-10:]
     if len(clean) != 10 or not clean.isdigit():
         return {"skipped": "bad_number"}
-    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=MISSED_CALL_WA_DEDUP_MIN)).isoformat()
-    if await db.missed_call_wa_logs.find_one({"phone": clean, "sent_at": {"$gte": cutoff}}, {"_id": 1}):
-        return {"skipped": "dedup"}
+    if not bypass_dedup:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=MISSED_CALL_WA_DEDUP_MIN)).isoformat()
+        if await db.missed_call_wa_logs.find_one({"phone": clean, "sent_at": {"$gte": cutoff}}, {"_id": 1}):
+            return {"skipped": "dedup"}
 
     ok = False
     if use_cloud:
@@ -51329,6 +51342,52 @@ async def send_missed_call_whatsapp(phone_number: str, call_type: str = "missed"
         "sent_at": datetime.now(timezone.utc).isoformat(),
     })
     return {"success": ok, "channel": channel}
+
+
+MISSED_CALL_RECONCILE_HOURS = int(os.environ.get("MISSED_CALL_RECONCILE_HOURS", "24"))
+MISSED_CALL_RECONCILE_MAX_TRIES = int(os.environ.get("MISSED_CALL_RECONCILE_MAX_TRIES", "3"))
+
+
+async def scheduled_missed_call_reconcile():
+    """Safety net: make sure EVERY missed caller actually got the WhatsApp. Scans recent missed calls in
+    db.smartflo_calls and, for any caller WITHOUT a successful missed_call_wa_logs entry, re-sends (covers a
+    crashed fire-and-forget task or a transient Meta failure). After MISSED_CALL_RECONCILE_MAX_TRIES failed
+    attempts (e.g. the number isn't on WhatsApp) it flags ops to call them manually, then stops retrying."""
+    if not (whatsapp_cloud.enabled() or MISSED_CALL_WA_ENABLED):
+        return
+    since = (datetime.now(timezone.utc) - timedelta(hours=MISSED_CALL_RECONCILE_HOURS)).isoformat()
+    calls = await db.smartflo_calls.find(
+        {"call_status": "missed", "received_at": {"$gte": since}},
+        {"_id": 0, "caller_phone": 1, "caller_number": 1}).to_list(2000)
+    seen, recovered, flagged = set(), 0, 0
+    for c in calls:
+        clean = re.sub(r"\D", "", str(c.get("caller_phone") or c.get("caller_number") or ""))[-10:]
+        if len(clean) != 10 or clean in seen:
+            continue
+        seen.add(clean)
+        if await db.whatsapp_optouts.find_one({"phone": clean}, {"_id": 1}):
+            continue
+        logs = await db.missed_call_wa_logs.find(
+            {"phone": clean, "sent_at": {"$gte": since}}, {"_id": 0, "success": 1}).to_list(20)
+        if any(l.get("success") for l in logs):
+            continue  # already reached — nothing to do
+        if len(logs) >= MISSED_CALL_RECONCILE_MAX_TRIES:
+            if not await db.missed_call_wa_logs.find_one({"phone": clean, "channel": "needs_human"}, {"_id": 1}):
+                await create_notification(
+                    title="☎️ Missed caller not reachable on WhatsApp",
+                    message=f"Couldn't WhatsApp {clean} after {len(logs)} tries — please call them back manually.",
+                    notification_type="whatsapp", link="/calls", target_roles=["admin", "call_support"], priority="high")
+                await db.missed_call_wa_logs.insert_one({
+                    "id": str(uuid.uuid4()), "phone": clean, "call_type": "missed", "channel": "needs_human",
+                    "detail": {"reason": "max_retries"}, "success": False,
+                    "sent_at": datetime.now(timezone.utc).isoformat()})
+                flagged += 1
+            continue
+        res = await send_missed_call_whatsapp(clean, "missed", bypass_dedup=True)
+        if res.get("success"):
+            recovered += 1
+    if recovered or flagged:
+        logger.info(f"Missed-call reconcile: recovered={recovered} flagged_for_human={flagged} of {len(seen)} callers")
 
 
 # =============================================================================
