@@ -51298,6 +51298,18 @@ async def send_post_call_sms(phone_number: str, call_type: str = "general"):
 # (unofficial) bridge number carries a ban risk, so the founder opts in per env.
 MISSED_CALL_WA_ENABLED = os.environ.get("MISSED_CALL_WA_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
 MISSED_CALL_WA_DEDUP_MIN = int(os.environ.get("MISSED_CALL_WA_DEDUP_MIN", "180") or 180)
+# A connected call shorter than this (seconds) is treated like a missed call — the customer
+# likely wasn't helped — so they get the same WhatsApp follow-up.
+MISSED_CALL_SHORT_SECS = int(os.environ.get("MISSED_CALL_SHORT_SECONDS", "60") or 60)
+
+
+def _call_is_short(duration) -> bool:
+    """True if a connected call lasted >0 but < MISSED_CALL_SHORT_SECS seconds."""
+    try:
+        d = int(float(duration or 0))
+    except (TypeError, ValueError):
+        return False
+    return 0 < d < MISSED_CALL_SHORT_SECS
 
 
 async def send_missed_call_whatsapp(phone_number: str, call_type: str = "missed", bypass_dedup: bool = False):
@@ -51367,11 +51379,17 @@ async def scheduled_missed_call_reconcile():
     if not (whatsapp_cloud.enabled() or MISSED_CALL_WA_ENABLED):
         return
     since = (datetime.now(timezone.utc) - timedelta(hours=MISSED_CALL_RECONCILE_HOURS)).isoformat()
+    # Missed calls AND short (<60s) connected calls both warrant the follow-up.
     calls = await db.smartflo_calls.find(
-        {"call_status": "missed", "received_at": {"$gte": since}},
-        {"_id": 0, "caller_phone": 1, "caller_number": 1}).to_list(2000)
+        {"received_at": {"$gte": since},
+         "$or": [{"call_status": "missed"}, {"answered_agent_name": {"$nin": [None, ""]}}]},
+        {"_id": 0, "caller_phone": 1, "caller_number": 1, "call_status": 1, "duration": 1, "answered_agent_name": 1}
+    ).to_list(3000)
     seen, recovered, flagged = set(), 0, 0
     for c in calls:
+        missed_like = (c.get("call_status") == "missed") or _call_is_short(c.get("duration"))
+        if not missed_like:
+            continue  # a normal call that lasted >= 60s — no follow-up needed
         clean = re.sub(r"\D", "", str(c.get("caller_phone") or c.get("caller_number") or ""))[-10:]
         if len(clean) != 10 or clean in seen:
             continue
@@ -53556,9 +53574,12 @@ async def smartflo_webhook(request: Request):
             asyncio.create_task(send_post_call_sms(caller_phone, call_type))
             logger.info(f"Triggered post-call SMS for {caller_phone} (call type: {call_type})")
 
-            # On a MISSED call, also WhatsApp the caller (opt-in via MISSED_CALL_WA_ENABLED).
-            if call_type == "missed":
-                asyncio.create_task(send_missed_call_whatsapp(caller_phone, call_type))
+            # WhatsApp the caller on a MISSED call OR a SHORT (<60s) connected call — both mean the
+            # customer probably wasn't helped. (Dedup per number prevents repeat sends.)
+            short_answered = bool(body.get("answered_agent_name")) and _call_is_short(body.get("duration") or body.get("billsec"))
+            if call_type == "missed" or short_answered:
+                asyncio.create_task(send_missed_call_whatsapp(
+                    caller_phone, "short_call" if (short_answered and call_type != "missed") else "missed"))
 
         # ========== SCREEN-POP BROADCAST ==========
         # Notify connected agents about the inbound call so the browser can pop
