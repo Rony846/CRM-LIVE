@@ -799,6 +799,19 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Bigship PANEL scrape — read the All-Shipments report (the API can't list orders) to
+        # capture labels created in the panel. Off unless BIGSHIP_PANEL_SCRAPE_ENABLED; the job
+        # body no-ops when the flag is off, so this registration is safe to leave in place.
+        scheduler.add_job(
+            scheduled_bigship_panel_scrape,
+            IntervalTrigger(minutes=int(os.environ.get("BIGSHIP_PANEL_SCRAPE_MIN", "30") or 30)),
+            id="bigship_panel_scrape",
+            name="Bigship Panel Scrape (All Shipments report)",
+            replace_existing=True,
+            misfire_grace_time=300,
+            max_instances=1,
+        )
+
         # Repair arrival → Gaurav: when a reverse-pickup is delivered to the Meerut service centre,
         # auto-notify the technician to start the repair (closes the manual arrival-trigger gap).
         scheduler.add_job(
@@ -1189,6 +1202,8 @@ GATE_SCAN_TYPES = ["inward", "outward"]
 
 # Minimum notes length for escalation
 MIN_NOTES_LENGTH = 100
+# Supervisor actions only need a short, real note — 100 chars blocked supervisors from acting.
+SUPERVISOR_MIN_NOTES = int(os.environ.get("SUPERVISOR_MIN_NOTES", "15"))
 
 # ==================== CENTRALIZED STATE MACHINE ====================
 # Single source of truth for all entity status transitions
@@ -7829,9 +7844,9 @@ async def supervisor_action(
     sku: Optional[str] = Form(None),
     user: dict = Depends(require_roles(["supervisor", "admin"]))
 ):
-    """Supervisor takes action on escalated ticket - notes must be 100+ chars"""
-    if len(notes) < MIN_NOTES_LENGTH:
-        raise HTTPException(status_code=400, detail=f"Notes must be at least {MIN_NOTES_LENGTH} characters")
+    """Supervisor takes action on a ticket. Needs a short note (SUPERVISOR_MIN_NOTES chars)."""
+    if len((notes or "").strip()) < SUPERVISOR_MIN_NOTES:
+        raise HTTPException(status_code=400, detail=f"Please add a short note ({SUPERVISOR_MIN_NOTES}+ characters) about the action.")
     
     ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
     if not ticket:
@@ -11414,6 +11429,47 @@ async def dispatcher_update_courier(
         "attempt": len(courier_history) + 1
     }
 
+@api_router.get("/dispatcher/stuck-shipments")
+async def get_stuck_shipments(
+    user: dict = Depends(require_roles(["dispatcher", "gate", "supervisor", "admin"]))
+):
+    """Bigship shipments stuck at the 'created' stage — a label exists but the courier
+    hasn't picked it up (NOT PICKED / PICKUP SCHEDULED). The scheduled_bigship_tracking
+    job keeps these statuses fresh; this endpoint just reads them for the live dispatcher
+    dashboard (cheap DB read, no Bigship call per refresh)."""
+    rows = await db.courier_shipments.find(
+        {"status": {"$regex": r"^\s*(not\s*picked|pickup\s*scheduled)\s*$", "$options": "i"}},
+        {"_id": 0, "awb_number": 1, "customer_name": 1, "company_name": 1, "courier_name": 1,
+         "status": 1, "invoice_number": 1, "consignee_city": 1, "consignee_state": 1,
+         "manifested_at": 1, "created_at": 1, "phone": 1, "product_name": 1}
+    ).to_list(500)
+    now = datetime.now(timezone.utc)
+    out = []
+    for r in rows:
+        ts = r.get("manifested_at") or r.get("created_at")
+        age_h = None
+        if ts:
+            try:
+                dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                age_h = round((now - dt).total_seconds() / 3600, 1)
+            except (ValueError, TypeError):
+                pass
+        out.append({
+            "awb": r.get("awb_number"),
+            "customer": r.get("customer_name") or r.get("company_name"),
+            "courier": r.get("courier_name"),
+            "status": (r.get("status") or "").strip().upper(),
+            "order_id": r.get("invoice_number"),
+            "city": r.get("consignee_city"), "state": r.get("consignee_state"),
+            "phone": r.get("phone"), "product": r.get("product_name"),
+            "age_hours": age_h, "stale": age_h is not None and age_h >= 24,
+        })
+    out.sort(key=lambda x: (x["age_hours"] is None, -(x["age_hours"] or 0)))
+    return {"count": len(out), "stale_count": sum(1 for x in out if x["stale"]), "shipments": out}
+
+
 @api_router.get("/dispatcher/recent")
 async def get_recent_dispatches(
     user: dict = Depends(require_roles(["call_support", "supervisor", "technician", "service_agent", "accountant", "dispatcher", "gate", "admin"]))
@@ -14378,12 +14434,16 @@ async def adjust_sku_stock(
 
 @api_router.get("/supervisor/queue")
 async def get_supervisor_queue(user: dict = Depends(require_roles(["supervisor", "admin"]))):
-    """Get tickets escalated to supervisor"""
-    tickets = await db.tickets.find(
-        {"status": {"$in": ["escalated_to_supervisor", "supervisor_followup", "customer_escalated"]}},
-        {"_id": 0}
-    ).sort("escalated_at", 1).to_list(100)
-    
+    """All OPEN complaints for the supervisor — escalations first, then every other live ticket, so the
+    supervisor can see and act on everything (not just escalations)."""
+    ESC = ["escalated_to_supervisor", "supervisor_followup", "customer_escalated"]
+    OPEN_OTHER = ["new_request", "in_progress", "hardware_service", "assigned_to_technician",
+                  "awaiting_label", "label_uploaded", "received_at_factory", "in_repair",
+                  "ready_for_dispatch", "dispatched"]
+    escalated = await db.tickets.find({"status": {"$in": ESC}}, {"_id": 0}).sort("escalated_at", 1).to_list(300)
+    others = await db.tickets.find({"status": {"$in": OPEN_OTHER}}, {"_id": 0}).sort("created_at", -1).to_list(400)
+    tickets = escalated + others
+
     # Calculate 48-hour SLA for each
     now = datetime.now(timezone.utc)
     for ticket in tickets:
@@ -63139,6 +63199,80 @@ async def scheduled_bigship_tracking():
                     f"failed={failed} of {len(docs)} active")
 
 
+BIGSHIP_PANEL_SCRAPE_ENABLED = os.environ.get("BIGSHIP_PANEL_SCRAPE_ENABLED", "").lower() in ("1", "true", "yes", "on")
+BIGSHIP_PANEL_SCRAPE_PAGES = int(os.environ.get("BIGSHIP_PANEL_SCRAPE_PAGES", "3") or 3)
+_AMZ_ORDER_RE = re.compile(r"^\d{3}-\d{7}-\d{7}$")
+
+
+async def scheduled_bigship_panel_scrape():
+    """Read the Bigship panel's All-Shipments report (the API can't list orders) and upsert each
+    shipment into courier_shipments keyed by AWB. Labels created in the panel (not via the CRM)
+    get captured + flagged — closing the blind spot. Off unless BIGSHIP_PANEL_SCRAPE_ENABLED.
+    Skips while an Amazon browser agent holds the single-browser slot (avoids a 2nd Chromium).
+    Alerts admins if the scrape breaks (Bigship UI change / session expiry)."""
+    if not (BIGSHIP_PANEL_SCRAPE_ENABLED and BIGSHIP_USER_ID):
+        return
+    if _active_firm_id:  # an Amazon browser agent is running — don't launch a 2nd Chromium
+        logger.info("Bigship panel scrape skipped — browser agent busy (%s)", _active_firm_id)
+        return
+    from utils import bigship_panel
+    res = await bigship_panel.scrape_all_shipments(max_pages=BIGSHIP_PANEL_SCRAPE_PAGES)
+    if not res.get("ok"):
+        await create_notification(
+            title="⚠️ Bigship panel scrape failed",
+            message=f"The Bigship panel scraper broke ({res.get('error')}). Panel-created labels won't be "
+                    f"captured until fixed (likely a Bigship UI change or login/session expiry).",
+            notification_type="service", link="/dispatcher", target_roles=["admin"], priority="high")
+        logger.error("Bigship panel scrape failed: %s", res.get("error"))
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    new_count = upd_count = matched_amz = 0
+    new_labels = []
+    for s in res.get("shipments", []):
+        awb = s.get("awb")
+        if not awb:
+            continue
+        ref = (s.get("order_ref") or "").strip()
+        set_doc = {
+            "status": s.get("status"), "courier_name": s.get("courier"),
+            "customer_name": s.get("customer_name"), "phone": s.get("phone"),
+            "consignee_city": s.get("city"), "consignee_state": s.get("state"),
+            "consignee_pincode": s.get("pincode"),
+            "address": " ".join(x for x in [s.get("address1"), s.get("address2"), s.get("landmark")] if x),
+            "panel_order_ref": ref, "payment_type": s.get("payment_type"),
+            "invoice_amount": s.get("order_value"), "lr_number": s.get("lr_number"),
+            "bigship_panel_order_id": s.get("bigship_order_id"),
+            "panel_scraped_at": now, "updated_at": now,
+        }
+        # Amazon match: the panel's full userOrderId IS the Amazon order id when entered.
+        if s.get("is_amazon_order") or _AMZ_ORDER_RE.match(ref):
+            set_doc["amazon_order_id"] = ref
+            set_doc["invoice_number"] = ref
+            ao = await db.amazon_orders.find_one({"amazon_order_id": ref}, {"_id": 0, "id": 1})
+            if ao:
+                set_doc["amazon_order_ref_id"] = ao["id"]
+                matched_amz += 1
+        existing = await db.courier_shipments.find_one({"awb_number": awb}, {"_id": 1})
+        if existing:
+            await db.courier_shipments.update_one({"awb_number": awb}, {"$set": set_doc})
+            upd_count += 1
+        else:
+            set_doc.update({"id": str(uuid.uuid4()), "awb_number": awb, "tracking_id": awb,
+                            "source": "bigship_panel", "created_at": now})
+            set_doc.setdefault("invoice_number", ref or None)
+            await db.courier_shipments.insert_one(set_doc)
+            new_count += 1
+            new_labels.append(f"{s.get('customer_name', '?')} ({awb})")
+    logger.info("Bigship panel scrape: %d scraped, %d new, %d updated, %d amazon-matched",
+                res["count"], new_count, upd_count, matched_amz)
+    if new_count:
+        await create_notification(
+            title=f"\U0001f4e6 {new_count} new Bigship shipment{'s' if new_count != 1 else ''} captured",
+            message="Panel-created labels now in the CRM: " + ", ".join(new_labels[:8])
+                    + (f" +{new_count - 8} more" if new_count > 8 else ""),
+            notification_type="service", link="/dispatcher", target_roles=["admin", "dispatcher"], priority="low")
+
+
 REPAIR_ARRIVAL_ENABLED = os.environ.get("REPAIR_ARRIVAL_ENABLED", "true").lower() == "true"
 
 
@@ -75433,6 +75567,68 @@ async def _wa_handle_media(digits: str, contact_name: str, media_id: str, mime: 
             f"to see the problem, politely ask them to send a clear PHOTO instead."))
 
 
+# ---- Feedback → Google review gating -------------------------------------
+# After we ask a customer for purchase/service feedback, a HAPPY reply gets a
+# Google review link; an UNHAPPY reply is left to the agent (empathy + fix),
+# never the public link.
+GOOGLE_REVIEW_LINK = os.environ.get("GOOGLE_REVIEW_LINK", "https://g.page/r/CY0W_g0eEX53EBM/review").strip()
+_FB_POS_WORDS = {"haan", "han", "ji", "yes", "good", "achha", "accha", "acha", "theek", "thik",
+                 "sahi", "happy", "satisfied", "great", "nice", "badhiya", "ekdum", "perfect",
+                 "ok", "okay", "working", "best", "awesome", "mast", "superb", "thanks", "thank",
+                 "dhanyavaad", "shukriya", "excellent", "good", "fine"}
+_FB_POS_PHRASES = {"sab theek", "sab badhiya", "bohot badhiya", "bahut badhiya", "working fine",
+                   "sab sahi", "bahut accha", "bahut achha", "no issue", "no problem", "all good"}
+_FB_POS_EMOJI = ("\U0001f44d", "\U0001f64f", "❤", "\U0001f60a", "\U0001f4af", "\U0001f970", "\U0001f60d")
+_FB_NEG_WORDS = {"nahi", "nahin", "no", "not", "problem", "issue", "kharab", "kharaab", "defective",
+                 "faulty", "complaint", "return", "refund", "bekar", "bakwas", "worst", "bad",
+                 "damage", "damaged", "galat", "dukhi", "band", "dead", "broken", "missing"}
+_FB_NEG_PHRASES = {"not working", "nahi mila", "kaam nahi", "not received", "nahi aaya", "kaam nahi kar"}
+
+
+async def _maybe_feedback_to_review(digits: str, low: str, contact_name: str = "") -> bool:
+    """If this inbound is a reply to a recent feedback request, gate on sentiment:
+    HAPPY → send the Google review link (free-text; the customer is in-window since
+    they just messaged). UNHAPPY/unclear → return False so the agent handles it.
+    Returns True only when it fully handled the message (link sent)."""
+    if not GOOGLE_REVIEW_LINK:
+        return False
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
+    fb = await db.whatsapp_cloud_messages.find_one(
+        {"phone": digits, "direction": "outgoing",
+         "kind": {"$in": ["purchase_feedback", "feedback_request"]},
+         "review_link_sent": {"$ne": True}, "ts": {"$gte": cutoff}},
+        sort=[("ts", -1)])
+    if not fb:
+        return False  # not in a feedback conversation
+    toks = set(re.findall(r"[a-zऀ-ॿ]+", low))
+    neg = bool(toks & _FB_NEG_WORDS) or any(p in low for p in _FB_NEG_PHRASES)
+    pos = (bool(toks & _FB_POS_WORDS) or any(p in low for p in _FB_POS_PHRASES)
+           or any(e in low for e in _FB_POS_EMOJI))
+    now = datetime.now(timezone.utc).isoformat()
+    if neg or not pos:
+        # Unhappy or ambiguous: mark it, let the agent reply (it will help / escalate).
+        await db.whatsapp_cloud_messages.update_one(
+            {"id": fb["id"]}, {"$set": {"feedback_sentiment": "negative" if neg else "neutral",
+                                        "feedback_replied_at": now}})
+        return False
+    # Happy → thank + share the review link.
+    first = (contact_name or "").split()[0] if contact_name else ""
+    msg = (f"Bahut bahut dhanyavaad{(' ' + first) if first else ''}! \U0001f64f Aapka feedback "
+           f"sunkar khushi hui. Agar 1 minute ho to apna experience yahan rate/review kar dijiye — "
+           f"isse humein bahut help milti hai:\n{GOOGLE_REVIEW_LINK}\n\n— Team MuscleGrid")
+    res = await whatsapp_cloud.send_text(digits, msg)
+    if res.get("wamid"):
+        await db.whatsapp_cloud_messages.update_one(
+            {"id": fb["id"]}, {"$set": {"review_link_sent": True, "review_link_at": now,
+                                        "feedback_sentiment": "positive", "feedback_replied_at": now}})
+        await db.whatsapp_cloud_messages.insert_one({
+            "id": str(uuid.uuid4()), "direction": "outgoing", "phone": digits, "text": msg,
+            "msg_type": "text", "wamid": res["wamid"], "ts": now, "received_at": now,
+            "source": "whatsapp_cloud", "kind": "review_link"})
+        return True
+    return False
+
+
 async def _pratibha_wa_autoreply(phone: str, text: str, contact_name: str = ""):
     """Generate + send a real Claude reply to an inbound WhatsApp message, safely."""
     if not (PRATIBHA_WA_AUTOREPLY and pratibha_brain.available() and whatsapp_cloud.enabled()):
@@ -75453,6 +75649,11 @@ async def _pratibha_wa_autoreply(phone: str, text: str, contact_name: str = ""):
         return  # previously opted out
     if await _wa_agent_paused(digits):
         return  # a human has taken over this chat — bot stays quiet
+
+    # Feedback follow-up: a happy reply to our feedback request gets the Google
+    # review link and we're done; otherwise fall through to the agent.
+    if await _maybe_feedback_to_review(digits, low, contact_name):
+        return
 
     # Hand the whole conversation to the agent — it decides what to say and what to do.
     await _wa_agent_respond(digits, contact_name)
@@ -75528,9 +75729,34 @@ async def _pratibha_wa_decision_reply(message):
         choice = "repair"
     else:
         return None  # not a decision word → fall through to other handlers
-    dec = await db.repair_decisions.find_one({"status": "open"}, sort=[("created_at", -1)])
-    if not dec:
+    # Target the RIGHT decision. A reply may name the decision's [ref] (e.g. "6776E4 pcb")
+    # or the customer; with several open at once and no ref/name, DON'T guess — ask for the ref.
+    # (Previously this took the NEWEST open decision, which mis-routed approvals to the wrong customer.)
+    open_decs = await db.repair_decisions.find({"status": "open"}).sort("created_at", -1).to_list(50)
+    if not open_decs:
         return None
+    dec = None
+    ref_m = re.search(r"\b([0-9a-f]{6})\b", text)
+    if ref_m:
+        rf = ref_m.group(1).upper()
+        dec = next((d for d in open_decs if (d.get("ref") or "").upper() == rf), None)
+        if not dec:
+            return ("⚠️ Ref *" + rf + "* se koi open decision match nahi hui. Open: "
+                    + ", ".join(f"[{d.get('ref')}] {d.get('customer_name') or '?'}" for d in open_decs[:10]))
+    if dec is None:
+        def _name_hit(d):
+            return any(w in text for w in re.findall(r"[a-z]{3,}", (d.get("customer_name") or "").lower()))
+        named = [d for d in open_decs if _name_hit(d)]
+        if len(named) == 1:
+            dec = named[0]
+        elif len(open_decs) == 1:
+            dec = open_decs[0]
+        else:
+            lst = "\n".join(f"• [{d.get('ref')}] {d.get('customer_name') or '?'} — {d.get('product') or '?'}"
+                            for d in open_decs[:10])
+            more = f"\n…+{len(open_decs) - 10} aur" if len(open_decs) > 10 else ""
+            return (f"⚠️ {len(open_decs)} decisions abhi open hain — kis customer ke liye? Ref ke saath "
+                    f"reply kijiye, jaise \"{open_decs[0].get('ref')} {choice}\":\n{lst}{more}")
     now = datetime.now(timezone.utc).isoformat()
     await db.repair_decisions.update_one(
         {"id": dec["id"]},

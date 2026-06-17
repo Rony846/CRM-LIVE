@@ -18,7 +18,7 @@ import {
 import { toast } from 'sonner';
 import { motion } from 'framer-motion';
 import { Shimmer } from '@/components/ui/motion';
-import { Truck, Package, Monitor, Loader2, CheckCircle, Clock, Edit, Upload, RefreshCw, FileText, XCircle, Download } from 'lucide-react';
+import { Truck, Package, Monitor, Loader2, CheckCircle, Clock, Edit, Upload, RefreshCw, FileText, XCircle, Download, AlertTriangle } from 'lucide-react';
 
 // ─── Shared badge component (Obsidian Elite mono style) ──────────────────────
 const SOFT_BADGE_TONES = {
@@ -44,6 +44,7 @@ export default function DispatcherDashboard() {
   const [stats, setStats] = useState(null);
   const [queue, setQueue] = useState([]);
   const [recentDispatches, setRecentDispatches] = useState([]);
+  const [stuck, setStuck] = useState({ count: 0, stale_count: 0, shipments: [] });
   const [loading, setLoading] = useState(true);
   const [selectedItem, setSelectedItem] = useState(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -68,12 +69,14 @@ export default function DispatcherDashboard() {
   const fetchData = async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const [queueRes, recentRes] = await Promise.all([
+      const [queueRes, recentRes, stuckRes] = await Promise.all([
         axios.get(`${API}/dispatcher/queue`, { headers }),
-        axios.get(`${API}/dispatcher/recent`, { headers }).catch(() => ({ data: [] }))
+        axios.get(`${API}/dispatcher/recent`, { headers }).catch(() => ({ data: [] })),
+        axios.get(`${API}/dispatcher/stuck-shipments`, { headers }).catch(() => ({ data: { count: 0, stale_count: 0, shipments: [] } }))
       ]);
       setQueue(queueRes.data);
       setRecentDispatches(recentRes.data || []);
+      setStuck(stuckRes.data || { count: 0, stale_count: 0, shipments: [] });
 
       // Compute stats locally
       const readyToDispatch = queueRes.data.filter(d => d.status === 'ready_for_dispatch' || d.status === 'ready_to_dispatch').length;
@@ -284,6 +287,47 @@ export default function DispatcherDashboard() {
         <StatCard title="Dispatched Today"  value={stats?.dispatched_today  || 0} icon={Truck}   tone="emerald" />
         <StatCard title="Total in Queue"    value={queue.length}                  icon={Clock}   tone="indigo" />
       </div>
+
+      {/* ── Stuck at Pickup (Bigship NOT PICKED / PICKUP SCHEDULED) ───────── */}
+      {stuck.count > 0 && (
+        <div className="mg-card mb-6 rounded-lg border border-amber-500/30 bg-card" data-testid="dispatcher-stuck">
+          <div className="flex items-center justify-between border-b border-border px-6 py-4">
+            <div>
+              <h3 className="text-[17px] font-semibold tracking-tight text-foreground flex items-center gap-2">
+                <span className="flex h-7 w-7 items-center justify-center rounded bg-amber-500/15">
+                  <AlertTriangle className="w-4 h-4 text-amber-500" />
+                </span>
+                Stuck at Pickup
+              </h3>
+              <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground mt-0.5">
+                {stuck.count} label{stuck.count !== 1 ? 's' : ''} created but not picked up · {stuck.stale_count} over 24h
+              </p>
+            </div>
+          </div>
+          <div className="max-h-80 overflow-y-auto divide-y divide-border">
+            {stuck.shipments.map((s, idx) => (
+              <div key={s.awb || idx} className="flex items-center justify-between gap-3 px-6 py-3 text-sm">
+                <div className="min-w-0">
+                  <div className="font-medium text-foreground truncate">
+                    {s.customer || '—'} <span className="text-muted-foreground">· {s.courier || 'courier ?'}</span>
+                  </div>
+                  <div className="font-mono text-[11px] text-muted-foreground truncate">
+                    AWB {s.awb || '—'}{s.order_id ? ` · ${s.order_id}` : ''}{s.city ? ` · ${s.city}` : ''}
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className={`rounded px-2 py-0.5 font-mono text-[10px] uppercase ${s.status === 'NOT PICKED' ? 'bg-rose-500/15 text-rose-400' : 'bg-amber-500/15 text-amber-500'}`}>
+                    {s.status}
+                  </span>
+                  <span className={`font-mono text-xs ${s.stale ? 'text-rose-400 font-semibold' : 'text-muted-foreground'}`}>
+                    {s.age_hours != null ? (s.age_hours < 48 ? `${s.age_hours}h` : `${Math.round(s.age_hours / 24)}d`) : '—'}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── Dispatch Queue ───────────────────────────────────────────────── */}
       <div className="mg-card mb-6 rounded-lg border border-border bg-card">
