@@ -176,6 +176,7 @@ import AdminSpareParts from './pages/admin/AdminSpareParts';
 import AdminSpareOrders from './pages/admin/AdminSpareOrders';
 import AmazonRefundLosses from './pages/admin/AmazonRefundLosses';
 import LegalCases from './pages/admin/LegalCases';
+import AZClaims from './pages/admin/AZClaims';
 import AdminWhatsAppAgent from './pages/admin/AdminWhatsAppAgent';
 
 // Leads Pages
@@ -1165,6 +1166,11 @@ function App() {
           <Route path="/admin/legal-cases" element={
             <ProtectedRoute allowedRoles={['admin', 'accountant', 'lawyer']}>
               <LegalCases />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/az-claims" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <AZClaims />
             </ProtectedRoute>
           } />
           <Route path="/admin/whatsapp-agent" element={

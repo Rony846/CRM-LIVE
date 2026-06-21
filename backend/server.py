@@ -38401,6 +38401,78 @@ async def get_legal_case_document(case_id: str, user: dict = Depends(require_rol
     return FileResponse(str(path), media_type="application/pdf", filename=os.path.basename(rel))
 
 
+# ============== Amazon A-to-z Guarantee Claims tracker ==============
+AZ_CLAIM_STATUS = ["under_review", "granted", "denied", "appealed", "closed"]
+
+
+@api_router.get("/admin/az-claims")
+async def list_az_claims(
+    status: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Amazon A-to-z guarantee claims. 'granted' = Amazon sided with the buyer (our loss);
+    'denied' = we won. Seeded from claim emails + the Returns Report a_to_z flag; the full
+    A-to-z Claims export can upsert real outcomes."""
+    q = {}
+    scope = get_user_firm_scope(user)
+    if scope:
+        q["firm_id"] = scope
+    if status in AZ_CLAIM_STATUS:
+        q["status"] = status
+    rows = await db.az_claims.find(q, {"_id": 0}).sort("claim_date", -1).to_list(5000)
+    # cross-link to refund-loss + legal case by order id
+    loss_map, legal_map = {}, {}
+    async for rl in db.amazon_refund_losses.find({}, {"order_id": 1, "refund_amount": 1, "returned": 1, "id": 1}):
+        k = _amz_oid(rl.get("order_id"))
+        if k:
+            loss_map.setdefault(k, {"amount": rl.get("refund_amount"), "returned": rl.get("returned"), "id": rl.get("id")})
+    async for lc in db.legal_cases.find({}, {"order_id": 1, "serial": 1, "status": 1, "id": 1}):
+        k = _amz_oid(lc.get("order_id"))
+        if k:
+            legal_map.setdefault(k, {"serial": lc.get("serial"), "status": lc.get("status"), "id": lc.get("id")})
+    for r in rows:
+        k = _amz_oid(r.get("order_id"))
+        r["refund_loss"] = loss_map.get(k)
+        r["legal_case"] = legal_map.get(k)
+    from collections import Counter as _C
+    _amt = lambda xs: round(sum(float(r.get("amount_at_risk") or 0) for r in xs), 2)
+    granted = [r for r in rows if r.get("status") == "granted"]
+    pend = [r for r in rows if r.get("status") in ("under_review", "appealed")]
+    summary = {
+        "count": len(rows), "total_at_risk": _amt(rows),
+        "granted_count": len(granted), "granted_loss": _amt(granted),
+        "pending_count": len(pend), "pending_at_risk": _amt(pend),
+        "denied_count": sum(1 for r in rows if r.get("status") == "denied"),
+        "by_status": dict(_C(r.get("status") or "under_review" for r in rows)),
+    }
+    return {"success": True, "summary": summary, "claims": rows, "statuses": AZ_CLAIM_STATUS}
+
+
+class AZClaimBody(BaseModel):
+    status: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@api_router.patch("/admin/az-claims/{order_id}")
+async def update_az_claim(order_id: str, body: AZClaimBody, user: dict = Depends(require_roles(["admin", "accountant"]))):
+    sets = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    if body.status is not None:
+        if body.status not in AZ_CLAIM_STATUS:
+            raise HTTPException(status_code=400, detail=f"status must be one of {AZ_CLAIM_STATUS}")
+        sets["status"] = body.status
+        sets["outcome"] = "loss" if body.status == "granted" else ("won" if body.status == "denied" else None)
+    if body.notes is not None:
+        sets["notes"] = body.notes.strip()
+    q = {"order_id": order_id}
+    scope = get_user_firm_scope(user)
+    if scope:
+        q["firm_id"] = scope
+    res = await db.az_claims.update_one(q, {"$set": sets})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Claim not found")
+    return {"success": True, "order_id": order_id}
+
+
 @api_router.get("/sales-orders/stats")
 async def get_sales_orders_stats(
     firm_id: Optional[str] = None,
