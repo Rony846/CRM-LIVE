@@ -174,6 +174,7 @@ import AdminDealerTerms from './pages/admin/AdminDealerTerms';
 import AdminWarrantyClaims from './pages/admin/AdminWarrantyClaims';
 import AdminSpareParts from './pages/admin/AdminSpareParts';
 import AdminSpareOrders from './pages/admin/AdminSpareOrders';
+import AmazonRefundLosses from './pages/admin/AmazonRefundLosses';
 import AdminWhatsAppAgent from './pages/admin/AdminWhatsAppAgent';
 
 // Leads Pages
@@ -1153,6 +1154,11 @@ function App() {
           <Route path="/admin/spare-orders" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <AdminSpareOrders />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/refund-losses" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <AmazonRefundLosses />
             </ProtectedRoute>
           } />
           <Route path="/admin/whatsapp-agent" element={

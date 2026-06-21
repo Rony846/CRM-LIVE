@@ -38163,6 +38163,76 @@ async def lawyer_mark_notice_sent(order_id: str, body: LegalNoticeBody,
     return {"success": True, "message": "Notice marked as sent", "order_id": order_id}
 
 
+# ============== Amazon refund losses (delivered + refunded — legal recovery) ==============
+AMZ_LOSS_LEGAL = ["none", "review", "notice_drafted", "notice_sent", "case_filed", "recovered", "written_off"]
+
+
+@api_router.get("/admin/amazon-refund-losses")
+async def list_amazon_refund_losses(
+    confidence: Optional[str] = None,
+    legal_status: Optional[str] = None,
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Orders where the customer was REFUNDED by Amazon but the parcel was DELIVERED and never
+    returned to us — i.e. real losses, candidates for legal recovery. Built by the 90-day refund audit."""
+    q = {}
+    scope = get_user_firm_scope(user)
+    if scope:
+        q["firm_id"] = scope
+    if confidence in ("High", "Medium", "Low"):
+        q["loss_confidence"] = {"$regex": f"^{confidence}"}
+    if legal_status in AMZ_LOSS_LEGAL:
+        q["legal_status"] = legal_status
+    rows = await db.amazon_refund_losses.find(q, {"_id": 0}).sort("refund_amount", -1).to_list(5000)
+    total = round(sum(float(r.get("refund_amount") or 0) for r in rows), 2)
+    high = [r for r in rows if str(r.get("loss_confidence") or "").startswith("High")]
+    by_status = {}
+    for r in rows:
+        by_status[r.get("legal_status") or "none"] = by_status.get(r.get("legal_status") or "none", 0) + 1
+    by_state = {}
+    for r in rows:
+        st = r.get("ship_state") or "—"
+        by_state[st] = round(by_state.get(st, 0) + float(r.get("refund_amount") or 0), 2)
+    summary = {
+        "count": len(rows), "total_loss": total,
+        "high_count": len(high), "high_loss": round(sum(float(r.get("refund_amount") or 0) for r in high), 2),
+        "medium_count": len(rows) - len(high),
+        "by_legal_status": by_status,
+        "top_states": sorted(by_state.items(), key=lambda x: -x[1])[:6],
+        "recovered_loss": round(sum(float(r.get("refund_amount") or 0) for r in rows if r.get("legal_status") == "recovered"), 2),
+    }
+    return {"success": True, "summary": summary, "orders": rows, "legal_statuses": AMZ_LOSS_LEGAL}
+
+
+class AmazonLossLegalBody(BaseModel):
+    legal_status: Optional[str] = None
+    legal_notes: Optional[str] = None
+
+
+@api_router.patch("/admin/amazon-refund-losses/{order_id}")
+async def update_amazon_refund_loss(
+    order_id: str, body: AmazonLossLegalBody,
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """Update the legal-recovery status / notes on a refund-loss order."""
+    sets = {"updated_at": datetime.now(timezone.utc).isoformat(),
+            "legal_updated_by": user.get("first_name") or user.get("email")}
+    if body.legal_status is not None:
+        if body.legal_status not in AMZ_LOSS_LEGAL:
+            raise HTTPException(status_code=400, detail=f"legal_status must be one of {AMZ_LOSS_LEGAL}")
+        sets["legal_status"] = body.legal_status
+    if body.legal_notes is not None:
+        sets["legal_notes"] = body.legal_notes.strip()
+    q = {"order_id": order_id}
+    scope = get_user_firm_scope(user)
+    if scope:
+        q["firm_id"] = scope
+    res = await db.amazon_refund_losses.update_one(q, {"$set": sets})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Loss order not found")
+    return {"success": True, "order_id": order_id}
+
+
 @api_router.get("/sales-orders/stats")
 async def get_sales_orders_stats(
     firm_id: Optional[str] = None,
