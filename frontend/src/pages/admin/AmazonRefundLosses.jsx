@@ -30,6 +30,7 @@ export default function AmazonRefundLosses() {
   const [loading, setLoading] = useState(true);
   const [confidence, setConfidence] = useState('all');
   const [legalStatus, setLegalStatus] = useState('all');
+  const [returned, setReturned] = useState('genuine');
   const [search, setSearch] = useState('');
   const auth = { headers: { Authorization: `Bearer ${token}` } };
 
@@ -39,12 +40,13 @@ export default function AmazonRefundLosses() {
       const params = {};
       if (confidence !== 'all') params.confidence = confidence;
       if (legalStatus !== 'all') params.legal_status = legalStatus;
+      if (returned !== 'all') params.returned = returned;
       const r = await axios.get(`${API}/admin/amazon-refund-losses`, { ...auth, params });
       setData(r.data);
     } catch (e) { toast.error('Failed to load refund losses'); }
     finally { setLoading(false); }
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [confidence, legalStatus]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [confidence, legalStatus, returned]);
 
   const orders = useMemo(() => {
     const o = data?.orders || [];
@@ -79,7 +81,7 @@ export default function AmazonRefundLosses() {
     } catch (e) { toast.error('Failed to create legal case'); return false; }
   };
   const createAllMissing = async () => {
-    const missing = orders.filter((o) => !o.legal_case);
+    const missing = orders.filter((o) => !o.legal_case && !o.returned);
     if (!missing.length) { toast.info('All shown orders already have a legal case'); return; }
     if (!window.confirm(`Create a legal case for all ${missing.length} shown orders that don't have one?`)) return;
     setCreating(true);
@@ -119,7 +121,7 @@ export default function AmazonRefundLosses() {
               <AlertTriangle className="w-5 h-5 text-red-500" /> Refund Losses — Legal Recovery
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Orders Amazon refunded where the parcel was <b>delivered and never returned</b> to us — recover via A-Z contest / legal notice.
+              Refunded + delivered orders. Cross-checked against the Amazon <b>Returns Report</b> — <b>genuine</b> = never came back (recover via legal); the rest were returned to us.
             </p>
           </div>
           <div className="flex gap-2">
@@ -132,10 +134,10 @@ export default function AmazonRefundLosses() {
         </div>
 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <Stat label="Total real loss" value={inr(s.total_loss)} sub={`${s.count || 0} orders`} icon={IndianRupee} tone="text-red-500" />
-          <Stat label="High confidence" value={inr(s.high_loss)} sub={`${s.high_count || 0} Amazon-confirmed`} icon={AlertTriangle} tone="text-red-400" />
-          <Stat label="Medium confidence" value={`${s.medium_count || 0}`} sub="self-ship, our data" icon={Scale} tone="text-amber-500" />
-          <Stat label="Recovered" value={inr(s.recovered_loss)} sub="marked recovered" icon={ShieldCheck} tone="text-emerald-500" />
+          <Stat label="Genuine real loss" value={inr(s.total_loss)} sub={`${s.genuine_count || 0} orders · never returned`} icon={IndianRupee} tone="text-red-500" />
+          <Stat label="Returned to us" value={inr(s.returned_value)} sub={`${s.returned_count || 0} orders · per Returns Report`} icon={ShieldCheck} tone="text-emerald-500" />
+          <Stat label="High confidence" value={inr(s.high_loss)} sub={`${s.high_count || 0} of the genuine losses`} icon={AlertTriangle} tone="text-red-400" />
+          <Stat label="Recovered" value={inr(s.recovered_loss)} sub="marked recovered" icon={Scale} tone="text-cyan-500" />
         </div>
 
         <div className="flex flex-wrap gap-2 items-center">
@@ -144,6 +146,14 @@ export default function AmazonRefundLosses() {
             <Input className="pl-8" placeholder="Search order / customer / phone / product"
               value={search} onChange={(e) => setSearch(e.target.value)} />
           </div>
+          <Select value={returned} onValueChange={setReturned}>
+            <SelectTrigger className="w-[180px]"><SelectValue placeholder="Returned?" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="genuine">Genuine losses</SelectItem>
+              <SelectItem value="returned">Returned to us</SelectItem>
+              <SelectItem value="all">All</SelectItem>
+            </SelectContent>
+          </Select>
           <Select value={confidence} onValueChange={setConfidence}>
             <SelectTrigger className="w-[170px]"><SelectValue placeholder="Confidence" /></SelectTrigger>
             <SelectContent>
@@ -185,7 +195,12 @@ export default function AmazonRefundLosses() {
                 <TableRow key={o.order_id}>
                   <TableCell className="font-mono text-xs">
                     {o.order_id}
-                    {o.legal_case ? (
+                    {o.returned ? (
+                      <span title={`${o.return_resolution || ''} · ${o.return_reason || ''}`}
+                        className="mt-1 inline-flex items-center gap-1 text-[10px] text-emerald-500">
+                        <ShieldCheck className="w-3 h-3" /> Returned{o.return_resolution ? ` · ${o.return_resolution}` : ''}
+                      </span>
+                    ) : o.legal_case ? (
                       <Link to="/admin/legal-cases" title="Legal case exists for this order"
                         className="mt-1 inline-flex items-center gap-1 text-[10px] text-purple-400 hover:underline">
                         <Gavel className="w-3 h-3" /> Legal case{o.legal_case.serial ? ` ${o.legal_case.serial}` : ''}

@@ -38177,10 +38177,11 @@ def _amz_oid(o):
 async def list_amazon_refund_losses(
     confidence: Optional[str] = None,
     legal_status: Optional[str] = None,
+    returned: Optional[str] = None,
     user: dict = Depends(require_roles(["admin", "accountant"])),
 ):
-    """Orders where the customer was REFUNDED by Amazon but the parcel was DELIVERED and never
-    returned to us — i.e. real losses, candidates for legal recovery. Built by the 90-day refund audit."""
+    """Orders the customer was REFUNDED for + parcel DELIVERED. The Amazon Returns Report tells us
+    which actually came back: returned=False are the GENUINE losses (legal-recovery candidates)."""
     q = {}
     scope = get_user_firm_scope(user)
     if scope:
@@ -38189,6 +38190,10 @@ async def list_amazon_refund_losses(
         q["loss_confidence"] = {"$regex": f"^{confidence}"}
     if legal_status in AMZ_LOSS_LEGAL:
         q["legal_status"] = legal_status
+    if returned == "genuine":
+        q["returned"] = False
+    elif returned == "returned":
+        q["returned"] = True
     rows = await db.amazon_refund_losses.find(q, {"_id": 0}).sort("refund_amount", -1).to_list(5000)
     # cross-link: attach any existing legal case (matched by Amazon order id)
     legal_map = {}
@@ -38198,22 +38203,26 @@ async def list_amazon_refund_losses(
             legal_map.setdefault(k, {"serial": lc.get("serial"), "status": lc.get("status"), "id": lc.get("id")})
     for r in rows:
         r["legal_case"] = legal_map.get(_amz_oid(r.get("order_id")))
-    total = round(sum(float(r.get("refund_amount") or 0) for r in rows), 2)
-    high = [r for r in rows if str(r.get("loss_confidence") or "").startswith("High")]
+    genuine = [r for r in rows if not r.get("returned")]   # not in the Amazon Returns Report
+    returned_rows = [r for r in rows if r.get("returned")]
+    _amt = lambda xs: round(sum(float(r.get("refund_amount") or 0) for r in xs), 2)
+    high = [r for r in genuine if str(r.get("loss_confidence") or "").startswith("High")]
     by_status = {}
-    for r in rows:
+    for r in genuine:
         by_status[r.get("legal_status") or "none"] = by_status.get(r.get("legal_status") or "none", 0) + 1
     by_state = {}
-    for r in rows:
+    for r in genuine:
         st = r.get("ship_state") or "—"
         by_state[st] = round(by_state.get(st, 0) + float(r.get("refund_amount") or 0), 2)
     summary = {
-        "count": len(rows), "total_loss": total,
-        "high_count": len(high), "high_loss": round(sum(float(r.get("refund_amount") or 0) for r in high), 2),
-        "medium_count": len(rows) - len(high),
+        "count": len(rows),
+        "genuine_count": len(genuine), "total_loss": _amt(genuine),     # total_loss = GENUINE only
+        "returned_count": len(returned_rows), "returned_value": _amt(returned_rows),
+        "high_count": len(high), "high_loss": _amt(high),
+        "medium_count": len(genuine) - len(high),
         "by_legal_status": by_status,
         "top_states": sorted(by_state.items(), key=lambda x: -x[1])[:6],
-        "recovered_loss": round(sum(float(r.get("refund_amount") or 0) for r in rows if r.get("legal_status") == "recovered"), 2),
+        "recovered_loss": _amt([r for r in genuine if r.get("legal_status") == "recovered"]),
         "with_legal_case": sum(1 for r in rows if r.get("legal_case")),
     }
     return {"success": True, "summary": summary, "orders": rows, "legal_statuses": AMZ_LOSS_LEGAL}
@@ -38259,6 +38268,8 @@ async def create_legal_case_from_loss(order_id: str, user: dict = Depends(requir
     loss = await db.amazon_refund_losses.find_one(q, {"_id": 0})
     if not loss:
         raise HTTPException(status_code=404, detail="Loss order not found")
+    if loss.get("returned"):
+        raise HTTPException(status_code=400, detail="This order was returned to us (per the Amazon Returns Report) — not a loss, no legal case needed.")
     existing = await db.legal_cases.find_one({"order_id": order_id}, {"_id": 0, "id": 1, "serial": 1})
     if existing:
         return {"success": True, "created": False, "case": existing, "note": "A legal case already exists for this order."}
