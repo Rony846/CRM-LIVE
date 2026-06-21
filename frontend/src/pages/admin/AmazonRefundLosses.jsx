@@ -67,6 +67,28 @@ export default function AmazonRefundLosses() {
     } catch (e) { toast.error('Update failed'); }
   };
 
+  const [creating, setCreating] = useState(false);
+  const createCase = async (order_id) => {
+    try {
+      const r = await axios.post(`${API}/admin/amazon-refund-losses/${order_id}/create-legal-case`, {}, auth);
+      const c = r.data.case;
+      setData((d) => ({ ...d, orders: d.orders.map((o) => o.order_id === order_id
+        ? { ...o, legal_case: { serial: c.serial, status: c.status || 'notice_pending', id: c.id } } : o) }));
+      toast.success(r.data.created ? `Legal case ${c.serial} created` : `Case ${c.serial || ''} already existed`);
+      return true;
+    } catch (e) { toast.error('Failed to create legal case'); return false; }
+  };
+  const createAllMissing = async () => {
+    const missing = orders.filter((o) => !o.legal_case);
+    if (!missing.length) { toast.info('All shown orders already have a legal case'); return; }
+    if (!window.confirm(`Create a legal case for all ${missing.length} shown orders that don't have one?`)) return;
+    setCreating(true);
+    let made = 0;
+    for (const o of missing) { if (await createCase(o.order_id)) made += 1; }
+    setCreating(false);
+    toast.success(`Done — ${made} legal cases ready`);
+  };
+
   const exportCsv = () => {
     const cols = ['order_id', 'firm_name', 'customer', 'phone', 'ship_state', 'product', 'refund_amount',
       'channel', 'loss_confidence', 'delivery_proof', 'delivered_date', 'awb', 'legal_status', 'legal_notes'];
@@ -101,6 +123,9 @@ export default function AmazonRefundLosses() {
             </p>
           </div>
           <div className="flex gap-2">
+            <Button variant="default" size="sm" onClick={createAllMissing} disabled={creating}>
+              <Gavel className="w-4 h-4 mr-1" />{creating ? 'Creating…' : 'Create cases for all shown'}
+            </Button>
             <Button variant="outline" size="sm" onClick={exportCsv}><Download className="w-4 h-4 mr-1" />Export</Button>
             <Button variant="outline" size="sm" onClick={load}><RefreshCw className="w-4 h-4 mr-1" />Refresh</Button>
           </div>
@@ -160,11 +185,16 @@ export default function AmazonRefundLosses() {
                 <TableRow key={o.order_id}>
                   <TableCell className="font-mono text-xs">
                     {o.order_id}
-                    {o.legal_case && (
+                    {o.legal_case ? (
                       <Link to="/admin/legal-cases" title="Legal case exists for this order"
                         className="mt-1 inline-flex items-center gap-1 text-[10px] text-purple-400 hover:underline">
                         <Gavel className="w-3 h-3" /> Legal case{o.legal_case.serial ? ` ${o.legal_case.serial}` : ''}
                       </Link>
+                    ) : (
+                      <button onClick={() => createCase(o.order_id)}
+                        className="mt-1 inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-purple-400 hover:underline">
+                        <Gavel className="w-3 h-3" /> + Create legal case
+                      </button>
                     )}
                   </TableCell>
                   <TableCell>

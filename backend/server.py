@@ -38248,6 +38248,53 @@ async def update_amazon_refund_loss(
     return {"success": True, "order_id": order_id}
 
 
+@api_router.post("/admin/amazon-refund-losses/{order_id}/create-legal-case")
+async def create_legal_case_from_loss(order_id: str, user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """One-click: turn a refund-loss order into a legal case (notice_pending), with the delivery
+    proof baked into the issue. Idempotent — returns the existing case if one already exists."""
+    q = {"order_id": order_id}
+    scope = get_user_firm_scope(user)
+    if scope:
+        q["firm_id"] = scope
+    loss = await db.amazon_refund_losses.find_one(q, {"_id": 0})
+    if not loss:
+        raise HTTPException(status_code=404, detail="Loss order not found")
+    existing = await db.legal_cases.find_one({"order_id": order_id}, {"_id": 0, "id": 1, "serial": 1})
+    if existing:
+        return {"success": True, "created": False, "case": existing, "note": "A legal case already exists for this order."}
+    # next serial (continue the MG{n} scheme)
+    mx = 0
+    async for c in db.legal_cases.find({"serial": {"$regex": "^MG\\d+$"}}, {"serial": 1}):
+        try:
+            mx = max(mx, int(str(c["serial"])[2:]))
+        except (ValueError, TypeError):
+            pass
+    serial = f"MG{mx + 1}"
+    now = datetime.now(timezone.utc).isoformat()
+    amt = float(loss.get("refund_amount") or 0)
+    issue = (f"Amazon order {order_id}: customer was REFUNDED Rs {amt:,.0f} but the parcel was "
+             f"DELIVERED ({loss.get('delivery_proof') or 'delivered'}"
+             + (f", {loss.get('delivered_date')}" if loss.get('delivered_date') else "")
+             + f") and never returned to us. Confidence: {loss.get('loss_confidence')}. "
+             f"Channel: {loss.get('channel')}. AWB: {loss.get('awb') or '-'}.")
+    case = {
+        "id": str(uuid.uuid4()), "serial": serial,
+        "party_name": loss.get("customer") or "Customer", "customer_phone": loss.get("phone") or "",
+        "firm_name": loss.get("firm_name"), "firm_id": loss.get("firm_id"),
+        "order_id": order_id, "issue": issue, "client_document": None, "notice_file": None,
+        "status": "notice_pending", "created_by_name": user.get("first_name") or user.get("email") or "Admin",
+        "comments": [], "source": "refund_loss_auto",
+        "refund_loss_origin": {"id": loss.get("id"), "amount": amt, "confidence": loss.get("loss_confidence")},
+        "created_at": now, "updated_at": now,
+    }
+    await db.legal_cases.insert_one(case)
+    await db.amazon_refund_losses.update_one({"order_id": order_id}, {"$set": {
+        "legal_status": "review" if (loss.get("legal_status") in (None, "none")) else loss.get("legal_status"),
+        "updated_at": now}})
+    case.pop("_id", None)
+    return {"success": True, "created": True, "case": {"id": case["id"], "serial": serial, "status": "notice_pending"}}
+
+
 # ============== Legal cases (imported from the old legal-panel website) ==============
 LEGAL_CASE_STATUS = ["pending", "draft_uploaded", "notice_pending", "notice_sent",
                      "notice_delivered", "pending_legal_case", "case_filed", "closed_recovered", "closed_dropped"]
