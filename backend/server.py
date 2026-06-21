@@ -38233,6 +38233,92 @@ async def update_amazon_refund_loss(
     return {"success": True, "order_id": order_id}
 
 
+# ============== Legal cases (imported from the old legal-panel website) ==============
+LEGAL_CASE_STATUS = ["pending", "draft_uploaded", "notice_pending", "notice_sent",
+                     "notice_delivered", "pending_legal_case", "case_filed", "closed_recovered", "closed_dropped"]
+_LEGAL_ROLES = ["admin", "accountant", "lawyer"]
+
+
+@api_router.get("/admin/legal-cases")
+async def list_legal_cases(
+    status: Optional[str] = None, firm: Optional[str] = None, q: Optional[str] = None,
+    user: dict = Depends(require_roles(_LEGAL_ROLES)),
+):
+    """Legal cases against customers (mostly false-refund / non-return), imported from the old legal panel."""
+    query = {}
+    scope = get_user_firm_scope(user)
+    if scope:
+        query["firm_id"] = scope
+    if status in LEGAL_CASE_STATUS:
+        query["status"] = status
+    if firm:
+        query["firm_name"] = firm
+    rows = await db.legal_cases.find(query, {"_id": 0}).sort("old_case_id", 1).to_list(5000)
+    ql = (q or "").strip().lower()
+    if ql:
+        rows = [r for r in rows if ql in str(r.get("party_name", "")).lower()
+                or ql in str(r.get("order_id", "")).lower() or ql in str(r.get("customer_phone", "")).lower()
+                or ql in str(r.get("serial", "")).lower() or ql in str(r.get("issue", "")).lower()]
+    from collections import Counter as _C
+    summary = {
+        "count": len(rows),
+        "by_status": dict(_C(r.get("status") or "pending" for r in rows)),
+        "by_firm": dict(_C(r.get("firm_name") or "—" for r in rows)),
+        "with_docs": sum(1 for r in rows if r.get("client_document")),
+    }
+    firms = sorted({r.get("firm_name") for r in await db.legal_cases.find({}, {"firm_name": 1}).to_list(5000) if r.get("firm_name")})
+    return {"success": True, "summary": summary, "cases": rows, "statuses": LEGAL_CASE_STATUS, "firms": firms}
+
+
+class LegalCaseBody(BaseModel):
+    status: Optional[str] = None
+    issue: Optional[str] = None
+
+
+@api_router.patch("/admin/legal-cases/{case_id}")
+async def update_legal_case(case_id: str, body: LegalCaseBody, user: dict = Depends(require_roles(_LEGAL_ROLES))):
+    sets = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    if body.status is not None:
+        if body.status not in LEGAL_CASE_STATUS:
+            raise HTTPException(status_code=400, detail=f"status must be one of {LEGAL_CASE_STATUS}")
+        sets["status"] = body.status
+    if body.issue is not None:
+        sets["issue"] = body.issue.strip()
+    res = await db.legal_cases.update_one({"id": case_id}, {"$set": sets})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return {"success": True, "case_id": case_id}
+
+
+class LegalCommentBody(BaseModel):
+    text: str
+
+
+@api_router.post("/admin/legal-cases/{case_id}/comment")
+async def add_legal_comment(case_id: str, body: LegalCommentBody, user: dict = Depends(require_roles(_LEGAL_ROLES))):
+    if not (body.text or "").strip():
+        raise HTTPException(status_code=400, detail="Empty comment")
+    comment = {"id": str(uuid.uuid4()), "text": body.text.strip(),
+               "by": user.get("first_name") or user.get("email") or "Staff",
+               "at": datetime.now(timezone.utc).isoformat()}
+    res = await db.legal_cases.update_one({"id": case_id}, {"$push": {"comments": comment}})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return {"success": True, "comment": comment}
+
+
+@api_router.get("/admin/legal-cases/{case_id}/document")
+async def get_legal_case_document(case_id: str, user: dict = Depends(require_roles(_LEGAL_ROLES))):
+    case = await db.legal_cases.find_one({"id": case_id}, {"client_document": 1})
+    rel = (case or {}).get("client_document")
+    if not rel:
+        raise HTTPException(status_code=404, detail="No document for this case")
+    path = (UPLOAD_DIR / rel).resolve()
+    if not str(path).startswith(str(UPLOAD_DIR.resolve())) or not path.exists():
+        raise HTTPException(status_code=404, detail="Document file missing")
+    return FileResponse(str(path), media_type="application/pdf", filename=os.path.basename(rel))
+
+
 @api_router.get("/sales-orders/stats")
 async def get_sales_orders_stats(
     firm_id: Optional[str] = None,
