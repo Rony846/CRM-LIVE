@@ -75959,9 +75959,40 @@ CLAUDE_WA_RELAY_ENABLED = os.environ.get("CLAUDE_WA_RELAY_ENABLED", "").strip().
 CLAUDE_WA_RELAY_NUMBER = re.sub(r"\D", "", os.environ.get("CLAUDE_WA_RELAY_NUMBER", "9560377363"))[-10:]
 CLAUDE_WA_RELAY_PREFIX = os.environ.get("CLAUDE_WA_RELAY_PREFIX", "cc ").lower()
 CLAUDE_WA_RELAY_TIMEOUT = int(os.environ.get("CLAUDE_WA_RELAY_TIMEOUT", "240"))
+# PIN gate: the founder must "prove they are the boss" with this secret before the relay answers;
+# a successful PIN opens a session for CLAUDE_WA_SESSION_MIN minutes.
+CLAUDE_WA_RELAY_SECRET = os.environ.get("CLAUDE_WA_RELAY_SECRET", "").strip()
+CLAUDE_WA_SESSION_MIN = int(os.environ.get("CLAUDE_WA_SESSION_MIN", "30"))
 
 
 async def _claude_wa_relay(digits: str, question: str):
+    """PIN gate in front of the relay: verify the boss, then (within the session window) answer."""
+    now = datetime.now(timezone.utc)
+    sess = await db.claude_wa_sessions.find_one({"phone": digits}) or {}
+    authed = str(sess.get("authed_until") or "") > now.isoformat()
+
+    if not authed:
+        if CLAUDE_WA_RELAY_SECRET and question.strip() == CLAUDE_WA_RELAY_SECRET:
+            until = (now + timedelta(minutes=CLAUDE_WA_SESSION_MIN)).isoformat()
+            pending = sess.get("pending_question")
+            await db.claude_wa_sessions.update_one({"phone": digits},
+                {"$set": {"phone": digits, "authed_until": until, "pending_question": None}}, upsert=True)
+            if pending:
+                await whatsapp_cloud.send_text(digits, f"✅ Verified, boss. Full access for {CLAUDE_WA_SESSION_MIN} min — answering your question…")
+                await _claude_wa_run(digits, pending)
+            else:
+                await whatsapp_cloud.send_text(digits, f"✅ Verified, boss. Full access for the next {CLAUDE_WA_SESSION_MIN} min — ask away.")
+            return
+        # not authed and not the secret → remember the question, ask for the PIN
+        await db.claude_wa_sessions.update_one({"phone": digits},
+            {"$set": {"phone": digits, "pending_question": question}}, upsert=True)
+        await whatsapp_cloud.send_text(digits, "🔒 Please prove you are the boss?  (reply:  cc <your secret>)")
+        return
+
+    await _claude_wa_run(digits, question)
+
+
+async def _claude_wa_run(digits: str, question: str):
     """Relay a WhatsApp question to the sandboxed Claude Code and send the answer back."""
     if not question:
         await whatsapp_cloud.send_text(digits, "Send:  cc <your question>")
