@@ -517,7 +517,7 @@ export default function TDSDashboard() {
 
               <TabsContent value={activeTab} className="mt-0">
                 <div className="overflow-x-auto">
-                  <Table>
+                  <Table cards>
                     <TableHeader>
                       <TableRow className="border-border">
                         {activeTab === 'pending' && (

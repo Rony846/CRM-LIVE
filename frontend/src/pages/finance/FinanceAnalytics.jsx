@@ -383,7 +383,7 @@ export default function FinanceAnalytics() {
               </CardHeader>
               <CardContent>
                 <div className="overflow-x-auto rounded-lg border border-border">
-                  <Table>
+                  <Table cards>
                     <TableHeader>
                       <TableRow>
                         <TableHead>Rank</TableHead>
@@ -479,7 +479,7 @@ export default function FinanceAnalytics() {
                   </ResponsiveContainer>
                 </div>
                 <div className="overflow-x-auto rounded-lg border border-border">
-                  <Table>
+                  <Table cards>
                     <TableHeader>
                       <TableRow>
                         <TableHead>Bucket</TableHead>
@@ -521,7 +521,7 @@ export default function FinanceAnalytics() {
                   </ResponsiveContainer>
                 </div>
                 <div className="overflow-x-auto rounded-lg border border-border">
-                  <Table>
+                  <Table cards>
                     <TableHeader>
                       <TableRow>
                         <TableHead>Bucket</TableHead>
@@ -599,7 +599,7 @@ export default function FinanceAnalytics() {
                 </CardHeader>
                 <CardContent>
                   <div className="overflow-x-auto rounded-lg border border-border">
-                    <Table>
+                    <Table cards>
                       <TableHeader>
                         <TableRow>
                           <TableHead>Account</TableHead>
@@ -696,7 +696,7 @@ export default function FinanceAnalytics() {
                 </CardHeader>
                 <CardContent>
                   <div className="overflow-x-auto rounded-lg border border-border">
-                    <Table>
+                    <Table cards>
                       <TableHeader>
                         <TableRow>
                           <TableHead>Category</TableHead>

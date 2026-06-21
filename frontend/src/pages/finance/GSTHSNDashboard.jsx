@@ -387,7 +387,7 @@ export default function GSTHSNDashboard() {
             {/* HSN Summary Tab */}
             <TabsContent value="summary" className="mt-0">
               <ScrollArea className="h-[500px]">
-                <Table>
+                <Table cards>
                   <TableHeader>
                     <TableRow>
                       <TableHead>HSN Code</TableHead>
@@ -464,7 +464,7 @@ export default function GSTHSNDashboard() {
             {/* State-wise Tab */}
             <TabsContent value="statewise" className="mt-0">
               <ScrollArea className="h-[500px]">
-                <Table>
+                <Table cards>
                   <TableHeader>
                     <TableRow>
                       <TableHead>State</TableHead>
@@ -506,7 +506,7 @@ export default function GSTHSNDashboard() {
             {/* Purchase vs Sales Tab */}
             <TabsContent value="comparison" className="mt-0">
               <ScrollArea className="h-[500px]">
-                <Table>
+                <Table cards>
                   <TableHeader>
                     <TableRow>
                       <TableHead>HSN Code</TableHead>
@@ -622,7 +622,7 @@ export default function GSTHSNDashboard() {
             {drilldownData && (
               <ScrollArea className="max-h-[400px]">
                 <div className="overflow-x-auto rounded-lg border border-border">
-                  <Table>
+                  <Table cards>
                     <TableHeader>
                       <TableRow>
                         <TableHead>State</TableHead>

@@ -245,7 +245,7 @@ export default function BankReconciliation() {
                 <Loader2 className="w-8 h-8 animate-spin text-primary" />
               </div>
             ) : (
-              <Table>
+              <Table cards>
                 <TableHeader>
                   <TableRow className="border-border">
                     <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Bank</TableHead>
@@ -441,7 +441,7 @@ export default function BankReconciliation() {
 
               {/* Transactions Table */}
               <div className="max-h-[50vh] overflow-y-auto rounded-lg border border-border">
-                <Table>
+                <Table cards>
                   <TableHeader>
                     <TableRow className="border-border bg-muted">
                       <TableHead className="text-muted-foreground font-mono text-[11px] uppercase tracking-wide">Date</TableHead>

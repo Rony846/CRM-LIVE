@@ -516,7 +516,7 @@ export default function FinanceDashboard() {
                       </div>
                     </div>
                     <div className="overflow-x-auto rounded-lg border border-border">
-                      <Table>
+                      <Table cards>
                         <TableHeader>
                           <TableRow>
                             <TableHead>SKU Code</TableHead>
@@ -627,7 +627,7 @@ export default function FinanceDashboard() {
                       <div>
                         <h4 className="font-semibold text-foreground mb-2">GST Breakup by Rate</h4>
                         <div className="overflow-x-auto rounded-lg border border-border">
-                          <Table>
+                          <Table cards>
                             <TableHeader>
                               <TableRow>
                                 <TableHead>Rate</TableHead>
@@ -814,7 +814,7 @@ export default function FinanceDashboard() {
               </CardHeader>
               <CardContent>
                 <div className="overflow-x-auto rounded-lg border border-border">
-                  <Table>
+                  <Table cards>
                     <TableHeader>
                       <TableRow>
                         <TableHead>Timestamp</TableHead>

@@ -658,7 +658,7 @@ export default function EcommerceReconciliation() {
                     </Button>
                   </div>
                 ) : (
-                  <Table>
+                  <Table cards>
                     <TableHeader>
                       <TableRow>
                         <TableHead>Statement #</TableHead>
@@ -986,7 +986,7 @@ export default function EcommerceReconciliation() {
                   </CardHeader>
                   <CardContent>
                     <div className="overflow-x-auto">
-                      <Table>
+                      <Table cards>
                         <TableHeader>
                           <TableRow>
                             <TableHead>Date</TableHead>
@@ -1117,7 +1117,7 @@ export default function EcommerceReconciliation() {
                 </CardHeader>
                 <CardContent>
                   <div className="overflow-x-auto">
-                    <Table>
+                    <Table cards>
                       <TableHeader>
                         <TableRow>
                           <TableHead>Order ID</TableHead>
@@ -1206,7 +1206,7 @@ export default function EcommerceReconciliation() {
                     </div>
                   ) : (
                     <div className="overflow-x-auto">
-                      <Table>
+                      <Table cards>
                         <TableHeader>
                           <TableRow>
                             <TableHead>Date</TableHead>
@@ -1319,7 +1319,7 @@ export default function EcommerceReconciliation() {
                       </div>
                     ) : (
                       <div className="overflow-x-auto">
-                        <Table>
+                        <Table cards>
                           <TableHeader>
                             <TableRow>
                               <TableHead>Tax Type</TableHead>
@@ -1549,7 +1549,7 @@ export default function EcommerceReconciliation() {
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
-                    <Table>
+                    <Table cards>
                       <TableHeader>
                         <TableRow>
                           <TableHead>Report Type</TableHead>
@@ -2284,7 +2284,7 @@ export default function EcommerceReconciliation() {
                       Transactions ({verifyResult.transactions.length})
                     </div>
                     <div className="border border-border rounded overflow-hidden">
-                      <Table>
+                      <Table cards>
                         <TableHeader>
                           <TableRow>
                             <TableHead className="text-[10px] uppercase font-mono">Date</TableHead>

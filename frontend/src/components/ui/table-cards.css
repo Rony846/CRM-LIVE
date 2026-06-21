@@ -1,0 +1,68 @@
+/* Opt-in card mode for <Table cards> — below md, each row becomes a labeled card.
+   Desktop (>= 768px) is unchanged: normal table layout. */
+@media (max-width: 767px) {
+  table.tbl-cards,
+  table.tbl-cards tbody,
+  table.tbl-cards tfoot {
+    display: block;
+    width: 100%;
+  }
+
+  /* header is encoded into per-cell labels, so hide the header row on mobile */
+  table.tbl-cards thead {
+    display: none;
+  }
+
+  table.tbl-cards tr {
+    display: block;
+    border: 1px solid hsl(var(--border));
+    border-radius: 0.625rem;
+    background: hsl(var(--card));
+    padding: 0.25rem 0.85rem;
+    margin-bottom: 0.6rem;
+  }
+
+  table.tbl-cards td {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 1rem;
+    text-align: right;
+    padding: 0.45rem 0;
+    border: 0;
+    border-bottom: 1px solid hsl(var(--border) / 0.4);
+    white-space: normal;
+  }
+
+  table.tbl-cards tr td:last-child {
+    border-bottom: 0;
+  }
+
+  /* the column label, pulled from the header via data-label */
+  table.tbl-cards td::before {
+    content: attr(data-label);
+    flex: 0 0 auto;
+    max-width: 45%;
+    text-align: left;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: hsl(var(--muted-foreground));
+  }
+
+  /* empty label (e.g. an action/icon column) — don't reserve label space */
+  table.tbl-cards td[data-label=""]::before,
+  table.tbl-cards td:not([data-label])::before {
+    content: "";
+  }
+
+  /* full-width message / empty-state rows span the whole card */
+  table.tbl-cards td[colspan] {
+    display: block;
+    text-align: center;
+  }
+  table.tbl-cards td[colspan]::before {
+    content: "";
+  }
+}

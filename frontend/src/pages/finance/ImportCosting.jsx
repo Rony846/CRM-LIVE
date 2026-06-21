@@ -576,7 +576,7 @@ export default function ImportCosting() {
                 <Loader2 className="w-8 h-8 animate-spin text-primary" />
               </div>
             ) : (
-              <Table>
+              <Table cards>
                 <TableHeader>
                   <TableRow className="border-border">
                     <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Tracking / Shipment #</TableHead>
@@ -1297,7 +1297,7 @@ export default function ImportCosting() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <Table>
+                  <Table cards>
                     <TableHeader>
                       <TableRow className="border-border">
                         <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Item</TableHead>
@@ -1338,7 +1338,7 @@ export default function ImportCosting() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="p-0">
-                  <Table>
+                  <Table cards>
                     <TableHeader>
                       <TableRow className="border-border">
                         <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Item</TableHead>
@@ -1395,7 +1395,7 @@ export default function ImportCosting() {
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="p-0">
-                    <Table>
+                    <Table cards>
                       <TableHeader>
                         <TableRow className="border-border">
                           <TableHead className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">Type</TableHead>
