@@ -75952,6 +75952,44 @@ async def _maybe_feedback_to_review(digits: str, low: str, contact_name: str = "
     return False
 
 
+# --- Founder's direct line to a SANDBOXED Claude Code (Opus via subscription) over WhatsApp ---
+# Text "cc <question>" from the founder's number -> runs `claude` as the unprivileged claude-router
+# user (no CRM access, subscription auth — no metered API key) and WhatsApps back the answer.
+CLAUDE_WA_RELAY_ENABLED = os.environ.get("CLAUDE_WA_RELAY_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+CLAUDE_WA_RELAY_NUMBER = re.sub(r"\D", "", os.environ.get("CLAUDE_WA_RELAY_NUMBER", "9560377363"))[-10:]
+CLAUDE_WA_RELAY_PREFIX = os.environ.get("CLAUDE_WA_RELAY_PREFIX", "cc ").lower()
+CLAUDE_WA_RELAY_TIMEOUT = int(os.environ.get("CLAUDE_WA_RELAY_TIMEOUT", "240"))
+
+
+async def _claude_wa_relay(digits: str, question: str):
+    """Relay a WhatsApp question to the sandboxed Claude Code and send the answer back."""
+    if not question:
+        await whatsapp_cloud.send_text(digits, "Send:  cc <your question>")
+        return
+    try:
+        await whatsapp_cloud.send_text(digits, "\U0001f916 asking Claude…")
+    except Exception:
+        pass
+    reply = ""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "sudo", "-n", "-u", "claude-router", "env", "HOME=/var/lib/claude-router",
+            "CLAUDE_ROUTER_WORK=/var/lib/claude-router/work",
+            "/var/www/claude-router/escalate.sh", question,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=CLAUDE_WA_RELAY_TIMEOUT)
+        reply = out.decode(errors="replace").strip() or f"[no answer] {err.decode(errors='replace')[:200]}"
+    except asyncio.TimeoutError:
+        reply = "⏳ Claude took too long — try a shorter question."
+    except Exception as e:
+        reply = f"[relay error] {e}"
+    await whatsapp_cloud.send_text(digits, reply[:4000])
+    now = datetime.now(timezone.utc).isoformat()
+    await db.whatsapp_cloud_messages.insert_one({
+        "id": str(uuid.uuid4()), "direction": "outgoing", "phone": digits, "text": reply[:4000],
+        "msg_type": "text", "ts": now, "received_at": now, "source": "whatsapp_cloud", "kind": "claude_relay"})
+
+
 async def _pratibha_wa_autoreply(phone: str, text: str, contact_name: str = ""):
     """Generate + send a real Claude reply to an inbound WhatsApp message, safely."""
     if not (PRATIBHA_WA_AUTOREPLY and pratibha_brain.available() and whatsapp_cloud.enabled()):
@@ -75962,6 +76000,11 @@ async def _pratibha_wa_autoreply(phone: str, text: str, contact_name: str = ""):
     now = datetime.now(timezone.utc).isoformat()
     digits = re.sub(r"\D", "", phone)[-10:]
     low = t.lower()
+
+    # Founder's "cc <question>" → sandboxed Claude relay; never reaches Pratibha.
+    if CLAUDE_WA_RELAY_ENABLED and digits == CLAUDE_WA_RELAY_NUMBER and low.startswith(CLAUDE_WA_RELAY_PREFIX):
+        await _claude_wa_relay(digits, t[len(CLAUDE_WA_RELAY_PREFIX):].strip())
+        return
 
     # Opt-out: honour and stop.
     if low in _WA_OPTOUT_WORDS:
