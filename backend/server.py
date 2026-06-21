@@ -13731,9 +13731,22 @@ async def admin_dashboard_executive(user: dict = Depends(require_roles(["admin"]
     pending_dispatches = await db.dispatches.count_documents(
         {"status": {"$in": ["pending_label", "ready_for_dispatch"]}})
 
+    # ---------- Data freshness ----------
+    # sales_invoices is fed by periodic batch imports (Vyapar / Amazon / Flipkart / GSTR-1),
+    # not a live feed — so the current month reads near-empty until those imports run. Surface the
+    # newest invoice date as "data through" so an un-imported month isn't misread as a sales crash.
+    latest = await db.sales_invoices.aggregate([
+        {"$addFields": {"_d": {"$substr": [{"$ifNull": ["$invoice_date", "$created_at"]}, 0, 10]}}},
+        {"$group": {"_id": None, "max": {"$max": "$_d"}}},
+    ]).to_list(1)
+    data_through = latest[0]["max"] if latest else None
+    sales_stale = bool(data_through and data_through < month_start)
+
     return {
         "month_label": now.strftime("%B %Y"),
         "generated_at": now.isoformat(),
+        "data_through": data_through,
+        "sales_stale": sales_stale,
         "revenue": {
             "this_month": this_month_rev,
             "last_month": last_month_rev,

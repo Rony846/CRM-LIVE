@@ -150,6 +150,11 @@ function ExecutiveOverview({ data, onRefresh }) {
     value: d.value || 0,
   }));
 
+  const dataThrough = data.data_through
+    ? new Date(data.data_through).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+    : null;
+  const salesStale = !!data.sales_stale;
+
   const alerts = [];
   if ((ai.sla_breaches || 0) > 0) alerts.push({ icon: AlertTriangle, tone: 'bad', code: 'SLA_DEADLINE_EXCEEDED', title: 'SLA breaches', meta: 'Tickets past their resolution deadline', to: '/admin/tickets?sla_breached=true', count: ai.sla_breaches });
   if ((ai.pending_warranties || 0) > 0) alerts.push({ icon: Shield, tone: 'warn', code: 'APPROVAL_REQUIRED', title: 'Warranty approvals', meta: 'Claims waiting for a decision', to: '/admin/warranties?status=pending', count: ai.pending_warranties });
@@ -162,6 +167,24 @@ function ExecutiveOverview({ data, onRefresh }) {
           <div className="cd-eyebrow"><span className="cd-dot" /> Live · All firms</div>
           <h2 className="cd-title">Executive <span className="thin">Overview</span></h2>
           <p className="cd-sub">Real-time performance across all firms · {data.month_label}</p>
+          {dataThrough && (
+            <div
+              title={salesStale
+                ? 'Sales come from periodic Vyapar/Amazon/Flipkart imports, not a live feed. The current month fills in once those imports run.'
+                : 'Newest sales invoice on record.'}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 8,
+                padding: '4px 10px', borderRadius: 6, fontSize: 11.5, fontWeight: 600,
+                letterSpacing: 0.2,
+                color: salesStale ? '#f4b740' : '#8ea3c4',
+                background: salesStale ? 'rgba(244,183,64,0.10)' : 'rgba(255,255,255,0.04)',
+                border: `1px solid ${salesStale ? 'rgba(244,183,64,0.35)' : 'rgba(255,255,255,0.08)'}`,
+              }}
+            >
+              {salesStale ? <AlertTriangle size={13} /> : <Calendar size={13} />}
+              Sales data through {dataThrough}{salesStale ? ' · current month not imported yet' : ''}
+            </div>
+          )}
         </div>
         <div className="cd-headbtns">
           <span className="cd-btn"><Calendar size={14} /> Last 30 days</span>
