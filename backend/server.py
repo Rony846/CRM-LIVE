@@ -38165,6 +38165,12 @@ async def lawyer_mark_notice_sent(order_id: str, body: LegalNoticeBody,
 
 # ============== Amazon refund losses (delivered + refunded — legal recovery) ==============
 AMZ_LOSS_LEGAL = ["none", "review", "notice_drafted", "notice_sent", "case_filed", "recovered", "written_off"]
+_AMZ_OID_RE = re.compile(r"\d{3}-\d{7}-\d{7}")
+
+
+def _amz_oid(o):
+    m = _AMZ_OID_RE.search(str(o or ""))
+    return m.group(0) if m else None
 
 
 @api_router.get("/admin/amazon-refund-losses")
@@ -38184,6 +38190,14 @@ async def list_amazon_refund_losses(
     if legal_status in AMZ_LOSS_LEGAL:
         q["legal_status"] = legal_status
     rows = await db.amazon_refund_losses.find(q, {"_id": 0}).sort("refund_amount", -1).to_list(5000)
+    # cross-link: attach any existing legal case (matched by Amazon order id)
+    legal_map = {}
+    async for lc in db.legal_cases.find({}, {"order_id": 1, "serial": 1, "status": 1, "id": 1}):
+        k = _amz_oid(lc.get("order_id"))
+        if k:
+            legal_map.setdefault(k, {"serial": lc.get("serial"), "status": lc.get("status"), "id": lc.get("id")})
+    for r in rows:
+        r["legal_case"] = legal_map.get(_amz_oid(r.get("order_id")))
     total = round(sum(float(r.get("refund_amount") or 0) for r in rows), 2)
     high = [r for r in rows if str(r.get("loss_confidence") or "").startswith("High")]
     by_status = {}
@@ -38200,6 +38214,7 @@ async def list_amazon_refund_losses(
         "by_legal_status": by_status,
         "top_states": sorted(by_state.items(), key=lambda x: -x[1])[:6],
         "recovered_loss": round(sum(float(r.get("refund_amount") or 0) for r in rows if r.get("legal_status") == "recovered"), 2),
+        "with_legal_case": sum(1 for r in rows if r.get("legal_case")),
     }
     return {"success": True, "summary": summary, "orders": rows, "legal_statuses": AMZ_LOSS_LEGAL}
 
@@ -38254,6 +38269,14 @@ async def list_legal_cases(
     if firm:
         query["firm_name"] = firm
     rows = await db.legal_cases.find(query, {"_id": 0}).sort("old_case_id", 1).to_list(5000)
+    # cross-link: attach any tracked refund-loss (matched by Amazon order id)
+    loss_map = {}
+    async for rl in db.amazon_refund_losses.find({}, {"order_id": 1, "refund_amount": 1, "loss_confidence": 1, "id": 1}):
+        k = _amz_oid(rl.get("order_id"))
+        if k:
+            loss_map.setdefault(k, {"amount": rl.get("refund_amount"), "confidence": rl.get("loss_confidence"), "id": rl.get("id")})
+    for r in rows:
+        r["refund_loss"] = loss_map.get(_amz_oid(r.get("order_id")))
     ql = (q or "").strip().lower()
     if ql:
         rows = [r for r in rows if ql in str(r.get("party_name", "")).lower()
@@ -38265,6 +38288,7 @@ async def list_legal_cases(
         "by_status": dict(_C(r.get("status") or "pending" for r in rows)),
         "by_firm": dict(_C(r.get("firm_name") or "—" for r in rows)),
         "with_docs": sum(1 for r in rows if r.get("client_document")),
+        "with_refund_loss": sum(1 for r in rows if r.get("refund_loss")),
     }
     firms = sorted({r.get("firm_name") for r in await db.legal_cases.find({}, {"firm_name": 1}).to_list(5000) if r.get("firm_name")})
     return {"success": True, "summary": summary, "cases": rows, "statuses": LEGAL_CASE_STATUS, "firms": firms}

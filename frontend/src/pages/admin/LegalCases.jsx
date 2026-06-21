@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { API, useAuth } from '@/App';
@@ -11,7 +12,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Scale, RefreshCw, Search, FileText, MessageSquare, Gavel, Send } from 'lucide-react';
+import { Scale, RefreshCw, Search, FileText, MessageSquare, Gavel, Send, IndianRupee } from 'lucide-react';
 
 const STATUS_LABEL = {
   pending: 'Pending', draft_uploaded: 'Draft uploaded', notice_pending: 'Notice pending',
@@ -154,7 +155,15 @@ export default function LegalCases() {
                 <TableRow key={c.id}>
                   <TableCell className="font-mono text-xs font-semibold">{c.serial || '—'}</TableCell>
                   <TableCell><div className="font-medium">{c.party_name}</div><div className="text-xs text-muted-foreground font-mono">{c.customer_phone}</div></TableCell>
-                  <TableCell className="font-mono text-xs">{c.order_id || '—'}</TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {c.order_id || '—'}
+                    {c.refund_loss && (
+                      <Link to="/admin/refund-losses" title="Tracked as a refund loss"
+                        className="mt-1 inline-flex items-center gap-1 text-[10px] text-red-400 hover:underline">
+                        <IndianRupee className="w-3 h-3" />{Number(c.refund_loss.amount || 0).toLocaleString('en-IN')} loss
+                      </Link>
+                    )}
+                  </TableCell>
                   <TableCell className="text-xs max-w-[140px] truncate" title={c.firm_name}>{c.firm_name}</TableCell>
                   <TableCell className="text-xs max-w-[220px] truncate" title={c.issue}>{c.issue || '—'}</TableCell>
                   <TableCell><StatusSelect c={c} /></TableCell>
@@ -183,6 +192,12 @@ export default function LegalCases() {
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                 <span>📞 {open.customer_phone || '—'}</span><span>🧾 {open.order_id || '—'}</span><span>🏢 {open.firm_name}</span>
               </div>
+              {open.refund_loss && (
+                <Link to="/admin/refund-losses" className="flex items-center gap-1.5 text-xs text-red-400 hover:underline">
+                  <IndianRupee className="w-3.5 h-3.5" />Tracked refund loss: ₹{Number(open.refund_loss.amount || 0).toLocaleString('en-IN')}
+                  <span className="text-muted-foreground">· {open.refund_loss.confidence}</span>
+                </Link>
+              )}
               <div><div className="text-xs text-muted-foreground mb-1">Issue</div>
                 <div className="bg-muted/40 rounded p-2 text-sm whitespace-pre-wrap">{open.issue || '—'}</div></div>
               <div className="flex items-center gap-2">

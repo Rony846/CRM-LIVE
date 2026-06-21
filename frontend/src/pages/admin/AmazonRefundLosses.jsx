@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { API, useAuth } from '@/App';
@@ -9,7 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { AlertTriangle, Scale, RefreshCw, Download, Search, IndianRupee, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, Scale, RefreshCw, Download, Search, IndianRupee, ShieldCheck, Gavel } from 'lucide-react';
 
 const inr = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 });
 const STATUS_LABEL = {
@@ -157,7 +158,15 @@ export default function AmazonRefundLosses() {
                 <TableRow><TableCell colSpan={9} className="text-center py-10 text-muted-foreground">No loss orders.</TableCell></TableRow>
               ) : orders.map((o) => (
                 <TableRow key={o.order_id}>
-                  <TableCell className="font-mono text-xs">{o.order_id}</TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {o.order_id}
+                    {o.legal_case && (
+                      <Link to="/admin/legal-cases" title="Legal case exists for this order"
+                        className="mt-1 inline-flex items-center gap-1 text-[10px] text-purple-400 hover:underline">
+                        <Gavel className="w-3 h-3" /> Legal case{o.legal_case.serial ? ` ${o.legal_case.serial}` : ''}
+                      </Link>
+                    )}
+                  </TableCell>
                   <TableCell>
                     <div className="font-medium">{o.customer || '—'}</div>
                     <div className="text-xs text-muted-foreground font-mono">{o.phone}</div>
