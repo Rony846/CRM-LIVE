@@ -287,7 +287,7 @@ export default function AdminWhatsAppAgent() {
               </CardTitle>
             </CardHeader>
             <CardContent className="p-0">
-              <table className="w-full text-sm">
+              <div className="overflow-x-auto"><table className="w-full text-sm">
                 <thead className="bg-muted/40 border-b border-border">
                   <tr>
                     <th className="text-left px-4 py-2 text-[10px] font-mono uppercase tracking-wider text-muted-foreground">User</th>
@@ -312,7 +312,7 @@ export default function AdminWhatsAppAgent() {
                     </tr>
                   ))}
                 </tbody>
-              </table>
+              </table></div>
             </CardContent>
           </Card>
         )}

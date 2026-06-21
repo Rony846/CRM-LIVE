@@ -184,7 +184,7 @@ export default function DealerManagement() {
               <p>No dealers match these filters.</p>
             </div>
           ) : (
-            <table className="w-full">
+            <div className="overflow-x-auto"><table className="w-full">
               <thead>
                 <tr className="border-b border-border">
                   {['Firm Name', 'Primary Contact', 'Location', 'Status', 'Ledger Balance', 'Last Order', ''].map((h, i) => (
@@ -228,7 +228,7 @@ export default function DealerManagement() {
                   </motion.tr>
                 ))}
               </tbody>
-            </table>
+            </table></div>
           )}
 
           {!loading && filtered.length > 0 && (

@@ -2129,7 +2129,7 @@ export default function AccountantDashboard() {
                       ) : (
                         // Table-based selection for larger lists
                         <div className="mt-2 border border-violet-400/25 rounded-lg overflow-hidden max-h-48 overflow-y-auto">
-                          <table className="w-full text-sm">
+                          <div className="overflow-x-auto"><table className="w-full text-sm">
                             <thead className="bg-violet-400/[0.07] sticky top-0">
                               <tr>
                                 <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wide text-violet-400">Select</th>
@@ -2158,7 +2158,7 @@ export default function AccountantDashboard() {
                                 </tr>
                               ))}
                             </tbody>
-                          </table>
+                          </table></div>
                         </div>
                       )}
                       {dispatchForm.serial_number && (

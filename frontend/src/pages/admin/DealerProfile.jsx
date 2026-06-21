@@ -258,7 +258,7 @@ export default function DealerProfile() {
                   {ledger.length === 0 ? (
                     <p className="text-center py-8 text-sm text-muted-foreground">No ledger entries.</p>
                   ) : (
-                    <table className="w-full">
+                    <div className="overflow-x-auto"><table className="w-full">
                       <thead><tr className="border-b border-border">
                         {['Date', 'Ref / Type', 'Description', 'Debit (DR)', 'Credit (CR)', 'Balance'].map((h, i) => (
                           <th key={i} className={`py-2 font-mono text-[10px] uppercase tracking-wide text-muted-foreground ${i >= 3 ? 'text-right' : 'text-left'}`}>{h}</th>
@@ -281,7 +281,7 @@ export default function DealerProfile() {
                           </tr>
                         ))}
                       </tbody>
-                    </table>
+                    </table></div>
                   )}
                   {ledger.length > 0 && (
                     <p className="mt-3 text-[11px] text-muted-foreground">Showing {ledger.length} most recent entries</p>
@@ -292,7 +292,7 @@ export default function DealerProfile() {
                   {orders.length === 0 ? (
                     <p className="text-center py-8 text-sm text-muted-foreground">No orders yet.</p>
                   ) : (
-                    <table className="w-full">
+                    <div className="overflow-x-auto"><table className="w-full">
                       <thead><tr className="border-b border-border">
                         {['Order #', 'Date', 'Items', 'Total', 'Status', 'Payment'].map((h, i) => (
                           <th key={i} className={`py-2 font-mono text-[10px] uppercase tracking-wide text-muted-foreground ${i === 3 ? 'text-right' : 'text-left'}`}>{h}</th>
@@ -310,7 +310,7 @@ export default function DealerProfile() {
                           </tr>
                         ))}
                       </tbody>
-                    </table>
+                    </table></div>
                   )}
                 </TabsContent>
 
