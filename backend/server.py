@@ -75989,6 +75989,15 @@ async def _claude_wa_relay(digits: str, question: str):
         await whatsapp_cloud.send_text(digits, "🔒 Please prove you are the boss?  (reply:  cc <your secret>)")
         return
 
+    # authed → named actions run as DETERMINISTIC commands (not via the LLM); anything else is
+    # read-only Q&A through the sandboxed relay.
+    ql = question.strip()
+    if ql.lower().startswith("ship "):
+        await _claude_wa_ship(digits, ql[5:])
+        return
+    if ql.lower() in ("confirm", "confirm ship", "yes confirm"):
+        await _claude_wa_confirm_ship(digits)
+        return
     await _claude_wa_run(digits, question)
 
 
@@ -75998,7 +76007,7 @@ async def _claude_wa_run(digits: str, question: str):
         await whatsapp_cloud.send_text(digits, "Send:  cc <your question>")
         return
     try:
-        await whatsapp_cloud.send_text(digits, "\U0001f916 asking Claude…")
+        await whatsapp_cloud.send_text(digits, "\U0001f9e0 asking MG Brain…")
     except Exception:
         pass
     reply = ""
@@ -76019,6 +76028,66 @@ async def _claude_wa_run(digits: str, question: str):
     await db.whatsapp_cloud_messages.insert_one({
         "id": str(uuid.uuid4()), "direction": "outgoing", "phone": digits, "text": reply[:4000],
         "msg_type": "text", "ts": now, "received_at": now, "source": "whatsapp_cloud", "kind": "claude_relay"})
+
+
+# Named WhatsApp action: book a Bigship label for an order. Deterministic (no LLM), reuses the
+# idempotent + dedup-guarded /pending-fulfillment bigship-label flow, behind the PIN session.
+_WA_ACTION_USER = {"id": "15511c11-f2bc-480c-8364-6a1208f0b015", "role": "admin",
+                   "first_name": "WhatsApp", "last_name": "Boss"}
+
+
+async def _claude_wa_ship(digits: str, order_id: str):
+    order_id = (order_id or "").strip()
+    if not order_id:
+        await whatsapp_cloud.send_text(digits, "Usage:  cc ship <order id>")
+        return
+    rec = await db.pending_fulfillment.find_one({"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]})
+    if not rec:
+        await whatsapp_cloud.send_text(digits, f"No dispatch-queue record for {order_id} — cc ship needs an order in pending fulfillment.")
+        return
+    try:
+        res = await bigship_label_for_fulfillment(rec["id"], dry_run=True, user=_WA_ACTION_USER)
+    except HTTPException as e:
+        await whatsapp_cloud.send_text(digits, f"⚠️ Can't ship {order_id}: {e.detail}")
+        return
+    except Exception as e:
+        await whatsapp_cloud.send_text(digits, f"⚠️ Ship check failed for {order_id}: {str(e)[:200]}")
+        return
+    if res.get("already_booked"):
+        await whatsapp_cloud.send_text(digits, f"✅ {order_id} is already booked — AWB {res.get('awb_number')}.")
+        return
+    p = res.get("preview", {})
+    await db.claude_wa_sessions.update_one({"phone": digits}, {"$set": {"pending_ship": {"fulfillment_id": rec["id"], "order_id": order_id}}})
+    await whatsapp_cloud.send_text(digits,
+        f"📦 Ready to book via Bigship — {order_id}\n"
+        f"To: {p.get('consignee')} ({p.get('phone')}), {p.get('pincode')}\n"
+        f"Item: {p.get('product_name')}\n"
+        f"Weight: {p.get('weight_kg')}kg · {p.get('dimensions')}cm\n"
+        f"Courier: {p.get('courier')} · est ₹{p.get('rate')}\n\n"
+        f"Reply  cc confirm  to book (this spends money).")
+
+
+async def _claude_wa_confirm_ship(digits: str):
+    sess = await db.claude_wa_sessions.find_one({"phone": digits}) or {}
+    ps = sess.get("pending_ship")
+    if not ps:
+        await whatsapp_cloud.send_text(digits, "Nothing pending. Send  cc ship <order id>  first.")
+        return
+    await whatsapp_cloud.send_text(digits, f"📦 Booking {ps['order_id']} …")
+    try:
+        res = await bigship_label_for_fulfillment(ps["fulfillment_id"], dry_run=False, user=_WA_ACTION_USER)
+    except HTTPException as e:
+        await whatsapp_cloud.send_text(digits, f"⚠️ Booking failed for {ps['order_id']}: {e.detail}")
+        return
+    except Exception as e:
+        await whatsapp_cloud.send_text(digits, f"⚠️ Booking error for {ps['order_id']}: {str(e)[:200]}")
+        return
+    await db.claude_wa_sessions.update_one({"phone": digits}, {"$set": {"pending_ship": None}})
+    msg = (f"✅ Booked {ps['order_id']}\nAWB: {res.get('awb_number')}\n"
+           f"Courier: {res.get('bigship_courier') or 'Delhivery'}")
+    if res.get("label_url"):
+        msg += f"\nLabel: {res['label_url']}"
+    await whatsapp_cloud.send_text(digits, msg)
 
 
 async def _pratibha_wa_autoreply(phone: str, text: str, contact_name: str = ""):
