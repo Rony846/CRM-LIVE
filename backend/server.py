@@ -76262,6 +76262,17 @@ CLAUDE_WA_RELAY_SECRET = os.environ.get("CLAUDE_WA_RELAY_SECRET", "").strip()
 CLAUDE_WA_SESSION_MIN = int(os.environ.get("CLAUDE_WA_SESSION_MIN", "30"))
 
 
+def _wa_relay_profiles():
+    """Numbers allowed to use MG Brain -> data profile. Founder = full; ops numbers (supervisor/agent)
+    = support/service/production/dispatch/stock only, NO financial data (enforced by crm-read)."""
+    profiles = {CLAUDE_WA_RELAY_NUMBER: "full"}
+    for n in os.environ.get("CLAUDE_WA_RELAY_OPS_NUMBERS", "").split(","):
+        nn = re.sub(r"\D", "", n)[-10:]
+        if len(nn) == 10:
+            profiles[nn] = "ops"
+    return profiles
+
+
 async def _claude_wa_relay(digits: str, question: str):
     """PIN gate in front of the relay: verify the boss, then (within the session window) answer."""
     now = datetime.now(timezone.utc)
@@ -76315,12 +76326,13 @@ async def _claude_wa_run(digits: str, question: str):
         await whatsapp_cloud.send_text(digits, "\U0001f9e0 asking MG Brain…")
     except Exception:
         pass
+    profile = _wa_relay_profiles().get(digits, "full")   # founder=full data, ops=no financials
     reply = ""
     for attempt in (1, 2):  # retry once on an empty/errored run before giving up
         try:
             proc = await asyncio.create_subprocess_exec(
                 "sudo", "-n", "-u", "claude-router", "env", "HOME=/var/lib/claude-router",
-                "CLAUDE_ROUTER_WORK=/var/lib/claude-router/work",
+                "CLAUDE_ROUTER_WORK=/var/lib/claude-router/work", f"CRM_READ_PROFILE={profile}",
                 "/var/www/claude-router/escalate.sh", question,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             out, err = await asyncio.wait_for(proc.communicate(), timeout=CLAUDE_WA_RELAY_TIMEOUT)
@@ -76416,7 +76428,7 @@ async def _pratibha_wa_autoreply(phone: str, text: str, contact_name: str = ""):
     low = t.lower()
 
     # Founder's "cc <question>" → sandboxed Claude relay; never reaches Pratibha.
-    if CLAUDE_WA_RELAY_ENABLED and digits == CLAUDE_WA_RELAY_NUMBER and low.startswith(CLAUDE_WA_RELAY_PREFIX):
+    if CLAUDE_WA_RELAY_ENABLED and digits in _wa_relay_profiles() and low.startswith(CLAUDE_WA_RELAY_PREFIX):
         await _claude_wa_relay(digits, t[len(CLAUDE_WA_RELAY_PREFIX):].strip())
         return
 
