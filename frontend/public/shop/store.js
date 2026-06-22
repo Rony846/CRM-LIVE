@@ -33,11 +33,11 @@
   window.__mgProducts={};
   MG.card=function(p){ var pct=p.compare_at?Math.round((p.compare_at-p.price)/p.compare_at*100):0;
     return '<article class="mg-pc spec" data-product-id="'+p.id+'">'
-      +'<a class="mg-pc-img" href="/store/product/?id='+p.id+'" aria-label="'+esc(p.title)+'">'
+      +'<a class="mg-pc-img" href="/store/p/'+(p.slug||p.id)+'/" aria-label="'+esc(p.title)+'">'
       +(p.compare_at?'<span class="mg-pc-tag mg-pc-tag-sale">Sale</span>':'')
       +(p.image?'<img src="'+p.image+'" alt="'+esc(p.title)+'" loading="lazy">':'<img src="/shop/inverter.png" alt="">')+'</a>'
       +'<div class="mg-pc-body">'+(p.type?'<div class="mg-pc-cat">'+p.type+'</div>':'')
-      +'<h3 class="mg-pc-title"><a href="/store/product/?id='+p.id+'">'+p.title+'</a></h3>'
+      +'<h3 class="mg-pc-title"><a href="/store/p/'+(p.slug||p.id)+'/">'+p.title+'</a></h3>'
       +'<div class="mg-pc-price-row"><span class="mg-pc-now">₹'+INR(p.price)+'</span>'
       +(p.compare_at?'<span class="mg-pc-was">₹'+INR(p.compare_at)+'</span><span class="mg-pc-pct">−'+pct+'%</span>':'')+'</div>'
       +'<button class="mg-btn mg-btn-primary mg-pc-cta" type="button" data-add="'+p.id+'">Add to cart</button></div></article>'; };

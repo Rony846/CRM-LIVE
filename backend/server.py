@@ -72525,6 +72525,7 @@ def _shop_card(m: dict) -> dict:
     return {
         "id": m.get("id"),
         "handle": m.get("shopify_handle") or m.get("sku_code") or m.get("id"),
+        "slug": m.get("web_slug") or m.get("shopify_handle") or m.get("id"),
         "title": m.get("name"),
         "type": m.get("category") or m.get("product_type"),
         "price": m.get("selling_price"),
@@ -72562,7 +72563,8 @@ async def shop_featured(limit: int = 8):
 @api_router.get("/shop/product/{pid}")
 async def shop_product(pid: str):
     m = await db.master_skus.find_one(
-        {"$and": [_SHOP_BASEQ, {"$or": [{"id": pid}, {"sku_code": pid}, {"shopify_handle": pid}]}]})
+        {"$and": [_SHOP_BASEQ, {"$or": [{"id": pid}, {"sku_code": pid}, {"shopify_handle": pid},
+                                        {"web_slug": pid}]}]})
     if not m:
         raise HTTPException(status_code=404, detail="Product not found")
     return {"product": _shop_card(m)}

@@ -5,7 +5,12 @@
 <link rel="icon" href="/shop/favicon.png">
 <link rel="stylesheet" href="/shop/tokens.css">
 <link rel="stylesheet" href="/shop/theme.css">
-<link rel="stylesheet" href="/shop/mg-home2.css"><script src="/shop/store.js" defer></script>
+<link rel="stylesheet" href="/shop/mg-home2.css">
+<link rel="canonical" href="https://musclegrid.in/store/">
+<meta property="og:type" content="website"><meta property="og:title" content="MuscleGrid — Industrial Power. Engineered for India."><meta property="og:description" content="Solar inverters, lithium batteries and stabilizers — built for Indian homes, shops and industry."><meta property="og:url" content="https://musclegrid.in/store/"><meta property="og:image" content="https://musclegrid.in/shop/logo-full.png"><meta property="og:site_name" content="MuscleGrid"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:image" content="https://musclegrid.in/shop/logo-full.png">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"Organization","name":"MuscleGrid","url":"https://musclegrid.in/","logo":"https://musclegrid.in/shop/logo-full.png","sameAs":["https://www.instagram.com/musclegrid_industries","https://facebook.com/MuscleGrid"],"contactPoint":{"@type":"ContactPoint","telephone":"+91-9999036254","contactType":"customer service","areaServed":"IN"}}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebSite","name":"MuscleGrid","url":"https://musclegrid.in/store/","potentialAction":{"@type":"SearchAction","target":"https://musclegrid.in/store/products/?q={q}","query-input":"required name=q"}}</script>
+<script src="/shop/store.js" defer></script>
 </head><body class="template-index">
 <header class="mg-header" style="position:sticky;top:0;z-index:100;background:var(--mg-bg-elev);border-bottom:1px solid var(--mg-iron-200)">
  <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;max-width:1320px;margin:0 auto;padding:12px 20px">
@@ -309,7 +314,7 @@ fetch('/api/shop/featured?limit=8').then(r=>r.json()).then(d=>{
   var inr=function(n){return Number(n).toLocaleString('en-IN');};
   g.innerHTML=d.products.map(function(p){
     var save=p.compare_at?Math.round((p.compare_at-p.price)/p.compare_at*100):0;
-    return '<a class="mh-pc" href="/store/product/?id='+p.id+'">'
+    return '<a class="mh-pc" href="/store/p/'+(p.slug||p.id)+'/">'
       +'<div class="im">'+(p.image?'<img src="'+p.image+'" alt="'+(p.title||'').replace(/"/g,'')+'" loading="lazy">':'')+'</div>'
       +'<div class="bd">'+(p.type?'<div class="typ">'+p.type+'</div>':'')
       +'<div class="tt">'+p.title+'</div>'
