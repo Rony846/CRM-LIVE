@@ -359,15 +359,67 @@ document.getElementById('bbBack').onclick=()=>go(-1);
 document.getElementById('bbNext').onclick=()=>go(1);
 document.getElementById('bbReview').onclick=showSummary;
 document.getElementById('bbEdit').onclick=()=>{ document.querySelector('.bb-summary').style.display='none'; document.getElementById('bbBuilder').style.display='grid'; document.getElementById('bbBuilder').scrollIntoView({behavior:'smooth'}); };
-// Checkout → add the configured pack to the existing cart, then go to checkout
-document.getElementById('bbCheckout').onclick=()=>{
-  const id='custom-battery-'+Date.now();
-  const item={ id:id, title:'Custom Lithium Battery — '+opt('system',sel.system).name+' ('+opt('cells',sel.cells).name+', '+opt('warranty',sel.warranty).name+')', price:total(), image:'/shop/prod-battery.jpg' };
-  if(window.MGCart){ MGCart.add(item,1); location.href='/store/cart/'; }
-  else location.href=document.getElementById('bbWa').href;
+// Both CTAs capture contact → create a routed CRM sales lead (custom packs are price-confirmed by the team)
+document.getElementById('bbCheckout').onclick=()=>openQuote('order');
+document.getElementById('bbQuote').onclick=()=>openQuote('quote');
+
+function openQuote(intent){
+  document.getElementById('bbqIntent').value=intent;
+  document.getElementById('bbqTitle').textContent = intent==='order' ? 'Confirm your order' : 'Request your final quote';
+  document.getElementById('bbqSub').textContent = intent==='order'
+    ? 'Share your details — our team confirms the exact price and sends a secure payment link.'
+    : 'Share your details — our team confirms the exact price and calls you back.';
+  document.getElementById('bbqBody').style.display='block';
+  document.getElementById('bbqDone').style.display='none';
+  document.getElementById('bbqErr').textContent='';
+  document.getElementById('bbQModal').style.display='flex';
+  document.getElementById('bbqWa').href=document.getElementById('bbWa').href;
+}
+document.getElementById('bbqClose').onclick=()=>{ document.getElementById('bbQModal').style.display='none'; };
+document.getElementById('bbQModal').addEventListener('click',e=>{ if(e.target.id==='bbQModal') e.currentTarget.style.display='none'; });
+document.getElementById('bbqSubmit').onclick=function(){
+  const err=document.getElementById('bbqErr'); err.textContent='';
+  const name=document.getElementById('bbqName').value.trim();
+  const phone=document.getElementById('bbqPhone').value.replace(/\D/g,'');
+  if(!name){ err.textContent='Please enter your name.'; return; }
+  if(phone.length<10){ err.textContent='Please enter a valid 10-digit phone.'; return; }
+  const btn=this; btn.disabled=true; btn.textContent='Sending…';
+  fetch('/api/shop/battery-quote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    name:name, phone:phone, city:document.getElementById('bbqCity').value.trim(), email:document.getElementById('bbqEmail').value.trim(),
+    total:total(), intent:document.getElementById('bbqIntent').value,
+    config:BB.steps.map(s=>({label:s.label, option:opt(s.key,sel[s.key]).name}))
+  })}).then(r=>r.json().then(d=>({ok:r.ok,d}))).then(res=>{
+    if(!res.ok){ err.textContent=res.d.detail||'Could not send. Try WhatsApp instead.'; btn.disabled=false; btn.textContent='Send request'; return; }
+    document.getElementById('bbqBody').style.display='none';
+    document.getElementById('bbqDone').style.display='block';
+  }).catch(()=>{ err.textContent='Network error — please try WhatsApp.'; btn.disabled=false; btn.textContent='Send request'; });
 };
-document.getElementById('bbQuote').onclick=()=>{ location.href=document.getElementById('bbWa').href; };
 
 renderStep(); updateBattery(); updatePrice();
 </script>
+
+<!-- contact modal → CRM lead -->
+<div id="bbQModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;align-items:center;justify-content:center;padding:20px">
+  <div style="background:#fff;border-radius:18px;max-width:440px;width:100%;padding:26px;box-shadow:0 30px 80px rgba(0,0,0,.4)">
+    <div id="bbqBody">
+      <h3 id="bbqTitle" style="font-family:var(--mg-font-display);font-weight:800;font-size:24px;text-transform:uppercase;margin:0 0 4px">Request your final quote</h3>
+      <p id="bbqSub" style="color:var(--bb-grey);font-size:13.5px;margin:0 0 16px">Share your details — our team confirms the exact price and calls you back.</p>
+      <input type="hidden" id="bbqIntent" value="quote">
+      <input id="bbqName"  placeholder="Full name *"        style="width:100%;padding:12px;border:1px solid var(--bb-line);border-radius:9px;margin:5px 0;font-size:15px">
+      <input id="bbqPhone" placeholder="Phone (10-digit) *" type="tel" style="width:100%;padding:12px;border:1px solid var(--bb-line);border-radius:9px;margin:5px 0;font-size:15px">
+      <input id="bbqCity"  placeholder="City (optional)"    style="width:100%;padding:12px;border:1px solid var(--bb-line);border-radius:9px;margin:5px 0;font-size:15px">
+      <input id="bbqEmail" placeholder="Email (optional)" type="email" style="width:100%;padding:12px;border:1px solid var(--bb-line);border-radius:9px;margin:5px 0;font-size:15px">
+      <div id="bbqErr" style="color:#c0392b;font-size:13px;margin:4px 0;min-height:16px"></div>
+      <button class="bb-btn yellow" id="bbqSubmit" style="width:100%;margin-top:6px">Send request</button>
+      <a id="bbqWa" href="#" class="bb-btn ghost" style="display:block;text-align:center;text-decoration:none;margin-top:8px">💬 Or chat on WhatsApp</a>
+      <button class="bb-btn ghost" id="bbqClose" style="width:100%;margin-top:8px;border:none;color:var(--bb-grey)">Cancel</button>
+    </div>
+    <div id="bbqDone" style="display:none;text-align:center;padding:14px 0">
+      <div style="font-size:54px">✅</div>
+      <h3 style="font-family:var(--mg-font-display);font-weight:800;text-transform:uppercase;margin:10px 0 6px">Request received!</h3>
+      <p style="color:var(--bb-grey);font-size:14px">Our team has your configuration and will call you shortly to confirm the exact price &amp; dispatch. For anything urgent, call <a href="tel:+919999036254" style="color:var(--bb-yellow-deep);font-weight:700">099990 36254</a>.</p>
+      <button class="bb-btn ghost" onclick="document.getElementById('bbQModal').style.display='none'" style="margin-top:14px;width:100%">Close</button>
+    </div>
+  </div>
+</div>
 </body></html>

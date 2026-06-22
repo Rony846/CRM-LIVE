@@ -72803,6 +72803,84 @@ async def admin_online_order_update(oid: str, body: dict,
     return {"success": True}
 
 
+class BatteryQuoteCreate(BaseModel):
+    name: str
+    phone: str
+    email: Optional[str] = None
+    city: Optional[str] = None
+    total: Optional[float] = 0
+    intent: Optional[str] = "quote"        # "quote" | "order"
+    config: Optional[List[dict]] = None    # [{label, option}]
+
+
+_battery_quote_hits = {}
+
+
+@api_router.post("/shop/battery-quote")
+async def shop_battery_quote(body: BatteryQuoteCreate,
+                             x_forwarded_for: Optional[str] = Header(None, alias="x-forwarded-for")):
+    """Public: a configured battery from the builder → a routed SALES LEAD the team sees + a free
+    WhatsApp alert. Rate-limited + deduped (per phone, 6h). No auth (rate-limited public form)."""
+    now = datetime.now(timezone.utc)
+    ip = (x_forwarded_for or "unknown").split(",")[0].strip()
+    window = now - timedelta(minutes=1)
+    hits = [t for t in _battery_quote_hits.get(ip, []) if t > window]
+    if len(hits) >= 10:
+        raise HTTPException(status_code=429, detail="Too many requests — please slow down")
+    hits.append(now); _battery_quote_hits[ip] = hits
+
+    phone = re.sub(r"\D", "", body.phone or "")[-10:]
+    if len(phone) != 10:
+        raise HTTPException(status_code=400, detail="A valid 10-digit phone number is required")
+    if not (body.name or "").strip():
+        raise HTTPException(status_code=400, detail="Name is required")
+
+    cfg = body.config or []
+    cfg_lines = "\n".join(f"• {c.get('label')}: {c.get('option')}" for c in cfg if c.get("label"))
+    total = int(body.total or 0)
+    intent = "ORDER" if body.intent == "order" else "QUOTE"
+    prod = f"Custom Lithium Battery (~₹{total:,})" if total else "Custom Lithium Battery"
+    notes = (f"🔋 Battery builder {intent} request:\n{cfg_lines}\nEstimated total: ₹{total:,}"
+             + (f"\nCity: {body.city.strip()}" if body.city else ""))
+
+    since = (now - timedelta(hours=6)).isoformat()
+    dup = await db.leads.find_one(
+        {"phone": phone, "source": "battery_configurator", "created_at": {"$gte": since}}, {"_id": 0, "id": 1})
+    if dup:
+        await db.leads.update_one({"id": dup["id"]}, {
+            "$push": {"interactions": {"type": "web_form", "notes": notes, "by": "Battery Builder",
+                                       "timestamp": now.isoformat()}},
+            "$set": {"updated_at": now.isoformat()}})
+        return {"success": True, "lead_id": dup["id"], "deduped": True}
+
+    assignee = await _next_sales_assignee()
+    lead_id = str(uuid.uuid4())
+    await db.leads.insert_one({
+        "id": lead_id, "phone": phone, "name": body.name.strip()[:120], "email": body.email,
+        "product_interest": prod, "state": (body.city or "").strip()[:80] or None,
+        "source": "battery_configurator", "status": "new", "notes": notes,
+        "battery_config": {"items": cfg, "total": total, "intent": body.intent},
+        "assigned_to": (assignee or {}).get("user_id"), "assigned_to_name": (assignee or {}).get("name"),
+        "follow_up_date": None,
+        "interactions": [{"type": "web_form", "notes": notes, "by": "Battery Builder",
+                          "by_id": None, "timestamp": now.isoformat()}],
+        "created_by": "battery_configurator", "created_at": now.isoformat(),
+        "updated_at": now.isoformat(), "converted_at": None})
+    asyncio.create_task(create_notification(
+        title="🔋 New battery quote request",
+        message=f"{body.name.strip()} · {phone} · ~₹{total:,}" + (f" · {body.city}" if body.city else ""),
+        notification_type="info", link="/leads", priority="high",
+        target_roles=["call_support", "admin"], created_by_name="Battery Builder",
+        data={"lead_id": lead_id}))
+    try:
+        await _alert_founder_free(
+            f"🔋 BATTERY {intent} — {body.name.strip()} · {phone}" + (f" · {body.city}" if body.city else "")
+            + f"\nEst ₹{total:,}\n{cfg_lines}\n→ /leads", "battery_quote")
+    except Exception:
+        pass
+    return {"success": True, "lead_id": lead_id, "assigned_to": (assignee or {}).get("name")}
+
+
 # Mount static files
 static_path = ROOT_DIR / "static"
 if static_path.exists():
