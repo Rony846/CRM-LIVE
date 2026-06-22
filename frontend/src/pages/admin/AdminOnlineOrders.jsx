@@ -10,6 +10,7 @@ import { Loader2, ShoppingCart, IndianRupee, Truck, Package, ChevronDown, Refres
 const STATUSES = ['confirmed', 'packed', 'shipped', 'delivered', 'cancelled'];
 const fmt = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 });
 const when = (s) => (s ? new Date(s).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '—');
+const gstRates = (o) => [...new Set((o.items || []).map((it) => it.gst_rate).filter(Boolean))].sort((a, b) => a - b).map((r) => r + '%').join(' / ');
 
 export default function AdminOnlineOrders() {
   const { token } = useAuth();
@@ -115,6 +116,7 @@ export default function AdminOnlineOrders() {
                   <span className="text-slate-400 text-sm">{o.customer_phone}</span>
                   <span className="text-slate-400 text-sm">· {(o.items || []).length} item(s)</span>
                   <span className="flex-1" />
+                  {o.gstin && <Badge className="bg-amber-600" title={`GSTIN ${o.gstin}`}>GST invoice</Badge>}
                   {payBadge(o)}
                   <Badge className="bg-slate-700 capitalize">{o.status}</Badge>
                   <span className="font-bold text-green-400">{fmt(o.total)}</span>
@@ -126,9 +128,17 @@ export default function AdminOnlineOrders() {
                       <div className="text-xs text-slate-500 mb-1">ITEMS</div>
                       {(o.items || []).map((it, i) => (
                         <div key={i} className="text-sm text-slate-300 flex justify-between py-0.5">
-                          <span>{it.quantity}× {it.title}</span><span>{fmt(it.line_total)}</span>
+                          <span>{it.quantity}× {it.title}{it.gst_rate ? <span className="text-slate-500"> ({it.gst_rate}% GST)</span> : null}</span><span>{fmt(it.line_total)}</span>
                         </div>
                       ))}
+                      {o.gst_included > 0 && (
+                        <div className="mt-2 pt-2 border-t border-slate-700/50 text-sm">
+                          <div className="flex justify-between py-0.5 text-slate-400"><span>Taxable value</span><span>{fmt(o.taxable_value)}</span></div>
+                          <div className="flex justify-between py-0.5 text-slate-400"><span>GST {gstRates(o)}</span><span>{fmt(o.gst_included)}</span></div>
+                          <div className="flex justify-between py-0.5 font-bold text-white"><span>Total (incl. GST)</span><span>{fmt(o.total)}</span></div>
+                          {o.gstin && <div className="mt-2 text-amber-400 text-xs">🧾 GST invoice → GSTIN <b>{o.gstin}</b></div>}
+                        </div>
+                      )}
                       <div className="text-xs text-slate-500 mt-3 mb-1">SHIP TO</div>
                       <div className="text-sm text-slate-300">
                         {o.shipping?.name} · {o.shipping?.phone}<br />
