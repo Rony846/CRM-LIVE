@@ -75587,13 +75587,21 @@ async def _wa_send_to_manager(text: str, fallback_desc: str = "") -> tuple:
         logger.warning(f"manager send attempt {attempt + 1} failed: {res}")
         await asyncio.sleep(2)
     ok = isinstance(res, dict) and not res.get("error")
+    # Founder rule: attach the customer's invoice to every decision-ask (sent right after the text).
+    if ok:
+        try:
+            att = await _pratibha_invoice_attachment(customer_phone, ticket_number)
+            if att:
+                await send_whatsapp_media(target, "📄 Customer invoice (for the decision above)", att)
+        except Exception as e:
+            logger.warning(f"decision invoice attach failed: {e}")
     if not ok and fallback_desc:
         await create_notification(title="⚠️ Couldn't reach manager on WhatsApp", message=fallback_desc,
                                   notification_type="whatsapp", link="/admin", target_roles=["admin"], priority="high")
     return ok, asked_via
 
 
-async def _wa_tool_ask_manager(digits: str, name: str, summary: str, question: str) -> dict:
+async def _wa_tool_ask_manager(digits: str, name: str, summary: str, question: str, _gated: bool = False, prefix_note: str = "") -> dict:
     """Action tool: escalate a decision to Pawan/Shweta. One open decision per customer (no spam)."""
     if await db.repair_decisions.find_one({"customer_phone": digits, "status": "open"}, {"_id": 1}):
         return {"status": "already_pending", "note": "You already asked the manager and are awaiting their reply — just reassure the customer, don't ask again."}
@@ -76217,18 +76225,27 @@ async def _claude_wa_run(digits: str, question: str):
     except Exception:
         pass
     reply = ""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "sudo", "-n", "-u", "claude-router", "env", "HOME=/var/lib/claude-router",
-            "CLAUDE_ROUTER_WORK=/var/lib/claude-router/work",
-            "/var/www/claude-router/escalate.sh", question,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=CLAUDE_WA_RELAY_TIMEOUT)
-        reply = out.decode(errors="replace").strip() or f"[no answer] {err.decode(errors='replace')[:200]}"
-    except asyncio.TimeoutError:
-        reply = "⏳ Claude took too long — try a shorter question."
-    except Exception as e:
-        reply = f"[relay error] {e}"
+    for attempt in (1, 2):  # retry once on an empty/errored run before giving up
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "sudo", "-n", "-u", "claude-router", "env", "HOME=/var/lib/claude-router",
+                "CLAUDE_ROUTER_WORK=/var/lib/claude-router/work",
+                "/var/www/claude-router/escalate.sh", question,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=CLAUDE_WA_RELAY_TIMEOUT)
+            reply = out.decode(errors="replace").strip()
+            if not reply:
+                logger.warning(f"MG Brain empty output (attempt {attempt}): {err.decode(errors='replace')[:200]}")
+        except asyncio.TimeoutError:
+            reply = "⏳ MG Brain took too long — try a shorter question."
+            break  # don't retry a timeout
+        except Exception as e:
+            logger.warning(f"MG Brain relay error (attempt {attempt}): {e}")
+            reply = ""
+        if reply:
+            break
+    if not reply:  # never leak raw stderr to the user
+        reply = "⚠️ MG Brain didn't catch that — please try again."
     await whatsapp_cloud.send_text(digits, reply[:4000])
     now = datetime.now(timezone.utc).isoformat()
     await db.whatsapp_cloud_messages.insert_one({
@@ -76372,6 +76389,14 @@ async def _pratibha_raise_repair_decision(customer_phone: str, customer_name: st
         logger.warning(f"repair decision [{ref}] {asked_via} send attempt {attempt + 1} failed: {res}")
         await asyncio.sleep(2)
     ok = isinstance(res, dict) and not res.get("error")
+    # Founder rule: attach the customer's invoice to the decision-ask.
+    if ok:
+        try:
+            att = await _pratibha_invoice_attachment(customer_phone, ticket_number)
+            if att:
+                await send_whatsapp_media(target, "📄 Customer invoice (for the decision above)", att)
+        except Exception as e:
+            logger.warning(f"decision invoice attach failed: {e}")
     await db.repair_decisions.update_one(
         {"id": did}, {"$set": {"group_notified": ok, "asked_via": asked_via, "group_send_result": str(res)[:200]}})
     if not ok:
