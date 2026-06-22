@@ -38459,7 +38459,57 @@ async def upload_legal_case_document(case_id: str, file: UploadFile = File(...),
     if doc["type"] == "notice":
         sets["status"] = "notice_sent"   # uploading the notice advances the case
     await db.legal_cases.update_one({"id": case_id}, {"$push": {"lawyer_documents": doc}, "$set": sets})
+    # notify the founder (free) that the lawyer filed something
+    await _alert_founder_free(
+        f"⚖️ {doc['by']} uploaded a *{doc['type']}* for case {case.get('serial') or case_id} "
+        f"({case.get('party_name') or '?'}) — {doc['filename']}", "legal_upload")
     return {"success": True, "document": {k: doc[k] for k in ("id", "filename", "type", "by", "at")}}
+
+
+@api_router.get("/admin/legal-cases/{case_id}/draft-notice")
+async def draft_legal_notice(case_id: str, user: dict = Depends(require_roles(_LEGAL_ROLES))):
+    """Generate a pre-filled demand-notice draft for a case (deterministic template — lawyer edits/finalises)."""
+    c = await db.legal_cases.find_one({"id": case_id}, {"_id": 0})
+    if not c:
+        raise HTTPException(status_code=404, detail="Case not found")
+    phone = re.sub(r"\D", "", str(c.get("customer_phone") or ""))[-10:]
+    party = await db.parties.find_one({"phone": {"$regex": phone + "$"}},
+        {"address": 1, "city": 1, "state": 1, "pincode": 1}) if phone else None
+    addr = ", ".join(x for x in [(party or {}).get("address"), (party or {}).get("city"),
+                                  (party or {}).get("state"), (party or {}).get("pincode")] if x) or "(address on record)"
+    oid = _amz_oid(c.get("order_id"))
+    rl = await db.amazon_refund_losses.find_one({"order_id": {"$regex": oid}}, {"refund_amount": 1}) if oid else None
+    amt = (rl or {}).get("refund_amount")
+    firm = c.get("firm_name") or "MuscleGrid"
+    today = datetime.now(timezone.utc).strftime("%d %B %Y")
+    pt3 = (f"\n3. Despite delivery of the said product (proof of delivery on record), a refund of "
+           f"₹{float(amt):,.0f} was claimed and processed, and the product has not been returned to our client."
+           if amt else "")
+    demand = (f"pay the sum of ₹{float(amt):,.0f} or return the said product in its original condition"
+              if amt else "return the said product in its original condition or pay the value thereof")
+    notice = (f"""LEGAL NOTICE
+
+To,
+{c.get('party_name') or '—'}
+Mobile: {phone or '—'}
+{addr}
+
+Subject: Demand notice in respect of Amazon Order No. {c.get('order_id') or '—'}
+
+Madam/Sir,
+
+Under instructions from and on behalf of our client, {firm} ("our client"), we hereby serve upon you the following notice:
+
+1. That our client supplied goods to you against Amazon Order No. {c.get('order_id') or '—'}.
+2. {c.get('issue') or 'That you have wrongfully retained the goods and/or their value.'}{pt3}
+
+You are hereby called upon to, WITHIN SEVEN (7) DAYS of receipt of this notice, {demand}, failing which our client shall be constrained to initiate appropriate civil and criminal proceedings against you, including under Sections 420 and 406 of the Indian Penal Code, entirely at your risk as to cost and consequences, which please note.
+
+Dated: {today}
+
+For {firm}
+(Advocate)""")
+    return {"success": True, "notice": notice, "serial": c.get("serial")}
 
 
 @api_router.get("/admin/legal-cases/{case_id}/lawyer-doc/{doc_id}")

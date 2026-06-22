@@ -93,6 +93,15 @@ export default function LegalCases() {
     } catch (e) { toast.error('File unavailable'); }
   };
 
+  const [notice, setNotice] = useState('');
+  const genNotice = async (caseId) => {
+    try {
+      const r = await axios.get(`${API}/admin/legal-cases/${caseId}/draft-notice`, auth);
+      setNotice(r.data.notice || '');
+      toast.success('Draft generated — edit & copy below');
+    } catch (e) { toast.error('Could not generate notice'); }
+  };
+
   const [uploading, setUploading] = useState(false);
   const uploadDoc = async (caseId, file) => {
     setUploading(true);
@@ -196,7 +205,7 @@ export default function LegalCases() {
                     ? <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => openDoc(c.id)}><FileText className="w-4 h-4 text-blue-400" /></Button>
                     : <span className="text-muted-foreground text-xs">—</span>}</TableCell>
                   <TableCell>
-                    <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => { setOpen(c); setComment(''); }}>
+                    <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => { setOpen(c); setComment(''); setNotice(''); }}>
                       <MessageSquare className="w-3.5 h-3.5 mr-1" />{(c.comments || []).length || 'View'}
                     </Button>
                   </TableCell>
@@ -227,8 +236,19 @@ export default function LegalCases() {
                 <div className="bg-muted/40 rounded p-2 text-sm whitespace-pre-wrap">{open.issue || '—'}</div></div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-muted-foreground">Status:</span><StatusSelect c={open} w="w-[170px]" />
-                {open.client_document && <Button variant="outline" size="sm" className="h-8 text-xs ml-auto" onClick={() => openDoc(open.id)}><FileText className="w-4 h-4 mr-1" />Client doc</Button>}
+                <Button variant="outline" size="sm" className="h-8 text-xs ml-auto" onClick={() => genNotice(open.id)}><Gavel className="w-4 h-4 mr-1" />Draft notice</Button>
+                {open.client_document && <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => openDoc(open.id)}><FileText className="w-4 h-4 mr-1" />Client doc</Button>}
               </div>
+              {notice && (
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs text-muted-foreground">Draft demand notice (edit as needed)</span>
+                    <button onClick={() => { navigator.clipboard?.writeText(notice); toast.success('Copied'); }}
+                      className="text-xs text-blue-400 hover:underline">Copy</button>
+                  </div>
+                  <Textarea className="text-[11px] font-mono min-h-[180px]" value={notice} onChange={(e) => setNotice(e.target.value)} />
+                </div>
+              )}
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-xs text-muted-foreground">My notices & documents</span>
