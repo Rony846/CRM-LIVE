@@ -1,0 +1,359 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Build Your Custom Lithium Battery · MuscleGrid</title>
+<meta name="description" content="Configure your own MuscleGrid lithium battery — choose cells, BMS, busbar, cabinet, color and warranty. Get an instant estimated price.">
+<link rel="canonical" href="https://musclegrid.in/store/build-battery/">
+<meta property="og:title" content="Build Your Custom Lithium Battery · MuscleGrid">
+<meta property="og:description" content="Choose your cells, protection system, cabinet, color and warranty. Get an instant estimated price before checkout.">
+<meta property="og:image" content="https://musclegrid.in/shop/logo-full.png"><meta property="og:type" content="website">
+<link rel="icon" href="/shop/favicon.png">
+<link rel="stylesheet" href="/shop/tokens.css"><link rel="stylesheet" href="/shop/theme.css">
+<script src="/shop/store.js" defer></script>
+<style>
+/* ============ MuscleGrid Battery Configurator — yellow / black / white / grey ============ */
+:root{ --bb-yellow:#FFC400; --bb-yellow-deep:#E0A800; --bb-ink:#0E0E0E; --bb-ink2:#1A1A1A;
+  --bb-grey:#5C5C5C; --bb-grey-2:#9A9A9A; --bb-line:#E6E6E6; --bb-bg:#FAFAF8; --bb-color:#FFC400; }
+.bb-wrap{ background:var(--bb-bg); color:var(--bb-ink); }
+.bb-hero{ background:radial-gradient(1200px 500px at 50% -10%, #1c1c1c, var(--bb-ink)); color:#fff; padding:56px 20px 40px; text-align:center; }
+.bb-hero .eb{ display:inline-flex; gap:8px; align-items:center; font-family:var(--mg-font-mono); font-size:12px; letter-spacing:.16em; text-transform:uppercase; color:var(--bb-yellow); border:1px solid rgba(255,196,0,.4); padding:6px 14px; border-radius:999px; }
+.bb-hero h1{ font-family:var(--mg-font-display); font-weight:800; font-size:clamp(34px,6vw,68px); letter-spacing:-.02em; text-transform:uppercase; margin:18px 0 10px; line-height:1 }
+.bb-hero h1 em{ color:var(--bb-yellow); font-style:normal }
+.bb-hero p{ color:#bdbdbd; max-width:640px; margin:0 auto; font-size:clamp(15px,2vw,18px); line-height:1.6 }
+.bb-main{ max-width:1320px; margin:0 auto; padding:0 20px 40px; display:grid; grid-template-columns:1fr 1fr; gap:40px; align-items:start; margin-top:-30px }
+@media(max-width:920px){ .bb-main{ grid-template-columns:1fr; gap:24px } }
+
+/* ---- 3D battery stage ---- */
+.bb-stage-card{ position:sticky; top:84px; background:linear-gradient(160deg,#202020,#0b0b0b); border-radius:20px; padding:24px; box-shadow:0 30px 70px -30px rgba(0,0,0,.6); overflow:hidden }
+.bb-stage-card .grid-bg{ position:absolute; inset:0; background-image:linear-gradient(rgba(255,255,255,.03) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.03) 1px,transparent 1px); background-size:30px 30px; opacity:.7 }
+.bb-glow{ position:absolute; width:420px; height:420px; left:50%; top:46%; transform:translate(-50%,-50%); background:radial-gradient(circle, rgba(255,196,0,.22), transparent 60%); filter:blur(10px); pointer-events:none }
+.bb-stage{ position:relative; perspective:1400px; min-height:430px; display:flex; align-items:center; justify-content:center; z-index:1 }
+.bb-battery{ position:relative; width:280px; height:360px; transform-style:preserve-3d; transform:rotateX(6deg) rotateY(-18deg); transition:transform .9s cubic-bezier(.2,.8,.2,1) }
+.bb-battery:hover{ transform:rotateX(4deg) rotateY(-10deg) }
+.bb-cabinet{ position:absolute; inset:0; border-radius:16px; background:linear-gradient(145deg,#2c2c2c,#0c0c0c); border:1px solid #3a3a3a; box-shadow:inset 0 3px 14px rgba(255,255,255,.06), inset 0 -20px 40px rgba(0,0,0,.5), 0 50px 80px -28px rgba(0,0,0,.85); overflow:hidden; transition:background .5s, border-color .5s }
+.bb-cabinet::after{ content:""; position:absolute; top:0; left:0; right:0; height:42%; background:linear-gradient(180deg,rgba(255,255,255,.10),transparent) }
+.bb-brand{ position:absolute; bottom:12px; left:0; right:0; text-align:center; font-family:var(--mg-font-display); font-weight:800; font-size:13px; letter-spacing:.08em; color:rgba(255,255,255,.55); text-transform:uppercase; z-index:6 }
+.bb-brand b{ color:var(--bb-color) }
+/* color accent strip driven by --bb-color */
+.bb-strip{ position:absolute; top:0; left:0; width:8px; bottom:0; background:var(--bb-color); box-shadow:0 0 24px var(--bb-color); z-index:7; transition:background .4s }
+
+/* cells */
+.bb-cells{ position:absolute; left:14%; right:14%; top:14%; bottom:22%; display:grid; grid-template-columns:repeat(4,1fr); gap:6px; z-index:2 }
+.bb-cell{ border-radius:3px; background:linear-gradient(180deg,#d6d6d6,#8a8a8a); box-shadow:inset 0 2px 3px rgba(255,255,255,.5), inset 0 -3px 4px rgba(0,0,0,.35); opacity:0; transform:translateY(34px) scale(.9) }
+.bb-cell::before{ content:""; position:absolute; top:3px; left:50%; transform:translateX(-50%); width:40%; height:4px; border-radius:2px; background:var(--bb-color); opacity:.8 }
+.show-cells .bb-cell{ animation:bbCellIn .5s cubic-bezier(.2,.9,.2,1) forwards }
+@keyframes bbCellIn{ to{ opacity:1; transform:none } }
+/* busbar */
+.bb-busbar{ position:absolute; left:14%; right:14%; top:11%; height:9px; border-radius:3px; background:linear-gradient(90deg,#ffe27a,#ffba00,#cf8b00); box-shadow:0 2px 8px rgba(0,0,0,.4); z-index:3; opacity:0; transform:scaleX(.2); transform-origin:left }
+.show-busbar .bb-busbar{ animation:bbBus .5s ease forwards }
+@keyframes bbBus{ to{ opacity:1; transform:scaleX(1) } }
+/* bms */
+.bb-bms{ position:absolute; right:14%; top:30%; width:30%; height:16%; border-radius:5px; background:linear-gradient(160deg,#0f6f3f,#0a4a2a); border:1px solid #16a05a; box-shadow:0 4px 12px rgba(0,0,0,.45); z-index:4; opacity:0; transform:translateX(20px) }
+.bb-bms::before{ content:""; position:absolute; inset:18% 12%; background-image:radial-gradient(rgba(255,255,255,.5) 1px,transparent 1px); background-size:7px 7px; opacity:.5 }
+.show-bms .bb-bms{ animation:bbFadeR .5s ease forwards }
+/* mcb */
+.bb-mcb{ position:absolute; left:16%; bottom:20%; width:16%; height:13%; border-radius:4px; background:linear-gradient(160deg,#f4f4f4,#c9c9c9); border:1px solid #aaa; box-shadow:0 4px 10px rgba(0,0,0,.4); z-index:5; opacity:0; transform:translateY(14px) }
+.bb-mcb::after{ content:""; position:absolute; left:50%; top:18%; transform:translateX(-50%); width:30%; height:34%; border-radius:2px; background:var(--bb-ink) }
+.show-mcb .bb-mcb{ animation:bbFadeU .5s ease forwards }
+/* terminals */
+.bb-term{ position:absolute; width:24px; height:24px; border-radius:50%; z-index:8; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:14px; color:var(--bb-ink);
+  background:radial-gradient(circle at 35% 30%, #fff3b0, var(--bb-yellow)); box-shadow:0 0 18px 5px rgba(255,196,0,.55), inset 0 -2px 4px rgba(0,0,0,.25); animation:bbPulse 2.2s ease-in-out infinite }
+.bb-term.pos{ top:5%; right:20% } .bb-term.neg{ top:5%; right:5%; background:radial-gradient(circle at 35% 30%,#eee,#bcbcbc); box-shadow:0 0 14px 3px rgba(255,255,255,.4) }
+@keyframes bbPulse{ 0%,100%{ box-shadow:0 0 14px 3px rgba(255,196,0,.45) } 50%{ box-shadow:0 0 26px 8px rgba(255,196,0,.75) } }
+/* handles */
+.bb-handle{ position:absolute; width:14px; height:64px; border-radius:8px; background:linear-gradient(90deg,#3a3a3a,#1a1a1a); border:1px solid #4a4a4a; box-shadow:0 4px 10px rgba(0,0,0,.5); z-index:9; opacity:0 }
+.bb-handle.l{ left:-12px; top:34% } .bb-handle.r{ right:-12px; top:34% }
+.show-handles .bb-handle{ animation:bbFade .45s ease forwards }
+/* warranty shield */
+.bb-shield{ position:absolute; right:-14px; bottom:-10px; width:64px; height:64px; z-index:12; opacity:0; transform:scale(.4) }
+.bb-shield svg{ width:100%; height:100%; filter:drop-shadow(0 6px 14px rgba(0,0,0,.4)) }
+.show-shield .bb-shield{ animation:bbPop .55s cubic-bezier(.2,1.4,.4,1) forwards }
+@keyframes bbPop{ to{ opacity:1; transform:scale(1) } }
+@keyframes bbFade{ to{ opacity:1 } } @keyframes bbFadeR{ to{ opacity:1; transform:none } }
+@keyframes bbFadeU{ to{ opacity:1; transform:none } }
+.bb-cap{ text-align:center; color:#9a9a9a; font-family:var(--mg-font-mono); font-size:11px; letter-spacing:.1em; text-transform:uppercase; margin-top:14px; position:relative; z-index:1 }
+
+/* ---- configurator ---- */
+.bb-config{ background:#fff; border:1px solid var(--bb-line); border-radius:20px; padding:24px; box-shadow:0 20px 50px -30px rgba(0,0,0,.25) }
+.bb-prog{ display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap }
+.bb-prog .dot{ flex:1; min-width:18px; height:5px; border-radius:3px; background:var(--bb-line); transition:.3s }
+.bb-prog .dot.done{ background:var(--bb-color) } .bb-prog .dot.cur{ background:var(--bb-yellow-deep) }
+.bb-step-meta{ font-family:var(--mg-font-mono); font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--bb-grey); margin:14px 0 2px }
+.bb-step-title{ font-family:var(--mg-font-display); font-weight:800; font-size:26px; text-transform:uppercase; letter-spacing:-.01em; margin-bottom:16px; display:flex; align-items:center; gap:10px }
+.bb-opts{ display:grid; gap:10px }
+.bb-opt{ position:relative; text-align:left; border:1.5px solid var(--bb-line); border-radius:14px; padding:14px 16px; cursor:pointer; background:#fff; transition:.18s; display:flex; gap:14px; align-items:center }
+.bb-opt:hover{ border-color:var(--bb-yellow); transform:translateY(-1px); box-shadow:0 8px 20px -12px rgba(0,0,0,.3) }
+.bb-opt.sel{ border-color:var(--bb-yellow); background:linear-gradient(180deg,#fffbe9,#fff); box-shadow:0 0 0 3px rgba(255,196,0,.18) }
+.bb-opt .ic{ width:46px; height:46px; flex:none; border-radius:11px; background:var(--bb-ink); color:var(--bb-yellow); display:flex; align-items:center; justify-content:center; font-size:22px }
+.bb-opt.sel .ic{ background:var(--bb-yellow); color:var(--bb-ink) }
+.bb-opt .nm{ font-weight:700; font-size:15px; display:flex; align-items:center; gap:8px; flex-wrap:wrap }
+.bb-opt .ds{ color:var(--bb-grey); font-size:12.5px; margin-top:2px; line-height:1.4 }
+.bb-opt .pr{ margin-left:auto; text-align:right; font-weight:800; white-space:nowrap; color:var(--bb-ink) }
+.bb-opt .pr small{ display:block; font-weight:500; color:var(--bb-grey-2); font-size:11px }
+.bb-badge{ font-size:10px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; padding:2px 7px; border-radius:5px; background:var(--bb-ink); color:#fff }
+.bb-badge.rec{ background:var(--bb-yellow); color:var(--bb-ink) }
+.bb-swatch{ width:18px;height:18px;border-radius:50%; border:2px solid #fff; box-shadow:0 0 0 1px #ccc }
+.bb-tick{ position:absolute; top:10px; right:10px; width:20px;height:20px; border-radius:50%; background:var(--bb-yellow); color:var(--bb-ink); display:none; align-items:center; justify-content:center; font-size:12px; font-weight:900 }
+.bb-opt.sel .bb-tick{ display:flex }
+.bb-nav{ display:flex; gap:10px; margin-top:18px }
+.bb-btn{ border:none; cursor:pointer; font-weight:700; border-radius:11px; padding:13px 20px; font-size:15px; transition:.15s; font-family:inherit }
+.bb-btn.ghost{ background:#fff; border:1.5px solid var(--bb-line); color:var(--bb-ink) } .bb-btn.ghost:hover{ border-color:var(--bb-grey) }
+.bb-btn.solid{ background:var(--bb-ink); color:#fff; flex:1 } .bb-btn.solid:hover{ background:#000 }
+.bb-btn.yellow{ background:var(--bb-yellow); color:var(--bb-ink) } .bb-btn.yellow:hover{ background:var(--bb-yellow-deep) }
+.bb-btn:disabled{ opacity:.4; cursor:not-allowed }
+
+/* ---- live price summary ---- */
+.bb-price{ position:sticky; bottom:0; z-index:30; background:var(--bb-ink); color:#fff; }
+.bb-price-in{ max-width:1320px; margin:0 auto; padding:14px 20px; display:flex; align-items:center; gap:18px; flex-wrap:wrap }
+.bb-price .tot{ font-family:var(--mg-font-display); font-weight:800; font-size:30px; color:var(--bb-yellow); line-height:1 }
+.bb-price .tot small{ display:block; font-family:var(--mg-font-body); font-size:11px; color:#9a9a9a; font-weight:500; letter-spacing:.06em; text-transform:uppercase }
+.bb-price .note{ flex:1; min-width:200px; color:#9a9a9a; font-size:11.5px; line-height:1.4 }
+.bb-price .acts{ display:flex; gap:8px; flex-wrap:wrap }
+@media(max-width:560px){ .bb-price .tot{ font-size:24px } .bb-price-in{ gap:10px } .bb-price .acts{ width:100% } .bb-price .acts .bb-btn{ flex:1 } }
+
+/* ---- summary screen ---- */
+.bb-summary{ display:none; max-width:760px; margin:0 auto; padding:30px 20px 60px }
+.bb-sum-card{ background:#fff; border:1px solid var(--bb-line); border-radius:20px; padding:28px; box-shadow:0 20px 50px -30px rgba(0,0,0,.25) }
+.bb-sum-row{ display:flex; justify-content:space-between; gap:12px; padding:11px 0; border-bottom:1px solid var(--bb-line); font-size:14px }
+.bb-sum-row .k{ color:var(--bb-grey) } .bb-sum-row .v{ font-weight:700; text-align:right }
+.bb-sum-row .v small{ display:block; color:var(--bb-yellow-deep); font-weight:600 }
+.bb-sum-total{ display:flex; justify-content:space-between; align-items:center; margin-top:16px; padding-top:16px; border-top:2px solid var(--bb-ink) }
+.bb-sum-total .t{ font-family:var(--mg-font-display); font-weight:800; font-size:34px }
+</style></head>
+<body class="template-page"><div class="bb-wrap">
+
+<section class="bb-hero">
+  <span class="eb">⚡ Custom Engineered · Made in India</span>
+  <h1>Build Your <em>Custom Lithium Battery</em></h1>
+  <p>Choose your cells, protection system, cabinet, color and warranty. Get an instant estimated price before checkout — engineered for Indian inverter, solar &amp; industrial backup.</p>
+</section>
+
+<div class="bb-main" id="bbBuilder">
+  <!-- LEFT: animated battery -->
+  <div>
+    <div class="bb-stage-card">
+      <div class="grid-bg"></div><div class="bb-glow"></div>
+      <div class="bb-stage">
+        <div class="bb-battery" id="bbBattery" style="--bb-color:#FFC400">
+          <div class="bb-cabinet"></div>
+          <div class="bb-strip"></div>
+          <div class="bb-busbar"></div>
+          <div class="bb-cells" id="bbCells"></div>
+          <div class="bb-bms"></div>
+          <div class="bb-mcb"></div>
+          <div class="bb-term pos">+</div><div class="bb-term neg">−</div>
+          <div class="bb-handle l"></div><div class="bb-handle r"></div>
+          <div class="bb-brand"><b>MUSCLE</b>GRID</div>
+          <div class="bb-shield"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z" fill="#FFC400"/><path d="M8 12l3 3 5-6" stroke="#0E0E0E" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        </div>
+      </div>
+      <div class="bb-cap" id="bbCap">Your battery builds as you choose ▸</div>
+    </div>
+  </div>
+  <!-- RIGHT: configurator -->
+  <div class="bb-config">
+    <div class="bb-prog" id="bbProg"></div>
+    <div class="bb-step-meta" id="bbMeta">Step 1 of 8</div>
+    <div class="bb-step-title" id="bbTitle"></div>
+    <div class="bb-opts" id="bbOpts"></div>
+    <div class="bb-nav">
+      <button class="bb-btn ghost" id="bbBack">← Back</button>
+      <button class="bb-btn solid" id="bbNext">Next →</button>
+    </div>
+  </div>
+</div>
+
+<!-- SUMMARY SCREEN -->
+<div class="bb-summary" id="bbSummary">
+  <h2 style="font-family:var(--mg-font-display);font-weight:800;font-size:32px;text-transform:uppercase;text-align:center;margin-bottom:6px">Your Custom Battery</h2>
+  <p style="text-align:center;color:var(--bb-grey);margin-bottom:22px">Review your configuration and confirm — our team verifies the final price before dispatch.</p>
+  <div class="bb-sum-card">
+    <div id="bbSumRows"></div>
+    <div class="bb-sum-total"><span style="font-weight:700">Estimated Total</span><span class="t" id="bbSumTotal">₹0</span></div>
+    <p style="color:var(--bb-grey);font-size:12.5px;margin-top:14px;line-height:1.5">⚠️ Final pricing depends on battery capacity, cell batch, cabinet size and dispatch location. Our team will confirm the exact price before order processing. GST as applicable.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:18px">
+      <button class="bb-btn yellow" id="bbCheckout">Checkout Now</button>
+      <button class="bb-btn solid" id="bbQuote" style="flex:none">Request Final Quote</button>
+      <a class="bb-btn ghost" id="bbWa" style="grid-column:1/-1;text-align:center;text-decoration:none" href="#">💬 Chat on WhatsApp</a>
+    </div>
+    <button class="bb-btn ghost" id="bbEdit" style="width:100%;margin-top:10px">← Edit configuration</button>
+  </div>
+</div>
+
+<!-- LIVE PRICE BAR -->
+<div class="bb-price">
+  <div class="bb-price-in">
+    <div class="tot" id="bbBarTotal">₹25,000<small>Estimated total</small></div>
+    <div class="note">Prices are indicative and may vary based on capacity, cell availability and final configuration. GST as applicable.</div>
+    <div class="acts">
+      <a class="bb-btn ghost" href="https://wa.me/919999036254" style="text-decoration:none;color:#fff;border-color:#3a3a3a">💬 WhatsApp</a>
+      <button class="bb-btn yellow" id="bbReview">Review &amp; Checkout →</button>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+/* ╔══════════════════════════════════════════════════════════════════════════╗
+   ║  EDIT PRICING & OPTIONS HERE — base price + each option's `add` (₹ extra)  ║
+   ║  `rec:true` = Recommended badge.  `badge` = quality tag.                   ║
+   ║  Color step uses `color:'#hex'` to tint the 3D battery.                    ║
+   ╚══════════════════════════════════════════════════════════════════════════╝ */
+const BB = {
+  basePrice: 25000,                         // ◀ base pack price (₹)
+  whatsapp: '919999036254',                 // ◀ enquiry number
+  steps: [
+    { key:'cells', label:'Prismatic Cell Type', icon:'🔋', options:[
+      { id:'gradea', name:'Grade A LFP Cells', ic:'🔋', desc:'A-grade LiFePO₄ prismatic — reliable everyday performance.', add:0,     badge:'A-Grade' },
+      { id:'eve',    name:'EVE Grade A Cells',  ic:'⚡', desc:'EVE tier-1 cells — excellent cycle life & consistency.',    add:4000,  badge:'Premium', rec:true },
+      { id:'catl',   name:'CATL Cells',         ic:'🏭', desc:"World's #1 cell maker — top-tier longevity.",              add:7000,  badge:'Tier-1' },
+      { id:'byd',    name:'BYD Cells',          ic:'🛡', desc:'Blade-grade reliability for heavy industrial use.',        add:8000,  badge:'Tier-1' },
+    ]},
+    { key:'busbar', label:'Busbar Type', icon:'🔩', options:[
+      { id:'std',  name:'Standard Copper Busbar',      ic:'🔩', desc:'Solid copper interconnects for clean current flow.',  add:0 },
+      { id:'nick', name:'Nickel Plated Copper Busbar', ic:'✨', desc:'Corrosion-resistant nickel plating, lower resistance.', add:1500, rec:true },
+      { id:'hd',   name:'Heavy Duty Copper Busbar',    ic:'💪', desc:'Thicker gauge for high-current industrial loads.',     add:2500 },
+      { id:'flex', name:'Flexible Busbar',             ic:'🧵', desc:'Braided flexible links — absorb vibration & expansion.', add:2000 },
+    ]},
+    { key:'bms', label:'BMS Type', icon:'🧠', options:[
+      { id:'std',   name:'Standard BMS',          ic:'🧠', desc:'Reliable protection: over/under-voltage, short-circuit.', add:0 },
+      { id:'bt',    name:'Smart Bluetooth BMS',   ic:'📶', desc:'Monitor every cell live from your phone app.',           add:2500, rec:true },
+      { id:'can',   name:'CAN Communication BMS', ic:'🔗', desc:'Talks to hybrid inverters via CAN/RS485.',               add:4000 },
+      { id:'active',name:'Active Balancing BMS',  ic:'⚖️', desc:'Active cell balancing for maximum usable capacity.',      add:5500 },
+    ]},
+    { key:'mcb', label:'MCB / DC Protection', icon:'🔌', options:[
+      { id:'std',  name:'Standard DC MCB',  ic:'🔌', desc:'Dependable DC isolation & breaker protection.', add:0 },
+      { id:'prem', name:'Premium DC MCB',   ic:'⭐', desc:'Higher breaking capacity, premium contacts.',    add:1200 },
+      { id:'schn', name:'Schneider DC MCB', ic:'🟢', desc:'Schneider Electric — globally trusted.',         add:2200, rec:true },
+      { id:'abb',  name:'ABB DC MCB',       ic:'🔴', desc:'ABB industrial-grade DC breaker.',               add:2600 },
+    ]},
+    { key:'cabinet', label:'Cabinet Type', icon:'🗄️', options:[
+      { id:'std',   name:'Standard Metal Cabinet',     ic:'🗄️', desc:'Powder-coated steel enclosure.',           add:0,    cab:'#161616' },
+      { id:'hd',    name:'Heavy Duty Metal Cabinet',   ic:'🏗️', desc:'Reinforced thick-gauge steel.',            add:3000, cab:'#101010' },
+      { id:'wall',  name:'Wall Mount Cabinet',         ic:'🧱', desc:'Slim profile for wall installation.',       add:2500, cab:'#1e1e1e' },
+      { id:'rack',  name:'Rack Mount Cabinet',         ic:'🖥️', desc:'19" rack format for server/solar rooms.',   add:3500, cab:'#0d0d0d', rec:true },
+      { id:'ip',    name:'Waterproof Outdoor Cabinet', ic:'🌧️', desc:'IP65 sealed for outdoor installations.',    add:5000, cab:'#23231f' },
+    ]},
+    { key:'handles', label:'Handles', icon:'✊', options:[
+      { id:'none', name:'No Handles',          ic:'⛔', desc:'Clean, flush finish.',                  add:0,   handles:false },
+      { id:'side', name:'Side Handles',        ic:'✊', desc:'Easy two-person lift.',                 add:600, handles:true, rec:true },
+      { id:'hd',   name:'Heavy Duty Handles',  ic:'💪', desc:'Reinforced steel grips for big packs.', add:1200,handles:true },
+      { id:'fold', name:'Foldable Metal Handles', ic:'🔄', desc:'Fold flush when not in use.',        add:1500,handles:true },
+    ]},
+    { key:'color', label:'Battery Color', icon:'🎨', options:[
+      { id:'yellow', name:'MuscleGrid Yellow', ic:'🟡', desc:'Signature industrial yellow.', add:0,    color:'#FFC400', rec:true },
+      { id:'black',  name:'Matte Black',       ic:'⚫', desc:'Stealth matte finish.',         add:500,  color:'#222222' },
+      { id:'white',  name:'White',             ic:'⚪', desc:'Clean white powder-coat.',      add:500,  color:'#EDEDED' },
+      { id:'grey',   name:'Grey',              ic:'🔘', desc:'Industrial grey.',              add:500,  color:'#7A7A7A' },
+      { id:'custom', name:'Custom Color',      ic:'🎨', desc:'Your brand color (MOQ applies).', add:2000, color:'#E0A800' },
+    ]},
+    { key:'warranty', label:'Warranty', icon:'🛡️', options:[
+      { id:'3y', name:'3 Years Standard Warranty', ic:'🛡️', desc:'Comprehensive 3-year coverage.', add:0 },
+      { id:'5y', name:'5 Years Extended Warranty', ic:'🛡️', desc:'Extended peace of mind.',         add:3000, rec:true },
+      { id:'7y', name:'7 Years Premium Warranty',  ic:'🏆', desc:'Maximum protection for critical backup.', add:6000 },
+    ]},
+  ]
+};
+/* ───────────────────────── logic (no need to edit below) ───────────────────────── */
+const inr = n => '₹' + Number(n).toLocaleString('en-IN');
+let step = 0;
+const sel = {};                              // key -> option.id (default: first option)
+BB.steps.forEach(s => sel[s.key] = s.options[0].id);
+const opt = (k,id) => BB.steps.find(s=>s.key===k).options.find(o=>o.id===id);
+
+function total(){ let t = BB.basePrice; BB.steps.forEach(s => t += opt(s.key, sel[s.key]).add); return t; }
+
+function updateBattery(){
+  const b = document.getElementById('bbBattery');
+  // reveal a component once its step has been visited (kept simple: show for any chosen step up to current)
+  const show = k => b.classList.add('show-'+k);
+  ['cells','busbar','bms','mcb'].forEach((k,i)=>{ if(step>=i || done(k)) show(k); });
+  if(done('cells')) b.classList.add('show-cells');
+  if(done('busbar')) b.classList.add('show-busbar');
+  if(done('bms')) b.classList.add('show-bms');
+  if(done('mcb')) b.classList.add('show-mcb');
+  // handles
+  b.classList.toggle('show-handles', opt('handles', sel.handles).handles);
+  // color + cabinet tint
+  b.style.setProperty('--bb-color', opt('color', sel.color).color);
+  const cab = opt('cabinet', sel.cabinet).cab; b.querySelector('.bb-cabinet').style.background = 'linear-gradient(145deg,'+cab+',#070707)';
+  // warranty shield
+  if(done('warranty')) b.classList.add('show-shield');
+}
+const visited = new Set();
+function done(k){ return visited.has(k); }
+
+function buildCells(){
+  const g = document.getElementById('bbCells'); g.innerHTML='';
+  for(let i=0;i<8;i++){ const c=document.createElement('div'); c.className='bb-cell'; c.style.animationDelay=(i*60)+'ms'; g.appendChild(c); }
+}
+
+function renderStep(){
+  const s = BB.steps[step];
+  // progress
+  document.getElementById('bbProg').innerHTML = BB.steps.map((_,i)=>'<span class="dot '+(i<step?'done':i===step?'cur':'')+'"></span>').join('');
+  document.getElementById('bbMeta').textContent = 'Step '+(step+1)+' of '+BB.steps.length;
+  document.getElementById('bbTitle').innerHTML = '<span>'+s.icon+'</span> '+s.label;
+  document.getElementById('bbOpts').innerHTML = s.options.map(o=>{
+    const isSel = sel[s.key]===o.id;
+    const sw = o.color ? '<span class="bb-swatch" style="background:'+o.color+'"></span> ' : '';
+    const badge = o.rec ? '<span class="bb-badge rec">★ Recommended</span>' : (o.badge ? '<span class="bb-badge">'+o.badge+'</span>' : '');
+    return '<div class="bb-opt '+(isSel?'sel':'')+'" data-id="'+o.id+'">'
+      + '<div class="ic">'+(o.ic||s.icon)+'</div>'
+      + '<div><div class="nm">'+sw+o.name+' '+badge+'</div><div class="ds">'+o.desc+'</div></div>'
+      + '<div class="pr">'+(o.add>0?'+'+inr(o.add):'<span style="color:var(--bb-grey)">Included</span>')+'<small>add-on</small></div>'
+      + '<div class="bb-tick">✓</div></div>';
+  }).join('');
+  document.querySelectorAll('#bbOpts .bb-opt').forEach(el=>el.addEventListener('click',()=>{
+    sel[s.key]=el.getAttribute('data-id'); renderStep(); updateBattery(); updatePrice();
+    el.animate([{transform:'scale(.98)'},{transform:'scale(1)'}],{duration:160});
+  }));
+  document.getElementById('bbBack').disabled = step===0;
+  document.getElementById('bbNext').textContent = step===BB.steps.length-1 ? 'See Summary →' : 'Next →';
+  // animate the config card in
+  const card=document.querySelector('.bb-config'); card.animate([{opacity:.4,transform:'translateX(12px)'},{opacity:1,transform:'none'}],{duration:280,easing:'cubic-bezier(.2,.8,.2,1)'});
+  document.getElementById('bbCap').textContent = step<BB.steps.length-1 ? 'Building: '+s.label+' ▸' : 'Configuration complete ✓';
+}
+
+function updatePrice(){
+  document.getElementById('bbBarTotal').innerHTML = inr(total())+'<small>Estimated total</small>';
+}
+
+function go(d){
+  visited.add(BB.steps[step].key);
+  if(d>0 && step===BB.steps.length-1){ showSummary(); return; }
+  step = Math.max(0, Math.min(BB.steps.length-1, step+d));
+  renderStep(); updateBattery(); updatePrice();
+  document.getElementById('bbBuilder').scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+
+function configText(){
+  return BB.steps.map(s=>'• '+s.label+': '+opt(s.key,sel[s.key]).name).join('\n');
+}
+function showSummary(){
+  BB.steps.forEach(s=>visited.add(s.key)); updateBattery();
+  document.getElementById('bbBuilder').style.display='none';
+  document.querySelector('.bb-summary').style.display='block';
+  document.getElementById('bbSumRows').innerHTML = '<div class="bb-sum-row"><span class="k">Base pack</span><span class="v">'+inr(BB.basePrice)+'</span></div>'
+    + BB.steps.map(s=>{ const o=opt(s.key,sel[s.key]); return '<div class="bb-sum-row"><span class="k">'+s.label+'</span><span class="v">'+o.name+(o.add>0?'<small>+'+inr(o.add)+'</small>':'<small style="color:var(--bb-grey)">included</small>')+'</span></div>'; }).join('');
+  document.getElementById('bbSumTotal').textContent = inr(total());
+  const wa='https://wa.me/'+BB.whatsapp+'?text='+encodeURIComponent('Hi MuscleGrid, I built a custom lithium battery:\n\n'+configText()+'\n\nEstimated total: '+inr(total())+'\n\nPlease confirm the final price.');
+  document.getElementById('bbWa').href=wa;
+  document.querySelector('.bb-summary').scrollIntoView({behavior:'smooth'});
+}
+
+document.getElementById('bbBack').onclick=()=>go(-1);
+document.getElementById('bbNext').onclick=()=>go(1);
+document.getElementById('bbReview').onclick=showSummary;
+document.getElementById('bbEdit').onclick=()=>{ document.querySelector('.bb-summary').style.display='none'; document.getElementById('bbBuilder').style.display='grid'; document.getElementById('bbBuilder').scrollIntoView({behavior:'smooth'}); };
+// Checkout → add the configured pack to the existing cart, then go to checkout
+document.getElementById('bbCheckout').onclick=()=>{
+  const id='custom-battery-'+Date.now();
+  const item={ id:id, title:'Custom Lithium Battery ('+opt('cells',sel.cells).name+', '+opt('warranty',sel.warranty).name+')', price:total(), image:'/shop/prod-battery.jpg' };
+  if(window.MGCart){ MGCart.add(item,1); location.href='/store/cart/'; }
+  else location.href=document.getElementById('bbWa').href;
+};
+document.getElementById('bbQuote').onclick=()=>{ location.href=document.getElementById('bbWa').href; };
+
+buildCells(); renderStep(); updateBattery(); updatePrice();
+</script>
+</body></html>
