@@ -199,13 +199,20 @@
    ║  Color step uses `color:'#hex'` to tint the 3D battery.                    ║
    ╚══════════════════════════════════════════════════════════════════════════╝ */
 const BB = {
-  basePrice: 25000,                         // ◀ base pack price (₹)
+  ratePerWh: 11,                            // ◀ battery base price = ₹11 per Wh (V × Ah) — edit here
+  gstRate: 18,                              // ◀ GST % on batteries (18%); inverters are 5% elsewhere
   whatsapp: '919999036254',                 // ◀ enquiry number
   steps: [
     { key:'system', label:'Battery System · Voltage', icon:'⚙️', options:[
-      { id:'24v',  name:'24V (25.6V) · 8S',  ic:'🔋', desc:'8 × 3.2V LFP cells in series · 100Ah (≈105Ah actual) · ~2.56 kWh. Great for smaller inverters & home backup.', add:0,     series:8,  volt:'25.6V', ah:100, wh:2560, badge:'Compact' },
-      { id:'48v',  name:'48V · 15S',          ic:'⚡', desc:'15 × 3.2V LFP cells in series · 100Ah (≈105Ah actual) · ~4.8 kWh. Best for hybrid solar & larger loads.', add:20000, series:15, volt:'48V',   ah:100, wh:4800, badge:'Popular', rec:true },
-      { id:'512v', name:'51.2V · 16S',        ic:'🏭', desc:'16 × 3.2V LFP cells in series · 100Ah (≈105Ah actual) · ~5.12 kWh. Maximum energy for solar & industrial.', add:22000, series:16, volt:'51.2V', ah:100, wh:5120, badge:'Max Power' },
+      { id:'24v',  name:'24V (25.6V) · 8S',  ic:'🔋', desc:'8 × 3.2V LFP cells in series (25.6V nominal). Great for smaller inverters & home backup.', volt:25.6, series:8,  badge:'Compact' },
+      { id:'48v',  name:'48V · 15S',          ic:'⚡', desc:'15 × 3.2V LFP cells in series (48V nominal). Best for hybrid solar & larger loads.', volt:48,   series:15, badge:'Popular', rec:true },
+      { id:'512v', name:'51.2V · 16S',        ic:'🏭', desc:'16 × 3.2V LFP cells in series (51.2V nominal). Max compatibility for solar & industrial.', volt:51.2, series:16, badge:'Max Power' },
+    ]},
+    { key:'capacity', label:'Battery Capacity', icon:'🔋', options:[
+      { id:'100', name:'100Ah', ic:'🔋', desc:'≈105Ah actual output. Compact daily backup.',          ah:100, rec:true },
+      { id:'200', name:'200Ah', ic:'🔋', desc:'≈210Ah actual output. Longer runtime, fewer recharges.', ah:200 },
+      { id:'280', name:'280Ah', ic:'⚡', desc:'≈294Ah actual output. Heavy daily cycling.',             ah:280 },
+      { id:'314', name:'314Ah', ic:'🏭', desc:'≈330Ah actual output. Maximum energy storage.',          ah:314 },
     ]},
     { key:'cells', label:'Prismatic Cell Type', icon:'🔋', options:[
       { id:'gradea', name:'Grade A LFP Cells', ic:'🔋', desc:'A-grade 100Ah (≈105Ah) LiFePO₄ prismatic — reliable everyday performance.', add:0,     badge:'A-Grade' },
@@ -267,7 +274,14 @@ const sel = {};                              // key -> option.id (default: first
 BB.steps.forEach(s => sel[s.key] = s.options[0].id);
 const opt = (k,id) => BB.steps.find(s=>s.key===k).options.find(o=>o.id===id);
 
-function total(){ let t = BB.basePrice; BB.steps.forEach(s => t += opt(s.key, sel[s.key]).add); return t; }
+// ── pricing: battery base = (nominal V × Ah) Wh × ₹/Wh, + component add-ons, + GST ──
+function nominalV(){ return opt('system', sel.system).volt; }
+function capAh(){ return opt('capacity', sel.capacity).ah; }
+function wh(){ return Math.round(nominalV() * capAh()); }
+function baseBattery(){ return Math.round(wh() * BB.ratePerWh); }
+function subtotal(){ let t = baseBattery(); BB.steps.forEach(s => { const o = opt(s.key, sel[s.key]); if(typeof o.add === 'number') t += o.add; }); return t; }
+function gstAmt(){ return Math.round(subtotal() * BB.gstRate / 100); }
+function total(){ return subtotal() + gstAmt(); }
 
 const visited = new Set();
 function done(k){ return visited.has(k); }
@@ -286,18 +300,19 @@ function updateBattery(){
   const sys = opt('system', sel.system);
   if(sys.series !== curSeries){ curSeries = sys.series; buildCells(sys.series); }
   b.classList.add('show-cells');
-  // reveal components as the customer progresses (or if already visited)
-  b.classList.toggle('show-busbar', step>=2 || done('busbar'));
-  b.classList.toggle('show-bms',    step>=3 || done('bms'));
-  b.classList.toggle('show-mcb',    step>=4 || done('mcb'));
-  b.classList.toggle('show-handles', opt('handles', sel.handles).handles && (step>=6 || done('handles')));
+  // reveal components as the customer reaches their step (index-robust) or once visited
+  const idx = k => BB.steps.findIndex(s=>s.key===k);
+  b.classList.toggle('show-busbar', step>=idx('busbar') || done('busbar'));
+  b.classList.toggle('show-bms',    step>=idx('bms')    || done('bms'));
+  b.classList.toggle('show-mcb',    step>=idx('mcb')    || done('mcb'));
+  b.classList.toggle('show-handles', opt('handles', sel.handles).handles && (step>=idx('handles') || done('handles')));
   // battery COLOUR = the casing itself (default Matte Black); yellow accents stay
   const col = opt('color', sel.color);
   b.querySelector('.bb-cabinet').style.background = col.casing;
   b.querySelector('.bb-brand').style.color = col.light ? '#1a1a1a' : 'rgba(255,255,255,.6)';
-  if(step>=8 || done('warranty')) b.classList.add('show-shield');
+  if(step>=idx('warranty') || done('warranty')) b.classList.add('show-shield');
   // live spec readout under the battery
-  document.getElementById('bbCap').textContent = sys.volt+' · '+sys.series+'S · '+sys.ah+'Ah · ~'+(sys.wh/1000).toFixed(2)+' kWh';
+  document.getElementById('bbCap').textContent = nominalV()+'V · '+sys.series+'S · '+capAh()+'Ah · ~'+(wh()/1000).toFixed(2)+' kWh';
 }
 
 function renderStep(){
@@ -329,7 +344,7 @@ function renderStep(){
 }
 
 function updatePrice(){
-  document.getElementById('bbBarTotal').innerHTML = inr(total())+'<small>Estimated total</small>';
+  document.getElementById('bbBarTotal').innerHTML = inr(total())+'<small>incl. '+BB.gstRate+'% GST · '+inr(gstAmt())+' GST</small>';
 }
 
 function go(d){
@@ -347,8 +362,11 @@ function showSummary(){
   BB.steps.forEach(s=>visited.add(s.key)); updateBattery();
   document.getElementById('bbBuilder').style.display='none';
   document.querySelector('.bb-summary').style.display='block';
-  document.getElementById('bbSumRows').innerHTML = '<div class="bb-sum-row"><span class="k">Base pack</span><span class="v">'+inr(BB.basePrice)+'</span></div>'
-    + BB.steps.map(s=>{ const o=opt(s.key,sel[s.key]); return '<div class="bb-sum-row"><span class="k">'+s.label+'</span><span class="v">'+o.name+(o.add>0?'<small>+'+inr(o.add)+'</small>':'<small style="color:var(--bb-grey)">included</small>')+'</span></div>'; }).join('');
+  const baseRow = '<div class="bb-sum-row"><span class="k">Battery pack · '+nominalV()+'V '+capAh()+'Ah · ~'+(wh()/1000).toFixed(2)+' kWh <small style="color:var(--bb-grey)">@ ₹'+BB.ratePerWh+'/Wh</small></span><span class="v">'+inr(baseBattery())+'</span></div>';
+  const compRows = BB.steps.map(s=>{ const o=opt(s.key,sel[s.key]); if(typeof o.add!=='number') return ''; return '<div class="bb-sum-row"><span class="k">'+s.label+'</span><span class="v">'+o.name+(o.add>0?'<small>+'+inr(o.add)+'</small>':'<small style="color:var(--bb-grey)">included</small>')+'</span></div>'; }).join('');
+  document.getElementById('bbSumRows').innerHTML = baseRow + compRows
+    + '<div class="bb-sum-row"><span class="k">Subtotal (before GST)</span><span class="v">'+inr(subtotal())+'</span></div>'
+    + '<div class="bb-sum-row"><span class="k">GST @ '+BB.gstRate+'%</span><span class="v">'+inr(gstAmt())+'</span></div>';
   document.getElementById('bbSumTotal').textContent = inr(total());
   const wa='https://wa.me/'+BB.whatsapp+'?text='+encodeURIComponent('Hi MuscleGrid, I built a custom lithium battery:\n\n'+configText()+'\n\nEstimated total: '+inr(total())+'\n\nPlease confirm the final price.');
   document.getElementById('bbWa').href=wa;
@@ -386,7 +404,8 @@ document.getElementById('bbqSubmit').onclick=function(){
   const btn=this; btn.disabled=true; btn.textContent='Sending…';
   fetch('/api/shop/battery-quote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
     name:name, phone:phone, city:document.getElementById('bbqCity').value.trim(), email:document.getElementById('bbqEmail').value.trim(),
-    total:total(), intent:document.getElementById('bbqIntent').value,
+    gstin:document.getElementById('bbqGstin').value.trim().toUpperCase(),
+    total:total(), subtotal:subtotal(), gst:gstAmt(), gst_rate:BB.gstRate, intent:document.getElementById('bbqIntent').value,
     config:BB.steps.map(s=>({label:s.label, option:opt(s.key,sel[s.key]).name}))
   })}).then(r=>r.json().then(d=>({ok:r.ok,d}))).then(res=>{
     if(!res.ok){ err.textContent=res.d.detail||'Could not send. Try WhatsApp instead.'; btn.disabled=false; btn.textContent='Send request'; return; }
@@ -409,6 +428,8 @@ renderStep(); updateBattery(); updatePrice();
       <input id="bbqPhone" placeholder="Phone (10-digit) *" type="tel" style="width:100%;padding:12px;border:1px solid var(--bb-line);border-radius:9px;margin:5px 0;font-size:15px">
       <input id="bbqCity"  placeholder="City (optional)"    style="width:100%;padding:12px;border:1px solid var(--bb-line);border-radius:9px;margin:5px 0;font-size:15px">
       <input id="bbqEmail" placeholder="Email (optional)" type="email" style="width:100%;padding:12px;border:1px solid var(--bb-line);border-radius:9px;margin:5px 0;font-size:15px">
+      <input id="bbqGstin" placeholder="GSTIN (optional — for GST invoice)" style="width:100%;padding:12px;border:1px solid var(--bb-line);border-radius:9px;margin:5px 0;font-size:15px;text-transform:uppercase">
+      <div style="font-size:12px;color:var(--bb-grey);margin:2px 0 4px">🧾 Buying for a business? Add your GSTIN for a GST invoice &amp; input-tax credit. Price shown includes <b>18% GST</b>.</div>
       <div id="bbqErr" style="color:#c0392b;font-size:13px;margin:4px 0;min-height:16px"></div>
       <button class="bb-btn yellow" id="bbqSubmit" style="width:100%;margin-top:6px">Send request</button>
       <a id="bbqWa" href="#" class="bb-btn ghost" style="display:block;text-align:center;text-decoration:none;margin-top:8px">💬 Or chat on WhatsApp</a>

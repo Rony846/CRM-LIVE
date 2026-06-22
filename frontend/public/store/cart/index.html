@@ -51,11 +51,14 @@ function renderCart(){
      +'<h3 style="font-family:var(--mg-font-display);font-weight:800;text-transform:uppercase;margin-bottom:14px">Checkout</h3>'
      +'<div style="display:flex;justify-content:space-between;margin-bottom:6px"><span style="color:var(--mg-iron-500)">Subtotal</span><b>₹'+inr(total)+'</b></div>'
      +'<div style="display:flex;justify-content:space-between;margin-bottom:6px"><span style="color:var(--mg-iron-500)">Shipping</span><b style="color:var(--mg-success)">FREE</b></div>'
-     +'<div style="display:flex;justify-content:space-between;font-size:20px;font-weight:800;margin:12px 0;padding-top:12px;border-top:1px solid var(--mg-iron-200)"><span>Total</span><span>₹'+inr(total)+'</span></div>'
+     +'<div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:13px"><span style="color:var(--mg-iron-500)">Incl. GST</span><span style="color:var(--mg-iron-500)">₹'+inr(MGCart.gstIncluded())+'</span></div>'
+     +'<div style="display:flex;justify-content:space-between;font-size:20px;font-weight:800;margin:12px 0 2px;padding-top:12px;border-top:1px solid var(--mg-iron-200)"><span>Total</span><span>₹'+inr(total)+'</span></div>'
+     +'<div style="font-size:11.5px;color:var(--mg-iron-400);margin-bottom:10px">Prices are inclusive of GST (5% on inverters, 18% on batteries & other products).</div>'
      +'<div style="display:grid;gap:10px;margin-top:8px">'
        +fld('name','Full name','text')+fld('phone','Phone (10-digit)','tel')+fld('email','Email (optional)','email')
        +fld('address','Address','text')
        +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'+fld('city','City','text')+fld('pincode','PIN code','text')+'</div>'
+       +fld('gstin','GSTIN (optional — for GST invoice)','text')
      +'</div>'
      +'<div style="display:grid;gap:8px;margin-top:14px">'
        +'<label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input type="radio" name="pm" value="razorpay" checked> Pay online (UPI / Card / NetBanking)</label>'
@@ -80,7 +83,7 @@ function placeOrder(){
   var pm=document.querySelector('input[name=pm]:checked').value;
   var btn=document.getElementById('placeBtn'); btn.disabled=true; btn.textContent='Processing…';
   var payload={items:MGCart.get().map(x=>({id:x.id,qty:x.qty})),name:name,phone:phone,
-    email:val('email'),address:val('address'),city:val('city'),pincode:val('pincode'),payment_method:pm};
+    email:val('email'),address:val('address'),city:val('city'),pincode:val('pincode'),gstin:val('gstin').toUpperCase(),payment_method:pm};
   fetch('/api/shop/checkout/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
    .then(r=>r.json().then(d=>({ok:r.ok,d:d}))).then(function(res){
      if(!res.ok){ err.textContent=res.d.detail||'Could not place order.'; btn.disabled=false; btn.textContent='Place order'; return; }

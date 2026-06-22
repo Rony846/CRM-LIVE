@@ -72521,6 +72521,12 @@ async def scrape_all_products_from_website(
 
 # ============================ PUBLIC STOREFRONT API ============================
 # Read-only, unauthenticated product feed for the self-hosted storefront (Shopify replacement).
+def _gst_rate(m: dict) -> int:
+    """India GST: solar inverters 5%, everything else 18%."""
+    t = (str(m.get("category") or "") + " " + str(m.get("name") or "")).lower()
+    return 5 if "inverter" in t else 18
+
+
 def _shop_card(m: dict) -> dict:
     return {
         "id": m.get("id"),
@@ -72529,6 +72535,7 @@ def _shop_card(m: dict) -> dict:
         "title": m.get("name"),
         "type": m.get("category") or m.get("product_type"),
         "price": m.get("selling_price"),
+        "gst": _gst_rate(m),
         "compare_at": m.get("mrp") if (m.get("mrp") or 0) > (m.get("selling_price") or 0) else None,
         "image": m.get("image_url"),
         "gallery": m.get("image_gallery") or ([m.get("image_url")] if m.get("image_url") else []),
@@ -72586,6 +72593,7 @@ class ShopCheckoutCreate(BaseModel):
     address: Optional[str] = None
     city: Optional[str] = None
     pincode: Optional[str] = None
+    gstin: Optional[str] = None        # B2B GST purchase → GST invoice
     payment_method: str = "razorpay"   # "razorpay" | "cod"
 
 
@@ -72605,7 +72613,7 @@ async def shop_checkout_create(body: ShopCheckoutCreate):
         raise HTTPException(status_code=400, detail="A valid 10-digit phone number is required")
     if not (body.name or "").strip():
         raise HTTPException(status_code=400, detail="Name is required")
-    line_items, subtotal = [], 0.0
+    line_items, subtotal, gst_total = [], 0.0, 0.0
     for it in body.items:
         m = await db.master_skus.find_one(
             {"$and": [_SHOP_BASEQ, {"$or": [{"id": it.id}, {"sku_code": it.id}]}]})
@@ -72614,12 +72622,18 @@ async def shop_checkout_create(body: ShopCheckoutCreate):
         qty = max(1, int(it.qty or 1))
         price = float(m.get("selling_price") or 0)        # SERVER price — never trust the client
         lt = round(price * qty, 2)
+        rate = _gst_rate(m)                               # prices are GST-INCLUSIVE → back out the GST
+        line_gst = round(lt - lt / (1 + rate / 100.0), 2)
         subtotal += lt
+        gst_total += line_gst
         line_items.append({"master_sku_id": m["id"], "sku": m.get("sku_code"), "title": m.get("name"),
-                           "price": price, "quantity": qty, "line_total": lt, "image": m.get("image_url")})
+                           "price": price, "quantity": qty, "line_total": lt, "image": m.get("image_url"),
+                           "gst_rate": rate, "gst_amount": line_gst})
     if not line_items:
         raise HTTPException(status_code=400, detail="No valid items in cart")
     total = round(subtotal, 2)
+    gst_total = round(gst_total, 2)
+    gstin = (body.gstin or "").strip().upper() or None
     now = datetime.now(timezone.utc).isoformat()
     oid = str(uuid.uuid4())
     onum = "MGW-" + oid.replace("-", "")[:8].upper()
@@ -72629,6 +72643,7 @@ async def shop_checkout_create(body: ShopCheckoutCreate):
         "customer_name": body.name.strip(), "customer_phone": phone, "customer_email": body.email,
         "party_id": (party or {}).get("id"),
         "items": line_items, "subtotal": total, "discount": 0, "total": total,
+        "gst_included": gst_total, "taxable_value": round(total - gst_total, 2), "gstin": gstin,
         "shipping": {"name": body.name.strip(), "phone": phone, "address": body.address,
                      "city": body.city, "pincode": body.pincode},
         "payment_method": body.payment_method, "payment_status": "pending", "status": "pending",
@@ -72808,7 +72823,11 @@ class BatteryQuoteCreate(BaseModel):
     phone: str
     email: Optional[str] = None
     city: Optional[str] = None
-    total: Optional[float] = 0
+    gstin: Optional[str] = None
+    total: Optional[float] = 0             # incl. GST
+    subtotal: Optional[float] = 0          # before GST
+    gst: Optional[float] = 0
+    gst_rate: Optional[float] = 18
     intent: Optional[str] = "quote"        # "quote" | "order"
     config: Optional[List[dict]] = None    # [{label, option}]
 
@@ -72838,9 +72857,14 @@ async def shop_battery_quote(body: BatteryQuoteCreate,
     cfg = body.config or []
     cfg_lines = "\n".join(f"• {c.get('label')}: {c.get('option')}" for c in cfg if c.get("label"))
     total = int(body.total or 0)
+    sub = int(body.subtotal or 0)
+    gst = int(body.gst or 0)
+    gstin = (body.gstin or "").strip().upper() or None
     intent = "ORDER" if body.intent == "order" else "QUOTE"
     prod = f"Custom Lithium Battery (~₹{total:,})" if total else "Custom Lithium Battery"
-    notes = (f"🔋 Battery builder {intent} request:\n{cfg_lines}\nEstimated total: ₹{total:,}"
+    notes = (f"🔋 Battery builder {intent} request:\n{cfg_lines}\n"
+             f"Subtotal: ₹{sub:,} + GST {int(body.gst_rate or 18)}%: ₹{gst:,} = Total: ₹{total:,}"
+             + (f"\nGSTIN: {gstin}" if gstin else "")
              + (f"\nCity: {body.city.strip()}" if body.city else ""))
 
     since = (now - timedelta(hours=6)).isoformat()
@@ -72859,7 +72883,9 @@ async def shop_battery_quote(body: BatteryQuoteCreate,
         "id": lead_id, "phone": phone, "name": body.name.strip()[:120], "email": body.email,
         "product_interest": prod, "state": (body.city or "").strip()[:80] or None,
         "source": "battery_configurator", "status": "new", "notes": notes,
-        "battery_config": {"items": cfg, "total": total, "intent": body.intent},
+        "battery_config": {"items": cfg, "subtotal": sub, "gst": gst, "gst_rate": body.gst_rate,
+                           "total": total, "intent": body.intent, "gstin": gstin},
+        "gstin": gstin,
         "assigned_to": (assignee or {}).get("user_id"), "assigned_to_name": (assignee or {}).get("name"),
         "follow_up_date": None,
         "interactions": [{"type": "web_form", "notes": notes, "by": "Battery Builder",

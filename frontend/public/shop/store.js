@@ -19,8 +19,9 @@
     get(){ try{ return JSON.parse(localStorage.getItem(this.key))||[]; }catch(e){ return []; } },
     save(c){ localStorage.setItem(this.key, JSON.stringify(c)); this.badge(); MG.renderDrawer&&MG.renderDrawer(); },
     add(p, qty){ qty=qty||1; var c=this.get(); var e=c.find(x=>x.id===p.id);
-      if(e) e.qty+=qty; else c.push({id:p.id,title:p.title,price:p.price,image:p.image,sku:p.sku,qty:qty});
+      if(e) e.qty+=qty; else c.push({id:p.id,title:p.title,price:p.price,image:p.image,sku:p.sku,gst:(p.gst||18),qty:qty});
       this.save(c); },
+    gstIncluded(){ return Math.round(this.get().reduce(function(s,x){ var r=(x.gst||18); var lt=x.price*x.qty; return s+(lt-lt/(1+r/100)); },0)); },
     setQty(id,q){ var c=this.get(); var e=c.find(x=>x.id===id); if(e){ e.qty=Math.max(1,q);} this.save(c); },
     remove(id){ this.save(this.get().filter(x=>x.id!==id)); },
     count(){ return this.get().reduce((s,x)=>s+x.qty,0); },
