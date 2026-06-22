@@ -32,14 +32,14 @@
 .bb-cabinet{ position:absolute; inset:0; border-radius:16px; background:linear-gradient(145deg,#2c2c2c,#0c0c0c); border:1px solid #3a3a3a; box-shadow:inset 0 3px 14px rgba(255,255,255,.06), inset 0 -20px 40px rgba(0,0,0,.5), 0 50px 80px -28px rgba(0,0,0,.85); overflow:hidden; transition:background .5s, border-color .5s }
 .bb-cabinet::after{ content:""; position:absolute; top:0; left:0; right:0; height:42%; background:linear-gradient(180deg,rgba(255,255,255,.10),transparent) }
 .bb-brand{ position:absolute; bottom:12px; left:0; right:0; text-align:center; font-family:var(--mg-font-display); font-weight:800; font-size:13px; letter-spacing:.08em; color:rgba(255,255,255,.55); text-transform:uppercase; z-index:6 }
-.bb-brand b{ color:var(--bb-color) }
-/* color accent strip driven by --bb-color */
-.bb-strip{ position:absolute; top:0; left:0; width:8px; bottom:0; background:var(--bb-color); box-shadow:0 0 24px var(--bb-color); z-index:7; transition:background .4s }
+.bb-brand b{ color:var(--bb-yellow) }
+/* brand accent strip — always MuscleGrid yellow */
+.bb-strip{ position:absolute; top:0; left:0; width:8px; bottom:0; background:var(--bb-yellow); box-shadow:0 0 24px rgba(255,196,0,.7); z-index:7 }
 
 /* cells */
 .bb-cells{ position:absolute; left:14%; right:14%; top:14%; bottom:22%; display:grid; grid-template-columns:repeat(4,1fr); gap:6px; z-index:2 }
 .bb-cell{ border-radius:3px; background:linear-gradient(180deg,#d6d6d6,#8a8a8a); box-shadow:inset 0 2px 3px rgba(255,255,255,.5), inset 0 -3px 4px rgba(0,0,0,.35); opacity:0; transform:translateY(34px) scale(.9) }
-.bb-cell::before{ content:""; position:absolute; top:3px; left:50%; transform:translateX(-50%); width:40%; height:4px; border-radius:2px; background:var(--bb-color); opacity:.8 }
+.bb-cell::before{ content:""; position:absolute; top:3px; left:50%; transform:translateX(-50%); width:40%; height:4px; border-radius:2px; background:var(--bb-yellow); opacity:.85 }
 .show-cells .bb-cell{ animation:bbCellIn .5s cubic-bezier(.2,.9,.2,1) forwards }
 @keyframes bbCellIn{ to{ opacity:1; transform:none } }
 /* busbar */
@@ -202,11 +202,16 @@ const BB = {
   basePrice: 25000,                         // ◀ base pack price (₹)
   whatsapp: '919999036254',                 // ◀ enquiry number
   steps: [
+    { key:'system', label:'Battery System · Voltage', icon:'⚙️', options:[
+      { id:'24v',  name:'24V (25.6V) · 8S',  ic:'🔋', desc:'8 × 3.2V LFP cells in series · 100Ah (≈105Ah actual) · ~2.56 kWh. Great for smaller inverters & home backup.', add:0,     series:8,  volt:'25.6V', ah:100, wh:2560, badge:'Compact' },
+      { id:'48v',  name:'48V · 15S',          ic:'⚡', desc:'15 × 3.2V LFP cells in series · 100Ah (≈105Ah actual) · ~4.8 kWh. Best for hybrid solar & larger loads.', add:20000, series:15, volt:'48V',   ah:100, wh:4800, badge:'Popular', rec:true },
+      { id:'512v', name:'51.2V · 16S',        ic:'🏭', desc:'16 × 3.2V LFP cells in series · 100Ah (≈105Ah actual) · ~5.12 kWh. Maximum energy for solar & industrial.', add:22000, series:16, volt:'51.2V', ah:100, wh:5120, badge:'Max Power' },
+    ]},
     { key:'cells', label:'Prismatic Cell Type', icon:'🔋', options:[
-      { id:'gradea', name:'Grade A LFP Cells', ic:'🔋', desc:'A-grade LiFePO₄ prismatic — reliable everyday performance.', add:0,     badge:'A-Grade' },
-      { id:'eve',    name:'EVE Grade A Cells',  ic:'⚡', desc:'EVE tier-1 cells — excellent cycle life & consistency.',    add:4000,  badge:'Premium', rec:true },
-      { id:'catl',   name:'CATL Cells',         ic:'🏭', desc:"World's #1 cell maker — top-tier longevity.",              add:7000,  badge:'Tier-1' },
-      { id:'byd',    name:'BYD Cells',          ic:'🛡', desc:'Blade-grade reliability for heavy industrial use.',        add:8000,  badge:'Tier-1' },
+      { id:'gradea', name:'Grade A LFP Cells', ic:'🔋', desc:'A-grade 100Ah (≈105Ah) LiFePO₄ prismatic — reliable everyday performance.', add:0,     badge:'A-Grade' },
+      { id:'eve',    name:'EVE Grade A Cells',  ic:'⚡', desc:'EVE tier-1 100Ah cells — excellent cycle life & consistency.',    add:4000,  badge:'Premium', rec:true },
+      { id:'catl',   name:'CATL Cells',         ic:'🏭', desc:"World's #1 cell maker · 100Ah — top-tier longevity.",            add:7000,  badge:'Tier-1' },
+      { id:'byd',    name:'BYD Cells',          ic:'🛡', desc:'Blade-grade 100Ah reliability for heavy industrial use.',        add:8000,  badge:'Tier-1' },
     ]},
     { key:'busbar', label:'Busbar Type', icon:'🔩', options:[
       { id:'std',  name:'Standard Copper Busbar',      ic:'🔩', desc:'Solid copper interconnects for clean current flow.',  add:0 },
@@ -240,16 +245,18 @@ const BB = {
       { id:'fold', name:'Foldable Metal Handles', ic:'🔄', desc:'Fold flush when not in use.',        add:1500,handles:true },
     ]},
     { key:'color', label:'Battery Color', icon:'🎨', options:[
-      { id:'yellow', name:'MuscleGrid Yellow', ic:'🟡', desc:'Signature industrial yellow.', add:0,    color:'#FFC400', rec:true },
-      { id:'black',  name:'Matte Black',       ic:'⚫', desc:'Stealth matte finish.',         add:500,  color:'#222222' },
-      { id:'white',  name:'White',             ic:'⚪', desc:'Clean white powder-coat.',      add:500,  color:'#EDEDED' },
-      { id:'grey',   name:'Grey',              ic:'🔘', desc:'Industrial grey.',              add:500,  color:'#7A7A7A' },
-      { id:'custom', name:'Custom Color',      ic:'🎨', desc:'Your brand color (MOQ applies).', add:2000, color:'#E0A800' },
+      { id:'black',  name:'Matte Black',       ic:'⚫', desc:'Signature stealth matte finish — included free.', add:0,    color:'#222222', casing:'linear-gradient(145deg,#2c2c2c,#0a0a0a)', light:false, rec:true },
+      { id:'yellow', name:'MuscleGrid Yellow', ic:'🟡', desc:'Bold industrial yellow.',          add:500,  color:'#FFC400', casing:'linear-gradient(145deg,#ffce2e,#d39800)', light:true },
+      { id:'white',  name:'White',             ic:'⚪', desc:'Clean white powder-coat.',          add:500,  color:'#FFFFFF', casing:'linear-gradient(145deg,#fafafa,#d8d8d8)', light:true },
+      { id:'grey',   name:'Grey',              ic:'🔘', desc:'Industrial grey.',                  add:500,  color:'#7A7A7A', casing:'linear-gradient(145deg,#8f8f8f,#565656)', light:true },
+      { id:'custom', name:'Custom Color',      ic:'🎨', desc:'Your brand color (MOQ applies).',   add:2000, color:'#E0A800', casing:'linear-gradient(145deg,#E0A800,#a87b00)', light:true },
     ]},
-    { key:'warranty', label:'Warranty', icon:'🛡️', options:[
-      { id:'3y', name:'3 Years Standard Warranty', ic:'🛡️', desc:'Comprehensive 3-year coverage.', add:0 },
-      { id:'5y', name:'5 Years Extended Warranty', ic:'🛡️', desc:'Extended peace of mind.',         add:3000, rec:true },
-      { id:'7y', name:'7 Years Premium Warranty',  ic:'🏆', desc:'Maximum protection for critical backup.', add:6000 },
+    { key:'warranty', label:'Warranty', icon:'🛡️', note:'✓ Every pack includes <b>5-Year Free Phone Support</b> at no cost. Choose your hardware warranty below.', options:[
+      { id:'6m', name:'6 Months Warranty', ic:'🛡️', desc:'Short-term hardware coverage.',          add:0 },
+      { id:'1y', name:'1 Year Warranty',   ic:'🛡️', desc:'Standard 1-year hardware coverage.',      add:1500 },
+      { id:'3y', name:'3 Years Warranty',  ic:'🛡️', desc:'Extended 3-year coverage.',              add:4000 },
+      { id:'5y', name:'5 Years Warranty',  ic:'🛡️', desc:'Recommended for daily solar use.',        add:6000, rec:true },
+      { id:'8y', name:'8 Years Warranty',  ic:'🏆', desc:'Maximum protection for critical backup.',  add:10000 },
     ]},
   ]
 };
@@ -262,29 +269,35 @@ const opt = (k,id) => BB.steps.find(s=>s.key===k).options.find(o=>o.id===id);
 
 function total(){ let t = BB.basePrice; BB.steps.forEach(s => t += opt(s.key, sel[s.key]).add); return t; }
 
-function updateBattery(){
-  const b = document.getElementById('bbBattery');
-  // reveal a component once its step has been visited (kept simple: show for any chosen step up to current)
-  const show = k => b.classList.add('show-'+k);
-  ['cells','busbar','bms','mcb'].forEach((k,i)=>{ if(step>=i || done(k)) show(k); });
-  if(done('cells')) b.classList.add('show-cells');
-  if(done('busbar')) b.classList.add('show-busbar');
-  if(done('bms')) b.classList.add('show-bms');
-  if(done('mcb')) b.classList.add('show-mcb');
-  // handles
-  b.classList.toggle('show-handles', opt('handles', sel.handles).handles);
-  // color + cabinet tint
-  b.style.setProperty('--bb-color', opt('color', sel.color).color);
-  const cab = opt('cabinet', sel.cabinet).cab; b.querySelector('.bb-cabinet').style.background = 'linear-gradient(145deg,'+cab+',#070707)';
-  // warranty shield
-  if(done('warranty')) b.classList.add('show-shield');
-}
 const visited = new Set();
 function done(k){ return visited.has(k); }
+let curSeries = null;
 
-function buildCells(){
+function buildCells(n){
   const g = document.getElementById('bbCells'); g.innerHTML='';
-  for(let i=0;i<8;i++){ const c=document.createElement('div'); c.className='bb-cell'; c.style.animationDelay=(i*60)+'ms'; g.appendChild(c); }
+  // more cells (16) get a tighter grid; fewer (8) stay chunky
+  g.style.gridTemplateColumns = 'repeat(4,1fr)';
+  for(let i=0;i<n;i++){ const c=document.createElement('div'); c.className='bb-cell'; c.style.animationDelay=(i*45)+'ms'; g.appendChild(c); }
+}
+
+function updateBattery(){
+  const b = document.getElementById('bbBattery');
+  // cell COUNT follows the chosen series (8S/15S/16S) — re-animate when it changes
+  const sys = opt('system', sel.system);
+  if(sys.series !== curSeries){ curSeries = sys.series; buildCells(sys.series); }
+  b.classList.add('show-cells');
+  // reveal components as the customer progresses (or if already visited)
+  b.classList.toggle('show-busbar', step>=2 || done('busbar'));
+  b.classList.toggle('show-bms',    step>=3 || done('bms'));
+  b.classList.toggle('show-mcb',    step>=4 || done('mcb'));
+  b.classList.toggle('show-handles', opt('handles', sel.handles).handles && (step>=6 || done('handles')));
+  // battery COLOUR = the casing itself (default Matte Black); yellow accents stay
+  const col = opt('color', sel.color);
+  b.querySelector('.bb-cabinet').style.background = col.casing;
+  b.querySelector('.bb-brand').style.color = col.light ? '#1a1a1a' : 'rgba(255,255,255,.6)';
+  if(step>=8 || done('warranty')) b.classList.add('show-shield');
+  // live spec readout under the battery
+  document.getElementById('bbCap').textContent = sys.volt+' · '+sys.series+'S · '+sys.ah+'Ah · ~'+(sys.wh/1000).toFixed(2)+' kWh';
 }
 
 function renderStep(){
@@ -293,7 +306,8 @@ function renderStep(){
   document.getElementById('bbProg').innerHTML = BB.steps.map((_,i)=>'<span class="dot '+(i<step?'done':i===step?'cur':'')+'"></span>').join('');
   document.getElementById('bbMeta').textContent = 'Step '+(step+1)+' of '+BB.steps.length;
   document.getElementById('bbTitle').innerHTML = '<span>'+s.icon+'</span> '+s.label;
-  document.getElementById('bbOpts').innerHTML = s.options.map(o=>{
+  const noteHtml = s.note ? '<div style="background:#fffbe9;border:1px solid #ffe08a;border-radius:11px;padding:11px 14px;font-size:13px;line-height:1.45;margin-bottom:12px;color:#5a4a00">'+s.note+'</div>' : '';
+  document.getElementById('bbOpts').innerHTML = noteHtml + s.options.map(o=>{
     const isSel = sel[s.key]===o.id;
     const sw = o.color ? '<span class="bb-swatch" style="background:'+o.color+'"></span> ' : '';
     const badge = o.rec ? '<span class="bb-badge rec">★ Recommended</span>' : (o.badge ? '<span class="bb-badge">'+o.badge+'</span>' : '');
@@ -348,12 +362,12 @@ document.getElementById('bbEdit').onclick=()=>{ document.querySelector('.bb-summ
 // Checkout → add the configured pack to the existing cart, then go to checkout
 document.getElementById('bbCheckout').onclick=()=>{
   const id='custom-battery-'+Date.now();
-  const item={ id:id, title:'Custom Lithium Battery ('+opt('cells',sel.cells).name+', '+opt('warranty',sel.warranty).name+')', price:total(), image:'/shop/prod-battery.jpg' };
+  const item={ id:id, title:'Custom Lithium Battery — '+opt('system',sel.system).name+' ('+opt('cells',sel.cells).name+', '+opt('warranty',sel.warranty).name+')', price:total(), image:'/shop/prod-battery.jpg' };
   if(window.MGCart){ MGCart.add(item,1); location.href='/store/cart/'; }
   else location.href=document.getElementById('bbWa').href;
 };
 document.getElementById('bbQuote').onclick=()=>{ location.href=document.getElementById('bbWa').href; };
 
-buildCells(); renderStep(); updateBattery(); updatePrice();
+renderStep(); updateBattery(); updatePrice();
 </script>
 </body></html>
