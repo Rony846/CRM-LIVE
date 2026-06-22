@@ -62875,6 +62875,25 @@ async def get_courier_label(
         }
 
 
+async def _alert_founder_free(text: str, kind: str = "agent_alert"):
+    """Deliver an agent alert to the founder for FREE: Cloud API free-form (valid only inside the 24h
+    window the founder's own messages open). If the window is closed, queue it and flush on their next
+    MG Brain message — so it is NEVER a paid template (always ₹0)."""
+    num = re.sub(r"\D", "", os.environ.get("CLAUDE_WA_RELAY_NUMBER", "9560377363"))[-10:]
+    if not (whatsapp_cloud.enabled() and num):
+        return
+    try:
+        res = await whatsapp_cloud.send_text(num, text[:4000])
+    except Exception:
+        res = {}
+    if res.get("ok"):
+        return
+    # window closed → queue for free delivery next time the founder messages
+    await db.founder_alerts.insert_one({
+        "id": str(uuid.uuid4()), "text": text[:4000], "kind": kind,
+        "created_at": datetime.now(timezone.utc).isoformat(), "delivered": False})
+
+
 # ===================== Dispatch-Guard agent =====================
 async def _dispatch_guard_check(order_id: str) -> Optional[str]:
     """Reason string if this Amazon order was REFUNDED or CANCELLED (must NOT ship), else None."""
@@ -62923,10 +62942,7 @@ async def scheduled_dispatch_guard():
         body = (f"🚦 Dispatch-Guard: *{len(flagged)}* refunded/cancelled order(s) still queued — DO NOT SHIP:\n"
                 + "\n".join(f"• {o} — {r}" for o, r in flagged[:15])
                 + (f"\n…+{len(flagged) - 15} more" if len(flagged) > 15 else ""))
-        try:
-            await _wa_send_to_manager(body, fallback_desc=f"Dispatch-Guard flagged {len(flagged)} refunded orders")
-        except Exception as e:
-            logger.warning(f"Dispatch-Guard alert failed: {e}")
+        await _alert_founder_free(body, "dispatch_guard")
     logger.info(f"Dispatch-Guard: flagged {len(flagged)} refunded/cancelled queued orders")
 
 
@@ -62969,10 +62985,7 @@ async def scheduled_refund_defense():
         body = (f"🛡️ Refund-Defense: *{len(new_claims)}* new A-to-z claim(s) — ₹{total:,.0f} at risk. "
                 f"Respond before the deadline:\n" + "\n".join(f"• {o} — ₹{a:,.0f}" for o, a in new_claims[:12])
                 + "\n→ /admin/az-claims")
-        try:
-            await _wa_send_to_manager(body, fallback_desc=f"{len(new_claims)} new A-Z claims (₹{total:,.0f})")
-        except Exception as ex:
-            logger.warning(f"Refund-Defense alert failed: {ex}")
+        await _alert_founder_free(body, "refund_defense")
     logger.info(f"Refund-Defense: {len(new_claims)} new A-Z claims recorded")
 
 
@@ -63011,10 +63024,7 @@ async def scheduled_collections():
     body = (f"💰 Collections — ₹{total:,.0f} owed by {len(ranked)} external parties. Top to chase:\n"
             + "\n".join(f"• {p[:24]} — ₹{d['total']:,.0f} ({d['count']} inv, since {d['oldest'] or '?'})"
                         for p, d in ranked[:12]))
-    try:
-        await _wa_send_to_manager(body, fallback_desc=f"Collections: ₹{total:,.0f} receivable, {len(ranked)} parties")
-    except Exception as e:
-        logger.warning(f"Collections alert failed: {e}")
+    await _alert_founder_free(body, "collections")
     logger.info(f"Collections: {len(ranked)} external parties, Rs {total:,.0f} receivable")
 
 
@@ -76176,6 +76186,14 @@ async def _claude_wa_relay(digits: str, question: str):
             {"$set": {"phone": digits, "pending_question": question}}, upsert=True)
         await whatsapp_cloud.send_text(digits, "🔒 Please prove you are the boss?  (reply:  cc <your secret>)")
         return
+
+    # window is open now → flush any queued agent alerts for FREE (no paid template)
+    async for a in db.founder_alerts.find({"delivered": False}).sort("created_at", 1).limit(20):
+        try:
+            await whatsapp_cloud.send_text(digits, a.get("text") or "")
+            await db.founder_alerts.update_one({"id": a["id"]}, {"$set": {"delivered": True}})
+        except Exception:
+            break
 
     # authed → named actions run as DETERMINISTIC commands (not via the LLM); anything else is
     # read-only Q&A through the sandboxed relay.
