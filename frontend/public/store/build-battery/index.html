@@ -270,16 +270,18 @@ const BB = {
 /* ───────────────────────── logic (no need to edit below) ───────────────────────── */
 const inr = n => '₹' + Number(n).toLocaleString('en-IN');
 let step = 0;
-const sel = {};                              // key -> option.id (default: first option)
-BB.steps.forEach(s => sel[s.key] = s.options[0].id);
+const sel = {};                              // key -> option.id — NO defaults: the customer must choose each step
 const opt = (k,id) => BB.steps.find(s=>s.key===k).options.find(o=>o.id===id);
+function allSelected(){ return BB.steps.every(s => sel[s.key]); }
+function firstUnselected(){ return BB.steps.findIndex(s => !sel[s.key]); }
 
 // ── pricing: battery base = (nominal V × Ah) Wh × ₹/Wh, + component add-ons, + GST ──
-function nominalV(){ return opt('system', sel.system).volt; }
-function capAh(){ return opt('capacity', sel.capacity).ah; }
+function nominalV(){ return sel.system ? opt('system', sel.system).volt : 0; }
+function capAh(){ return sel.capacity ? opt('capacity', sel.capacity).ah : 0; }
 function wh(){ return Math.round(nominalV() * capAh()); }
 function baseBattery(){ return Math.round(wh() * BB.ratePerWh); }
-function subtotal(){ let t = baseBattery(); BB.steps.forEach(s => { const o = opt(s.key, sel[s.key]); if(typeof o.add === 'number') t += o.add; }); return t; }
+function priceReady(){ return !!(sel.system && sel.capacity); }   // need V + Ah to price
+function subtotal(){ let t = baseBattery(); BB.steps.forEach(s => { const id = sel[s.key]; if(!id) return; const o = opt(s.key, id); if(typeof o.add === 'number') t += o.add; }); return t; }
 function gstAmt(){ return Math.round(subtotal() * BB.gstRate / 100); }
 function total(){ return subtotal() + gstAmt(); }
 
@@ -296,23 +298,24 @@ function buildCells(n){
 
 function updateBattery(){
   const b = document.getElementById('bbBattery');
-  // cell COUNT follows the chosen series (8S/15S/16S) — re-animate when it changes
-  const sys = opt('system', sel.system);
-  if(sys.series !== curSeries){ curSeries = sys.series; buildCells(sys.series); }
-  b.classList.add('show-cells');
-  // reveal components as the customer reaches their step (index-robust) or once visited
-  const idx = k => BB.steps.findIndex(s=>s.key===k);
-  b.classList.toggle('show-busbar', step>=idx('busbar') || done('busbar'));
-  b.classList.toggle('show-bms',    step>=idx('bms')    || done('bms'));
-  b.classList.toggle('show-mcb',    step>=idx('mcb')    || done('mcb'));
-  b.classList.toggle('show-handles', opt('handles', sel.handles).handles && (step>=idx('handles') || done('handles')));
-  // battery COLOUR = the casing itself (default Matte Black); yellow accents stay
-  const col = opt('color', sel.color);
-  b.querySelector('.bb-cabinet').style.background = col.casing;
-  b.querySelector('.bb-brand').style.color = col.light ? '#1a1a1a' : 'rgba(255,255,255,.6)';
-  if(step>=idx('warranty') || done('warranty')) b.classList.add('show-shield');
-  // live spec readout under the battery
-  document.getElementById('bbCap').textContent = nominalV()+'V · '+sys.series+'S · '+capAh()+'Ah · ~'+(wh()/1000).toFixed(2)+' kWh';
+  // cells appear (count = series) only once a VOLTAGE is chosen; re-animate on change
+  if(sel.system){ const sys = opt('system', sel.system); if(sys.series !== curSeries){ curSeries = sys.series; buildCells(sys.series); } b.classList.add('show-cells'); }
+  else { b.classList.remove('show-cells'); document.getElementById('bbCells').innerHTML=''; curSeries=null; }
+  // each component appears only once the customer SELECTS it
+  b.classList.toggle('show-busbar', !!sel.busbar);
+  b.classList.toggle('show-bms',    !!sel.bms);
+  b.classList.toggle('show-mcb',    !!sel.mcb);
+  b.classList.toggle('show-handles', !!sel.handles && opt('handles', sel.handles).handles);
+  // casing colour once chosen (placeholder dark until then); yellow accents stay
+  const col = sel.color ? opt('color', sel.color) : null;
+  b.querySelector('.bb-cabinet').style.background = col ? col.casing : 'linear-gradient(145deg,#2c2c2c,#0a0a0a)';
+  b.querySelector('.bb-brand').style.color = (col && col.light) ? '#1a1a1a' : 'rgba(255,255,255,.6)';
+  b.classList.toggle('show-shield', !!sel.warranty);
+  // live spec readout under the battery (progressive)
+  document.getElementById('bbCap').textContent = (sel.system && sel.capacity)
+    ? nominalV()+'V · '+opt('system',sel.system).series+'S · '+capAh()+'Ah · ~'+(wh()/1000).toFixed(2)+' kWh'
+    : sel.system ? nominalV()+'V · '+opt('system',sel.system).series+'S · select capacity ▸'
+    : 'Select your voltage to begin ▸';
 }
 
 function renderStep(){
@@ -329,7 +332,7 @@ function renderStep(){
     return '<div class="bb-opt '+(isSel?'sel':'')+'" data-id="'+o.id+'">'
       + '<div class="ic">'+(o.ic||s.icon)+'</div>'
       + '<div><div class="nm">'+sw+o.name+' '+badge+'</div><div class="ds">'+o.desc+'</div></div>'
-      + '<div class="pr">'+(o.add>0?'+'+inr(o.add):'<span style="color:var(--bb-grey)">Included</span>')+'<small>add-on</small></div>'
+      + (typeof o.add==='number' ? '<div class="pr">'+(o.add>0?'+'+inr(o.add):'<span style="color:var(--bb-grey)">Included</span>')+'<small>add-on</small></div>' : '')
       + '<div class="bb-tick">✓</div></div>';
   }).join('');
   document.querySelectorAll('#bbOpts .bb-opt').forEach(el=>el.addEventListener('click',()=>{
@@ -337,13 +340,14 @@ function renderStep(){
     el.animate([{transform:'scale(.98)'},{transform:'scale(1)'}],{duration:160});
   }));
   document.getElementById('bbBack').disabled = step===0;
+  document.getElementById('bbNext').disabled = !sel[s.key];   // must choose a value before advancing
   document.getElementById('bbNext').textContent = step===BB.steps.length-1 ? 'See Summary →' : 'Next →';
   // animate the config card in
   const card=document.querySelector('.bb-config'); card.animate([{opacity:.4,transform:'translateX(12px)'},{opacity:1,transform:'none'}],{duration:280,easing:'cubic-bezier(.2,.8,.2,1)'});
-  document.getElementById('bbCap').textContent = step<BB.steps.length-1 ? 'Building: '+s.label+' ▸' : 'Configuration complete ✓';
 }
 
 function updatePrice(){
+  if(!priceReady()){ document.getElementById('bbBarTotal').innerHTML = 'Select voltage &amp; capacity<small>to see your price</small>'; return; }
   document.getElementById('bbBarTotal').innerHTML = inr(total())+'<small>incl. '+BB.gstRate+'% GST · '+inr(gstAmt())+' GST</small>';
 }
 
@@ -356,10 +360,19 @@ function go(d){
 }
 
 function configText(){
-  return BB.steps.map(s=>'• '+s.label+': '+opt(s.key,sel[s.key]).name).join('\n');
+  return BB.steps.map(s=>{ const o=opt(s.key,sel[s.key]); return '• '+s.label+': '+(o?o.name:'—'); }).join('\n');
+}
+function gotoStep(i, msg){
+  step = i;
+  document.querySelector('.bb-summary').style.display='none';
+  document.getElementById('bbBuilder').style.display='grid';
+  renderStep(); updateBattery(); updatePrice();
+  document.getElementById('bbBuilder').scrollIntoView({behavior:'smooth'});
+  if(msg && window.MG && MG.toast) MG.toast(msg);
 }
 function showSummary(){
-  BB.steps.forEach(s=>visited.add(s.key)); updateBattery();
+  if(!allSelected()){ const i=firstUnselected(); gotoStep(i, 'Please choose: '+BB.steps[i].label); return; }
+  updateBattery();
   document.getElementById('bbBuilder').style.display='none';
   document.querySelector('.bb-summary').style.display='block';
   const baseRow = '<div class="bb-sum-row"><span class="k">Battery pack · '+nominalV()+'V '+capAh()+'Ah · ~'+(wh()/1000).toFixed(2)+' kWh <small style="color:var(--bb-grey)">@ ₹'+BB.ratePerWh+'/Wh</small></span><span class="v">'+inr(baseBattery())+'</span></div>';
