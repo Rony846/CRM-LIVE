@@ -1065,6 +1065,28 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Refund-Defense: pick up new A-to-z claims (live, from email) and alert before deadlines.
+        scheduler.add_job(
+            scheduled_refund_defense,
+            IntervalTrigger(minutes=REFUND_DEFENSE_MIN),
+            id="refund_defense",
+            name="Refund-Defense (catch A-to-z claims before the deadline)",
+            replace_existing=True,
+            misfire_grace_time=600,
+            max_instances=1,
+        )
+
+        # Collections: daily prioritized external-receivables chase-list to the founder.
+        scheduler.add_job(
+            scheduled_collections,
+            IntervalTrigger(minutes=COLLECTIONS_MIN),
+            id="collections",
+            name="Collections (external receivables chase-list)",
+            replace_existing=True,
+            misfire_grace_time=3600,
+            max_instances=1,
+        )
+
         # Smartflo webhook health: alert the founder if calls are being rejected (401) or none arrive for hours.
         scheduler.add_job(
             scheduled_smartflo_webhook_health,
@@ -62906,6 +62928,94 @@ async def scheduled_dispatch_guard():
         except Exception as e:
             logger.warning(f"Dispatch-Guard alert failed: {e}")
     logger.info(f"Dispatch-Guard: flagged {len(flagged)} refunded/cancelled queued orders")
+
+
+# ===================== Refund-Defense agent =====================
+REFUND_DEFENSE_MIN = int(os.environ.get("REFUND_DEFENSE_MIN", "120"))
+
+
+async def scheduled_refund_defense():
+    """Refund-Defense agent: watch for NEW Amazon A-to-z guarantee claims (live, via the email agent),
+    record them in az_claims (enriched with customer/amount), and alert the founder so each claim gets
+    contested before its deadline. A-Z claims auto-lose if unanswered in time — this is the safety net."""
+    now = datetime.now(timezone.utc).isoformat()
+    new_claims = []
+    async for e in db.email_agent_inbox.find(
+            {"subject": {"$regex": "a-to-z|a to z guarantee", "$options": "i"}}, {"subject": 1, "created_at": 1}):
+        m = _AMZ_OID_RE.search(e.get("subject") or "")
+        if not m:
+            continue
+        oid = m.group(0)
+        if await db.az_claims.find_one({"order_id": oid}, {"_id": 1}):
+            continue
+        ao = await db.amazon_orders.find_one({"amazon_order_id": oid},
+            {"buyer_name": 1, "phone": 1, "phone_manual": 1, "firm_name": 1, "order_total": 1}) or {}
+        rf = await db.amazon_refunds.find_one({"amazon_order_id": oid}, {"refund_amount": 1}) or {}
+        cs = await db.courier_shipments.find_one(
+            {"$or": [{"amazon_order_id": {"$regex": oid}}, {"order_id": {"$regex": oid}}]},
+            {"customer_name": 1, "phone": 1, "product_name": 1}) or {}
+        ot = ao.get("order_total")
+        amt = (ot.get("Amount") if isinstance(ot, dict) else ot) or rf.get("refund_amount") or 0
+        await db.az_claims.insert_one({
+            "id": str(uuid.uuid4()), "order_id": oid, "claim_date": str(e.get("created_at"))[:10],
+            "sources": ["email"], "customer": ao.get("buyer_name") or cs.get("customer_name") or "",
+            "phone": re.sub(r"\D", "", str(ao.get("phone") or ao.get("phone_manual") or cs.get("phone") or ""))[-10:],
+            "product": (cs.get("product_name") or "")[:60], "firm_name": ao.get("firm_name") or "",
+            "amount_at_risk": round(float(amt or 0), 2), "status": "under_review", "outcome": None,
+            "notes": "", "source_tag": "refund_defense_auto", "created_at": now, "updated_at": now})
+        new_claims.append((oid, round(float(amt or 0))))
+    if new_claims:
+        total = sum(a for _, a in new_claims)
+        body = (f"🛡️ Refund-Defense: *{len(new_claims)}* new A-to-z claim(s) — ₹{total:,.0f} at risk. "
+                f"Respond before the deadline:\n" + "\n".join(f"• {o} — ₹{a:,.0f}" for o, a in new_claims[:12])
+                + "\n→ /admin/az-claims")
+        try:
+            await _wa_send_to_manager(body, fallback_desc=f"{len(new_claims)} new A-Z claims (₹{total:,.0f})")
+        except Exception as ex:
+            logger.warning(f"Refund-Defense alert failed: {ex}")
+    logger.info(f"Refund-Defense: {len(new_claims)} new A-Z claims recorded")
+
+
+# ===================== Collections agent =====================
+COLLECTIONS_MIN = int(os.environ.get("COLLECTIONS_MIN", "1440"))  # daily
+_GROUP_KW = ("mgipl", "musclegrid", "spv industries", "electronics bay", "ebay")
+
+
+async def scheduled_collections():
+    """Collections agent: build a prioritized chase-list of EXTERNAL receivables (sales_invoices with
+    balance_due > 0, excluding our own group firms / intercompany) and WhatsApp the founder the top
+    debtors by amount + age. (Auto-reminders to the customers themselves stay opt-in for now.)"""
+    firms = {str(f.get("name") or "").lower() for f in await db.firms.find({}, {"name": 1}).to_list(50)}
+
+    def is_group(p):
+        pl = (p or "").lower().strip()
+        return pl in firms or any(k in pl for k in _GROUP_KW)
+
+    owed = {}
+    async for r in db.sales_invoices.find({"balance_due": {"$gt": 0}},
+            {"party_name": 1, "balance_due": 1, "invoice_date": 1, "created_at": 1}):
+        p = (r.get("party_name") or "").strip()
+        if not p or is_group(p):
+            continue
+        d = owed.setdefault(p, {"total": 0.0, "count": 0, "oldest": ""})
+        d["total"] += float(r.get("balance_due") or 0)
+        d["count"] += 1
+        dt = str(r.get("invoice_date") or r.get("created_at") or "")[:10]
+        if dt and (not d["oldest"] or dt < d["oldest"]):
+            d["oldest"] = dt
+    ranked = sorted(owed.items(), key=lambda x: -x[1]["total"])
+    if not ranked:
+        logger.info("Collections: no external receivables")
+        return
+    total = sum(d["total"] for _, d in ranked)
+    body = (f"💰 Collections — ₹{total:,.0f} owed by {len(ranked)} external parties. Top to chase:\n"
+            + "\n".join(f"• {p[:24]} — ₹{d['total']:,.0f} ({d['count']} inv, since {d['oldest'] or '?'})"
+                        for p, d in ranked[:12]))
+    try:
+        await _wa_send_to_manager(body, fallback_desc=f"Collections: ₹{total:,.0f} receivable, {len(ranked)} parties")
+    except Exception as e:
+        logger.warning(f"Collections alert failed: {e}")
+    logger.info(f"Collections: {len(ranked)} external parties, Rs {total:,.0f} receivable")
 
 
 @api_router.post("/pending-fulfillment/{fulfillment_id}/bigship-label")
