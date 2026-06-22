@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
+import TicketSearchBar from '@/components/TicketSearchBar';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -255,6 +256,7 @@ export default function SupervisorWarranties() {
 
   return (
     <DashboardLayout title="Warranty Management">
+      <TicketSearchBar />
       <Card>
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <CardHeader className="pb-0">

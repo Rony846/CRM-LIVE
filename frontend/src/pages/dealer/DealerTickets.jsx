@@ -83,7 +83,14 @@ export default function DealerTickets() {
 
     setSubmitting(true);
     try {
-      await axios.post(`${API}/dealer/tickets`, form, {
+      // Backend expects multipart form-data with a required `issue_description` field —
+      // posting the raw object as JSON was being rejected (422). Combine subject + description.
+      const fd = new FormData();
+      fd.append('issue_description', `${form.subject}\n\n${form.description}`.trim());
+      if (form.product_id) fd.append('product_id', form.product_id);
+      if (form.subject) fd.append('subject', form.subject);
+      if (form.issue_type) fd.append('issue_type', form.issue_type);
+      await axios.post(`${API}/dealer/tickets`, fd, {
         headers: { Authorization: `Bearer ${token}` }
       });
       toast.success('Ticket created successfully');

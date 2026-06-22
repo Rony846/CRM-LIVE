@@ -14,6 +14,7 @@ import asyncio
 import base64
 import json
 import logging
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Callable
@@ -2611,7 +2612,96 @@ class AmazonBrowserAgent:
                     return res
 
         return None
-    
+
+    async def _resolve_master_sku(self, sku: str) -> Optional[Dict[str, Any]]:
+        """Resolve a scraped Amazon SKU to a CRM master_sku doc (id/name/category/gst/hsn) using the
+        same strategies as lookup_sku_dimensions. Returns the master_sku dict or None (unmapped)."""
+        if not sku:
+            return None
+        clean = sku.strip()
+        proj = {"_id": 0, "id": 1, "name": 1, "sku_code": 1, "category": 1, "gst_rate": 1, "hsn_code": 1}
+        d = await self.db.master_skus.find_one(
+            {"sku_code": {"$regex": f"^{re.escape(clean)}$", "$options": "i"}}, proj)
+        if d:
+            return d
+        d = await self.db.master_skus.find_one(
+            {"aliases.alias_code": {"$regex": f"^{re.escape(clean)}$", "$options": "i"}}, proj)
+        if d:
+            return d
+        m = await self.db.amazon_sku_mappings.find_one(
+            {"amazon_sku": {"$regex": f"^{re.escape(clean)}$", "$options": "i"}},
+            {"_id": 0, "sku_code": 1, "master_sku_id": 1})
+        if m:
+            if m.get("master_sku_id"):
+                d = await self.db.master_skus.find_one({"id": m["master_sku_id"]}, proj)
+                if d:
+                    return d
+            if m.get("sku_code"):
+                d = await self.db.master_skus.find_one(
+                    {"sku_code": {"$regex": f"^{re.escape(m['sku_code'])}$", "$options": "i"}}, proj)
+                if d:
+                    return d
+        return None
+
+    async def _create_dispatch_from_amazon(self, order, tracking_id, label_path, invoice_path, total_weight):
+        """Build a proper CRM dispatch from a scraped Amazon order so it flows into the normal pipeline
+        (split-dispatch queue, then gate scan -> stock deduction + COGS + GST sales invoice). Maps every
+        line to a master_sku_id. Idempotent: one dispatch per Amazon order. Returns (dispatch_id, unmapped)."""
+        from utils.dispatch_split import classify_dispatch_split, SPLIT_STATUS_AWAITING
+        oid = order.order_id
+        existing = await self.db.dispatches.find_one(
+            {"marketplace_order_id": oid, "order_source": "amazon"}, {"_id": 0, "id": 1})
+        if existing:
+            return existing["id"], []
+        items, unmapped = [], []
+        for li in (order.items or []):
+            sku = (li.get("sku") or "").strip()
+            qty = int(li.get("quantity") or 1)
+            ms = await self._resolve_master_sku(sku) if sku and sku.upper() != "UNKNOWN" else None
+            row = {"master_sku_id": ms["id"] if ms else None,
+                   "master_sku_name": (ms.get("name") if ms else None) or li.get("title") or sku,
+                   "sku_code": (ms.get("sku_code") if ms else None) or sku,
+                   "hsn_code": ms.get("hsn_code") if ms else None,
+                   "gst_rate": (ms.get("gst_rate") if ms else None) or 18,
+                   "quantity": qty, "serial_number": None, "is_manufactured": False,
+                   "amazon_sku": sku, "asin": li.get("asin"), "title": li.get("title")}
+            if not ms:
+                row["unmapped"] = True
+                unmapped.append(sku or li.get("title"))
+            items.append(row)
+        if not items:
+            return None, []
+        split_tasks, split_present = await classify_dispatch_split(self.db, items)
+        now = datetime.now(timezone.utc).isoformat()
+        did = str(uuid.uuid4())
+        dispatch_number = f"AMZ-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{(oid or '')[-6:]}"
+        first = items[0]
+        dispatch_doc = {
+            "id": did, "dispatch_number": dispatch_number, "dispatch_type": "amazon_order",
+            "order_source": "amazon", "firm_id": self.firm_id, "firm_name": self.firm_name,
+            "master_sku_id": first.get("master_sku_id"), "master_sku_name": first.get("master_sku_name"),
+            "sku": first.get("sku_code"), "sku_code": first.get("sku_code"),
+            "quantity": sum(int(i.get("quantity") or 1) for i in items), "items": items,
+            "serial_number": None, "order_id": oid, "marketplace_order_id": oid,
+            "customer_name": order.buyer_name, "phone": order.phone, "address": order.address,
+            "city": order.city, "state": order.state, "pincode": order.pincode,
+            "tracking_id": tracking_id, "courier": "Delhivery",
+            "invoice_url": invoice_path, "label_url": label_path, "label_file": label_path,
+            "invoice_value": order.total_amount, "is_marketplace_order": True,
+            "price_is_gst_inclusive": True, "total_weight_kg": total_weight,
+            "unmapped_skus": unmapped or None,
+            "status": "ready_for_dispatch", "scanned_out_at": None,
+            "prepared_by_name": "Amazon Browser Agent", "created_by_name": "Amazon Browser Agent",
+            "created_at": now, "updated_at": now,
+        }
+        if split_present:
+            dispatch_doc["split_tasks"] = split_tasks
+            dispatch_doc["split_managed"] = True
+            dispatch_doc["split_status"] = "pending"
+            dispatch_doc["status"] = SPLIT_STATUS_AWAITING
+        await self.db.dispatches.insert_one(dispatch_doc)
+        return did, unmapped
+
     async def process_order(self, order_id: str, force_shipping_type: Optional[str] = None) -> ProcessingResult:
         """
         Process a single order - HYBRID APPROACH:
@@ -2903,8 +2993,22 @@ class AmazonBrowserAgent:
                 await self.ai_processor.think(f"⚠️ Invoice download failed: {e}. Non-critical, continuing.")
                 logger.warning(f"Invoice download failed: {e}")
             
-            # Step 7: Save to database
-            await self.ai_processor.think("Saving order processing record to database...")
+            # Step 7: Create a proper CRM dispatch (maps EVERY line item -> master_sku_id; the parcel
+            # enters the split-dispatch queue, then stock deduction + COGS + GST sales invoice happen on
+            # the outward gate scan), then save the processing record.
+            await self.ai_processor.think("Creating CRM dispatch + saving processing record...")
+            dispatch_id, unmapped_skus = None, []
+            try:
+                dispatch_id, unmapped_skus = await self._create_dispatch_from_amazon(
+                    order, tracking_id, label_path, invoice_path, total_weight)
+                if dispatch_id:
+                    await self.ai_processor.think(
+                        f"📋 CRM dispatch created ({dispatch_id[:8]})"
+                        + (f" — ⚠️ {len(unmapped_skus)} unmapped SKU(s): {unmapped_skus}" if unmapped_skus else ""))
+            except Exception as _de:
+                logger.error(f"Amazon->dispatch creation failed for {order_id}: {_de}")
+                await self.ai_processor.think(f"⚠️ Could not create CRM dispatch: {_de}")
+
             await self.db.amazon_order_processing.insert_one({
                 "order_id": order_id,
                 "amazon_order_id": order_id,
@@ -2927,6 +3031,9 @@ class AmazonBrowserAgent:
                 "customer_city": order.city,
                 "customer_state": order.state,
                 "customer_pincode": order.pincode,
+                "dispatch_id": dispatch_id,
+                "unmapped_skus": unmapped_skus or None,
+                "items": order.items or [],  # ALL line items (was previously only items[0])
                 "product_title": (order.items[0].get("title") if order.items else None),
                 "product_sku": (order.items[0].get("sku") if order.items else None),
                 "asin": (order.items[0].get("asin") if order.items else None),

@@ -447,6 +447,29 @@ export default function CallSupportDashboard() {
     }
 
     setSearchLoading(true);
+    const q = searchQuery.trim();
+    // A TICKET NUMBER (MG-R-/MG-W-YYYYMMDD-...) → search tickets and open the match directly.
+    // (Previously this fell into the serial_number branch on /customers/search and never matched.)
+    if (/^mg-?[rw]-?\d{4,}/i.test(q.replace(/\s+/g, ''))) {
+      try {
+        const res = await axios.get(`${API}/tickets`, {
+          headers: { Authorization: `Bearer ${token}` },
+          params: { search: q, limit: 10 },
+        });
+        const list = res.data?.tickets || res.data || [];
+        if (list.length) {
+          setSearchResults(null);
+          await viewTicketDetails(list[0].id);
+        } else {
+          toast.error(`No ticket found for "${q}"`);
+        }
+      } catch (err) {
+        toast.error(err.response?.data?.detail || 'Ticket search failed');
+      } finally {
+        setSearchLoading(false);
+      }
+      return;
+    }
     try {
       // Determine search type based on input
       const params = {};

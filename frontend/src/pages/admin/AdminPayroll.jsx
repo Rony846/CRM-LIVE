@@ -494,6 +494,19 @@ export default function AdminPayroll() {
           </Card>
         </div>
 
+        {/* Unapproved-incentive warning — earned this month but NOT in payroll until approved */}
+        {payroll.summary.unapproved_incentives_count > 0 && (
+          <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-400 mt-0.5 shrink-0" />
+            <div className="text-sm text-amber-200">
+              <span className="font-semibold">
+                {payroll.summary.unapproved_incentives_count} incentives ({formatCurrency(payroll.summary.unapproved_incentives_total)}) are still pending approval for this month.
+              </span>{' '}
+              They are <span className="font-semibold">not</span> included in the payroll below and will be dropped if you generate or pay now — approve them in the Incentives tab first.
+            </div>
+          </div>
+        )}
+
         {/* Filters */}
         <Card className="bg-slate-800 border-slate-700">
           <CardContent className="p-4">

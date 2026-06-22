@@ -1,724 +1,252 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
-# IDE and editors
-.idea/
-.vscode/
-
-# Dependencies
-node_modules/
-/node_modules
-/.pnp
-.pnp.js
-.yarn/install-state.gz
-.yarn/*
 !.yarn/patches
 !.yarn/plugins
 !.yarn/releases
 !.yarn/versions
-
-# Testing
-/coverage
-
-# Next.js
-/.next/
-/out/
-next-env.d.ts
-*.tsbuildinfo
-
-# Production builds
-/build
-dist/
-dist
-
-# Environment files (comprehensive coverage)
-
-*token.json*
-*credentials.json*
-
-# Logs and debug files
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-dump.rdb
-
-# System files
-.DS_Store
-*.pem
-
-# Python
-__pycache__/
-*pyc*
-venv/
-.venv/
-
-# Development tools
-chainlit.md
-.chainlit
-.ipynb_checkpoints/
-.ac
-
-# Deployment
-.vercel
-
-# Data and databases
-agenthub/agents/youtube/db
-
 # Archive files and large assets
-**/*.zip
-**/*.tar.gz
+# Build caches
+# Data and databases
+# Dependencies
+# Deployment
+# Development tools
+# Environment and credential files
+# Environment files
+# Environment files (comprehensive coverage)
+# IDE and editors
+# Logs and debug files
+# Mobile development
+# Next.js
+# One-off migration data dumps (49M, kept on disk only)
+# Per-firm Chromium user-data-dirs for the browser agent. These hold
+# Production builds
+# Python
+# Runtime / sensitive artefacts
+# Runtime user uploads — sub-dirs only. The top-level enhanced_*.png files
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# System files
+# Testing
+# WhatsApp-Web bridge — Chromium session + cache. These churn every time
+# account — sensitive session data and large binary files.
+# code, and the auth payload is per-machine. Keep on disk so the bridge
+# cookies, localStorage, IndexedDB and cache for each Amazon/Bigship
+# product cards. Anything inside a sub-dir (claude_files/, dealer_*/,
+# stay tracked since they were already committed and are referenced from
+# stays logged in; just don't track them.
+# the bridge runs (Chromium auto-updates its internal data dirs), aren't
+# warranty_invoices/, etc.) is user-uploaded runtime data — never commit.
 **/*.tar
+**/*.tar.gz
 **/*.tgz
-*.pack
+**/*.zip
 *.deb
 *.dylib
-
-# Build caches
+*.env
+*.env.*
+*.key
+*.pack
+*.pem
+*.tsbuildinfo
+*credentials.json*
+*pyc*
+*token.json*
+-e 
+.DS_Store
+.ac
 .cache/
-
-# Mobile development
+.chainlit
+.credentials
+.env
+.env.*
+.idea/
+.ipynb_checkpoints/
+.pnp.js
+.pnpm-debug.log*
+.venv/
+.vercel
+.vscode/
+.yarn/*
+.yarn/install-state.gz
+/.next/
+/.pnp
+/build
+/coverage
+/node_modules
+/out/
+__pycache__/
+agenthub/agents/youtube/db
 android-sdk/ frontend/node_modules/.cache/default-development/25.pack
-frontend/node_modules/.cache/default-development/25.pack
-frontend/node_modules/.cache/default-development/29.pack
-frontend/node_modules/.cache/default-development/26.pack
-frontend/node_modules/.cache/default-development/30.pack
-frontend/node_modules/.cache/default-development/4.pack
-frontend/node_modules/.cache/default-development/22.pack
+backend/.live_mongo_uri
+backend/assets/
+backend/browser_profiles/
+backend/exports/
+backend/uploads/
+backend/uploads/*/
+backend/whatsapp_agent/bridge/.wwebjs_auth/
+backend/whatsapp_agent/bridge/.wwebjs_cache/
+backend/zoho_tokens.json
+chainlit.md
+credentials.json
+dist
+dist/
+dump.rdb
+frontend/build
+frontend/build*/
+frontend/node_modules/.cache/default-development/0.pack
+frontend/node_modules/.cache/default-development/1.pack
 frontend/node_modules/.cache/default-development/10.pack
-frontend/node_modules/.cache/default-development/21.pack
-frontend/node_modules/.cache/default-development/38.pack
-frontend/node_modules/.cache/default-development/39.pack
-frontend/node_modules/.cache/default-development/45.pack
-frontend/node_modules/.cache/default-development/9.pack
-frontend/node_modules/.cache/default-development/19.pack
-frontend/node_modules/.cache/default-development/36.pack
-frontend/node_modules/.cache/default-development/53.pack
--e 
-# Environment files
-*.env
-*.env.*
--e 
-# Environment files
-*.env
-*.env.*
-frontend/node_modules/.cache/default-development/50.pack
-frontend/node_modules/.cache/default-development/51.pack
-frontend/node_modules/.cache/default-development/51.pack
-frontend/node_modules/.cache/default-development/57.pack
-frontend/node_modules/.cache/default-development/59.pack
-frontend/node_modules/.cache/default-development/58.pack
-frontend/node_modules/.cache/default-development/62.pack
-frontend/node_modules/.cache/default-development/64.pack
-frontend/node_modules/.cache/default-development/55.pack
-frontend/node_modules/.cache/default-development/67.pack
-frontend/node_modules/.cache/default-development/74.pack
-frontend/node_modules/.cache/default-development/61.pack
-frontend/node_modules/.cache/default-development/80.pack
-frontend/node_modules/.cache/default-development/80.pack
-frontend/node_modules/.cache/default-development/83.pack
-frontend/node_modules/.cache/default-development/84.pack
-frontend/node_modules/.cache/default-development/85.pack
-frontend/node_modules/.cache/default-development/88.pack
-frontend/node_modules/.cache/default-development/88.pack
-frontend/node_modules/.cache/default-development/91.pack
-frontend/node_modules/.cache/default-development/91.pack
-frontend/node_modules/.cache/default-development/93.pack
-frontend/node_modules/.cache/default-development/96.pack
-frontend/node_modules/.cache/default-development/96.pack
-frontend/node_modules/.cache/default-development/86.pack
-frontend/node_modules/.cache/default-development/86.pack
-frontend/node_modules/.cache/default-development/94.pack
--e 
-# Environment files
-*.env
-*.env.*
 frontend/node_modules/.cache/default-development/100.pack
-frontend/node_modules/.cache/default-development/52.pack
-frontend/node_modules/.cache/default-development/99.pack
 frontend/node_modules/.cache/default-development/101.pack
-frontend/node_modules/.cache/default-development/5.pack
-frontend/node_modules/.cache/default-development/104.pack
-frontend/node_modules/.cache/default-development/12.pack
-frontend/node_modules/.cache/default-development/106.pack
--e 
-# Environment files
-*.env
-*.env.*
-frontend/node_modules/.cache/default-development/103.pack
-frontend/node_modules/.cache/default-development/7.pack
-frontend/node_modules/.cache/default-development/116.pack
--e 
-# Environment files
-*.env
-*.env.*
-frontend/node_modules/.cache/default-development/117.pack
--e 
-# Environment files
-*.env
-*.env.*
-frontend/node_modules/.cache/default-development/118.pack
-frontend/node_modules/.cache/default-development/92.pack
-frontend/node_modules/.cache/default-development/122.pack
-frontend/node_modules/.cache/default-development/125.pack
-frontend/node_modules/.cache/default-development/127.pack
-frontend/node_modules/.cache/default-development/132.pack
-frontend/node_modules/.cache/default-development/136.pack
--e 
-# Environment files
-*.env
-*.env.*
-frontend/node_modules/.cache/default-development/121.pack
-frontend/node_modules/.cache/default-development/135.pack
-frontend/node_modules/.cache/default-development/138.pack
-frontend/node_modules/.cache/default-development/140.pack
-frontend/node_modules/.cache/default-development/141.pack
-frontend/node_modules/.cache/default-development/137.pack
-frontend/node_modules/.cache/default-development/142.pack
-frontend/node_modules/.cache/default-development/145.pack
--e 
-# Environment files
-*.env
-*.env.*
-frontend/node_modules/.cache/default-development/146.pack
--e 
-# Environment files
-*.env
-*.env.*
--e 
-# Environment files
-*.env
-*.env.*
-frontend/node_modules/.cache/default-development/143.pack
--e 
-# Environment files
-*.env
-*.env.*
-frontend/node_modules/.cache/default-development/150.pack
-frontend/node_modules/.cache/default-development/152.pack
-frontend/node_modules/.cache/default-development/153.pack
-frontend/node_modules/.cache/default-development/155.pack
-frontend/node_modules/.cache/default-development/154.pack
-frontend/node_modules/.cache/default-development/158.pack
-frontend/node_modules/.cache/default-development/159.pack
-frontend/node_modules/.cache/default-development/161.pack
--e 
-# Environment files
-*.env
-*.env.*
-frontend/node_modules/.cache/default-development/157.pack
-frontend/node_modules/.cache/default-development/162.pack
--e 
-# Environment files
-*.env
-*.env.*
-frontend/node_modules/.cache/default-development/163.pack
--e 
-# Environment files
-*.env
-*.env.*
-frontend/node_modules/.cache/default-development/0.pack
-frontend/node_modules/.cache/default-development/0.pack
--e 
-# Environment files
-*.env
-*.env.*
-frontend/node_modules/.cache/default-development/2.pack
-frontend/node_modules/.cache/default-development/3.pack
-frontend/node_modules/.cache/default-development/11.pack
-frontend/node_modules/.cache/default-development/8.pack
-frontend/node_modules/.cache/default-development/14.pack
-frontend/node_modules/.cache/default-development/15.pack
-frontend/node_modules/.cache/default-development/16.pack
-frontend/node_modules/.cache/default-development/17.pack
-frontend/node_modules/.cache/default-development/18.pack
-frontend/node_modules/.cache/default-development/20.pack
-frontend/node_modules/.cache/default-development/23.pack
-frontend/node_modules/.cache/default-development/6.pack
-frontend/node_modules/.cache/default-development/31.pack
-frontend/node_modules/.cache/default-development/28.pack
--e 
-# Environment files
-*.env
-*.env.*
-frontend/node_modules/.cache/default-development/33.pack
-frontend/node_modules/.cache/default-development/37.pack
-frontend/node_modules/.cache/default-development/42.pack
-frontend/node_modules/.cache/default-development/13.pack
-frontend/node_modules/.cache/default-development/46.pack
-frontend/node_modules/.cache/default-development/43.pack
--e 
-# Environment files
-*.env
-*.env.*
-frontend/node_modules/.cache/default-development/54.pack
-frontend/node_modules/.cache/default-development/60.pack
-frontend/node_modules/.cache/default-development/63.pack
-frontend/node_modules/.cache/default-development/66.pack
-frontend/node_modules/.cache/default-development/69.pack
-frontend/node_modules/.cache/default-development/70.pack
-frontend/node_modules/.cache/default-development/71.pack
-frontend/node_modules/.cache/default-development/72.pack
-frontend/node_modules/.cache/default-development/78.pack
-frontend/node_modules/.cache/default-development/79.pack
-frontend/node_modules/.cache/default-development/82.pack
 frontend/node_modules/.cache/default-development/102.pack
+frontend/node_modules/.cache/default-development/103.pack
+frontend/node_modules/.cache/default-development/104.pack
 frontend/node_modules/.cache/default-development/105.pack
+frontend/node_modules/.cache/default-development/106.pack
 frontend/node_modules/.cache/default-development/107.pack
--e 
-# Environment files
-*.env
-*.env.*
+frontend/node_modules/.cache/default-development/108.pack
+frontend/node_modules/.cache/default-development/109.pack
+frontend/node_modules/.cache/default-development/11.pack
 frontend/node_modules/.cache/default-development/110.pack
+frontend/node_modules/.cache/default-development/111.pack
 frontend/node_modules/.cache/default-development/113.pack
 frontend/node_modules/.cache/default-development/114.pack
 frontend/node_modules/.cache/default-development/115.pack
-frontend/node_modules/.cache/default-development/109.pack
+frontend/node_modules/.cache/default-development/116.pack
+frontend/node_modules/.cache/default-development/117.pack
+frontend/node_modules/.cache/default-development/118.pack
 frontend/node_modules/.cache/default-development/119.pack
-frontend/node_modules/.cache/default-development/111.pack
-frontend/node_modules/.cache/default-development/108.pack
+frontend/node_modules/.cache/default-development/12.pack
+frontend/node_modules/.cache/default-development/121.pack
+frontend/node_modules/.cache/default-development/122.pack
+frontend/node_modules/.cache/default-development/124.pack
+frontend/node_modules/.cache/default-development/125.pack
 frontend/node_modules/.cache/default-development/126.pack
+frontend/node_modules/.cache/default-development/127.pack
+frontend/node_modules/.cache/default-development/129.pack
+frontend/node_modules/.cache/default-development/13.pack
 frontend/node_modules/.cache/default-development/130.pack
 frontend/node_modules/.cache/default-development/131.pack
+frontend/node_modules/.cache/default-development/132.pack
 frontend/node_modules/.cache/default-development/134.pack
-frontend/node_modules/.cache/default-development/90.pack
-frontend/node_modules/.cache/default-development/124.pack
-frontend/node_modules/.cache/default-development/129.pack
-frontend/node_modules/.cache/default-development/147.pack
+frontend/node_modules/.cache/default-development/135.pack
+frontend/node_modules/.cache/default-development/136.pack
+frontend/node_modules/.cache/default-development/137.pack
+frontend/node_modules/.cache/default-development/138.pack
 frontend/node_modules/.cache/default-development/139.pack
+frontend/node_modules/.cache/default-development/14.pack
+frontend/node_modules/.cache/default-development/140.pack
+frontend/node_modules/.cache/default-development/141.pack
+frontend/node_modules/.cache/default-development/142.pack
+frontend/node_modules/.cache/default-development/143.pack
+frontend/node_modules/.cache/default-development/145.pack
+frontend/node_modules/.cache/default-development/146.pack
+frontend/node_modules/.cache/default-development/147.pack
 frontend/node_modules/.cache/default-development/148.pack
+frontend/node_modules/.cache/default-development/15.pack
+frontend/node_modules/.cache/default-development/150.pack
+frontend/node_modules/.cache/default-development/152.pack
+frontend/node_modules/.cache/default-development/153.pack
+frontend/node_modules/.cache/default-development/154.pack
+frontend/node_modules/.cache/default-development/155.pack
 frontend/node_modules/.cache/default-development/156.pack
+frontend/node_modules/.cache/default-development/157.pack
+frontend/node_modules/.cache/default-development/158.pack
+frontend/node_modules/.cache/default-development/159.pack
+frontend/node_modules/.cache/default-development/16.pack
 frontend/node_modules/.cache/default-development/160.pack
+frontend/node_modules/.cache/default-development/161.pack
+frontend/node_modules/.cache/default-development/162.pack
+frontend/node_modules/.cache/default-development/163.pack
 frontend/node_modules/.cache/default-development/167.pack
 frontend/node_modules/.cache/default-development/168.pack
 frontend/node_modules/.cache/default-development/169.pack
-frontend/node_modules/.cache/default-development/35.pack
-frontend/node_modules/.cache/default-development/87.pack
+frontend/node_modules/.cache/default-development/17.pack
 frontend/node_modules/.cache/default-development/176.pack
 frontend/node_modules/.cache/default-development/177.pack
 frontend/node_modules/.cache/default-development/178.pack
 frontend/node_modules/.cache/default-development/179.pack
-frontend/node_modules/.cache/default-development/1.pack
+frontend/node_modules/.cache/default-development/18.pack
+frontend/node_modules/.cache/default-development/19.pack
+frontend/node_modules/.cache/default-development/2.pack
+frontend/node_modules/.cache/default-development/20.pack
+frontend/node_modules/.cache/default-development/21.pack
+frontend/node_modules/.cache/default-development/22.pack
+frontend/node_modules/.cache/default-development/23.pack
+frontend/node_modules/.cache/default-development/24.pack
+frontend/node_modules/.cache/default-development/25.pack
+frontend/node_modules/.cache/default-development/26.pack
+frontend/node_modules/.cache/default-development/28.pack
+frontend/node_modules/.cache/default-development/29.pack
+frontend/node_modules/.cache/default-development/3.pack
+frontend/node_modules/.cache/default-development/30.pack
+frontend/node_modules/.cache/default-development/31.pack
 frontend/node_modules/.cache/default-development/32.pack
+frontend/node_modules/.cache/default-development/33.pack
 frontend/node_modules/.cache/default-development/34.pack
+frontend/node_modules/.cache/default-development/35.pack
+frontend/node_modules/.cache/default-development/36.pack
+frontend/node_modules/.cache/default-development/37.pack
+frontend/node_modules/.cache/default-development/38.pack
+frontend/node_modules/.cache/default-development/39.pack
+frontend/node_modules/.cache/default-development/4.pack
 frontend/node_modules/.cache/default-development/40.pack
+frontend/node_modules/.cache/default-development/42.pack
+frontend/node_modules/.cache/default-development/43.pack
 frontend/node_modules/.cache/default-development/44.pack
+frontend/node_modules/.cache/default-development/45.pack
+frontend/node_modules/.cache/default-development/46.pack
 frontend/node_modules/.cache/default-development/47.pack
 frontend/node_modules/.cache/default-development/48.pack
 frontend/node_modules/.cache/default-development/49.pack
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
+frontend/node_modules/.cache/default-development/5.pack
+frontend/node_modules/.cache/default-development/50.pack
+frontend/node_modules/.cache/default-development/51.pack
+frontend/node_modules/.cache/default-development/52.pack
+frontend/node_modules/.cache/default-development/53.pack
+frontend/node_modules/.cache/default-development/54.pack
+frontend/node_modules/.cache/default-development/55.pack
+frontend/node_modules/.cache/default-development/57.pack
+frontend/node_modules/.cache/default-development/58.pack
+frontend/node_modules/.cache/default-development/59.pack
+frontend/node_modules/.cache/default-development/6.pack
+frontend/node_modules/.cache/default-development/60.pack
+frontend/node_modules/.cache/default-development/61.pack
+frontend/node_modules/.cache/default-development/62.pack
+frontend/node_modules/.cache/default-development/63.pack
+frontend/node_modules/.cache/default-development/64.pack
 frontend/node_modules/.cache/default-development/65.pack
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
+frontend/node_modules/.cache/default-development/66.pack
+frontend/node_modules/.cache/default-development/67.pack
 frontend/node_modules/.cache/default-development/68.pack
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
+frontend/node_modules/.cache/default-development/69.pack
+frontend/node_modules/.cache/default-development/7.pack
+frontend/node_modules/.cache/default-development/70.pack
+frontend/node_modules/.cache/default-development/71.pack
+frontend/node_modules/.cache/default-development/72.pack
 frontend/node_modules/.cache/default-development/73.pack
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
-frontend/node_modules/.cache/default-development/24.pack
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
-
-# WhatsApp-Web bridge — Chromium session + cache. These churn every time
-# the bridge runs (Chromium auto-updates its internal data dirs), aren't
-# code, and the auth payload is per-machine. Keep on disk so the bridge
-# stays logged in; just don't track them.
-backend/whatsapp_agent/bridge/.wwebjs_auth/
-backend/whatsapp_agent/bridge/.wwebjs_cache/
-
-# Runtime / sensitive artefacts
-backend/.live_mongo_uri
-backend/zoho_tokens.json
-
-# One-off migration data dumps (49M, kept on disk only)
+frontend/node_modules/.cache/default-development/74.pack
+frontend/node_modules/.cache/default-development/78.pack
+frontend/node_modules/.cache/default-development/79.pack
+frontend/node_modules/.cache/default-development/8.pack
+frontend/node_modules/.cache/default-development/80.pack
+frontend/node_modules/.cache/default-development/82.pack
+frontend/node_modules/.cache/default-development/83.pack
+frontend/node_modules/.cache/default-development/84.pack
+frontend/node_modules/.cache/default-development/85.pack
+frontend/node_modules/.cache/default-development/86.pack
+frontend/node_modules/.cache/default-development/87.pack
+frontend/node_modules/.cache/default-development/88.pack
+frontend/node_modules/.cache/default-development/9.pack
+frontend/node_modules/.cache/default-development/90.pack
+frontend/node_modules/.cache/default-development/91.pack
+frontend/node_modules/.cache/default-development/92.pack
+frontend/node_modules/.cache/default-development/93.pack
+frontend/node_modules/.cache/default-development/94.pack
+frontend/node_modules/.cache/default-development/96.pack
+frontend/node_modules/.cache/default-development/99.pack
 migration/
-
-# Runtime user uploads — sub-dirs only. The top-level enhanced_*.png files
-# stay tracked since they were already committed and are referenced from
-# product cards. Anything inside a sub-dir (claude_files/, dealer_*/,
-# warranty_invoices/, etc.) is user-uploaded runtime data — never commit.
-backend/uploads/*/
-
-# Per-firm Chromium user-data-dirs for the browser agent. These hold
-# cookies, localStorage, IndexedDB and cache for each Amazon/Bigship
-# account — sensitive session data and large binary files.
-backend/browser_profiles/
-backend/exports/
+next-env.d.ts
+node_modules/
+npm-debug.log*
+venv/
+yarn-debug.log*
+yarn-error.log*

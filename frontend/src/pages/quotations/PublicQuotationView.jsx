@@ -250,6 +250,7 @@ export default function PublicQuotationView() {
                   <th className="px-5 py-3 text-left font-mono text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Item Description</th>
                   <th className="px-5 py-3 text-right font-mono text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Qty</th>
                   <th className="px-5 py-3 text-right font-mono text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Rate</th>
+                  <th className="px-5 py-3 text-right font-mono text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Discount</th>
                   <th className="px-5 py-3 text-right font-mono text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">GST</th>
                   <th className="px-5 py-3 text-right font-mono text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Amount</th>
                 </tr>
@@ -276,6 +277,9 @@ export default function PublicQuotationView() {
                     </td>
                     <td className="px-5 py-4 text-right align-top font-mono text-sm tabular-nums text-foreground">
                       {formatCurrency(item.rate)}
+                    </td>
+                    <td className="px-5 py-4 text-right align-top font-mono text-sm tabular-nums text-rose-700">
+                      {item.discount > 0 ? `-${formatCurrency(item.discount)}` : '—'}
                     </td>
                     <td className="px-5 py-4 text-right align-top font-mono text-sm tabular-nums text-muted-foreground">
                       {item.gst_rate}%

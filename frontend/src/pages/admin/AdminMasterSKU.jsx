@@ -55,14 +55,35 @@ export default function AdminMasterSKU() {
   const [skuForm, setSkuForm] = useState({
     name: '', sku_code: '', category: '', hsn_code: '', unit: 'pcs',
     is_manufactured: false, product_type: '', manufacturing_role: '',
-    production_charge_per_unit: '', reorder_level: 10, description: '',
+    production_charge_per_unit: '', reorder_level: 10, description: '', image_url: '',
     gst_rate: '', cost_price: '', selling_price: '', mrp: '', dealer_discount_percent: '',
     // LBH and Weight for shipping
     length_cm: '', breadth_cm: '', height_cm: '', weight_kg: ''
   });
-  
+
   const [bomForm, setBomForm] = useState([]);
   const [aliasForm, setAliasForm] = useState({ alias_code: '', platform: '', notes: '' });
+  const [uploadingSkuImage, setUploadingSkuImage] = useState(false);
+
+  const handleSkuImageUpload = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setUploadingSkuImage(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await axios.post(`${API}/master-skus/upload-image`, fd, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setSkuForm((prev) => ({ ...prev, image_url: res.data.image_url || res.data.url }));
+      toast.success('Image uploaded');
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Image upload failed');
+    } finally {
+      setUploadingSkuImage(false);
+    }
+  };
 
   useEffect(() => {
     fetchData();
@@ -91,7 +112,7 @@ export default function AdminMasterSKU() {
     setSkuForm({
       name: '', sku_code: '', category: '', hsn_code: '', unit: 'pcs',
       is_manufactured: false, product_type: '', manufacturing_role: '',
-      production_charge_per_unit: '', reorder_level: 10, description: '',
+      production_charge_per_unit: '', reorder_level: 10, description: '', image_url: '',
       gst_rate: '', cost_price: '', selling_price: '', mrp: '', dealer_discount_percent: '',
       length_cm: '', breadth_cm: '', height_cm: '', weight_kg: ''
     });
@@ -155,6 +176,7 @@ export default function AdminMasterSKU() {
         production_charge_per_unit: productionCharge,
         reorder_level: reorderLevel,
         description: skuForm.description || null,
+        image_url: skuForm.image_url || null,
         // LBH and Weight for shipping
         length_cm: skuForm.length_cm !== '' ? parseFloat(skuForm.length_cm) : null,
         breadth_cm: skuForm.breadth_cm !== '' ? parseFloat(skuForm.breadth_cm) : null,
@@ -214,6 +236,7 @@ export default function AdminMasterSKU() {
         production_charge_per_unit: productionCharge,
         reorder_level: reorderLevel,
         description: skuForm.description || null,
+        image_url: skuForm.image_url || null,
         // LBH and Weight for shipping
         length_cm: skuForm.length_cm !== '' ? parseFloat(skuForm.length_cm) : null,
         breadth_cm: skuForm.breadth_cm !== '' ? parseFloat(skuForm.breadth_cm) : null,
@@ -335,6 +358,7 @@ export default function AdminMasterSKU() {
       production_charge_per_unit: sku.production_charge_per_unit || '',
       reorder_level: sku.reorder_level || 10,
       description: sku.description || '',
+      image_url: sku.image_url || '',
       // LBH and Weight for shipping
       length_cm: sku.length_cm !== null && sku.length_cm !== undefined ? sku.length_cm : '',
       breadth_cm: sku.breadth_cm !== null && sku.breadth_cm !== undefined ? sku.breadth_cm : '',
@@ -490,7 +514,13 @@ export default function AdminMasterSKU() {
                     {filteredSKUs.map((sku) => (
                       <TableRow key={sku.id} className="border-slate-700">
                         <TableCell>
-                          {sku.images && sku.images.length > 0 ? (
+                          {sku.image_url ? (
+                            <img
+                              src={sku.image_url}
+                              alt={sku.name}
+                              className="w-12 h-12 object-cover rounded-md border border-slate-700"
+                            />
+                          ) : sku.images && sku.images.length > 0 ? (
                             <AuthedImage
                               path={sku.images[0]}
                               token={token}
@@ -499,8 +529,11 @@ export default function AdminMasterSKU() {
                               className="w-12 h-12 object-cover rounded-md border border-slate-700"
                             />
                           ) : (
-                            <div className="w-12 h-12 rounded-md border border-slate-700 bg-slate-700/40 flex items-center justify-center">
-                              <Package className="w-5 h-5 text-slate-500" />
+                            <div
+                              title="No image — upload one so it shows in the app shop"
+                              className="w-12 h-12 rounded-md border border-dashed border-amber-600/60 bg-slate-700/40 flex items-center justify-center"
+                            >
+                              <Package className="w-5 h-5 text-amber-500/70" />
                             </div>
                           )}
                         </TableCell>
@@ -869,6 +902,28 @@ export default function AdminMasterSKU() {
                   rows={2}
                 />
               </div>
+
+              <div>
+                <Label className="text-slate-300">Product image <span className="text-slate-500">(shown to customers in the app shop)</span></Label>
+                <div className="flex gap-2 mt-1">
+                  <Input
+                    value={skuForm.image_url}
+                    onChange={(e) => setSkuForm({...skuForm, image_url: e.target.value})}
+                    placeholder="Paste an image URL, or upload →"
+                    className="bg-slate-700 border-slate-600 text-white"
+                  />
+                  <label className="shrink-0">
+                    <input type="file" accept="image/*" className="hidden" onChange={handleSkuImageUpload} disabled={uploadingSkuImage} />
+                    <span className="inline-flex items-center gap-1 px-3 py-2 rounded-md bg-blue-600 hover:bg-blue-500 text-white text-sm cursor-pointer whitespace-nowrap">
+                      {uploadingSkuImage ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                      Upload
+                    </span>
+                  </label>
+                </div>
+                {skuForm.image_url ? (
+                  <img src={skuForm.image_url} alt="" className="mt-2 h-20 w-20 object-cover rounded border border-slate-600" />
+                ) : null}
+              </div>
             </div>
             <DialogFooter className="mt-4">
               <Button variant="ghost" onClick={() => setCreateDialogOpen(false)} className="text-slate-300">
@@ -1100,7 +1155,29 @@ export default function AdminMasterSKU() {
                   rows={2}
                 />
               </div>
-              
+
+              <div>
+                <Label className="text-slate-300">Product image <span className="text-slate-500">(shown to customers in the app shop)</span></Label>
+                <div className="flex gap-2 mt-1">
+                  <Input
+                    value={skuForm.image_url}
+                    onChange={(e) => setSkuForm({...skuForm, image_url: e.target.value})}
+                    placeholder="Paste an image URL, or upload →"
+                    className="bg-slate-700 border-slate-600 text-white"
+                  />
+                  <label className="shrink-0">
+                    <input type="file" accept="image/*" className="hidden" onChange={handleSkuImageUpload} disabled={uploadingSkuImage} />
+                    <span className="inline-flex items-center gap-1 px-3 py-2 rounded-md bg-blue-600 hover:bg-blue-500 text-white text-sm cursor-pointer whitespace-nowrap">
+                      {uploadingSkuImage ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                      Upload
+                    </span>
+                  </label>
+                </div>
+                {skuForm.image_url ? (
+                  <img src={skuForm.image_url} alt="" className="mt-2 h-20 w-20 object-cover rounded border border-slate-600" />
+                ) : null}
+              </div>
+
               {/* Production Settings in Edit */}
               <div className="p-3 bg-slate-700/50 rounded-lg space-y-3">
                 <Label className="text-cyan-400 font-medium">Production Settings</Label>

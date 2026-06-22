@@ -33,6 +33,7 @@ export default function GateDashboard() {
   });
   const [scheduled, setScheduled] = useState({ incoming: [], outgoing: [] });
   const [recentScans, setRecentScans] = useState([]);
+  const [returnBatches, setReturnBatches] = useState([]);
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const trackingInputRef = React.useRef(null);
@@ -67,19 +68,23 @@ export default function GateDashboard() {
 
   const fetchData = async () => {
     try {
-      const [scheduledRes, logsRes] = await Promise.all([
+      const [scheduledRes, logsRes, batchesRes] = await Promise.all([
         axios.get(`${API}/gate/scheduled`, {
           headers: { Authorization: `Bearer ${token}` }
         }),
         axios.get(`${API}/gate/logs?limit=10`, {
           headers: { Authorization: `Bearer ${token}` }
-        })
+        }),
+        axios.get(`${API}/gate/return-batches?days=7`, {
+          headers: { Authorization: `Bearer ${token}` }
+        }).catch(() => ({ data: { batches: [] } }))
       ]);
       setScheduled({
         incoming: scheduledRes.data.scheduled_incoming || [],
         outgoing: scheduledRes.data.scheduled_outgoing || []
       });
       setRecentScans(logsRes.data);
+      setReturnBatches(batchesRes.data.batches || []);
     } catch (error) {
       toast.error('Failed to load data');
     } finally {
@@ -170,6 +175,74 @@ export default function GateDashboard() {
           Mobile View
         </Button>
       </div>
+
+      {/* Amazon Return-OTP batches — OTP stays locked until every parcel is scanned inward */}
+      {returnBatches.length > 0 && (
+        <Card className="bg-slate-800 border-amber-700/60 mb-4 md:mb-6">
+          <CardHeader className="pb-2 md:pb-4">
+            <CardTitle className="text-white flex items-center gap-2 text-lg md:text-xl">
+              <ArrowDownLeft className="w-5 h-5 text-amber-400" />
+              Amazon Returns — OTP Gate
+              <span className="text-xs font-normal text-slate-400 ml-2">
+                Scan every parcel inward to unlock the OTP
+              </span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {Object.entries(
+              returnBatches.reduce((acc, b) => {
+                const f = b.firm || (b.firm_names || ['?'])[0];
+                (acc[f] = acc[f] || []).push(b);
+                return acc;
+              }, {})
+            ).map(([firm, batches]) => (
+              <div key={firm}>
+                <div className="text-xs font-bold text-amber-300/90 uppercase tracking-wide mb-2 border-b border-amber-700/30 pb-1">
+                  {firm} · {batches.length} batch{batches.length > 1 ? 'es' : ''}
+                </div>
+                <div className="space-y-3">
+                  {batches.map((b) => {
+                    const done = !b.otp_locked;
+                    const expired = b.status === 'expired';
+                    return (
+                      <div key={b.id} className={`rounded-lg border p-3 ${done ? 'border-green-600/70 bg-green-900/15' : expired ? 'border-red-700/70 bg-red-900/15' : 'border-slate-600 bg-slate-900/40'}`}>
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                          <div className="text-sm text-slate-300">
+                            <span className="text-slate-400">{b.email_date} · agent {b.agent_name || '?'}</span>
+                            {b.valid_through && <span className="text-slate-500"> · valid {b.valid_through}</span>}
+                            {expired && <span className="text-red-400 font-semibold"> · EXPIRED</span>}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className={`text-xs px-2 py-0.5 rounded ${done ? 'bg-green-600 text-white' : expired ? 'bg-red-700 text-white' : 'bg-slate-700 text-slate-300'}`}>
+                              {b.scanned_count}/{b.total} scanned
+                            </span>
+                            {done ? (
+                              <span className="font-mono font-bold text-green-300 text-lg tracking-wider">🔓 OTP {b.otp}</span>
+                            ) : (
+                              <span className="font-mono text-slate-500 text-lg tracking-wider">🔒 OTP ••••••</span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="mt-2 grid gap-1">
+                          {(b.items || []).map((it, i) => (
+                            <div key={i} className="flex items-center gap-2 text-xs">
+                              <span className={it.scanned ? 'text-green-400' : 'text-slate-500'}>{it.scanned ? '✅' : '⬜'}</span>
+                              <span className="font-mono text-slate-400">{it.tracking_id}</span>
+                              <span className="text-slate-500">{it.order_id}</span>
+                              <span className="text-slate-400 truncate flex-1">{it.product}</span>
+                              {it.reason && <span className="text-amber-500/80">{it.reason}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Scan Form - Mobile Optimized */}
       <Card className="bg-slate-800 border-slate-700 mb-4 md:mb-6">

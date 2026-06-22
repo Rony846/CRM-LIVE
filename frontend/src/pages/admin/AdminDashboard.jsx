@@ -269,6 +269,39 @@ function ExecutiveOverview({ data, onRefresh }) {
   );
 }
 
+/* ===================== Battery Production widget ===================== */
+function BatteryProductionWidget({ token }) {
+  const [d, setD] = useState(null);
+  useEffect(() => {
+    axios.get(`${API}/admin/supervisor-production`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => setD(r.data)).catch(() => {});
+  }, [token]);
+  if (!d) return null;
+  const inr = (n) => '₹' + Number(n || 0).toLocaleString('en-IN');
+  const stat = (label, value, color) => (
+    <div style={{ flex: '1 1 130px', minWidth: 130 }}>
+      <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 28, fontWeight: 800, color: color || '#fff', letterSpacing: '-0.5px' }}>{value}</div>
+    </div>
+  );
+  return (
+    <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 16, padding: 20, marginTop: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#fff', fontWeight: 700, fontSize: 16 }}>
+          <Factory size={16} color="#34d399" /> Battery Production
+        </div>
+        <a href="/admin/supervisor-production" style={{ color: '#22d3ee', fontSize: 13, fontWeight: 600, textDecoration: 'none' }}>View report →</a>
+      </div>
+      <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+        {stat('Built', (d.total_batteries ?? 0).toLocaleString('en-IN'))}
+        {stat('Owed', inr(d.owed), '#cbd5e1')}
+        {stat('Paid (bank)', inr(d.paid_bank), '#34d399')}
+        {stat(d.outstanding < 0 ? 'Overpaid' : 'Outstanding', inr(Math.abs(d.outstanding || 0)), d.outstanding < 0 ? '#60a5fa' : '#fbbf24')}
+      </div>
+    </div>
+  );
+}
+
 /* ===================== Root ===================== */
 export default function AdminDashboard() {
   const { token } = useAuth();
@@ -361,6 +394,7 @@ export default function AdminDashboard() {
           <>
             <ComplianceAlertBanner />
             <ExecutiveOverview data={loading ? null : execData} onRefresh={fetchExecutive} />
+            <BatteryProductionWidget token={token} />
           </>
         )}
 

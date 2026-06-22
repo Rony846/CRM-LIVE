@@ -19,7 +19,8 @@ GSTIN2FIRM = {'07AATCM1213F1ZM': '16abb602-875d-4283-bed9-f8789e688a17',
               '06BCSPR2468A1ZF': '8bf93db6-045f-4aed-988c-352103ed049d',
               '09BPRPR2164D1ZK': 'c715c1b7-aca3-4100-8b00-4f711a729829',
               '07BLDPR5944R3Z5': '76b41510-bb17-42be-887f-abcbfd9f4180',
-              '09BLDPR5944R1Z3': 'a9b65de0-ef07-47d7-b778-2a9f63ef52ab'}
+              '09BLDPR5944R1Z3': 'a9b65de0-ef07-47d7-b778-2a9f63ef52ab',
+              '07BCSPR2468A1ZD': '45f6f868-58f0-4b3b-87d8-9289755fb062'}
 MON = {'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6, 'jul': 7,
        'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12}
 ARGS = [a for a in sys.argv[1:] if not a.startswith('--')]

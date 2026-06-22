@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { toast } from 'sonner';
-import { Eye, EyeOff, Warehouse, Loader2, Users, Smartphone, Mail, ArrowLeft } from 'lucide-react';
+import { Eye, EyeOff, Zap, Loader2, Users, Smartphone, Mail, ArrowLeft } from 'lucide-react';
 import axios from 'axios';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL;
@@ -115,10 +115,16 @@ export default function LoginPage() {
     const routes = {
       customer: '/customer',
       call_support: '/support',
+      supervisor: '/supervisor',
       service_agent: '/service',
+      technician: '/technician',
       accountant: '/accountant',
       dispatcher: '/dispatcher',
-      admin: '/admin'
+      gate: '/gate',
+      admin: '/admin',
+      dealer: '/dealer',
+      ca: '/ca',
+      lawyer: '/legal'
     };
     navigate(routes[user.role] || '/');
   };
@@ -131,22 +137,60 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen flex">
-      {/* Left side - Image */}
-      <div className="hidden lg:flex lg:w-1/2 login-bg relative">
-        <div className="absolute inset-0 bg-slate-900/70" />
-        <div className="relative z-10 flex flex-col justify-center px-12 text-white">
-          <div className="flex items-center gap-3 mb-8">
-            <div className="w-12 h-12 bg-blue-600 rounded-lg flex items-center justify-center">
-              <Warehouse className="w-7 h-7" />
+      {/* Left side - brand hero (intense electric-blue energy) */}
+      <div
+        className="hidden lg:flex lg:w-1/2 relative overflow-hidden"
+        style={{ background: 'linear-gradient(160deg, #050B16 0%, #0A1729 38%, #0B1C30 68%, #102843 100%)' }}
+      >
+        <style>{`
+          @keyframes mgGlow { 0%,100%{opacity:.7} 50%{opacity:1} }
+          @keyframes mgBolt { 0%,100%{transform:translateY(0) rotate(8deg);opacity:.08} 50%{transform:translateY(-14px) rotate(8deg);opacity:.16} }
+          @keyframes mgFlicker { 0%,100%{text-shadow:0 0 22px rgba(56,189,248,.55)} 50%{text-shadow:0 0 40px rgba(56,189,248,.95)} }
+          @keyframes mgPulse { 0%,100%{box-shadow:0 0 22px rgba(56,189,248,.5)} 50%{box-shadow:0 0 46px rgba(56,189,248,.95)} }
+          @keyframes mgSweep { 0%{transform:translateX(-30%)} 100%{transform:translateX(30%)} }
+          .mg-glow{animation:mgGlow 4s ease-in-out infinite}
+          .mg-bolt{animation:mgBolt 6s ease-in-out infinite}
+          .mg-flicker{animation:mgFlicker 3.5s ease-in-out infinite}
+          .mg-pulse{animation:mgPulse 3s ease-in-out infinite}
+          .mg-sweep{animation:mgSweep 9s ease-in-out infinite alternate}
+        `}</style>
+        {/* pulsing energy glows */}
+        <div
+          className="absolute inset-0 mg-glow"
+          style={{ background: 'radial-gradient(circle at 22% 18%, rgba(56,189,248,0.30), transparent 42%), radial-gradient(circle at 85% 88%, rgba(37,99,235,0.34), transparent 50%)' }}
+        />
+        {/* diagonal energy streaks */}
+        <div
+          className="absolute inset-0 mg-sweep"
+          style={{ opacity: 0.16, backgroundImage: 'repeating-linear-gradient(115deg, transparent 0px, transparent 40px, rgba(56,189,248,0.5) 41px, transparent 43px)' }}
+        />
+        {/* giant glowing bolt watermark */}
+        <Zap className="absolute mg-bolt" style={{ right: -40, top: '6%', width: 340, height: 340, color: '#38BDF8' }} fill="currentColor" />
+        <div className="relative z-10 flex flex-col justify-center px-14 text-white w-full">
+          <div className="flex items-center gap-3 mb-12">
+            <div
+              className="w-12 h-12 rounded-xl flex items-center justify-center mg-pulse"
+              style={{ background: 'linear-gradient(135deg, #38BDF8, #2563EB)' }}
+            >
+              <Zap className="w-7 h-7 text-white" fill="white" />
             </div>
-            <span className="text-3xl font-bold font-['Barlow_Condensed']">MuscleGrid CRM</span>
+            <span className="text-2xl font-extrabold tracking-tight text-white">MuscleGrid</span>
           </div>
-          <h1 className="text-4xl font-bold font-['Barlow_Condensed'] mb-4">
-            Customer Service & Logistics Platform
+          <h1 className="text-white text-5xl font-extrabold font-['Barlow_Condensed'] leading-[1.05] tracking-tight mb-5">
+            <span className="text-white">Industrial Power.</span><br />
+            <span className="mg-flicker" style={{ color: '#38BDF8' }}>Engineered for India.</span>
           </h1>
-          <p className="text-lg text-slate-300 max-w-md">
-            Manage warranties, support tickets, and dispatch operations for your inverter, battery, and stabilizer products.
+          <p className="text-lg text-slate-300 max-w-md mb-9">
+            Solar · Lithium · Stabilizer · Backup — warranties, support and dispatch, all in one command center.
           </p>
+          <div className="flex flex-wrap items-center gap-2.5">
+            {['BIS Certified', 'ISO 9001:2015', 'CE Marked'].map((b) => (
+              <span key={b} className="text-xs font-semibold px-3 py-1.5 rounded-full border border-[#38BDF8]/25 text-slate-100 bg-[#38BDF8]/5">
+                {b}
+              </span>
+            ))}
+          </div>
+          <p className="mt-12 text-sm tracking-[0.15em] text-slate-400 font-medium uppercase">Consistency Through You</p>
         </div>
       </div>
 
@@ -155,8 +199,8 @@ export default function LoginPage() {
         <Card className="w-full max-w-md">
           <CardHeader className="text-center">
             <div className="flex items-center justify-center gap-2 mb-4 lg:hidden">
-              <div className="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center">
-                <Warehouse className="w-6 h-6 text-white" />
+              <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #38BDF8, #2563EB)' }}>
+                <Zap className="w-6 h-6 text-white" fill="white" />
               </div>
               <span className="text-xl font-bold font-['Barlow_Condensed']">MuscleGrid</span>
             </div>
@@ -169,7 +213,7 @@ export default function LoginPage() {
               <Button
                 type="button"
                 variant={loginMode === 'email' ? 'default' : 'outline'}
-                className={`flex-1 ${loginMode === 'email' ? 'bg-blue-600 hover:bg-blue-700' : ''}`}
+                className={`flex-1 ${loginMode === 'email' ? 'bg-[#0B1C30] hover:bg-[#16304f]' : ''}`}
                 onClick={() => { setLoginMode('email'); resetOTPFlow(); }}
               >
                 <Mail className="w-4 h-4 mr-2" />
@@ -178,7 +222,7 @@ export default function LoginPage() {
               <Button
                 type="button"
                 variant={loginMode === 'otp' ? 'default' : 'outline'}
-                className={`flex-1 ${loginMode === 'otp' ? 'bg-green-600 hover:bg-green-700' : ''}`}
+                className={`flex-1 ${loginMode === 'otp' ? 'bg-[#0B1C30] hover:bg-[#16304f]' : ''}`}
                 onClick={() => setLoginMode('otp')}
               >
                 <Smartphone className="w-4 h-4 mr-2" />
@@ -225,14 +269,14 @@ export default function LoginPage() {
                 </div>
 
                 <div className="text-right -mt-1">
-                  <Link to="/forgot-password" className="text-sm text-blue-600 hover:underline">
+                  <Link to="/forgot-password" className="text-sm text-[#2563EB] hover:underline">
                     Forgot password?
                   </Link>
                 </div>
 
                 <Button
                   type="submit"
-                  className="w-full bg-blue-600 hover:bg-blue-700"
+                  className="w-full bg-[#0B1C30] hover:bg-[#16304f]"
                   disabled={loading}
                   data-testid="login-submit-btn"
                 >
@@ -275,7 +319,7 @@ export default function LoginPage() {
 
                 <Button 
                   type="submit" 
-                  className="w-full bg-green-600 hover:bg-green-700" 
+                  className="w-full bg-[#0B1C30] hover:bg-[#16304f]" 
                   disabled={loading || phone.length !== 10}
                   data-testid="send-otp-btn"
                 >
@@ -306,7 +350,7 @@ export default function LoginPage() {
                   Change number
                 </button>
 
-                <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-800">
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-800">
                   OTP sent to <span className="font-semibold">+91 ******{phone.slice(-4)}</span>
                 </div>
 
@@ -328,7 +372,7 @@ export default function LoginPage() {
 
                 <Button 
                   type="submit" 
-                  className="w-full bg-green-600 hover:bg-green-700" 
+                  className="w-full bg-[#0B1C30] hover:bg-[#16304f]" 
                   disabled={loading || otp.length !== 6}
                   data-testid="verify-otp-btn"
                 >
@@ -347,7 +391,7 @@ export default function LoginPage() {
                     type="button"
                     onClick={handleResendOTP}
                     disabled={countdown > 0 || loading}
-                    className={`text-sm ${countdown > 0 ? 'text-slate-400' : 'text-green-600 hover:underline'}`}
+                    className={`text-sm ${countdown > 0 ? 'text-slate-400' : 'text-[#2563EB] hover:underline'}`}
                   >
                     {countdown > 0 ? `Resend OTP in ${countdown}s` : 'Resend OTP'}
                   </button>
@@ -358,7 +402,7 @@ export default function LoginPage() {
             <div className="mt-6 text-center">
               <p className="text-sm text-slate-600">
                 New customer?{' '}
-                <Link to="/register" className="text-blue-600 hover:underline font-medium">
+                <Link to="/register" className="text-[#2563EB] hover:underline font-medium">
                   Create an account
                 </Link>
               </p>
@@ -369,7 +413,7 @@ export default function LoginPage() {
               <Link to="/partners">
                 <Button 
                   variant="outline" 
-                  className="w-full border-orange-500 text-orange-600 hover:bg-orange-50 hover:text-orange-700"
+                  className="w-full border-[#0B1C30]/25 text-[#0B1C30] hover:bg-slate-50 hover:text-[#0B1C30]"
                 >
                   <Users className="w-4 h-4 mr-2" />
                   Dealer / Partner Portal

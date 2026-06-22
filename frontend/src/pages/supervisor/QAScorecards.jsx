@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
+import TicketSearchBar from '@/components/TicketSearchBar';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -55,6 +56,7 @@ export default function QAScorecards() {
 
   return (
     <DashboardLayout title="QA Scorecards">
+      <TicketSearchBar />
       <div className="space-y-4">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <p className="text-sm text-slate-500">

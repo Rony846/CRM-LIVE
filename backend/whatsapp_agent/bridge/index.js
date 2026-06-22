@@ -32,7 +32,11 @@ const ALLOWLIST_RAW = process.env.WHATSAPP_AGENT_ALLOWLIST || '';
 const ALLOWLIST = new Set(
     ALLOWLIST_RAW.split(',').map(s => s.replace(/\D/g, '')).filter(s => s.length >= 10)
 );
-console.log(`[whitelist] ${ALLOWLIST.size} sender(s) allowed: ${[...ALLOWLIST].map(s => s.slice(0,5)+'…').join(', ')}`);
+console.log(`[whitelist] ${ALLOWLIST.size} sender(s) allowed to REPLY: ${[...ALLOWLIST].map(s => s.slice(0,5)+'…').join(', ')}`);
+// Observe-all: when true, forward EVERY message to the backend so Pratibha reads/logs all chatter,
+// but the backend only returns a reply for allowlisted senders (so we still reply to those two only).
+const OBSERVE_ALL = String(process.env.WHATSAPP_OBSERVE_ALL || '').toLowerCase() === 'true';
+console.log(`[observe-all] ${OBSERVE_ALL ? 'ON — reads everyone, replies only to allowlist' : 'OFF — non-allowlisted dropped'}`);
 
 /** Normalise a WhatsApp `from` (e.g. `919560377363@c.us`, `12345@lid`)
  *  to the digits-only form used in the allowlist. Returns '' if unknown. */
@@ -66,19 +70,22 @@ async function resolvePhone(message) {
  *  Returns { allowed: bool, resolved: string|null } so callers can log the
  *  actual phone they matched against. */
 async function checkAllowed(message) {
-    const raw = senderDigits(message.from);
+    if ((message.from || '').includes('@broadcast')) {
+        return { allowed: false, resolved: null, isGroup: false };
+    }
+    const isGroup = (message.from || '').includes('@g.us');
+    // In a GROUP the actual sender is message.author (a participant); in a DM it's message.from.
+    const principal = isGroup ? (message.author || '') : message.from;
+    const raw = senderDigits(principal);
     if (raw && ALLOWLIST.has(raw)) {
-        return { allowed: true, resolved: raw };
+        return { allowed: true, resolved: raw, isGroup };
     }
-    // Don't bother resolving for broadcast statuses
-    if ((message.from || '').includes('@broadcast') || (message.from || '').includes('@g.us')) {
-        return { allowed: false, resolved: null };
-    }
+    // Resolve the sender's real number via their contact (covers @lid, in groups too).
     const resolved = await resolvePhone(message);
     if (resolved && ALLOWLIST.has(resolved)) {
-        return { allowed: true, resolved };
+        return { allowed: true, resolved, isGroup };
     }
-    return { allowed: false, resolved };
+    return { allowed: false, resolved, isGroup };
 }
 
 // State
@@ -86,6 +93,41 @@ let client = null;
 let qrCodeData = null;
 let connectionState = 'disconnected';
 let lastError = null;
+
+/** Map the canonical id the backend uses (e.g. `192157440847938@c.us` or bare digits)
+ *  to the EXACT chat id WhatsApp delivered the message on (often `<hash>@lid`).
+ *  Sending to a fabricated `@c.us` for an @lid contact throws "No LID for user";
+ *  reusing the real delivered chat id is the only reliable way to message them back.
+ *  Persisted to disk so it survives bridge restarts. */
+const CHATMAP_PATH = path.join(SESSION_PATH, 'chat-id-map.json');
+const chatIdMap = new Map();
+try {
+    const saved = JSON.parse(fs.readFileSync(CHATMAP_PATH, 'utf8'));
+    for (const [k, v] of Object.entries(saved)) chatIdMap.set(k, v);
+    console.log(`Loaded ${chatIdMap.size} chat-id mappings`);
+} catch (e) { /* first run / no file yet */ }
+
+function rememberChatId(canonical, chatId) {
+    if (!chatId) return;
+    const digits = String(chatId).split('@')[0].replace(/\D/g, '');
+    let changed = false;
+    for (const key of [chatId, canonical, digits, digits ? digits + '@c.us' : null]) {
+        if (key && chatIdMap.get(key) !== chatId) { chatIdMap.set(key, chatId); changed = true; }
+    }
+    if (changed) {
+        try { fs.writeFileSync(CHATMAP_PATH, JSON.stringify(Object.fromEntries(chatIdMap))); } catch (e) {}
+    }
+}
+
+/** Resolve whatever the backend passes as `to` to the real delivered chat id when we know it. */
+function resolveChatId(to) {
+    if (!to) return to;
+    if (chatIdMap.has(to)) return chatIdMap.get(to);
+    const digits = String(to).split('@')[0].replace(/\D/g, '');
+    if (digits && chatIdMap.has(digits)) return chatIdMap.get(digits);
+    if (digits && chatIdMap.has(digits + '@c.us')) return chatIdMap.get(digits + '@c.us');
+    return to;
+}
 
 // Express app for API
 const app = express();
@@ -100,10 +142,18 @@ function initializeClient() {
     // Puppeteer auto-downloads Chromium to ~/.cache/puppeteer on `npm install`,
     // so leaving executablePath undefined lets Puppeteer pick the right one.
     const PUPPETEER_EXECUTABLE = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
+    // Pin a stable WhatsApp Web build. Without this, the lib falls back to whatever WA serves
+    // "latest", and a newer-than-the-library build leaves it stuck at `authenticated` (ready never
+    // fires). This version is close to what whatsapp-web.js 1.34.7 targets. Override via env if needed.
+    const WA_WEB_VERSION = process.env.WA_WEB_VERSION || '2.3000.1036439757-alpha';
     client = new Client({
         authStrategy: new LocalAuth({
             dataPath: SESSION_PATH
         }),
+        webVersionCache: {
+            type: 'remote',
+            remotePath: `https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/${WA_WEB_VERSION}.html`,
+        },
         puppeteer: {
             headless: true,
             ...(PUPPETEER_EXECUTABLE ? { executablePath: PUPPETEER_EXECUTABLE } : {}),
@@ -175,16 +225,23 @@ function initializeClient() {
         // backend call, no DB write, no token spend. Crucially, this also
         // resolves `@lid` anonymous IDs to real phone numbers so the agent
         // works with strangers / unsaved contacts.
-        const { allowed, resolved } = await checkAllowed(message);
+        const { allowed, resolved, isGroup } = await checkAllowed(message);
         if (!allowed) {
-            console.log(`[whitelist] drop: ${message.from}${resolved ? ` (resolved=${resolved})` : ''}`);
-            return;
+            if (!OBSERVE_ALL) {
+                console.log(`[whitelist] drop: ${message.from}${resolved ? ` (resolved=${resolved})` : ''}`);
+                return;
+            }
+            // Observe-all: forward for reading/logging, but the backend won't return a reply for a
+            // non-allowlisted sender, so we never message them back.
+            console.log(`[observe] read-only (non-allowlisted): ${message.from}`);
         }
-        // `resolvedFrom` is the digits we matched in the allowlist — use that
-        // as the canonical `from_number` we send to the backend, so the agent
-        // sees a stable phone number across @lid / @c.us reformulations.
-        const resolvedFrom = (resolved || senderDigits(message.from)) + '@c.us';
-        console.log(`Message from ${message.from} (resolved=${resolvedFrom}): ${message.body}`);
+        // The PRINCIPAL is who actually spoke: the group participant (message.author) in a group,
+        // else the DM contact. `resolvedFrom` is their canonical id for the backend allowlist/state.
+        const principal = isGroup ? (message.author || message.from) : message.from;
+        const resolvedFrom = (resolved || senderDigits(principal)) + '@c.us';
+        // Remember the chat id to reply on. For a group that's the group JID itself.
+        if (!isGroup) rememberChatId(resolvedFrom, message.from);
+        console.log(`Message from ${message.from}${isGroup ? ` (group, author ${principal})` : ''} (resolved=${resolvedFrom}): ${message.body}`);
 
         try {
             // Prepare message data
@@ -192,6 +249,9 @@ function initializeClient() {
                 message_id: message.id._serialized,
                 from_number: resolvedFrom,
                 from_raw: message.from,  // preserved for audit
+                chat_id: message.from,           // group JID or DM id — where a reply goes
+                author: message.author || null,  // group participant who spoke (null for DMs)
+                is_group: isGroup,
                 text: message.body,
                 timestamp: new Date(message.timestamp * 1000).toISOString(),
                 has_media: message.hasMedia,
@@ -286,14 +346,15 @@ app.post('/send', async (req, res) => {
         }
 
         let sentMessage;
-        
+        const target = resolveChatId(to);  // use the real delivered chat id for @lid contacts
+
         if (media) {
             // Send with media
             const mediaObj = new MessageMedia(media.mimetype, media.data, media.filename);
-            sentMessage = await client.sendMessage(to, mediaObj, { caption: message });
+            sentMessage = await client.sendMessage(target, mediaObj, { caption: message });
         } else {
             // Send text only
-            sentMessage = await client.sendMessage(to, message);
+            sentMessage = await client.sendMessage(target, message);
         }
 
         res.json({ 

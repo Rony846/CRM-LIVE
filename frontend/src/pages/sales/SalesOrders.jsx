@@ -10,10 +10,12 @@ import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import {
   Package, ShoppingCart, Wrench, Store, Search, RefreshCw, Loader2,
   IndianRupee, CheckCircle2, Clock, XCircle, ExternalLink, Eye,
-  TrendingUp, AlertCircle, Filter
+  TrendingUp, AlertCircle, Filter, Gavel
 } from 'lucide-react';
 
 const formatCurrency = (amount) => {
@@ -52,6 +54,49 @@ export default function SalesOrders() {
   const [paymentFilter, setPaymentFilter] = useState('all');
   
   const headers = { Authorization: `Bearer ${token}` };
+
+  // Legal-flag marking
+  const [legalFor, setLegalFor] = useState(null);
+  const [legalReason, setLegalReason] = useState('');
+  const [legalAmount, setLegalAmount] = useState('');
+  const [legalNote, setLegalNote] = useState('');
+  const [legalSaving, setLegalSaving] = useState(false);
+
+  const openLegal = (order) => {
+    setLegalFor(order);
+    setLegalReason(order.legal_reason || '');
+    setLegalAmount(order.legal_claim_amount ?? order.total_amount ?? '');
+    setLegalNote(order.legal_note || '');
+  };
+
+  const submitLegal = async () => {
+    if (!legalReason.trim()) { toast.error('Enter a reason'); return; }
+    setLegalSaving(true);
+    try {
+      await axios.post(`${API}/sales-orders/${legalFor.id}/mark-legal`, {
+        reason: legalReason.trim(),
+        claim_amount: legalAmount === '' ? null : Number(legalAmount),
+        note: legalNote.trim() || null,
+      }, { headers });
+      toast.success('Flagged for legal notice — visible in the Legal Portal');
+      setLegalFor(null);
+      fetchOrders();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Failed to flag');
+    } finally {
+      setLegalSaving(false);
+    }
+  };
+
+  const unmarkLegal = async (order) => {
+    try {
+      await axios.post(`${API}/sales-orders/${order.id}/unmark-legal`, {}, { headers });
+      toast.success('Legal flag removed');
+      fetchOrders();
+    } catch (e) {
+      toast.error('Failed to remove flag');
+    }
+  };
 
   const fetchOrders = useCallback(async () => {
     try {
@@ -366,6 +411,7 @@ export default function SalesOrders() {
                         <TableHead className="text-right">Amount</TableHead>
                         <TableHead>Payment</TableHead>
                         <TableHead>Status</TableHead>
+                        <TableHead className="text-right">Legal</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -405,6 +451,22 @@ export default function SalesOrders() {
                               {order.dispatch_status?.replace('_', ' ') || 'pending'}
                             </Badge>
                           </TableCell>
+                          <TableCell className="text-right">
+                            {order.legal_flag ? (
+                              <div className="flex items-center justify-end gap-1">
+                                <Badge className="bg-red-100 text-red-800">Legal</Badge>
+                                <Button variant="ghost" size="sm" className="h-7 w-7 p-0"
+                                        title="Remove legal flag" onClick={() => unmarkLegal(order)}>
+                                  <XCircle className="w-4 h-4 text-slate-400" />
+                                </Button>
+                              </div>
+                            ) : (
+                              <Button variant="ghost" size="sm" className="h-7 px-2"
+                                      title="Mark for legal notice" onClick={() => openLegal(order)}>
+                                <Gavel className="w-4 h-4 text-slate-400" />
+                              </Button>
+                            )}
+                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -415,6 +477,54 @@ export default function SalesOrders() {
           </Card>
         </Tabs>
       </div>
+
+      {/* Mark-for-legal dialog */}
+      <Dialog open={!!legalFor} onOpenChange={(v) => !v && setLegalFor(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Gavel className="w-5 h-5" /> Mark order for legal notice
+            </DialogTitle>
+          </DialogHeader>
+          {legalFor && (
+            <div className="space-y-3 text-sm">
+              <p className="text-muted-foreground">
+                {legalFor.customer_name} · <span className="font-mono">{legalFor.order_number}</span> ·{' '}
+                {formatCurrency(legalFor.total_amount)} · {legalFor.phone}
+              </p>
+              <div>
+                <label className="text-xs text-muted-foreground">Reason for legal notice *</label>
+                <Input value={legalReason} onChange={(e) => setLegalReason(e.target.value)}
+                       placeholder="e.g. Non-payment of dues / Disputed / Goods not returned" />
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {['Non-payment of dues', 'Disputed amount', 'Goods not returned', 'Cheque bounce', 'Fraud'].map((r) => (
+                    <button key={r} type="button" onClick={() => setLegalReason(r)}
+                            className="text-[11px] px-2 py-0.5 rounded border border-border text-muted-foreground hover:bg-muted">
+                      {r}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground">Claim amount (₹)</label>
+                <Input type="number" value={legalAmount} onChange={(e) => setLegalAmount(e.target.value)}
+                       placeholder="Amount being claimed" />
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground">Note for the lawyer (optional)</label>
+                <Textarea value={legalNote} onChange={(e) => setLegalNote(e.target.value)} rows={3}
+                          placeholder="Any context — history, prior reminders, agreement terms…" />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLegalFor(null)}>Cancel</Button>
+            <Button onClick={submitLegal} disabled={legalSaving}>
+              {legalSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Flag for legal'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </DashboardLayout>
   );
 }

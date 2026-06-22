@@ -75,7 +75,11 @@ export default function FinanceDashboard() {
   const [dashboard, setDashboard] = useState(null);
   const [firms, setFirms] = useState([]);
   const [selectedFirm, setSelectedFirm] = useState('all');
-  const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7));
+  const [selectedMonth, setSelectedMonth] = useState(() => {
+    // default to the PREVIOUS month (the GST period typically being filed)
+    const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1);
+    return d.toISOString().slice(0, 7);
+  });
   const [firmSummary, setFirmSummary] = useState(null);
   const [inventoryValuation, setInventoryValuation] = useState(null);
   const [recommendations, setRecommendations] = useState([]);
@@ -116,11 +120,13 @@ export default function FinanceDashboard() {
   const { token } = useAuth();
 
   useEffect(() => {
-    if (token) {
-      fetchDashboard();
-      fetchFirms();
-    }
+    if (token) fetchFirms();
   }, [token]);
+
+  // Re-fetch the dashboard whenever the selected GST period changes.
+  useEffect(() => {
+    if (token) fetchDashboard(selectedMonth);
+  }, [token, selectedMonth]);
 
   useEffect(() => {
     if (activeTab === 'inventory') {
@@ -138,9 +144,9 @@ export default function FinanceDashboard() {
     }
   }, [selectedFirm, selectedMonth]);
 
-  const fetchDashboard = async () => {
+  const fetchDashboard = async (mth = selectedMonth) => {
     try {
-      const response = await axios.get(`${API}/finance/dashboard`, {
+      const response = await axios.get(`${API}/finance/dashboard?month=${mth}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setDashboard(response.data);
@@ -319,7 +325,19 @@ export default function FinanceDashboard() {
               <p className="mt-1 text-sm text-muted-foreground">Firm-wise financial overview and GST planning dashboard</p>
             </div>
           </div>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
+              <label htmlFor="gst-period" className="text-xs font-medium text-muted-foreground">GST period</label>
+              <input
+                id="gst-period"
+                type="month"
+                value={selectedMonth}
+                max={new Date().toISOString().slice(0, 7)}
+                onChange={(e) => e.target.value && setSelectedMonth(e.target.value)}
+                className="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground"
+                data-testid="dashboard-month-picker"
+              />
+            </div>
             <Button variant="outline" onClick={() => setItcDialogOpen(true)} data-testid="enter-itc-btn">
               <Calculator className="w-4 h-4 mr-2" />
               Enter ITC Balance

@@ -14,7 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import {
   Package, Clock, AlertTriangle, CheckCircle, XCircle, RefreshCw,
-  Plus, History, Loader2, Search, ArrowRight, PackageCheck, AlertCircle, Phone, Trash2, Pencil, FileUp, IndianRupee
+  Plus, History, Loader2, Search, ArrowRight, PackageCheck, AlertCircle, Phone, Trash2, Pencil, FileUp, IndianRupee, Truck
 } from 'lucide-react';
 
 export default function PendingFulfillment() {
@@ -31,6 +31,7 @@ export default function PendingFulfillment() {
   const [historyOpen, setHistoryOpen] = useState(false);
 
   const [selectedEntry, setSelectedEntry] = useState(null);
+  const [bigshipLoadingId, setBigshipLoadingId] = useState(null);
   const [activeTab, setActiveTab] = useState('awaiting');
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -434,6 +435,38 @@ export default function PendingFulfillment() {
       fetchData();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to mark as ready');
+    }
+  };
+
+  // One-click Bigship: create the Delhivery shipment from this record's data + get the AWB.
+  // Duplicate-safe on the backend (idempotent + dedup guard); a re-click never re-books.
+  const handleBigshipLabel = async (entry) => {
+    if (entry.awb_number) {
+      toast.info(`Already booked — AWB ${entry.awb_number}`);
+      return;
+    }
+    const ok = window.confirm(
+      `Book a Delhivery shipment via Bigship for order ${entry.order_id}?\n\n` +
+      `This creates a REAL parcel and generates the AWB using the customer/address/invoice ` +
+      `already on this record. Re-clicking is safe — it will not re-book.`
+    );
+    if (!ok) return;
+    setBigshipLoadingId(entry.id);
+    try {
+      const res = await axios.post(`${API}/pending-fulfillment/${entry.id}/bigship-label`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const d = res.data || {};
+      if (d.already_booked) {
+        toast.success(`Already booked — AWB ${d.awb_number}`);
+      } else {
+        toast.success(`${d.courier || 'Delhivery'} booked — AWB ${d.awb_number}. Tracking set; proceed with dispatch.`);
+      }
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to book Bigship shipment');
+    } finally {
+      setBigshipLoadingId(null);
     }
   };
 
@@ -848,6 +881,30 @@ export default function PendingFulfillment() {
                                     <span className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-emerald-500/15 text-emerald-500 ring-1 ring-emerald-500/25 inline-flex items-center gap-1">
                                       <CheckCircle className="w-3 h-3" />
                                       Ready
+                                    </span>
+                                  )}
+                                  {/* One-click Bigship: generate the Delhivery AWB + label from this record */}
+                                  {!entry.awb_number ? (
+                                    <Button
+                                      size="sm"
+                                      className="bg-sky-600/80 hover:bg-sky-600 text-white font-mono text-[10px] uppercase tracking-wide"
+                                      onClick={() => handleBigshipLabel(entry)}
+                                      disabled={bigshipLoadingId === entry.id}
+                                      data-testid={`bigship-label-btn-${entry.id}`}
+                                      title="Create Delhivery label + AWB via Bigship (no Bigship-panel detour)"
+                                    >
+                                      {bigshipLoadingId === entry.id
+                                        ? <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                                        : <Truck className="w-3 h-3 mr-1" />}
+                                      Label
+                                    </Button>
+                                  ) : (
+                                    <span
+                                      className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wide bg-sky-500/15 text-sky-400 ring-1 ring-sky-500/25 inline-flex items-center gap-1"
+                                      title={`Bigship AWB ${entry.awb_number}`}
+                                    >
+                                      <Truck className="w-3 h-3" />
+                                      {entry.awb_number}
                                     </span>
                                   )}
                                   <Button

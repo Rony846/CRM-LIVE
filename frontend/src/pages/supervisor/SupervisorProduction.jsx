@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
+import TicketSearchBar from '@/components/TicketSearchBar';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -233,6 +234,7 @@ export default function SupervisorProduction() {
 
   return (
     <DashboardLayout>
+      <TicketSearchBar />
       <div className="space-y-6">
         {/* Header */}
         <div>

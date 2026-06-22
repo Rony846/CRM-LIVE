@@ -95,6 +95,9 @@ class WhatsAppMessage:
     media_url: Optional[str] = None
     media_data: Optional[bytes] = None
     quoted_message: Optional[str] = None
+    chat_id: Optional[str] = None     # group JID or DM id — where a reply is delivered
+    author: Optional[str] = None      # group participant who spoke (None for DMs)
+    is_group: bool = False
 
 
 @dataclass
@@ -136,6 +139,22 @@ class CRMToolRegistry:
     def _register_tools(self) -> Dict[str, Dict]:
         """Register all CRM tools with their descriptions"""
         return {
+            # Support tickets — look up, follow up with staff, set personal reminders
+            "lookup_ticket": {
+                "description": "Look up a support ticket by its number (e.g. MG-R-20260508-51336) and return full details.",
+                "parameters": {"ticket_number": "The ticket number"},
+                "function": self._lookup_ticket,
+            },
+            "followup_ticket": {
+                "description": "Email a staff member (Jaspreet/Harleen/Aman/Angad) for an update on a ticket, and chase them every 30 minutes until they reply; their reply is relayed back here. Use when the manager asks to follow up on a ticket with someone.",
+                "parameters": {"ticket_number": "The ticket number", "person": "Staff first name (e.g. Jaspreet)", "note": "Optional extra note"},
+                "function": self._followup_ticket,
+            },
+            "remind_me": {
+                "description": "Remember something for the user and remind them on WhatsApp later. Use when they say 'remind me' / 'isko yaad rakhna'.",
+                "parameters": {"note": "What to remind about", "remind_in_minutes": "Optional minutes from now"},
+                "function": self._remind_me,
+            },
             # Party/Ledger Management
             "search_party": {
                 "description": "Search for a party/customer/supplier by name or phone",
@@ -522,13 +541,98 @@ class CRMToolRegistry:
         """Execute a tool and return result"""
         if tool_name not in self.tools:
             return {"success": False, "error": f"Unknown tool: {tool_name}"}
-        
+
         try:
             result = await self.tools[tool_name]["function"](**parameters)
             return {"success": True, "data": result}
         except Exception as e:
             logger.error(f"Tool {tool_name} error: {e}")
             return {"success": False, "error": str(e)}
+
+    # ---- Ticket lookup + staff follow-up + personal reminders (WhatsApp-driven) ----
+    def _resolve_staff_email(self, person: str):
+        import os
+        person = (person or "").strip().lower()
+        assignees = [a.strip().lower() for a in os.environ.get(
+            "EMAIL_AGENT_ASSIGNEES",
+            "jaspreet@musclegrid.in,harleen@musclegrid.in,aman@musclegrid.in,angad@musclegrid.in").split(",") if a.strip()]
+        for a in assignees:
+            if person and person.split()[0] in a:
+                return a
+        return person if "@" in person else None
+
+    async def _lookup_ticket(self, ticket_number: str = "", **kw) -> Dict:
+        """Look up a support ticket by its number and return full details."""
+        tn = (ticket_number or kw.get("ticket") or kw.get("id") or kw.get("query") or "").strip()
+        if not tn:
+            return {"error": "Please give me the ticket number (e.g. MG-R-20260508-51336)."}
+        t = await self.db.tickets.find_one({"ticket_number": {"$regex": re.escape(tn), "$options": "i"}}, {"_id": 0})
+        if not t:
+            return {"found": False, "message": f"No ticket found for '{tn}'."}
+        return {"found": True, "id": t.get("id"), "ticket_number": t.get("ticket_number"),
+                "status": t.get("status"), "customer_name": t.get("customer_name"),
+                "customer_phone": t.get("customer_phone"), "product": t.get("product_name"),
+                "issue": (t.get("issue_description") or "")[:400], "assigned_to_name": t.get("assigned_to_name"),
+                "sla_breached": t.get("sla_breached"), "created_at": str(t.get("created_at"))}
+
+    async def _followup_ticket(self, ticket_number: str = "", person: str = "", note: str = "", **kw) -> Dict:
+        """Email a staff member (e.g. Jaspreet) for an update on a ticket, and start chasing them
+        every 30 min until they reply — then relay the reply back to the requester on WhatsApp."""
+        from utils import email_agent
+        import uuid
+        from datetime import datetime, timezone
+        tn = (ticket_number or kw.get("ticket") or "").strip()
+        staff = self._resolve_staff_email(person or kw.get("staff") or kw.get("assignee") or "")
+        if not tn:
+            return {"error": "Which ticket? Give me the ticket number."}
+        if not staff:
+            return {"error": f"Couldn't figure out who '{person}' is — use Jaspreet / Harleen / Aman / Angad."}
+        t = await self.db.tickets.find_one({"ticket_number": {"$regex": re.escape(tn), "$options": "i"}}, {"_id": 0})
+        if not t:
+            return {"found": False, "message": f"No ticket found for '{tn}'."}
+        who = staff.split("@")[0].capitalize()
+        subj = f"Update needed: {t.get('ticket_number')} — {(t.get('issue_description') or '')[:45]}"
+        body = (f"Hi {who},\n\n{email_agent.cfg().get('triage_manager_name', 'Shweta')} has asked for an update on this ticket.\n\n"
+                f"Ticket : {t.get('ticket_number')} [{t.get('status')}]\n"
+                f"Customer: {t.get('customer_name')} {t.get('customer_phone') or ''}\n"
+                f"Product : {t.get('product_name') or '-'}\n"
+                f"Issue   : {(t.get('issue_description') or '')[:300]}\n"
+                + (f"\nNote: {note}\n" if note else "")
+                + "\nPlease reply with the current status / update — I'll keep following up till then.\n\nPratibha, MuscleGrid")
+        try:
+            mid = await email_agent.send_reply_all([staff], [email_agent.cfg().get("triage_manager")], subj, body, add_standing=False)
+        except Exception as e:
+            return {"error": f"Couldn't send the email: {e}"}
+        now = datetime.now(timezone.utc).isoformat()
+        ctx = getattr(self, "ctx", {}) or {}
+        await self.db.pratibha_followups.insert_one({
+            "id": str(uuid.uuid4()), "sent_message_id": mid or "", "message_ids": [mid] if mid else [],
+            "subject": subj, "to": [staff], "cc": [], "internal_recipients": [staff], "references": "",
+            "context": f"Ticket {t.get('ticket_number')} — update requested via WhatsApp", "created_at": now,
+            "last_outbound_at": now, "last_reply_at": None, "reminder_count": 0, "status": "open",
+            "cadence_minutes": 30, "relay_wa": ctx.get("from_number"), "wa_ticket": t.get("ticket_number")})
+        return {"success": True, "emailed": who, "ticket": t.get("ticket_number"),
+                "message": f"Emailed {who} for an update on {t.get('ticket_number')}. I'll chase every 30 min and tell you the moment they reply."}
+
+    async def _remind_me(self, note: str = "", remind_in_minutes=None, when: str = "", **kw) -> Dict:
+        """Remember something for the requester and remind them on WhatsApp later."""
+        import uuid
+        from datetime import datetime, timezone, timedelta
+        ctx = getattr(self, "ctx", {}) or {}
+        wa = ctx.get("from_number")
+        note = (note or kw.get("text") or "").strip()
+        if not (note and wa):
+            return {"error": "What should I remind you about?"}
+        mins = None
+        try:
+            mins = int(remind_in_minutes) if remind_in_minutes not in (None, "") else None
+        except Exception:
+            mins = None
+        due = (datetime.now(timezone.utc) + timedelta(minutes=mins or 1440)).isoformat()
+        await self.db.pratibha_wa_reminders.insert_one({
+            "id": str(uuid.uuid4()), "to": wa, "note": note[:500], "due_at": due,
+            "status": "open", "created_at": datetime.now(timezone.utc).isoformat()})
+        return {"success": True, "message": f"Noted ✅ I'll remind you: \"{note[:80]}\"."}
     
     # ==================== Tool Implementations ====================
     
@@ -1705,13 +1809,29 @@ class WhatsAppAIBrain:
         caller (the /api/whatsapp/message endpoint) MUST check for this sentinel
         and NOT send any reply back — no auth prompt, no error message, nothing.
         """
-        # ===== WHITELIST GATE (defense-in-depth — bridge already filters) =====
+        # ===== OBSERVE ALL — Pratibha reads every message, even from non-allowlisted numbers =====
+        try:
+            await self.db.whatsapp_observed.insert_one({
+                "from_number": message.from_number, "text": (message.text or "")[:2000],
+                "has_media": bool(getattr(message, "has_media", False)),
+                "message_id": getattr(message, "message_id", ""),
+                "reply_allowed": self._is_allowed(message.from_number),
+                "timestamp": datetime.now(timezone.utc).isoformat()})
+        except Exception:
+            pass
+
+        # ===== REPLY GATE — only reply to allowlisted senders (Shweta + Pawan) =====
         if not self._is_allowed(message.from_number):
-            logger.info(f"[whitelist] drop: {message.from_number}")
+            logger.info(f"[reply-gate] observed, not replying (non-allowlisted): {message.from_number}")
             return self.SILENT_DROP
 
-        context = await self.get_or_create_context(message.from_number)
+        # In a group, key the conversation by the GROUP so Pawan + Shweta share ONE thread
+        # (continuity), not two per-author threads.
+        conv_key = message.chat_id if (getattr(message, "is_group", False) and message.chat_id) else message.from_number
+        context = await self.get_or_create_context(conv_key)
         user_text = (message.text or "").strip()
+        # Make the sender available to tools (e.g. followup_ticket relays back here; remind_me targets this number).
+        self.tools.ctx = {"from_number": message.from_number, "chat_id": message.chat_id, "is_group": getattr(message, "is_group", False)}
 
         # ---- Allow-listed senders are auto-authenticated on first message ----
         # The Rony846 code is preserved as a fallback for any sender we explicitly
@@ -1794,6 +1914,26 @@ class WhatsAppAIBrain:
         cached_system = [
             {"type": "text", "text": static_prompt, "cache_control": {"type": "ephemeral"}},
         ]
+        # Share the email brain's standing policies/memory (CEO authority, service policy, etc.) —
+        # fetched fresh each turn (not cached) so new policies apply immediately.
+        policies_block = await self._pratibha_policies_text()
+        if policies_block:
+            cached_system.append({"type": "text", "text": policies_block})
+        # Per-sender identity (fresh each turn, not cached) — so Pratibha addresses
+        # the founder (Pawan) as "sir", not the default "mam". His WhatsApp may arrive
+        # as a hidden @lid, so match against his real number AND his lid form.
+        try:
+            _sender = re.sub(r"\D", "", str((self.tools.ctx or {}).get("from_number") or "").split("@")[0])
+            _founder = {re.sub(r"\D", "", x) for x in os.environ.get(
+                "PRATIBHA_FOUNDER_WA", "33165771059423,9560377363,919560377363").split(",") if x.strip()}
+            if _sender and (_sender in _founder or _sender.endswith("9560377363")):
+                cached_system.append({"type": "text", "text": (
+                    "[CURRENT SENDER] You are talking to Pawan Rathi — the FOUNDER and OWNER of MuscleGrid, a man. "
+                    "ALWAYS address him as \"sir\" or \"Pawan sir\". NEVER call him \"mam\" or \"madam\" under any "
+                    "circumstance, even if earlier messages in this chat used \"mam\" — those were a routing bug. "
+                    "He has full founder-level authority.")})
+        except Exception:
+            pass
         cached_tools = list(tools_schema)
         if cached_tools:
             cached_tools[-1] = {**cached_tools[-1], "cache_control": {"type": "ephemeral"}}
@@ -2061,6 +2201,22 @@ class WhatsAppAIBrain:
         )
         self._firms_cache = rows
         return rows
+
+    async def _pratibha_policies_text(self) -> str:
+        """Load Pratibha's standing policies/memory (shared with her email brain) so WhatsApp replies
+        honour the same rules — CEO authority, no-field-technician service policy, etc."""
+        try:
+            notes = []
+            async for d in self.db.pratibha_memory.find(
+                    {}, {"_id": 0, "note": 1}).sort("created_at", -1).limit(20):
+                if d.get("note"):
+                    notes.append(f"- {d['note']}")
+            if not notes:
+                return ""
+            return ("## MuscleGrid standing policies — honour these in every reply (same as my email brain)\n"
+                    + "\n".join(notes))
+        except Exception:
+            return ""
 
     async def _build_system_prompt(self, context: ConversationContext) -> str:
         """Return the full static system prompt.

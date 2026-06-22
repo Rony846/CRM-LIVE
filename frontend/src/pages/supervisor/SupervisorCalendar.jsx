@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
+import TicketSearchBar from '@/components/TicketSearchBar';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -188,6 +189,7 @@ export default function SupervisorCalendar() {
 
   return (
     <DashboardLayout title="Appointment Calendar">
+      <TicketSearchBar />
       <div className="space-y-6">
         {/* Stats */}
         <div className="grid grid-cols-5 gap-4">

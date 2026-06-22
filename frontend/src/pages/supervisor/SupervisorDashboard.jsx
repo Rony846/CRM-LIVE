@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { useLocation } from 'react-router-dom';
 import { motion, useReducedMotion } from 'framer-motion';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
@@ -39,6 +40,7 @@ const CdStat = ({ icon: Icon, tone = 'violet', title, value }) => (
 
 export default function SupervisorDashboard() {
   const { token } = useAuth();
+  const location = useLocation();
   const reduce = useReducedMotion();
   const [stats, setStats] = useState(null);
   const [queue, setQueue] = useState([]);
@@ -56,6 +58,8 @@ export default function SupervisorDashboard() {
   const [action, setAction] = useState('');
   const [notes, setNotes] = useState('');
   const [selectedSku, setSelectedSku] = useState('');
+  const [ticketSearch, setTicketSearch] = useState('');
+  const [searchingTicket, setSearchingTicket] = useState(false);
 
   const tap = reduce ? {} : { scale: 0.96 };
   const hover = reduce ? {} : { scale: 1.03 };
@@ -101,6 +105,38 @@ export default function SupervisorDashboard() {
     }
   };
 
+  // Open a ticket when arriving via ?ticket=<id> (e.g. from the search bar on a supervisor sub-page).
+  useEffect(() => {
+    const tid = new URLSearchParams(location.search).get('ticket');
+    if (tid) viewTicketDetails(tid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search]);
+
+  // Search ANY ticket (by number MG-R-…, customer name, phone, serial, invoice, order id) and open it.
+  const searchTickets = async (e) => {
+    e?.preventDefault();
+    const q = ticketSearch.trim();
+    if (!q) return;
+    setSearchingTicket(true);
+    try {
+      const res = await axios.get(`${API}/tickets`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { search: q, limit: 10 },
+      });
+      const list = res.data?.tickets || res.data || [];
+      if (list.length) {
+        await viewTicketDetails(list[0].id);
+        if (list.length > 1) toast.message(`${list.length} matches — opened ${list[0].ticket_number}`);
+      } else {
+        toast.error(`No ticket found for "${q}"`);
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Search failed');
+    } finally {
+      setSearchingTicket(false);
+    }
+  };
+
   const fetchCustomerData = async (customerId, customerPhone) => {
     setLoadingCustomerData(true);
     try {
@@ -130,7 +166,7 @@ export default function SupervisorDashboard() {
 
   const handleSupervisorAction = async () => {
     if (!action) { toast.error('Please select an action'); return; }
-    if (notes.length < 100) { toast.error('Notes must be at least 100 characters'); return; }
+    if (notes.trim().length < 15) { toast.error('Please add a short note (15+ characters) about the action.'); return; }
 
     setActionLoading(true);
     try {
@@ -199,6 +235,19 @@ export default function SupervisorDashboard() {
             <RefreshCw className="h-4 w-4" /> Refresh
           </motion.button>
         </div>
+
+        {/* Ticket search — find ANY ticket by number / customer / phone / serial */}
+        <form onSubmit={searchTickets} className="cd-in flex gap-2" data-testid="supervisor-ticket-search">
+          <input
+            value={ticketSearch}
+            onChange={(e) => setTicketSearch(e.target.value)}
+            placeholder="Search any ticket — number (MG-R-…), customer name, phone, serial, order id…"
+            className="flex-1 rounded-lg border border-border bg-background px-4 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+          />
+          <Button type="submit" disabled={searchingTicket}>
+            {searchingTicket ? 'Searching…' : 'Search'}
+          </Button>
+        </form>
 
         {/* KPI cards */}
         <div className="cd-statgrid cd-in" data-testid="supervisor-stats">
@@ -706,14 +755,14 @@ export default function SupervisorDashboard() {
             )}
 
             <div className="space-y-2">
-              <Label>Notes * (min 100 characters)</Label>
+              <Label>Notes * (min 15 characters)</Label>
               <Textarea
-                placeholder="Enter detailed notes about your decision and next steps..."
+                placeholder="Short note about your decision / next steps..."
                 value={notes} onChange={(e) => setNotes(e.target.value)} rows={4}
                 data-testid="notes-input"
               />
-              <p className={cn('font-mono text-xs', notes.length < 100 ? 'text-rose-400' : 'text-emerald-500')}>
-                {notes.length}/100 characters
+              <p className={cn('font-mono text-xs', notes.trim().length < 15 ? 'text-rose-400' : 'text-emerald-500')}>
+                {notes.trim().length}/15 characters
               </p>
             </div>
           </div>
@@ -721,7 +770,7 @@ export default function SupervisorDashboard() {
             <Button variant="outline" onClick={() => setActionOpen(false)}>Cancel</Button>
             <Button
               onClick={handleSupervisorAction}
-              disabled={actionLoading || notes.length < 100 || !action}
+              disabled={actionLoading || notes.trim().length < 15 || !action}
               data-testid="confirm-action-btn"
             >
               {actionLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}

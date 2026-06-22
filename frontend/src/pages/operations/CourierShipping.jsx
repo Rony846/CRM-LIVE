@@ -83,6 +83,8 @@ export default function CourierShipping() {
   const [shipments, setShipments] = useState([]);
   const [shipmentsLoading, setShipmentsLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');   // '' = all; e.g. 'NOT PICKED'
+  const [notPicked, setNotPicked] = useState({ total: 0, stale: 0, recent: 0 });
   
   // Label dialog
   const [labelDialog, setLabelDialog] = useState(false);
@@ -96,8 +98,18 @@ export default function CourierShipping() {
   useEffect(() => {
     if (activeTab === 'history') {
       fetchShipments();
+      fetchStatusSummary();
     }
-  }, [activeTab]);
+  }, [activeTab, statusFilter]);
+
+  const fetchStatusSummary = async () => {
+    try {
+      const res = await axios.get(`${API}/courier/shipments/status-summary`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.data.success && res.data.not_picked) setNotPicked(res.data.not_picked);
+    } catch (e) { /* non-fatal */ }
+  };
 
   const fetchWarehouses = async () => {
     try {
@@ -119,9 +131,12 @@ export default function CourierShipping() {
   const fetchShipments = async () => {
     setShipmentsLoading(true);
     try {
-      const params = new URLSearchParams({ page_size: '50' });
+      // Bump page size when filtering so all matches of a small bucket (e.g. the
+      // ~66 NOT PICKED) land on one page rather than being cut off at 50.
+      const params = new URLSearchParams({ page_size: statusFilter ? '100' : '50' });
       if (searchTerm) params.append('search', searchTerm);
-      
+      if (statusFilter) params.append('status', statusFilter);
+
       const response = await axios.get(`${API}/courier/shipments?${params}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -379,20 +394,38 @@ export default function CourierShipping() {
     setManifestedShipment(null);
   };
 
+  const daysSince = (iso) => {
+    if (!iso) return null;
+    const t = new Date(iso).getTime();
+    if (Number.isNaN(t)) return null;
+    return Math.floor((Date.now() - t) / 86400000);
+  };
+
   const getStatusBadge = (status) => {
+    // Keyed by UPPERCASED status so mixed-case Bigship values ("Delivered"/"DELIVERED",
+    // "NOT PICKED", "PICKUP SCHEDULED") all resolve to one style.
     const styles = {
-      created: 'bg-yellow-100 text-yellow-800',
-      manifested: 'bg-green-100 text-green-800',
-      in_transit: 'bg-blue-100 text-blue-800',
-      delivered: 'bg-emerald-100 text-emerald-800',
-      cancelled: 'bg-red-100 text-red-800'
+      'CREATED': 'bg-yellow-100 text-yellow-800',
+      'MANIFESTED': 'bg-green-100 text-green-800',
+      'IN-TRANSIT': 'bg-blue-100 text-blue-800',
+      'IN TRANSIT': 'bg-blue-100 text-blue-800',
+      'PICKUP SCHEDULED': 'bg-violet-100 text-violet-800',
+      'NOT PICKED': 'bg-red-100 text-red-800 font-semibold',
+      'DELIVERED': 'bg-emerald-100 text-emerald-800',
+      'RTO DELIVERED': 'bg-orange-100 text-orange-800',
+      'RTO IN TRANSIT': 'bg-orange-100 text-orange-800',
+      'UNDELIVERED': 'bg-amber-100 text-amber-800',
+      'CANCELLED': 'bg-gray-200 text-gray-700',
     };
+    const key = (status || '').toUpperCase();
     return (
-      <Badge className={styles[status] || 'bg-gray-100 text-gray-800'}>
-        {status?.replace('_', ' ').toUpperCase()}
+      <Badge className={styles[key] || 'bg-gray-100 text-gray-800'}>
+        {status ? status.toUpperCase() : 'UNKNOWN'}
       </Badge>
     );
   };
+
+  const isNotPicked = (status) => (status || '').toUpperCase() === 'NOT PICKED';
 
   return (
     <DashboardLayout>
@@ -1055,6 +1088,40 @@ export default function CourierShipping() {
                     </Button>
                   </div>
                 </div>
+                {/* Quick filters — surface the parcels that need chasing. NOT PICKED = courier
+                    accepted the booking but hasn't collected the parcel yet. */}
+                <div className="flex flex-wrap items-center gap-2 mt-3">
+                  {[
+                    ['', 'All'],
+                    ['NOT PICKED', `🚨 Not picked${notPicked.total ? ` (${notPicked.total})` : ''}`],
+                    ['PICKUP SCHEDULED', 'Pickup scheduled'],
+                    ['IN-TRANSIT', 'In transit'],
+                    ['DELIVERED', 'Delivered'],
+                  ].map(([val, label]) => (
+                    <button
+                      key={val || 'all'}
+                      onClick={() => setStatusFilter(val)}
+                      className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${
+                        statusFilter === val
+                          ? (val === 'NOT PICKED' ? 'bg-red-600 text-white border-red-600' : 'bg-primary text-primary-foreground border-primary')
+                          : (val === 'NOT PICKED' && notPicked.total ? 'border-red-300 text-red-700 hover:bg-red-50' : 'border-muted-foreground/30 text-muted-foreground hover:bg-muted')
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {statusFilter === 'NOT PICKED' && notPicked.total > 0 && (
+                  <div className="mt-3 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 dark:bg-red-950/20 p-3 text-sm">
+                    <AlertTriangle className="h-4 w-4 text-red-600 mt-0.5 shrink-0" />
+                    <p className="text-red-800 dark:text-red-300">
+                      <strong>{notPicked.recent}</strong> parcels booked but not yet collected by the courier
+                      {notPicked.stale > 0 && (
+                        <> · <strong>{notPicked.stale}</strong> are stale (&gt;30 days old — likely dead bookings, not real pending pickups)</>
+                      )}. Rows older than 30 days are dimmed.
+                    </p>
+                  </div>
+                )}
               </CardHeader>
               <CardContent>
                 {shipmentsLoading ? (
@@ -1081,8 +1148,17 @@ export default function CourierShipping() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {shipments.map((shipment) => (
-                        <TableRow key={shipment.id}>
+                      {shipments.map((shipment) => {
+                        const np = isNotPicked(shipment.status);
+                        const age = daysSince(shipment.created_at);
+                        const stale = np && age != null && age > 30;
+                        return (
+                        <TableRow
+                          key={shipment.id}
+                          className={np ? (stale
+                            ? 'bg-red-50/40 dark:bg-red-950/10 opacity-60'
+                            : 'bg-red-50 dark:bg-red-950/20 border-l-2 border-l-red-500') : ''}
+                        >
                           <TableCell className="font-mono text-sm">
                             {shipment.bigship_order_id}
                           </TableCell>
@@ -1105,11 +1181,18 @@ export default function CourierShipping() {
                             {shipment.awb_number || '-'}
                           </TableCell>
                           <TableCell>{shipment.courier_name || '-'}</TableCell>
-                          <TableCell>{getStatusBadge(shipment.status)}</TableCell>
+                          <TableCell>
+                            {getStatusBadge(shipment.status)}
+                            {np && age != null && (
+                              <span className={`block text-xs mt-0.5 ${stale ? 'text-muted-foreground' : 'text-red-600 font-medium'}`}>
+                                {age}d {stale ? '· stale' : 'waiting'}
+                              </span>
+                            )}
+                          </TableCell>
                           <TableCell>
                             {shipment.status === 'manifested' && shipment.bigship_order_id && (
-                              <Button 
-                                size="sm" 
+                              <Button
+                                size="sm"
                                 variant="outline"
                                 onClick={() => downloadLabel(shipment.bigship_order_id)}
                               >
@@ -1119,7 +1202,8 @@ export default function CourierShipping() {
                             )}
                           </TableCell>
                         </TableRow>
-                      ))}
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 )}

@@ -374,3 +374,48 @@
 [data-theme^="hud-"] .divide-y > * + * {
   border-color: hsl(var(--primary) / 0.12) !important;
 }
+
+/* ============================================================
+   LIGHT-THEME REPAIR — many pages hardcode dark Tailwind panels +
+   light text (e.g. `bg-slate-800`, `text-white`, `text-slate-300`).
+   Those utilities ignore the theme tokens, so under hud-light the
+   panels stayed dark and their inherited text rendered dark-on-dark
+   (invisible). Re-map the hardcoded dark utilities to the light
+   palette. Colored buttons/badges (bg-cyan/blue/green + text-white)
+   are preserved via the :not([class*="bg-"]) guard.
+   ============================================================ */
+/* hardcoded dark container backgrounds → light panel */
+[data-theme="hud-light"] .bg-slate-950,[data-theme="hud-light"] .bg-slate-900,
+[data-theme="hud-light"] .bg-slate-800,[data-theme="hud-light"] .bg-slate-700,
+[data-theme="hud-light"] .bg-gray-950,[data-theme="hud-light"] .bg-gray-900,
+[data-theme="hud-light"] .bg-gray-800,[data-theme="hud-light"] .bg-gray-700,
+[data-theme="hud-light"] .bg-zinc-900,[data-theme="hud-light"] .bg-zinc-800,
+[data-theme="hud-light"] .bg-neutral-900,[data-theme="hud-light"] .bg-neutral-800 {
+  background-color: var(--hud-panel-solid) !important;
+}
+/* inset surfaces (inputs, select/dropdown panels) → soft light */
+[data-theme="hud-light"] .bg-slate-600,[data-theme="hud-light"] .bg-gray-600 {
+  background-color: #eef3f9 !important;
+}
+/* light text on the now-light panels → dark ink (NOT on colored buttons/badges) */
+[data-theme="hud-light"] .text-white:not([class*="bg-"]),
+[data-theme="hud-light"] [class*="bg-slate-"].text-white,
+[data-theme="hud-light"] [class*="bg-gray-"].text-white,
+[data-theme="hud-light"] [class*="bg-zinc-"].text-white,
+[data-theme="hud-light"] [class*="bg-neutral-"].text-white,
+[data-theme="hud-light"] .text-slate-100,[data-theme="hud-light"] .text-slate-200,
+[data-theme="hud-light"] .text-slate-300,[data-theme="hud-light"] .text-gray-100,
+[data-theme="hud-light"] .text-gray-200,[data-theme="hud-light"] .text-gray-300 {
+  color: var(--hud-ink) !important;
+}
+/* muted greys → dimmer ink (keeps text hierarchy) */
+[data-theme="hud-light"] .text-slate-400,[data-theme="hud-light"] .text-slate-500,
+[data-theme="hud-light"] .text-gray-400,[data-theme="hud-light"] .text-gray-500 {
+  color: var(--hud-ink-dim) !important;
+}
+/* hardcoded dark borders → light hairline */
+[data-theme="hud-light"] .border-slate-800,[data-theme="hud-light"] .border-slate-700,
+[data-theme="hud-light"] .border-slate-600,[data-theme="hud-light"] .border-gray-800,
+[data-theme="hud-light"] .border-gray-700,[data-theme="hud-light"] .border-gray-600 {
+  border-color: var(--hud-line-strong) !important;
+}
