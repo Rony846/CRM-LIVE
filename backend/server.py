@@ -1054,6 +1054,17 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Dispatch-Guard: flag/alert refunded-or-cancelled orders still queued, so none ship.
+        scheduler.add_job(
+            scheduled_dispatch_guard,
+            IntervalTrigger(minutes=DISPATCH_GUARD_MIN),
+            id="dispatch_guard",
+            name="Dispatch-Guard (never ship a refunded/cancelled order)",
+            replace_existing=True,
+            misfire_grace_time=600,
+            max_instances=1,
+        )
+
         # Smartflo webhook health: alert the founder if calls are being rejected (401) or none arrive for hours.
         scheduler.add_job(
             scheduled_smartflo_webhook_health,
@@ -62842,6 +62853,61 @@ async def get_courier_label(
         }
 
 
+# ===================== Dispatch-Guard agent =====================
+async def _dispatch_guard_check(order_id: str) -> Optional[str]:
+    """Reason string if this Amazon order was REFUNDED or CANCELLED (must NOT ship), else None."""
+    if not order_id:
+        return None
+    rf = await db.amazon_refunds.find_one({"amazon_order_id": order_id}, {"refund_amount": 1, "refund_date": 1})
+    if rf:
+        return f"REFUNDED ₹{rf.get('refund_amount')} on {rf.get('refund_date')}"
+    ao = await db.amazon_orders.find_one({"amazon_order_id": order_id},
+                                         {"order_status": 1, "amazon_status": 1, "crm_status": 1})
+    if ao:
+        cancels = {"canceled", "cancelled"}
+        if (str(ao.get("order_status") or "").lower() in cancels
+                or str(ao.get("amazon_status") or "").lower() in cancels
+                or str(ao.get("crm_status") or "").lower() == "cancelled"):
+            return "CANCELLED on Amazon"
+    return None
+
+
+DISPATCH_GUARD_MIN = int(os.environ.get("DISPATCH_GUARD_MIN", "60"))
+
+
+async def scheduled_dispatch_guard():
+    """Autonomous Dispatch-Guard: flag/alert orders Amazon REFUNDED or CANCELLED that are still queued or
+    booked-but-not-picked, so a refunded parcel never ships. Booking API blocks at source; this catches
+    everything already in flight (incl. panel/Excel bookings the API guard can't see)."""
+    now = datetime.now(timezone.utc).isoformat()
+    flagged = []
+    async for rec in db.pending_fulfillment.find(
+            {"awb_number": {"$in": [None, ""]}, "do_not_ship": {"$ne": True}}, {"id": 1, "order_id": 1}).limit(3000):
+        reason = await _dispatch_guard_check(rec.get("order_id"))
+        if reason:
+            await db.pending_fulfillment.update_one({"id": rec["id"]}, {"$set": {
+                "do_not_ship": True, "do_not_ship_reason": reason, "do_not_ship_at": now}})
+            flagged.append((rec.get("order_id"), reason))
+    async for cs in db.courier_shipments.find(
+            {"status": {"$regex": "not picked|pickup sched", "$options": "i"}, "do_not_ship": {"$ne": True}},
+            {"id": 1, "amazon_order_id": 1, "order_id": 1, "awb_number": 1}).limit(4000):
+        oid = _amz_oid(cs.get("amazon_order_id") or cs.get("order_id"))
+        reason = await _dispatch_guard_check(oid) if oid else None
+        if reason:
+            await db.courier_shipments.update_one({"_id": cs["_id"]} if cs.get("_id") else {"awb_number": cs.get("awb_number")},
+                {"$set": {"do_not_ship": True, "do_not_ship_reason": f"{reason} (AWB not picked — cancel it)", "do_not_ship_at": now}})
+            flagged.append((oid, f"{reason} · AWB {cs.get('awb_number')}"))
+    if flagged:
+        body = (f"🚦 Dispatch-Guard: *{len(flagged)}* refunded/cancelled order(s) still queued — DO NOT SHIP:\n"
+                + "\n".join(f"• {o} — {r}" for o, r in flagged[:15])
+                + (f"\n…+{len(flagged) - 15} more" if len(flagged) > 15 else ""))
+        try:
+            await _wa_send_to_manager(body, fallback_desc=f"Dispatch-Guard flagged {len(flagged)} refunded orders")
+        except Exception as e:
+            logger.warning(f"Dispatch-Guard alert failed: {e}")
+    logger.info(f"Dispatch-Guard: flagged {len(flagged)} refunded/cancelled queued orders")
+
+
 @api_router.post("/pending-fulfillment/{fulfillment_id}/bigship-label")
 async def bigship_label_for_fulfillment(
     fulfillment_id: str,
@@ -62868,6 +62934,18 @@ async def bigship_label_for_fulfillment(
     order_id = rec.get("order_id")
     if not order_id:
         raise HTTPException(status_code=400, detail="This record has no order id — cannot book a shipment")
+
+    # --- Dispatch-Guard: never book a shipment for an order Amazon already REFUNDED or CANCELLED.
+    # Stops shipping a product the customer was refunded for (the "shipped-after-refund" leak). ---
+    if not force:
+        guard = await _dispatch_guard_check(order_id)
+        if guard:
+            if not dry_run:
+                await db.pending_fulfillment.update_one({"id": fulfillment_id}, {"$set": {
+                    "do_not_ship": True, "do_not_ship_reason": guard,
+                    "do_not_ship_at": datetime.now(timezone.utc).isoformat()}})
+            raise HTTPException(status_code=409,
+                detail=f"Dispatch-Guard blocked {order_id}: {guard}. (admin can re-book with ?force=true)")
 
     # --- Idempotency: this record already carries a Bigship AWB -> return it, never re-book ---
     if rec.get("bigship_order_id") and rec.get("awb_number") and not force:
