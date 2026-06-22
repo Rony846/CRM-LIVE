@@ -76263,13 +76263,17 @@ CLAUDE_WA_SESSION_MIN = int(os.environ.get("CLAUDE_WA_SESSION_MIN", "30"))
 
 
 def _wa_relay_profiles():
-    """Numbers allowed to use MG Brain -> data profile. Founder = full; ops numbers (supervisor/agent)
+    """Numbers allowed to use MG Brain -> data profile. 'full' = all data; 'ops' (supervisor/agent)
     = support/service/production/dispatch/stock only, NO financial data (enforced by crm-read)."""
-    profiles = {CLAUDE_WA_RELAY_NUMBER: "full"}
+    profiles = {}
     for n in os.environ.get("CLAUDE_WA_RELAY_OPS_NUMBERS", "").split(","):
         nn = re.sub(r"\D", "", n)[-10:]
         if len(nn) == 10:
             profiles[nn] = "ops"
+    for n in [CLAUDE_WA_RELAY_NUMBER] + os.environ.get("CLAUDE_WA_RELAY_FULL_NUMBERS", "").split(","):
+        nn = re.sub(r"\D", "", n)[-10:]
+        if len(nn) == 10:
+            profiles[nn] = "full"   # full overrides ops if a number is in both
     return profiles
 
 
