@@ -72732,14 +72732,33 @@ async def _send_order_confirmation_email(order: dict):
             for it in (order.get("items") or []))
         sh = order.get("shipping") or {}
         paid = "and payment received ✅" if order.get("payment_status") == "paid" else "— pay cash on delivery"
+        total_v = float(order.get("total") or 0)
+        gst_inc = float(order.get("gst_included") or 0)
+        taxable = float(order.get("taxable_value") or (total_v - gst_inc))
+        gstin = order.get("gstin")
+        rates = sorted({int(it.get("gst_rate") or 18) for it in (order.get("items") or []) if it.get("gst_rate")})
+        rate_note = ("(" + " / ".join(f"{r}%" for r in rates) + ")") if rates else ""
+        cell = "padding:8px;border-top:1px solid #eee;text-align:right;color:#555"
+        if gst_inc > 0:
+            gst_rows = (
+                f"<tr><td style='{cell};text-align:left'>Taxable value</td><td style='{cell}'>₹{taxable:,.0f}</td></tr>"
+                f"<tr><td style='{cell};text-align:left'>GST {rate_note}</td><td style='{cell}'>₹{gst_inc:,.0f}</td></tr>"
+                f"<tr><td style='padding:10px 8px;font-weight:800;border-top:2px solid #1A1A1A'>Total (incl. GST)</td>"
+                f"<td style='padding:10px 8px;text-align:right;font-weight:800;border-top:2px solid #1A1A1A'>₹{total_v:,.0f}</td></tr>")
+        else:
+            gst_rows = (f"<tr><td style='padding:10px 8px;font-weight:800'>Total</td>"
+                        f"<td style='padding:10px 8px;text-align:right;font-weight:800'>₹{total_v:,.0f}</td></tr>")
+        gstin_html = (f'<p style="color:#555;background:#fff8ec;border:1px solid #ffe0b0;border-radius:8px;padding:10px 12px">'
+                      f'🧾 A <b>GST invoice</b> will be issued to GSTIN <b>{gstin}</b>.</p>') if gstin else ""
         html = f"""<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;border:1px solid #eee">
   <div style="background:#1A1A1A;padding:22px;text-align:center"><span style="color:#F58220;font-weight:800;font-size:24px">Muscle</span><span style="color:#fff;font-weight:800;font-size:24px">Grid</span></div>
   <div style="padding:26px;color:#1A1A1A">
     <h2 style="margin:0 0 6px">Thank you, {order.get('customer_name','')}!</h2>
     <p style="color:#555">Your order <b>{order.get('order_number')}</b> is confirmed {paid}.</p>
-    <table style="width:100%;border-collapse:collapse;margin:16px 0">{rows}
-      <tr><td style="padding:10px 8px;font-weight:800">Total</td><td style="padding:10px 8px;text-align:right;font-weight:800">₹{float(order.get('total') or 0):,.0f}</td></tr>
+    <table style="width:100%;border-collapse:collapse;margin:16px 0">{rows}{gst_rows}
     </table>
+    {gstin_html}
+    <p style="color:#888;font-size:12px;margin:-4px 0 14px">Prices are inclusive of GST (5% on solar inverters, 18% on batteries & other products).</p>
     <p style="color:#555"><b>Ship to:</b> {sh.get('address','')}, {sh.get('city','')} {sh.get('pincode','')}</p>
     <p style="color:#555">Our team will call you shortly to schedule delivery & installation. Need help? Call <a href="tel:+919999036254" style="color:#F58220">099990 36254</a>.</p>
     <div style="margin-top:20px;padding-top:16px;border-top:1px solid #eee;color:#999;font-size:12px">MuscleGrid Industries · 704, Sector-16, Gurugram · service@musclegrid.in</div>
