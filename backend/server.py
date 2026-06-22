@@ -38434,6 +38434,47 @@ async def get_legal_case_document(case_id: str, user: dict = Depends(require_rol
     return FileResponse(str(path), media_type="application/pdf", filename=os.path.basename(rel))
 
 
+@api_router.post("/admin/legal-cases/{case_id}/upload")
+async def upload_legal_case_document(case_id: str, file: UploadFile = File(...),
+                                     doc_type: str = Form("notice"),
+                                     user: dict = Depends(require_roles(_LEGAL_ROLES))):
+    """Lawyer (or admin) uploads their notice / supporting document for a case."""
+    if not await db.legal_cases.find_one({"id": case_id}, {"_id": 1}):
+        raise HTTPException(status_code=404, detail="Case not found")
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(content) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large (max 25MB)")
+    os.makedirs(UPLOAD_DIR / "legal_cases", exist_ok=True)
+    safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in (file.filename or "doc"))[:80] or "doc"
+    disk = f"{uuid.uuid4().hex[:8]}_{safe}"
+    with open(UPLOAD_DIR / "legal_cases" / disk, "wb") as f:
+        f.write(content)
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {"id": str(uuid.uuid4()), "filename": file.filename or safe, "disk": f"legal_cases/{disk}",
+           "type": (doc_type or "notice").strip()[:30], "mime": file.content_type or "application/octet-stream",
+           "by": user.get("first_name") or user.get("email") or "Lawyer", "at": now}
+    sets = {"updated_at": now}
+    if doc["type"] == "notice":
+        sets["status"] = "notice_sent"   # uploading the notice advances the case
+    await db.legal_cases.update_one({"id": case_id}, {"$push": {"lawyer_documents": doc}, "$set": sets})
+    return {"success": True, "document": {k: doc[k] for k in ("id", "filename", "type", "by", "at")}}
+
+
+@api_router.get("/admin/legal-cases/{case_id}/lawyer-doc/{doc_id}")
+async def get_legal_case_lawyer_doc(case_id: str, doc_id: str, user: dict = Depends(require_roles(_LEGAL_ROLES))):
+    case = await db.legal_cases.find_one({"id": case_id}, {"lawyer_documents": 1})
+    doc = next((d for d in (case or {}).get("lawyer_documents", []) if d.get("id") == doc_id), None)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    path = (UPLOAD_DIR / doc["disk"]).resolve()
+    if not str(path).startswith(str(UPLOAD_DIR.resolve())) or not path.exists():
+        raise HTTPException(status_code=404, detail="File missing")
+    return FileResponse(str(path), media_type=doc.get("mime") or "application/octet-stream",
+                        filename=doc.get("filename") or os.path.basename(doc["disk"]))
+
+
 # ============== Amazon A-to-z Guarantee Claims tracker ==============
 AZ_CLAIM_STATUS = ["under_review", "granted", "denied", "appealed", "closed"]
 

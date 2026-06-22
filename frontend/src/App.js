@@ -288,7 +288,7 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
       admin: '/admin',
       dealer: '/dealer',
       ca: '/ca',
-      lawyer: '/legal'
+      lawyer: '/admin/legal-cases'
     };
     return <Navigate to={dashboardRoutes[user.role] || '/login'} replace />;
   }
@@ -324,7 +324,7 @@ const RoleRedirect = () => {
     admin: '/admin',
     dealer: '/dealer',
     ca: '/ca',
-    lawyer: '/legal'
+    lawyer: '/admin/legal-cases'
   };
 
   return <Navigate to={dashboardRoutes[user.role] || '/login'} replace />;

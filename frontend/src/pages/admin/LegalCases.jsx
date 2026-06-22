@@ -12,7 +12,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Scale, RefreshCw, Search, FileText, MessageSquare, Gavel, Send, IndianRupee } from 'lucide-react';
+import { Scale, RefreshCw, Search, FileText, MessageSquare, Gavel, Send, IndianRupee, Upload } from 'lucide-react';
 
 const STATUS_LABEL = {
   pending: 'Pending', draft_uploaded: 'Draft uploaded', notice_pending: 'Notice pending',
@@ -84,6 +84,31 @@ export default function LegalCases() {
       const r = await axios.get(`${API}/admin/legal-cases/${id}/document`, { ...auth, responseType: 'blob' });
       window.open(URL.createObjectURL(r.data), '_blank');
     } catch (e) { toast.error('Document unavailable'); }
+  };
+
+  const openLawyerDoc = async (caseId, docId) => {
+    try {
+      const r = await axios.get(`${API}/admin/legal-cases/${caseId}/lawyer-doc/${docId}`, { ...auth, responseType: 'blob' });
+      window.open(URL.createObjectURL(r.data), '_blank');
+    } catch (e) { toast.error('File unavailable'); }
+  };
+
+  const [uploading, setUploading] = useState(false);
+  const uploadDoc = async (caseId, file) => {
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('doc_type', 'notice');
+      const r = await axios.post(`${API}/admin/legal-cases/${caseId}/upload`, fd, auth);
+      const doc = r.data.document;
+      const apply = (c) => c.id === caseId
+        ? { ...c, lawyer_documents: [...(c.lawyer_documents || []), doc], status: 'notice_sent' } : c;
+      setData((d) => ({ ...d, cases: d.cases.map(apply) }));
+      setOpen((o) => o && o.id === caseId ? apply(o) : o);
+      toast.success('Uploaded');
+    } catch (e) { toast.error(e.response?.data?.detail || 'Upload failed'); }
+    finally { setUploading(false); }
   };
 
   const Stat = ({ label, value, sub }) => (
@@ -202,7 +227,27 @@ export default function LegalCases() {
                 <div className="bg-muted/40 rounded p-2 text-sm whitespace-pre-wrap">{open.issue || '—'}</div></div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-muted-foreground">Status:</span><StatusSelect c={open} w="w-[170px]" />
-                {open.client_document && <Button variant="outline" size="sm" className="h-8 text-xs ml-auto" onClick={() => openDoc(open.id)}><FileText className="w-4 h-4 mr-1" />Document</Button>}
+                {open.client_document && <Button variant="outline" size="sm" className="h-8 text-xs ml-auto" onClick={() => openDoc(open.id)}><FileText className="w-4 h-4 mr-1" />Client doc</Button>}
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs text-muted-foreground">My notices & documents</span>
+                  <label className="text-xs text-blue-400 hover:underline cursor-pointer inline-flex items-center gap-1">
+                    <Upload className="w-3.5 h-3.5" />{uploading ? 'Uploading…' : 'Upload'}
+                    <input type="file" className="hidden" disabled={uploading}
+                      onChange={(e) => { if (e.target.files[0]) uploadDoc(open.id, e.target.files[0]); e.target.value = ''; }} />
+                  </label>
+                </div>
+                <div className="space-y-1">
+                  {(open.lawyer_documents || []).length === 0 && <div className="text-xs text-muted-foreground">No documents uploaded yet.</div>}
+                  {(open.lawyer_documents || []).map((d) => (
+                    <button key={d.id} onClick={() => openLawyerDoc(open.id, d.id)}
+                      className="flex items-center gap-1.5 text-xs text-blue-400 hover:underline text-left">
+                      <FileText className="w-3.5 h-3.5 shrink-0" /> {d.filename}
+                      <span className="text-muted-foreground">· {d.type} · {(d.at || '').slice(0, 10)}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
               <div>
                 <div className="text-xs text-muted-foreground mb-1">Comments</div>
