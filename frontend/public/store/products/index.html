@@ -1,0 +1,77 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Shop all products · MuscleGrid</title><meta name="description" content="Solar inverters, lithium batteries and stabilizers.">
+<link rel="icon" href="/shop/favicon.png">
+<link rel="stylesheet" href="/shop/tokens.css"><link rel="stylesheet" href="/shop/theme.css">
+<script src="/shop/store.js" defer></script></head><body class="template-collection"><header class="mg-header" style="position:sticky;top:0;z-index:100;background:var(--mg-bg-elev);border-bottom:1px solid var(--mg-iron-200)">
+ <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;max-width:1320px;margin:0 auto;padding:12px 20px">
+  <a href="/store" style="display:flex;align-items:center;gap:10px;text-decoration:none;color:inherit">
+   <img src="/shop/logo-mark.png" width="38" height="38" alt="MuscleGrid">
+   <div><div style="font-family:var(--mg-font-display);font-weight:800;font-size:21px;letter-spacing:.02em;line-height:1"><span style="color:var(--mg-orange)">Muscle</span>Grid</div>
+   <div style="font-size:10.5px;color:var(--mg-fg-muted)">Consistency Through You</div></div></a>
+  <nav style="display:flex;gap:22px;align-items:center;font-weight:600;font-size:14px">
+   <a href="/store/products" style="color:inherit;text-decoration:none">All products</a>
+   <a href="/store/products/?category=Inverter" style="color:inherit;text-decoration:none">Inverters</a>
+   <a href="/store/products/?category=Battery" style="color:inherit;text-decoration:none">Batteries</a>
+   <a href="/store/products/?category=Stabilizer" style="color:inherit;text-decoration:none">Stabilizers</a></nav>
+  <a href="/store/cart" style="position:relative;color:inherit;text-decoration:none;font-weight:700;display:inline-flex;align-items:center;gap:6px">
+   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.6 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6"></path></svg>
+   Cart <span data-cart-count hidden style="background:var(--mg-orange);color:#fff;border-radius:999px;padding:1px 7px;font-size:12px">0</span></a>
+ </div></header>
+<div class="mg-collection" style="max-width:1320px;margin:0 auto;padding:24px 20px 40px">
+  <div class="mg-breadcrumbs"><a href="/store">Home</a><span class="sep">/</span><span style="color:var(--mg-fg)" id="crumbCat">Shop</span></div>
+  <div class="mg-coll-head">
+    <div><span class="mg-eyebrow mg-eyebrow-bar">Catalogue</span><h1 id="collTitle">All products</h1>
+    <p>Engineered for Indian voltage swings, summer heat, and the loads that actually matter.</p></div>
+    <div class="mg-coll-meta"><span><b id="collCount">0</b> products</span><span>·</span><span>Free shipping over ₹999</span></div>
+  </div>
+  <nav class="mg-cat-chips" id="catChips" aria-label="Shop by category"></nav>
+  <div class="mg-coll-body" style="display:block">
+    <div class="mg-coll-toolbar" style="display:flex;align-items:center;gap:10px;margin-bottom:18px">
+      <span style="flex:1"></span>
+      <span style="font-family:var(--mg-font-mono);font-size:11px;color:var(--mg-iron-500)">Sort:</span>
+      <select id="sortSel" style="padding:8px 10px;border:1px solid var(--mg-iron-200);border-radius:6px;background:var(--mg-bg-elev);color:var(--mg-fg)">
+        <option value="featured">Featured</option><option value="price-asc">Price: low → high</option>
+        <option value="price-desc">Price: high → low</option><option value="name">Name A–Z</option></select>
+    </div>
+    <div class="mg-grid" id="prodGrid"></div>
+    <div id="emptyMsg" style="display:none;padding:64px;text-align:center;color:var(--mg-iron-500)">No products in this category.</div>
+  </div>
+</div>
+<script>
+(function(){
+  var qs=new URLSearchParams(location.search), cat=qs.get('category'), q=qs.get('q'), all=[];
+  function render(){
+    var s=document.getElementById('sortSel').value, list=all.slice();
+    if(s==='price-asc') list.sort((a,b)=>a.price-b.price);
+    else if(s==='price-desc') list.sort((a,b)=>b.price-a.price);
+    else if(s==='name') list.sort((a,b)=>(a.title||'').localeCompare(b.title||''));
+    document.getElementById('collCount').textContent=list.length;
+    document.getElementById('emptyMsg').style.display=list.length?'none':'block';
+    MG.renderGrid('#prodGrid', list);
+  }
+  var url='/api/shop/products?limit=500'+(cat?'&category='+encodeURIComponent(cat):'')+(q?'&q='+encodeURIComponent(q):'');
+  fetch(url).then(r=>r.json()).then(function(d){
+    all=d.products||[];
+    if(cat){ document.getElementById('collTitle').textContent=cat; document.getElementById('crumbCat').textContent=cat; }
+    if(q){ document.getElementById('collTitle').textContent='Search: '+q; }
+    var chips='<a class="mg-cat-chip '+(!cat?'active':'')+'" href="/store/products">All</a>';
+    (d.categories||[]).forEach(function(c){ chips+='<a class="mg-cat-chip '+(cat&&cat.toLowerCase()===c.toLowerCase()?'active':'')+'" href="/store/products/?category='+encodeURIComponent(c)+'">'+c+'</a>'; });
+    document.getElementById('catChips').innerHTML=chips;
+    render();
+  });
+  document.getElementById('sortSel').addEventListener('change', render);
+})();
+</script><footer style="background:var(--mg-iron-1000);color:var(--mg-fg-onDark);padding:54px 20px 40px;margin-top:60px">
+ <div style="max-width:1320px;margin:0 auto;display:grid;grid-template-columns:2fr 1fr 1fr;gap:40px">
+  <div><div style="font-family:var(--mg-font-display);font-weight:800;font-size:26px"><span style="color:var(--mg-orange)">Muscle</span>Grid</div>
+   <p style="color:var(--mg-fg-onDark-muted);max-width:340px;margin:12px 0 0;line-height:1.6">Industrial power, engineered for India. Solar inverters, LiFePO₄ batteries and mainline stabilizers — warranty-backed, 12,000+ homes powered.</p></div>
+  <div><div style="font-weight:700;margin-bottom:12px">Shop</div>
+   <a href="/store/products" style="display:block;color:var(--mg-fg-onDark-muted);text-decoration:none;margin:6px 0">All products</a>
+   <a href="/store/products/?category=Inverter" style="display:block;color:var(--mg-fg-onDark-muted);text-decoration:none;margin:6px 0">Solar inverters</a>
+   <a href="/store/products/?category=Battery" style="display:block;color:var(--mg-fg-onDark-muted);text-decoration:none;margin:6px 0">Lithium batteries</a>
+   <a href="/store/products/?category=Stabilizer" style="display:block;color:var(--mg-fg-onDark-muted);text-decoration:none;margin:6px 0">Stabilizers</a></div>
+  <div><div style="font-weight:700;margin-bottom:12px">Contact</div>
+   <div style="color:var(--mg-fg-onDark-muted);line-height:1.7">704, Sector-16, Gurugram, Haryana 122006<br><a href="tel:+919999036254" style="color:var(--mg-orange)">099990 36254</a><br><a href="mailto:service@musclegrid.in" style="color:var(--mg-orange)">service@musclegrid.in</a></div></div>
+ </div>
+ <div style="max-width:1320px;margin:34px auto 0;padding-top:20px;border-top:1px solid #222;color:var(--mg-fg-onDark-muted);font-size:13px">© 2026 MuscleGrid Industries · Made in India</div></footer></body></html>

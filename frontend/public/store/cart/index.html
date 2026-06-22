@@ -1,0 +1,116 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cart · MuscleGrid</title><meta name="description" content="Your MuscleGrid cart">
+<link rel="icon" href="/shop/favicon.png">
+<link rel="stylesheet" href="/shop/tokens.css"><link rel="stylesheet" href="/shop/theme.css">
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<script src="/shop/store.js" defer></script></head><body class="template-cart">
+<header class="mg-header" style="position:sticky;top:0;z-index:100;background:var(--mg-bg-elev);border-bottom:1px solid var(--mg-iron-200)">
+ <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;max-width:1320px;margin:0 auto;padding:12px 20px">
+  <a href="/store" style="display:flex;align-items:center;gap:10px;text-decoration:none;color:inherit">
+   <img src="/shop/logo-mark.png" width="38" height="38" alt="MuscleGrid">
+   <div><div style="font-family:var(--mg-font-display);font-weight:800;font-size:21px;letter-spacing:.02em;line-height:1"><span style="color:var(--mg-orange)">Muscle</span>Grid</div>
+   <div style="font-size:10.5px;color:var(--mg-fg-muted)">Consistency Through You</div></div></a>
+  <nav style="display:flex;gap:22px;align-items:center;font-weight:600;font-size:14px">
+   <a href="/store/products/" style="color:inherit;text-decoration:none">All products</a></nav>
+  <a href="/store/cart/" style="position:relative;color:inherit;text-decoration:none;font-weight:700;display:inline-flex;align-items:center;gap:6px">
+   🛒 Cart <span data-cart-count hidden style="background:var(--mg-orange);color:#fff;border-radius:999px;padding:1px 7px;font-size:12px">0</span></a>
+ </div></header>
+
+<div style="max-width:1100px;margin:0 auto;padding:28px 20px 60px">
+ <h1 style="font-family:var(--mg-font-display);font-weight:800;font-size:34px;text-transform:uppercase;margin-bottom:20px">Your Cart</h1>
+ <div id="cartRoot"></div>
+</div>
+
+<footer style="background:var(--mg-iron-1000);color:var(--mg-fg-onDark);padding:40px 20px;text-align:center;margin-top:40px">
+ <div style="font-family:var(--mg-font-display);font-weight:800;font-size:22px"><span style="color:var(--mg-orange)">Muscle</span>Grid</div>
+ <div style="color:var(--mg-fg-onDark-muted);font-size:13px;margin-top:10px">© 2026 MuscleGrid Industries · <a href="tel:+919999036254" style="color:var(--mg-orange)">099990 36254</a> · service@musclegrid.in</div>
+</footer>
+
+<script>
+function inr(n){return Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:0});}
+function root(){return document.getElementById('cartRoot');}
+
+function renderCart(){
+  var c=MGCart.get();
+  if(!c.length){ root().innerHTML='<div style="text-align:center;padding:70px 20px;color:var(--mg-iron-500)"><div style="font-size:48px">🛒</div><p style="margin:16px 0">Your cart is empty.</p><a class="mg-btn mg-btn-primary" href="/store/products/">Shop products</a></div>'; MGCart.badge(); return; }
+  var rows=c.map(function(it){
+    return '<div class="cartrow" style="display:flex;gap:14px;align-items:center;padding:16px 0;border-bottom:1px solid var(--mg-iron-200)">'
+      +'<img src="'+(it.image||'/shop/inverter.png')+'" style="width:78px;height:78px;object-fit:contain;border:1px solid var(--mg-iron-200);border-radius:8px;background:#fff;flex-shrink:0">'
+      +'<div style="flex:1;min-width:120px"><div style="font-weight:700;line-height:1.3">'+it.title+'</div><div style="color:var(--mg-iron-500);font-size:13px;margin-top:2px">₹'+inr(it.price)+' each</div></div>'
+      +'<div class="cart-ctl" style="display:flex;align-items:center;gap:14px">'
+      +'<div style="display:flex;align-items:center;border:1px solid var(--mg-iron-200);border-radius:8px"><button onclick="chg(\''+it.id+'\',-1)" style="padding:8px 12px;border:none;background:none;cursor:pointer">−</button><span style="min-width:28px;text-align:center;font-weight:700">'+it.qty+'</span><button onclick="chg(\''+it.id+'\',1)" style="padding:8px 12px;border:none;background:none;cursor:pointer">+</button></div>'
+      +'<div style="min-width:84px;text-align:right;font-weight:800">₹'+inr(it.price*it.qty)+'</div>'
+      +'<button onclick="rm(\''+it.id+'\')" title="Remove" style="border:none;background:none;cursor:pointer;color:var(--mg-iron-400);font-size:20px">×</button></div></div>';
+  }).join('');
+  var total=MGCart.total();
+  root().innerHTML=
+   '<div style="display:grid;grid-template-columns:1.6fr 1fr;gap:36px;align-items:start" class="cartgrid">'
+   +'<div>'+rows+'</div>'
+   +'<div style="background:var(--mg-bg-elev);border:1px solid var(--mg-iron-200);border-radius:14px;padding:22px;position:sticky;top:80px">'
+     +'<h3 style="font-family:var(--mg-font-display);font-weight:800;text-transform:uppercase;margin-bottom:14px">Checkout</h3>'
+     +'<div style="display:flex;justify-content:space-between;margin-bottom:6px"><span style="color:var(--mg-iron-500)">Subtotal</span><b>₹'+inr(total)+'</b></div>'
+     +'<div style="display:flex;justify-content:space-between;margin-bottom:6px"><span style="color:var(--mg-iron-500)">Shipping</span><b style="color:var(--mg-success)">FREE</b></div>'
+     +'<div style="display:flex;justify-content:space-between;font-size:20px;font-weight:800;margin:12px 0;padding-top:12px;border-top:1px solid var(--mg-iron-200)"><span>Total</span><span>₹'+inr(total)+'</span></div>'
+     +'<div style="display:grid;gap:10px;margin-top:8px">'
+       +fld('name','Full name','text')+fld('phone','Phone (10-digit)','tel')+fld('email','Email (optional)','email')
+       +fld('address','Address','text')
+       +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'+fld('city','City','text')+fld('pincode','PIN code','text')+'</div>'
+     +'</div>'
+     +'<div style="display:grid;gap:8px;margin-top:14px">'
+       +'<label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input type="radio" name="pm" value="razorpay" checked> Pay online (UPI / Card / NetBanking)</label>'
+       +'<label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input type="radio" name="pm" value="cod"> Cash on delivery</label>'
+     +'</div>'
+     +'<button class="mg-btn mg-btn-primary" id="placeBtn" style="width:100%;margin-top:16px" onclick="placeOrder()">Place order · ₹'+inr(total)+'</button>'
+     +'<div id="coErr" style="color:var(--mg-danger);font-size:13px;margin-top:8px"></div>'
+     +'<div style="text-align:center;color:var(--mg-iron-400);font-size:11px;margin-top:10px">🔒 Secure payment by Razorpay</div>'
+   +'</div></div>';
+  MGCart.badge();
+}
+function fld(id,ph,t){return '<input id="co_'+id+'" type="'+t+'" placeholder="'+ph+'" style="width:100%;padding:11px 12px;border:1px solid var(--mg-iron-200);border-radius:8px;font-size:14px;background:#fff;color:var(--mg-fg)">';}
+function chg(id,d){var c=MGCart.get();var e=c.find(x=>x.id===id);if(e){e.qty+=d;if(e.qty<1)e.qty=1;}MGCart.save(c);renderCart();}
+function rm(id){MGCart.save(MGCart.get().filter(x=>x.id!==id));renderCart();}
+function val(id){var e=document.getElementById('co_'+id);return e?e.value.trim():'';}
+
+function placeOrder(){
+  var err=document.getElementById('coErr'); err.textContent='';
+  var name=val('name'), phone=val('phone').replace(/\D/g,'');
+  if(!name){err.textContent='Please enter your name.';return;}
+  if(phone.length<10){err.textContent='Please enter a valid 10-digit phone.';return;}
+  var pm=document.querySelector('input[name=pm]:checked').value;
+  var btn=document.getElementById('placeBtn'); btn.disabled=true; btn.textContent='Processing…';
+  var payload={items:MGCart.get().map(x=>({id:x.id,qty:x.qty})),name:name,phone:phone,
+    email:val('email'),address:val('address'),city:val('city'),pincode:val('pincode'),payment_method:pm};
+  fetch('/api/shop/checkout/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+   .then(r=>r.json().then(d=>({ok:r.ok,d:d}))).then(function(res){
+     if(!res.ok){ err.textContent=res.d.detail||'Could not place order.'; btn.disabled=false; btn.textContent='Place order'; return; }
+     var d=res.d;
+     if(d.cod){ success(d.order_number,true); return; }
+     var rzp=new Razorpay({key:d.key_id,order_id:d.razorpay_order_id,amount:d.amount,currency:'INR',
+       name:'MuscleGrid',description:'Order '+d.order_number,image:'/shop/logo-mark.png',
+       prefill:d.prefill,theme:{color:'#F58220'},
+       handler:function(r){
+         fetch('/api/shop/checkout/verify',{method:'POST',headers:{'Content-Type':'application/json'},
+           body:JSON.stringify({order_id:d.order_id,razorpay_order_id:r.razorpay_order_id,razorpay_payment_id:r.razorpay_payment_id,razorpay_signature:r.razorpay_signature})})
+          .then(x=>x.json()).then(function(v){ if(v.success){ success(v.order_number,false); } else { err.textContent='Payment verification failed — contact us.'; btn.disabled=false; btn.textContent='Place order'; } });
+       },
+       modal:{ondismiss:function(){ btn.disabled=false; btn.textContent='Place order · ₹'+inr(MGCart.total()); }}});
+     rzp.open();
+   }).catch(function(){ err.textContent='Network error — try again.'; btn.disabled=false; btn.textContent='Place order'; });
+}
+function success(onum,cod){
+  MGCart.save([]);
+  root().innerHTML='<div style="text-align:center;padding:60px 20px;max-width:520px;margin:0 auto">'
+   +'<div style="font-size:56px">✅</div>'
+   +'<h2 style="font-family:var(--mg-font-display);font-weight:800;text-transform:uppercase;margin:14px 0 8px">Order placed!</h2>'
+   +'<p style="color:var(--mg-iron-500)">Order <b style="color:var(--mg-fg)">'+onum+'</b> '+(cod?'is confirmed — pay cash on delivery.':'is confirmed and paid. 🎉')+'</p>'
+   +'<p style="color:var(--mg-iron-500);margin-top:10px">Our team will call you to schedule delivery & installation. For help: <a href="tel:+919999036254" style="color:var(--mg-orange)">099990 36254</a></p>'
+   +'<a class="mg-btn mg-btn-primary" href="/store/products/" style="margin-top:20px">Continue shopping</a></div>';
+}
+document.addEventListener('DOMContentLoaded',renderCart);
+</script>
+<style>
+@media(max-width:760px){.cartgrid{grid-template-columns:1fr!important}}
+@media(max-width:540px){.cartrow{flex-wrap:wrap;gap:10px}.cart-ctl{flex:1 1 100%;justify-content:space-between;padding-left:92px}}
+</style>
+</body></html>

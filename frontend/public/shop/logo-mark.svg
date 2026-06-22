@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <defs>
+    <clipPath id="c"><circle cx="60" cy="60" r="58"></circle></clipPath>
+  </defs>
+  <circle cx="60" cy="60" r="58" fill="#FFFFFF"></circle>
+  <ellipse cx="60" cy="60" rx="56" ry="40" fill="none" stroke="#5C5C5C" stroke-width="3"></ellipse>
+  <ellipse cx="60" cy="60" rx="56" ry="40" fill="none" stroke="#F58220" stroke-width="3" stroke-dasharray="220 360" stroke-dashoffset="-30"></ellipse>
+  <text x="60" y="78" text-anchor="middle" font-family="&#39;Saira Condensed&#39;,&#39;Oswald&#39;,system-ui,sans-serif" font-weight="800" font-size="56" fill="#F58220" letter-spacing="-2">MG</text>
+</svg>

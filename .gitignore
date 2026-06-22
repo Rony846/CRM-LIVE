@@ -721,3 +721,4 @@ backend/uploads/*/
 # cookies, localStorage, IndexedDB and cache for each Amazon/Bigship
 # account — sensitive session data and large binary files.
 backend/browser_profiles/
+backend/exports/

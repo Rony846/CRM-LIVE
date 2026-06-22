@@ -48,6 +48,7 @@ import GSTHSNDashboard from './pages/finance/GSTHSNDashboard';
 import EcommerceReconciliation from './pages/finance/EcommerceReconciliation';
 import ImportCosting from './pages/finance/ImportCosting';
 import BankReconciliation from './pages/finance/BankReconciliation';
+import UnbookedReceipts from './pages/finance/UnbookedReceipts';
 import FinanceAgent from './pages/agents/FinanceAgent';
 import FinanceAgentWatch from './pages/agents/FinanceAgentWatch';
 import FinanceAgentInbox from './pages/agents/FinanceAgentInbox';
@@ -175,6 +176,7 @@ import AdminWarrantyClaims from './pages/admin/AdminWarrantyClaims';
 import AdminSpareParts from './pages/admin/AdminSpareParts';
 import AdminSpareOrders from './pages/admin/AdminSpareOrders';
 import AmazonRefundLosses from './pages/admin/AmazonRefundLosses';
+import AdminOnlineOrders from './pages/admin/AdminOnlineOrders';
 import LegalCases from './pages/admin/LegalCases';
 import AZClaims from './pages/admin/AZClaims';
 import AdminWhatsAppAgent from './pages/admin/AdminWhatsAppAgent';
@@ -656,6 +658,11 @@ function App() {
           <Route path="/finance/bank-reconciliation" element={
             <ProtectedRoute allowedRoles={['admin', 'accountant']}>
               <BankReconciliation />
+            </ProtectedRoute>
+          } />
+          <Route path="/finance/unbooked-receipts" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <UnbookedReceipts />
             </ProtectedRoute>
           } />
           <Route path="/agents/finance" element={
@@ -1161,6 +1168,11 @@ function App() {
           <Route path="/admin/refund-losses" element={
             <ProtectedRoute allowedRoles={['admin', 'accountant']}>
               <AmazonRefundLosses />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/online-orders" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <AdminOnlineOrders />
             </ProtectedRoute>
           } />
           <Route path="/admin/legal-cases" element={

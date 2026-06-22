@@ -203,6 +203,7 @@ const adminNavGroups = [
     items: [
       { label: 'Finance Analytics', icon: BarChart3, path: '/finance/analytics' },
       { label: 'Finance & GST', icon: IndianRupee, path: '/finance' },
+      { label: 'Online Orders', icon: ShoppingBag, path: '/admin/online-orders' },
       { label: 'Amazon Refunds', icon: AlertTriangle, path: '/admin/refunds' },
       { label: 'Refund Losses (Legal)', icon: Scale, path: '/admin/refund-losses' },
       { label: 'A-Z Claims', icon: ShieldAlert, path: '/admin/az-claims' },
@@ -215,6 +216,7 @@ const adminNavGroups = [
       { label: 'E-commerce Recon', icon: ShoppingCart, path: '/finance/ecommerce-reconciliation' },
       { label: 'Import Costing', icon: Ship, path: '/finance/import-costing' },
       { label: 'Bank Reconciliation', icon: CreditCard, path: '/finance/bank-reconciliation' },
+      { label: 'Unbooked Receipts', icon: AlertTriangle, path: '/finance/unbooked-receipts' },
       { label: 'Sales Register', icon: FileText, path: '/accountant/sales' },
       { label: 'Purchase Register', icon: ShoppingCart, path: '/accountant/purchases' },
       { label: 'Party Master', icon: Building2, path: '/admin/parties' },
@@ -308,6 +310,7 @@ const accountantNavGroups = [
     items: [
       { label: 'Finance Analytics', icon: BarChart3, path: '/finance/analytics' },
       { label: 'Finance & GST', icon: IndianRupee, path: '/finance' },
+      { label: 'Online Orders', icon: ShoppingBag, path: '/admin/online-orders' },
       { label: 'Amazon Refunds', icon: AlertTriangle, path: '/admin/refunds' },
       { label: 'Refund Losses (Legal)', icon: Scale, path: '/admin/refund-losses' },
       { label: 'A-Z Claims', icon: ShieldAlert, path: '/admin/az-claims' },

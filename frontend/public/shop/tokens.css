@@ -1,0 +1,252 @@
+/* =====================================================================
+   MuscleGrid Design Tokens
+   Drop into any HTML doc with: <link rel="stylesheet" href="colors_and_type.css">
+   Then prefer semantic vars (--mg-h1, --mg-card-bg) over base ones.
+   ===================================================================== */
+
+@import url("https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;600;700;800&family=Inter+Tight:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap");
+
+:root {
+  /* ---------- Color · Brand ---------- */
+  --mg-orange:         #F58220;   /* primary brand orange (lion + accents) */
+  --mg-orange-deep:    #D96A0A;   /* CTA hover / press */
+  --mg-orange-soft:    #FFF1E3;   /* tinted orange bg */
+  --mg-grey:           #5C5C5C;   /* primary brand grey (Muscle wordmark) */
+  --mg-grey-deep:      #3F3F3F;
+  /* legacy red aliases — map to orange so existing files still render on-brand */
+  --mg-red:            #F58220;
+  --mg-red-deep:       #D96A0A;
+  --mg-red-soft:       #FFF1E3;
+
+  /* ---------- Color · Neutrals (Iron scale) ---------- */
+  --mg-iron-1000:      #0E0E0E;
+  --mg-iron-900:       #1A1A1A;   /* primary text */
+  --mg-iron-700:       #3A3A3A;
+  --mg-iron-500:       #6B6B6B;   /* secondary text */
+  --mg-iron-400:       #9A9A9A;
+  --mg-iron-300:       #C7C7C7;
+  --mg-iron-200:       #E6E6E6;   /* hairlines */
+  --mg-iron-100:       #F2F2F1;
+  --mg-iron-50:        #FAFAF8;   /* paper bg */
+  --mg-white:          #FFFFFF;
+
+  /* ---------- Color · Energy accents ---------- */
+  --mg-voltage:        #F4C518;   /* warranty, caution */
+  --mg-voltage-deep:   #C49C00;
+  --mg-grid-blue:      #0B6FB8;   /* technical / data */
+  --mg-solar-orange:   #FF8A1F;   /* solar imagery */
+
+  /* ---------- Color · Semantic ---------- */
+  --mg-success:        #1F8A4C;
+  --mg-warning:        var(--mg-voltage);
+  --mg-danger:         var(--mg-red);
+  --mg-info:           var(--mg-grid-blue);
+
+  /* ---------- Foreground / background pairs ---------- */
+  --mg-bg:             var(--mg-iron-50);
+  --mg-bg-elev:        var(--mg-white);
+  --mg-bg-dark:        var(--mg-iron-900);
+  --mg-fg:             var(--mg-iron-900);
+  --mg-fg-muted:       var(--mg-iron-500);
+  --mg-fg-onDark:      var(--mg-white);
+  --mg-fg-onDark-muted:#A6A6A6;
+
+  /* ---------- Type · Families ---------- */
+  --mg-font-display:   "Saira Condensed", "Oswald", system-ui, sans-serif;
+  --mg-font-headline:  "Inter Tight", system-ui, sans-serif;
+  --mg-font-body:      "Inter", system-ui, sans-serif;
+  --mg-font-mono:      "JetBrains Mono", ui-monospace, monospace;
+
+  /* ---------- Type · Scale ---------- */
+  --mg-text-xs:        12px;
+  --mg-text-sm:        14px;
+  --mg-text-base:      16px;
+  --mg-text-md:        18px;
+  --mg-text-lg:        20px;
+  --mg-text-xl:        24px;
+  --mg-text-2xl:       30px;
+  --mg-text-3xl:       38px;
+  --mg-text-4xl:       48px;
+  --mg-text-5xl:       64px;
+  --mg-text-6xl:       84px;
+
+  --mg-leading-tight:  1.1;
+  --mg-leading-snug:   1.25;
+  --mg-leading-normal: 1.5;
+  --mg-leading-loose:  1.7;
+
+  --mg-tracking-tight: -0.02em;
+  --mg-tracking-snug:  -0.01em;
+  --mg-tracking-flat:  0em;
+  --mg-tracking-wide:   0.04em;
+  --mg-tracking-caps:   0.08em;
+
+  /* ---------- Spacing ---------- */
+  --mg-space-1:  4px;
+  --mg-space-2:  8px;
+  --mg-space-3:  12px;
+  --mg-space-4:  16px;
+  --mg-space-5:  24px;
+  --mg-space-6:  32px;
+  --mg-space-7:  48px;
+  --mg-space-8:  64px;
+  --mg-space-9:  96px;
+
+  /* ---------- Radii ---------- */
+  --mg-radius-sm:   4px;
+  --mg-radius-md:   8px;
+  --mg-radius-lg:   14px;
+  --mg-radius-pill: 999px;
+
+  /* ---------- Borders ---------- */
+  --mg-border:       1px solid var(--mg-iron-200);
+  --mg-border-dark:  1px solid rgba(255,255,255,0.08);
+
+  /* ---------- Shadows ---------- */
+  --mg-shadow-sm:  0 1px 2px rgba(15,15,15,0.06);
+  --mg-shadow-md:  0 6px 16px rgba(15,15,15,0.08);
+  --mg-shadow-lg:  0 16px 40px rgba(15,15,15,0.12);
+  --mg-shadow-inset-top: inset 0 1px 0 rgba(15,15,15,0.04);
+
+  /* ---------- Motion ---------- */
+  --mg-ease-out:    cubic-bezier(.2,.7,.3,1);
+  --mg-ease-in:     cubic-bezier(.5,0,.9,.3);
+  --mg-dur-fast:    100ms;
+  --mg-dur-base:    180ms;
+  --mg-dur-slow:    320ms;
+}
+
+/* =====================================================================
+   Semantic / element styles
+   ===================================================================== */
+
+.mg-display {
+  font-family: var(--mg-font-display);
+  font-weight: 800;
+  font-size: var(--mg-text-6xl);
+  line-height: var(--mg-leading-tight);
+  letter-spacing: var(--mg-tracking-tight);
+  color: var(--mg-fg);
+  text-transform: uppercase;
+}
+
+.mg-h1, h1.mg {
+  font-family: var(--mg-font-headline);
+  font-weight: 700;
+  font-size: var(--mg-text-4xl);
+  line-height: var(--mg-leading-tight);
+  letter-spacing: var(--mg-tracking-tight);
+  color: var(--mg-fg);
+}
+.mg-h2, h2.mg {
+  font-family: var(--mg-font-headline);
+  font-weight: 700;
+  font-size: var(--mg-text-2xl);
+  line-height: var(--mg-leading-snug);
+  letter-spacing: var(--mg-tracking-snug);
+  color: var(--mg-fg);
+}
+.mg-h3, h3.mg {
+  font-family: var(--mg-font-headline);
+  font-weight: 600;
+  font-size: var(--mg-text-xl);
+  line-height: var(--mg-leading-snug);
+  color: var(--mg-fg);
+}
+.mg-eyebrow {
+  font-family: var(--mg-font-headline);
+  font-weight: 700;
+  font-size: var(--mg-text-xs);
+  letter-spacing: var(--mg-tracking-caps);
+  text-transform: uppercase;
+  color: var(--mg-orange);
+}
+.mg-body, p.mg {
+  font-family: var(--mg-font-body);
+  font-weight: 400;
+  font-size: var(--mg-text-base);
+  line-height: var(--mg-leading-normal);
+  color: var(--mg-fg);
+}
+.mg-body-sm {
+  font-family: var(--mg-font-body);
+  font-weight: 400;
+  font-size: var(--mg-text-sm);
+  line-height: var(--mg-leading-normal);
+  color: var(--mg-fg-muted);
+}
+.mg-spec {
+  font-family: var(--mg-font-mono);
+  font-weight: 500;
+  font-size: var(--mg-text-sm);
+  letter-spacing: var(--mg-tracking-flat);
+  color: var(--mg-fg);
+  font-variant-numeric: tabular-nums;
+}
+.mg-price {
+  font-family: var(--mg-font-headline);
+  font-weight: 700;
+  font-size: var(--mg-text-xl);
+  font-variant-numeric: tabular-nums;
+  color: var(--mg-fg);
+}
+.mg-price-strike {
+  font-family: var(--mg-font-headline);
+  font-weight: 500;
+  font-size: var(--mg-text-md);
+  color: var(--mg-fg-muted);
+  text-decoration: line-through;
+}
+
+/* Buttons */
+.mg-btn {
+  display: inline-flex; align-items: center; gap: var(--mg-space-2);
+  font-family: var(--mg-font-headline);
+  font-weight: 700;
+  font-size: var(--mg-text-sm);
+  letter-spacing: var(--mg-tracking-wide);
+  text-transform: uppercase;
+  padding: 12px 20px;
+  border-radius: var(--mg-radius-md);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background var(--mg-dur-base) var(--mg-ease-out),
+              transform var(--mg-dur-fast) var(--mg-ease-out),
+              box-shadow var(--mg-dur-base) var(--mg-ease-out);
+}
+.mg-btn-primary { background: var(--mg-orange); color: var(--mg-white); }
+.mg-btn-primary:hover { background: var(--mg-orange-deep); }
+.mg-btn-primary:active { transform: scale(.98); }
+.mg-btn-secondary { background: var(--mg-iron-900); color: var(--mg-white); }
+.mg-btn-secondary:hover { background: var(--mg-iron-700); }
+.mg-btn-ghost { background: transparent; color: var(--mg-fg); border-color: var(--mg-iron-300); }
+.mg-btn-ghost:hover { background: var(--mg-iron-100); }
+.mg-btn:focus-visible { outline: 2px solid var(--mg-orange); outline-offset: 2px; }
+.mg-btn:disabled { opacity: .4; pointer-events: none; }
+
+/* Card */
+.mg-card {
+  background: var(--mg-bg-elev);
+  border: var(--mg-border);
+  border-radius: var(--mg-radius-md);
+  box-shadow: var(--mg-shadow-sm);
+}
+.mg-card-elev { box-shadow: var(--mg-shadow-md); }
+
+/* Pill / chip */
+.mg-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--mg-font-headline);
+  font-weight: 700;
+  font-size: var(--mg-text-xs);
+  letter-spacing: var(--mg-tracking-caps);
+  text-transform: uppercase;
+  padding: 4px 10px;
+  border-radius: var(--mg-radius-pill);
+  background: var(--mg-iron-100);
+  color: var(--mg-iron-900);
+}
+.mg-chip-sale  { background: var(--mg-orange); color: var(--mg-white); }
+.mg-chip-volt  { background: var(--mg-voltage); color: var(--mg-iron-900); }
+.mg-chip-grid  { background: var(--mg-grid-blue); color: var(--mg-white); }
+.mg-chip-solar { background: var(--mg-solar-orange); color: var(--mg-iron-900); }

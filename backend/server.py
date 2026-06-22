@@ -916,6 +916,18 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Invoice-hold timeout — a decision held for an invoice the customer never sent gets
+        # escalated to the manager (raised without an invoice, flagged) after PRATIBHA_INVOICE_HOLD_HOURS.
+        scheduler.add_job(
+            scheduled_pratibha_invoice_holds,
+            IntervalTrigger(hours=1),
+            id="pratibha_invoice_holds",
+            name="Pratibha Invoice-Hold Timeout (escalate decisions stuck waiting on a customer invoice)",
+            replace_existing=True,
+            misfire_grace_time=600,
+            max_instances=1,
+        )
+
         # Pratibha proactive daily digest — once a day (UTC schedule from env; default
         # 03:30 UTC ≈ 09:00 IST). Emails the founder an ops-health summary.
         from apscheduler.triggers.cron import CronTrigger as _CronTrigger
@@ -1071,6 +1083,17 @@ async def create_indexes():
             IntervalTrigger(minutes=REFUND_DEFENSE_MIN),
             id="refund_defense",
             name="Refund-Defense (catch A-to-z claims before the deadline)",
+            replace_existing=True,
+            misfire_grace_time=600,
+            max_instances=1,
+        )
+
+        # Amazon email ingest: keep A-to-z claims + refunds live from the seller mailbox (IMAP, free).
+        scheduler.add_job(
+            scheduled_amazon_email_ingest,
+            IntervalTrigger(minutes=AMAZON_EMAIL_INGEST_MIN),
+            id="amazon_email_ingest",
+            name="Amazon email ingest (A-to-z claims + refunds → CRM)",
             replace_existing=True,
             misfire_grace_time=600,
             max_instances=1,
@@ -3550,6 +3573,9 @@ async def scheduled_amazon_sync():
                             "address_line2": shipping.get("AddressLine2"),
                             "order_total": float((order.get("OrderTotal") or {}).get("Amount", 0) or 0),
                             "currency": (order.get("OrderTotal") or {}).get("CurrencyCode", "INR"),
+                            "payment_method": order.get("PaymentMethod"),
+                            "payment_method_details": order.get("PaymentMethodDetails"),
+                            "is_cod": (order.get("PaymentMethod") == "COD") or ("COD" in (order.get("PaymentMethodDetails") or [])),
                             "items": res["items"],
                             "synced_at": now_iso,
                             "updated_at": now_iso,
@@ -12488,6 +12514,80 @@ async def _gate_resolve_customer(tracking_id, ticket=None, dispatch=None):
     return None
 
 
+async def _return_otp_headsup(batch: dict):
+    """(a) A new return batch arrived → tell the founder it's coming (firm-wise), OTP still held."""
+    if batch.get("heads_up_sent"):
+        return
+    orders = "\n".join(f"• {it['order_id']} · {it['tracking_id']} — {(it.get('product') or '')[:30]}"
+                       for it in batch.get("items", [])[:8])
+    body = (f"📦 New Amazon return batch — *{batch.get('firm') or '?'}*: {batch.get('total')} parcel(s) "
+            f"incoming (agent {batch.get('agent_name') or '?'}, valid {batch.get('valid_through') or '?'}).\n"
+            f"{orders}\n🔒 OTP held until all {batch.get('total')} are scanned inward at the gate.")
+    try:
+        await _alert_founder_free(body, "return_otp_new")
+    except Exception as e:
+        logger.warning(f"return-OTP heads-up failed: {e}")
+    await db.return_otp_batches.update_one({"id": batch["id"]}, {"$set": {"heads_up_sent": True}})
+
+
+async def _return_otp_expired_alert(batch: dict):
+    """(b) A batch passed its validity with parcels un-scanned → flag the never-arrived returns."""
+    missing = [it for it in batch.get("items", []) if not it.get("scanned")]
+    body = (f"⚠️ Return batch EXPIRED — *{batch.get('firm') or '?'}* (valid {batch.get('valid_through') or '?'}): "
+            f"{len(missing)}/{batch.get('total')} parcel(s) never scanned inward — these returns may NOT have "
+            f"arrived. Verify before any refund/credit:\n"
+            + "\n".join(f"• {it['order_id']} · {it['tracking_id']}" for it in missing[:8]))
+    try:
+        await _alert_founder_free(body, "return_otp_expired")
+    except Exception as e:
+        logger.warning(f"return-OTP expiry alert failed: {e}")
+
+
+async def _release_return_otp(batch: dict):
+    """A return batch is fully scanned → WhatsApp the founder the now-unlocked OTP (free, in-window)."""
+    if batch.get("notified"):
+        return
+    orders = "\n".join(f"• {it['order_id']} · {it['tracking_id']}" for it in batch.get("items", [])[:8])
+    body = (f"🔓 Return OTP UNLOCKED — *{batch.get('firm') or '?'}* — all {batch.get('total')} parcel(s) scanned.\n"
+            f"OTP: *{batch.get('otp')}*  (agent {batch.get('agent_name') or '?'}, valid {batch.get('valid_through') or '?'})\n"
+            f"{orders}\nKey it into the Amazon handheld to accept the returns.")
+    try:
+        await _alert_founder_free(body, "return_otp")
+    except Exception as e:
+        logger.warning(f"return-OTP founder alert failed: {e}")
+    await db.return_otp_batches.update_one({"id": batch["id"]}, {"$set": {"notified": True}})
+
+
+@api_router.get("/gate/return-batches")
+async def gate_return_batches(
+    days: int = 7,
+    user: dict = Depends(require_roles(["gate", "dispatcher", "admin", "accountant"]))
+):
+    """Open + recent Amazon return-OTP batches for the gate page. The OTP is MASKED until every
+    listed parcel has been scanned inward (status complete) — then it's revealed inline."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    out = []
+    async for b in db.return_otp_batches.find(
+            {"$or": [{"status": "pending"}, {"email_date": {"$gte": cutoff}}]},
+            {"_id": 0}).sort("email_date", -1).limit(100):
+        released = b.get("otp_released")
+        out.append({
+            "id": b.get("id"), "email_date": b.get("email_date"), "status": b.get("status"),
+            "firm": b.get("firm") or (b.get("firm_names") or ["?"])[0],
+            "firm_names": b.get("firm_names"), "agent_name": b.get("agent_name"),
+            "agent_phone": b.get("agent_phone"), "valid_through": b.get("valid_through"),
+            "total": b.get("total"), "scanned_count": b.get("scanned_count"),
+            "otp": b.get("otp") if released else None,            # hidden until complete
+            "otp_locked": not released,
+            "items": [{"order_id": it["order_id"], "tracking_id": it["tracking_id"],
+                       "product": it.get("product"), "reason": it.get("reason"),
+                       "firm_name": it.get("firm_name"), "scanned": it.get("scanned"),
+                       "scanned_at": it.get("scanned_at")} for it in b.get("items", [])],
+        })
+    pending = sum(1 for b in out if b["status"] == "pending")
+    return {"batches": out, "pending_batches": pending, "as_of": datetime.now(timezone.utc).isoformat()}
+
+
 @api_router.post("/gate/scan", response_model=GateScanResponse)
 async def gate_scan(
     scan_data: GateScanCreate,
@@ -12603,7 +12703,21 @@ async def gate_scan(
                 "queue_number": queue_entry["queue_number"]
             })
         # ============ END INCOMING QUEUE ENTRY ============
-    
+
+        # ============ RETURN-OTP GATE: match this inward parcel to an Amazon return batch ============
+        # If this tracking belongs to an Amazon "Proof of Delivery" return batch, mark it scanned.
+        # When the LAST parcel of a batch is scanned, the held OTP is released (gate page + WhatsApp).
+        try:
+            from utils import amazon_return_otp
+            if amazon_return_otp.enabled():
+                _b = await amazon_return_otp.match_inward_scan(
+                    db, scan_data.tracking_id, by=user["id"],
+                    by_name=f"{user['first_name']} {user['last_name']}")
+                if _b and _b.get("just_completed"):
+                    await _release_return_otp(_b)
+        except Exception as _e:
+            logger.warning(f"return-OTP match failed: {_e}")
+
     elif scan_data.scan_type == "outward":
         if ticket:
             await db.tickets.update_one(
@@ -25175,6 +25289,30 @@ async def export_financial_report(
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
+@api_router.get("/finance/unbooked-receipts")
+async def get_unbooked_dealer_receipts(
+    confidence: Optional[str] = None,  # high | medium | low (filter)
+    user: dict = Depends(require_roles(["accountant", "admin"]))
+):
+    """Dealer payments seen in the bank but booked in NEITHER the CRM nor Vyapar — a per-dealer
+    reconciliation worklist (flagged by scripts/flag_unbooked_dealer_receipts.py)."""
+    q = {"unbooked_bank_receipts": {"$exists": True}}
+    if confidence in ("high", "medium", "low"):
+        q["unbooked_bank_confidence"] = confidence
+    rows = await db.parties.find(
+        q, {"_id": 0, "id": 1, "name": 1, "phone": 1, "gstin": 1,
+            "unbooked_bank_total": 1, "unbooked_bank_count": 1, "unbooked_bank_confidence": 1,
+            "unbooked_bank_receipts": 1, "unbooked_bank_flagged_at": 1}
+    ).sort("unbooked_bank_total", -1).to_list(1000)
+    grand = round(sum(r.get("unbooked_bank_total") or 0 for r in rows), 2)
+    by_conf = {"high": 0.0, "medium": 0.0, "low": 0.0}
+    for r in rows:
+        c = r.get("unbooked_bank_confidence") or "low"
+        by_conf[c] = round(by_conf.get(c, 0) + (r.get("unbooked_bank_total") or 0), 2)
+    return {"dealers": len(rows), "total": grand, "by_confidence": by_conf, "rows": rows,
+            "flagged_at": rows[0].get("unbooked_bank_flagged_at") if rows else None}
+
+
 @api_router.get("/finance/audit-logs")
 async def get_financial_audit_logs(
     entity_type: Optional[str] = None,
@@ -34978,6 +35116,10 @@ async def fetch_amazon_orders(
                 "amazon_shipped" if order.get("OrderStatus") == "Shipped" else "pending"
             ),
             "amazon_status": order.get("OrderStatus"),  # Track Amazon's status
+            # Payment method (for COD-vs-Prepaid cancellation analysis). India: "COD" or "Other"(≈Prepaid).
+            "payment_method": order.get("PaymentMethod"),
+            "payment_method_details": order.get("PaymentMethodDetails"),
+            "is_cod": (order.get("PaymentMethod") == "COD") or ("COD" in (order.get("PaymentMethodDetails") or [])),
             "tracking_number": existing.get("tracking_number") if existing else None,
             "carrier_code": existing.get("carrier_code") if existing else None,
             "dispatch_id": existing.get("dispatch_id") if existing else None,
@@ -38439,7 +38581,8 @@ async def upload_legal_case_document(case_id: str, file: UploadFile = File(...),
                                      doc_type: str = Form("notice"),
                                      user: dict = Depends(require_roles(_LEGAL_ROLES))):
     """Lawyer (or admin) uploads their notice / supporting document for a case."""
-    if not await db.legal_cases.find_one({"id": case_id}, {"_id": 1}):
+    case = await db.legal_cases.find_one({"id": case_id}, {"serial": 1, "party_name": 1})
+    if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     content = await file.read()
     if not content:
@@ -63080,6 +63223,36 @@ async def scheduled_refund_defense():
     logger.info(f"Refund-Defense: {len(new_claims)} new A-Z claims recorded")
 
 
+# ===================== Amazon email → CRM ingest =====================
+AMAZON_EMAIL_INGEST_MIN = int(os.environ.get("AMAZON_EMAIL_INGEST_MIN", "30"))
+
+
+async def scheduled_amazon_email_ingest():
+    """Keep az_claims + amazon_refunds live from Amazon's A-to-z claim / refund emails (IMAP, free,
+    no paid API). Incremental (last ~14 days) and idempotent (message-id dedup). Off unless
+    AMAZON_EMAIL_INGEST_ENABLED is set."""
+    from utils import amazon_email_ingest, amazon_return_otp
+    if amazon_email_ingest.enabled():
+        try:
+            st = await amazon_email_ingest.ingest(db, write=True, since_days=14)
+            if any(st.get(k) for k in ("claims_new", "claims_decided", "refunds_new", "refunds_confirmed")):
+                logger.info(f"Amazon email ingest: {st}")
+        except Exception as e:
+            logger.warning(f"Amazon email ingest failed: {e}")
+    # Return-OTP batches: parse the daily "Proof of Delivery" return emails (OTP held until scanned).
+    if amazon_return_otp.enabled():
+        try:
+            rb = await amazon_return_otp.ingest_batches(db, since_days=7)
+            for nb in rb.get("new", []):                     # (a) heads-up on a newly-arrived batch
+                await _return_otp_headsup(nb)
+            for xb in await amazon_return_otp.flag_expired(db):  # (b) flag batches that expired unscanned
+                await _return_otp_expired_alert(xb)
+            if rb.get("batches_new"):
+                logger.info(f"Return-OTP batches new={rb['batches_new']}")
+        except Exception as e:
+            logger.warning(f"Return-OTP ingest failed: {e}")
+
+
 # ===================== Collections agent =====================
 COLLECTIONS_MIN = int(os.environ.get("COLLECTIONS_MIN", "1440"))  # daily
 _GROUP_KW = ("mgipl", "musclegrid", "spv industries", "electronics bay", "ebay")
@@ -72346,6 +72519,288 @@ async def scrape_all_products_from_website(
         raise HTTPException(status_code=400, detail=f"Website scraping failed: {str(e)}")
 
 
+# ============================ PUBLIC STOREFRONT API ============================
+# Read-only, unauthenticated product feed for the self-hosted storefront (Shopify replacement).
+def _shop_card(m: dict) -> dict:
+    return {
+        "id": m.get("id"),
+        "handle": m.get("shopify_handle") or m.get("sku_code") or m.get("id"),
+        "title": m.get("name"),
+        "type": m.get("category") or m.get("product_type"),
+        "price": m.get("selling_price"),
+        "compare_at": m.get("mrp") if (m.get("mrp") or 0) > (m.get("selling_price") or 0) else None,
+        "image": m.get("image_url"),
+        "gallery": m.get("image_gallery") or ([m.get("image_url")] if m.get("image_url") else []),
+        "sku": m.get("sku_code"),
+        "description": m.get("description"),
+    }
+
+
+_SHOP_BASEQ = {"is_active": {"$ne": False}, "selling_price": {"$gt": 0}, "image_url": {"$nin": [None, ""]}}
+
+
+@api_router.get("/shop/products")
+async def shop_products(limit: int = 300, category: Optional[str] = None, q: Optional[str] = None):
+    """All sellable products for the storefront (active, priced, with an image)."""
+    query = dict(_SHOP_BASEQ)
+    if category:
+        query["category"] = {"$regex": f"^{re.escape(category)}$", "$options": "i"}
+    if q:
+        query["name"] = {"$regex": re.escape(q), "$options": "i"}
+    cur = db.master_skus.find(query).sort("mrp", -1).limit(min(limit, 500))
+    items = [_shop_card(m) async for m in cur]
+    cats = await db.master_skus.distinct("category", _SHOP_BASEQ)
+    return {"products": items, "count": len(items), "categories": sorted([c for c in cats if c])}
+
+
+@api_router.get("/shop/featured")
+async def shop_featured(limit: int = 8):
+    cur = db.master_skus.find(_SHOP_BASEQ).sort("mrp", -1).limit(min(limit, 24))
+    return {"products": [_shop_card(m) async for m in cur]}
+
+
+@api_router.get("/shop/product/{pid}")
+async def shop_product(pid: str):
+    m = await db.master_skus.find_one(
+        {"$and": [_SHOP_BASEQ, {"$or": [{"id": pid}, {"sku_code": pid}, {"shopify_handle": pid}]}]})
+    if not m:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return {"product": _shop_card(m)}
+
+
+# ---- Public guest checkout (storefront). Prices are computed SERVER-SIDE from master_skus —
+# the client only sends product ids + quantities, never prices. Razorpay signature is bound to
+# THIS order's razorpay_order_id and each payment id can settle only one order. ----
+class ShopCheckoutItem(BaseModel):
+    id: str
+    qty: int = 1
+
+
+class ShopCheckoutCreate(BaseModel):
+    items: List[ShopCheckoutItem]
+    name: str
+    phone: str
+    email: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    pincode: Optional[str] = None
+    payment_method: str = "razorpay"   # "razorpay" | "cod"
+
+
+class ShopCheckoutVerify(BaseModel):
+    order_id: str
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
+
+
+@api_router.post("/shop/checkout/create")
+async def shop_checkout_create(body: ShopCheckoutCreate):
+    if not body.items:
+        raise HTTPException(status_code=400, detail="Cart is empty")
+    phone = re.sub(r"\D", "", body.phone or "")[-10:]
+    if len(phone) != 10:
+        raise HTTPException(status_code=400, detail="A valid 10-digit phone number is required")
+    if not (body.name or "").strip():
+        raise HTTPException(status_code=400, detail="Name is required")
+    line_items, subtotal = [], 0.0
+    for it in body.items:
+        m = await db.master_skus.find_one(
+            {"$and": [_SHOP_BASEQ, {"$or": [{"id": it.id}, {"sku_code": it.id}]}]})
+        if not m:
+            continue
+        qty = max(1, int(it.qty or 1))
+        price = float(m.get("selling_price") or 0)        # SERVER price — never trust the client
+        lt = round(price * qty, 2)
+        subtotal += lt
+        line_items.append({"master_sku_id": m["id"], "sku": m.get("sku_code"), "title": m.get("name"),
+                           "price": price, "quantity": qty, "line_total": lt, "image": m.get("image_url")})
+    if not line_items:
+        raise HTTPException(status_code=400, detail="No valid items in cart")
+    total = round(subtotal, 2)
+    now = datetime.now(timezone.utc).isoformat()
+    oid = str(uuid.uuid4())
+    onum = "MGW-" + oid.replace("-", "")[:8].upper()
+    party = await db.parties.find_one({"phone": {"$regex": phone + "$"}}, {"id": 1})
+    await db.marketplace_orders.insert_one({
+        "id": oid, "order_number": onum, "source": "storefront",
+        "customer_name": body.name.strip(), "customer_phone": phone, "customer_email": body.email,
+        "party_id": (party or {}).get("id"),
+        "items": line_items, "subtotal": total, "discount": 0, "total": total,
+        "shipping": {"name": body.name.strip(), "phone": phone, "address": body.address,
+                     "city": body.city, "pincode": body.pincode},
+        "payment_method": body.payment_method, "payment_status": "pending", "status": "pending",
+        "created_at": now, "updated_at": now})
+    if body.payment_method == "cod":
+        await db.marketplace_orders.update_one(
+            {"id": oid}, {"$set": {"status": "confirmed", "payment_status": "cod_pending"}})
+        fresh = await db.marketplace_orders.find_one({"id": oid}, {"_id": 0})
+        await _notify_new_storefront_order(fresh)
+        return {"order_id": oid, "order_number": onum, "cod": True, "total": total}
+    if not RAZORPAY_ENABLED:
+        raise HTTPException(status_code=503, detail="Online payment is not configured")
+    amount_paise = int(round(total * 100))
+    try:
+        rzp = razorpay_client.order.create({
+            "amount": amount_paise, "currency": "INR", "receipt": onum, "payment_capture": 1,
+            "notes": {"storefront_order_id": oid}})
+    except Exception as e:
+        logger.error(f"Storefront Razorpay create failed for {onum}: {e}")
+        raise HTTPException(status_code=502, detail="Could not start payment")
+    await db.marketplace_orders.update_one(
+        {"id": oid}, {"$set": {"razorpay_order_id": rzp["id"], "updated_at": now}})
+    return {"order_id": oid, "order_number": onum, "razorpay_order_id": rzp["id"],
+            "key_id": RAZORPAY_KEY_ID, "amount": amount_paise, "currency": "INR", "total": total,
+            "prefill": {"name": body.name.strip(), "email": body.email or "", "contact": phone}}
+
+
+@api_router.post("/shop/checkout/verify")
+async def shop_checkout_verify(body: ShopCheckoutVerify):
+    order = await db.marketplace_orders.find_one({"id": body.order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("payment_status") == "paid":
+        return {"success": True, "order_number": order.get("order_number")}
+    if body.razorpay_order_id != order.get("razorpay_order_id"):
+        raise HTTPException(status_code=400, detail="Payment does not match this order")
+    if await db.marketplace_orders.find_one({"razorpay_payment_id": body.razorpay_payment_id}, {"_id": 1}):
+        raise HTTPException(status_code=400, detail="This payment has already been used")
+    try:
+        razorpay_client.utility.verify_payment_signature({
+            "razorpay_order_id": body.razorpay_order_id,
+            "razorpay_payment_id": body.razorpay_payment_id,
+            "razorpay_signature": body.razorpay_signature})
+    except Exception as e:
+        logger.warning(f"Storefront payment verify failed for {body.order_id}: {e}")
+        raise HTTPException(status_code=400, detail="Payment verification failed")
+    now = datetime.now(timezone.utc).isoformat()
+    await db.marketplace_orders.update_one({"id": body.order_id}, {"$set": {
+        "payment_status": "paid", "status": "confirmed", "razorpay_payment_id": body.razorpay_payment_id,
+        "paid_at": now, "updated_at": now}})
+    fresh = await db.marketplace_orders.find_one({"id": body.order_id}, {"_id": 0})
+    await _notify_new_storefront_order(fresh)
+    return {"success": True, "order_number": order.get("order_number")}
+
+
+async def _notify_new_storefront_order(order: dict):
+    """Free WhatsApp ping to the team so no online order goes unseen. Fires on COD placement
+    and on successful online payment."""
+    if not order:
+        return
+    try:
+        items = "\n".join(f"• {it.get('quantity')}× {(it.get('title') or '')[:34]}"
+                          for it in (order.get("items") or [])[:6])
+        pm = "COD" if order.get("payment_method") == "cod" else "PAID online ✅"
+        sh = order.get("shipping") or {}
+        body = (f"🛒 NEW ONLINE ORDER {order.get('order_number')} — ₹{float(order.get('total') or 0):,.0f} ({pm})\n"
+                f"{order.get('customer_name')} · {order.get('customer_phone')}\n"
+                f"{sh.get('address') or ''}, {sh.get('city') or ''} {sh.get('pincode') or ''}\n"
+                f"{items}\n→ /admin/online-orders")
+        await _alert_founder_free(body, "online_order")
+    except Exception as e:
+        logger.warning(f"storefront order notify failed: {e}")
+    await _send_order_confirmation_email(order)     # buyer confirmation
+    await _create_storefront_fulfillment(order)     # into the dispatch queue
+
+
+async def _send_order_confirmation_email(order: dict):
+    """Email the buyer their order confirmation (best-effort; skips if no email)."""
+    email = (order.get("customer_email") or "").strip()
+    if not email:
+        return
+    try:
+        rows = "".join(
+            f"<tr><td style='padding:8px;border-bottom:1px solid #eee'>{it.get('quantity')}× {it.get('title')}</td>"
+            f"<td style='padding:8px;border-bottom:1px solid #eee;text-align:right'>₹{float(it.get('line_total') or 0):,.0f}</td></tr>"
+            for it in (order.get("items") or []))
+        sh = order.get("shipping") or {}
+        paid = "and payment received ✅" if order.get("payment_status") == "paid" else "— pay cash on delivery"
+        html = f"""<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;border:1px solid #eee">
+  <div style="background:#1A1A1A;padding:22px;text-align:center"><span style="color:#F58220;font-weight:800;font-size:24px">Muscle</span><span style="color:#fff;font-weight:800;font-size:24px">Grid</span></div>
+  <div style="padding:26px;color:#1A1A1A">
+    <h2 style="margin:0 0 6px">Thank you, {order.get('customer_name','')}!</h2>
+    <p style="color:#555">Your order <b>{order.get('order_number')}</b> is confirmed {paid}.</p>
+    <table style="width:100%;border-collapse:collapse;margin:16px 0">{rows}
+      <tr><td style="padding:10px 8px;font-weight:800">Total</td><td style="padding:10px 8px;text-align:right;font-weight:800">₹{float(order.get('total') or 0):,.0f}</td></tr>
+    </table>
+    <p style="color:#555"><b>Ship to:</b> {sh.get('address','')}, {sh.get('city','')} {sh.get('pincode','')}</p>
+    <p style="color:#555">Our team will call you shortly to schedule delivery & installation. Need help? Call <a href="tel:+919999036254" style="color:#F58220">099990 36254</a>.</p>
+    <div style="margin-top:20px;padding-top:16px;border-top:1px solid #eee;color:#999;font-size:12px">MuscleGrid Industries · 704, Sector-16, Gurugram · service@musclegrid.in</div>
+  </div></div>"""
+        await send_email_background(email, f"Order Confirmed · {order.get('order_number')} · MuscleGrid",
+                                    html, "order_confirmation", order.get("id"))
+    except Exception as e:
+        logger.warning(f"order confirmation email failed: {e}")
+
+
+async def _create_storefront_fulfillment(order: dict):
+    """Create a pending_fulfillment record so the order enters the team's normal dispatch queue.
+    Status 'ready_to_dispatch' — inert until the team books a label (no stock/COGS movement yet)."""
+    if order.get("fulfillment_id"):
+        return
+    try:
+        firm_id = os.environ.get("STOREFRONT_FIRM_ID", "").strip()
+        firm = await db.firms.find_one({"id": firm_id}) if firm_id else None
+        if not firm:
+            firm = await db.firms.find_one({"name": "MGIPL"})
+        parts = (order.get("customer_name") or "").strip().split()
+        sh = order.get("shipping") or {}
+        items = [{"master_sku_id": it.get("master_sku_id"), "product_name": it.get("title"),
+                  "sku": it.get("sku"), "quantity": it.get("quantity")} for it in (order.get("items") or [])]
+        fid = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        await db.pending_fulfillment.insert_one({
+            "id": fid, "type": "storefront_order", "order_source": "storefront",
+            "firm_id": (firm or {}).get("id"), "firm_name": (firm or {}).get("name"),
+            "order_id": order.get("order_number"),
+            "customer_name": order.get("customer_name"),
+            "customer_first_name": parts[0] if parts else "",
+            "customer_last_name": " ".join(parts[1:]) if len(parts) > 1 else "",
+            "customer_phone": order.get("customer_phone"), "phone": order.get("customer_phone"),
+            "address": sh.get("address"), "city": sh.get("city"), "pincode": sh.get("pincode"),
+            "items": items, "invoice_value": order.get("total"),
+            "payment_method": order.get("payment_method"), "payment_status": order.get("payment_status"),
+            "status": "ready_to_dispatch", "notes": f"Online order ({order.get('payment_method')})",
+            "created_by": "system", "created_by_name": "Storefront", "created_at": now, "updated_at": now})
+        await db.marketplace_orders.update_one({"id": order["id"]}, {"$set": {"fulfillment_id": fid}})
+    except Exception as e:
+        logger.warning(f"storefront fulfillment create failed: {e}")
+
+
+@api_router.get("/admin/online-orders")
+async def admin_online_orders(status: Optional[str] = None, payment: Optional[str] = None,
+                              limit: int = 200, user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """All storefront (guest) orders for the admin Online-Orders view."""
+    q = {"source": "storefront"}
+    if status:
+        q["status"] = status
+    if payment:
+        q["payment_status"] = payment
+    orders = [o async for o in db.marketplace_orders.find(q, {"_id": 0}).sort("created_at", -1).limit(min(limit, 500))]
+    summ = {
+        "count": len(orders),
+        "revenue_paid": round(sum(float(o.get("total") or 0) for o in orders if o.get("payment_status") == "paid"), 2),
+        "cod_pending_value": round(sum(float(o.get("total") or 0) for o in orders if o.get("payment_status") == "cod_pending"), 2),
+        "to_fulfil": sum(1 for o in orders if o.get("status") in ("confirmed", "pending")),
+    }
+    return {"orders": orders, "summary": summ}
+
+
+@api_router.patch("/admin/online-orders/{oid}")
+async def admin_online_order_update(oid: str, body: dict,
+                                    user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Update a storefront order's fulfilment status / tracking / notes."""
+    allowed = {k: v for k, v in (body or {}).items()
+               if k in ("status", "payment_status", "notes", "tracking_id", "courier")}
+    if not allowed:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    allowed["updated_at"] = datetime.now(timezone.utc).isoformat()
+    r = await db.marketplace_orders.update_one({"id": oid, "source": "storefront"}, {"$set": allowed})
+    if not r.matched_count:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return {"success": True}
+
+
 # Mount static files
 static_path = ROOT_DIR / "static"
 if static_path.exists():
@@ -75661,7 +76116,104 @@ async def _wa_tool_search_knowledge(query: str, series: str = "") -> dict:
     return out
 
 
-async def _wa_send_to_manager(text: str, fallback_desc: str = "") -> tuple:
+async def _pratibha_invoice_attachment(customer_phone: str = "", ticket_number: str = ""):
+    """Founder rule: every WhatsApp decision-ask must carry the customer's invoice. Find the
+    invoice on file (by ticket, else the customer's most recent ticket with one) and return a
+    send_whatsapp_media attachment {filename, content(base64), media_type}, or None."""
+    t = None
+    if ticket_number:
+        t = await db.tickets.find_one({"ticket_number": ticket_number, "invoice_file": {"$nin": [None, ""]}},
+                                      {"_id": 0, "invoice_file": 1})
+    if not t and customer_phone:
+        digits = re.sub(r"\D", "", str(customer_phone))[-10:]
+        if digits:
+            t = await db.tickets.find_one({"customer_phone": {"$regex": digits + "$"}, "invoice_file": {"$nin": [None, ""]}},
+                                          {"_id": 0, "invoice_file": 1}, sort=[("created_at", -1)])
+    inv_path = t.get("invoice_file") if t else None
+    # Fallback: an invoice the customer sent over WhatsApp (saved by the invoice-gate flow).
+    if not inv_path and customer_phone:
+        d2 = re.sub(r"\D", "", str(customer_phone))[-10:]
+        if d2:
+            ci = await db.customer_invoices.find_one({"phone": d2}, sort=[("saved_at", -1)])
+            if ci:
+                inv_path = ci.get("path")
+    if not inv_path:
+        return None
+    rel = str(inv_path).replace("/api/files/", "")
+    try:
+        data = await storage_download(rel)
+    except Exception as e:
+        logger.warning(f"decision invoice attach — could not load {rel}: {e}")
+        return None
+    if not data:
+        return None
+    ext = (rel.rsplit(".", 1)[-1] if "." in rel else "").lower()
+    mt = "application/pdf" if ext == "pdf" else ("image/png" if ext == "png" else "image/jpeg")
+    return {"filename": rel.split("/")[-1], "content": base64.b64encode(data).decode(), "media_type": mt}
+
+
+INVOICE_ASK_MSG = ("Aapke case ko aage badhane ke liye humein aapka *purchase invoice* chahiye \U0001f64f "
+                   "Kripya apna MuscleGrid invoice (photo ya PDF) yahin bhej dijiye, taaki hum turant aage "
+                   "badh sakein. Dhanyavaad!")
+
+
+async def _pratibha_hold_decision_for_invoice(digits: str, name: str, kind: str, payload: dict) -> bool:
+    """Invoice-first: no invoice on file → ask the customer for it and hold the decision until it
+    arrives. Returns True (the caller must NOT raise the decision yet). One hold per customer."""
+    digits = re.sub(r"\D", "", str(digits))[-10:]
+    if not digits:
+        return False
+    if not await db.pratibha_pending_decisions.find_one(
+            {"customer_phone": digits, "status": "awaiting_invoice"}, {"_id": 1}):
+        await db.pratibha_pending_decisions.insert_one({
+            "id": str(uuid.uuid4()), "customer_phone": digits, "customer_name": name or "",
+            "kind": kind, "payload": payload, "status": "awaiting_invoice",
+            "created_at": datetime.now(timezone.utc).isoformat()})
+        try:
+            await whatsapp_cloud.send_text(digits, INVOICE_ASK_MSG)
+        except Exception as e:
+            logger.warning(f"invoice-ask send failed for {digits}: {e}")
+    return True
+
+
+async def _pratibha_release_decision(pend: dict, prefix_note: str = "\U0001f4c4 Customer ne abhi *invoice* bhej diya hai (neeche attached)."):
+    """Re-raise a held decision (invoice now on file → it attaches). prefix_note heads the group
+    message — defaults to the 'invoice received' line; the 24h-timeout job passes its own warning."""
+    kind = pend.get("kind")
+    p = pend.get("payload") or {}
+    digits = pend["customer_phone"]
+    name = pend.get("customer_name") or ""
+    if kind == "ask_manager":
+        await _wa_tool_ask_manager(digits, name, p.get("summary", ""), p.get("question", ""), _gated=True, prefix_note=prefix_note)
+    elif kind == "repair_decision":
+        await _pratibha_raise_repair_decision(digits, name, p.get("product", ""), p.get("ticket_number", ""), _gated=True, prefix_note=prefix_note)
+
+
+PRATIBHA_INVOICE_HOLD_HOURS = int(os.environ.get("PRATIBHA_INVOICE_HOLD_HOURS", "24"))
+
+
+async def scheduled_pratibha_invoice_holds():
+    """Timeout: a decision held for an invoice the customer never sent → after N hours, escalate to
+    the manager anyway (raise the decision WITHOUT an invoice, flagged). One-shot per hold."""
+    try:
+        cut = (datetime.now(timezone.utc) - timedelta(hours=PRATIBHA_INVOICE_HOLD_HOURS)).isoformat()
+        holds = await db.pratibha_pending_decisions.find(
+            {"status": "awaiting_invoice", "created_at": {"$lt": cut}}).to_list(50)
+        for h in holds:
+            await db.pratibha_pending_decisions.update_one(
+                {"id": h["id"]}, {"$set": {"status": "escalated", "escalated_at": datetime.now(timezone.utc).isoformat()}})
+            who = h.get("customer_name") or h.get("customer_phone")
+            note = (f"⚠️ *{who}* ne {PRATIBHA_INVOICE_HOLD_HOURS}h me invoice nahi bheja. "
+                    f"Bina invoice ke decide karein, ya aur wait karein?")
+            try:
+                await _pratibha_release_decision(h, prefix_note=note)
+            except Exception as e:
+                logger.error(f"invoice-hold escalation failed for {h.get('customer_phone')}: {e}")
+    except Exception as e:
+        logger.error(f"scheduled_pratibha_invoice_holds failed: {e}")
+
+
+async def _wa_send_to_manager(text: str, fallback_desc: str = "", customer_phone: str = "", ticket_number: str = "") -> tuple:
     """Send to the manager — group in business hours, founder DM off-hours. Retry; on failure, in-app
     fallback so nothing is lost. Returns (ok, asked_via)."""
     off = _pratibha_wa_quiet_now()
@@ -75702,13 +76254,21 @@ async def _wa_tool_ask_manager(digits: str, name: str, summary: str, question: s
     info = await _wa_customer_info(digits)
     product = (info.get("warranty") or {}).get("product") or (info.get("recent_ticket") or {}).get("product") or ""
     tkn = (info.get("recent_ticket") or {}).get("number") or ""
+    # Invoice-first: every manager decision must carry the customer's invoice. If none on file,
+    # ask the customer for it and HOLD — the decision auto-fires (with the invoice) once it arrives.
+    if not _gated and not await _pratibha_invoice_attachment(digits, tkn):
+        await _pratibha_hold_decision_for_invoice(digits, name, "ask_manager",
+            {"summary": summary, "question": question, "product": product, "ticket_number": tkn})
+        return {"status": "awaiting_invoice", "note": "No invoice on file — I've asked the customer to send their MuscleGrid purchase invoice. The decision will go to the manager automatically once it arrives. Reassure the customer and ask them to share the invoice (photo/PDF); do NOT escalate again."}
     await db.repair_decisions.insert_one({
         "id": did, "ref": ref, "customer_phone": digits, "customer_name": name, "product": product,
         "ticket_number": tkn, "summary": summary, "question": question, "status": "open", "created_at": now})
-    msg = (f"\U0001f6e0️ *Decision needed* [{ref}]\n{summary or (name + ' needs a decision')}\n\n"
+    msg = ((prefix_note + "\n\n") if prefix_note else "") + (
+           f"\U0001f6e0️ *Decision needed* [{ref}]\n{summary or (name + ' needs a decision')}\n\n"
            f"Reply: *repair* / *replace* / *angad*" + (f"\n({question})" if question else ""))
     ok, asked_via = await _wa_send_to_manager(
-        msg, fallback_desc=f"Pratibha couldn't reach the WhatsApp group/DM. {summary}. Decide repair/replace/call for {name} ({digits}).")
+        msg, fallback_desc=f"Pratibha couldn't reach the WhatsApp group/DM. {summary}. Decide repair/replace/call for {name} ({digits}).",
+        customer_phone=digits, ticket_number=tkn)
     await db.repair_decisions.update_one({"id": did}, {"$set": {"group_notified": ok, "asked_via": asked_via}})
     return {"status": "asked", "asked_via": asked_via, "delivered": ok,
             "note": "Tell the customer (Hinglish) you've checked with the team and will update them — do NOT promise an outcome."}
@@ -76140,6 +76700,22 @@ async def _wa_handle_media(digits: str, contact_name: str, media_id: str, mime: 
     """A customer sent media (photo / PDF / video / audio). Download + store it so it's viewable in the
     chat AND on the ticket. Images and PDFs are shown to the agent (vision); video/audio can't be 'seen',
     so the agent is told to acknowledge and ask for a photo if it needs to see the problem."""
+    # Founder/admin sent a VOICE NOTE to MG Brain → transcribe locally (free, no API) and run it as a
+    # relay command, exactly as if they'd typed `cc <transcription>`.
+    if mtype in ("audio", "voice") and CLAUDE_WA_RELAY_ENABLED and whatsapp_cloud.enabled() \
+            and digits in _wa_relay_profiles():
+        media = await whatsapp_cloud.download_media(media_id)
+        if media and media.get("bytes"):
+            from utils import voice_transcribe
+            heard = voice_transcribe.transcribe(media["bytes"])
+            if heard:
+                await whatsapp_cloud.send_text(digits, f"🎙️ heard: “{heard}”")
+                t = re.sub(r"^\s*(cc|see\s*see|si\s*si)[ ,:.\-]*", "", heard, flags=re.I).strip()
+                await _claude_wa_relay(digits, t)
+                return
+        await whatsapp_cloud.send_text(digits,
+            "🎙️ Voice note samajh nahi aaya — thoda saaf bol kar dobara bhejein, ya type karein.")
+        return
     if not (PRATIBHA_WA_AUTOREPLY and pratibha_brain.available() and whatsapp_cloud.enabled()):
         return
     if await db.whatsapp_optouts.find_one({"phone": digits}, {"_id": 1}):
@@ -76175,6 +76751,33 @@ async def _wa_handle_media(digits: str, contact_name: str, media_id: str, mime: 
                                      REPAIR_LOOP_AGENT, {"action_type": "customer_media", "url": url})
     except Exception as e:
         logger.warning(f"could not attach WhatsApp media to ticket: {e}")
+    # Invoice-first gate: a customer with a decision held for their invoice → treat this image/PDF as
+    # the invoice, save it, and RELEASE the held decision (it goes to the manager with the invoice).
+    if url and mtype in ("image", "document"):
+        pend = await db.pratibha_pending_decisions.find_one(
+            {"customer_phone": digits, "status": "awaiting_invoice"})
+        if pend:
+            await db.customer_invoices.update_one({"phone": digits},
+                {"$set": {"phone": digits, "path": url, "saved_at": now, "source": "whatsapp"}}, upsert=True)
+            try:
+                tkt2 = await db.tickets.find_one(
+                    {"customer_phone": {"$regex": re.escape(digits) + "$"}}, sort=[("created_at", -1)])
+                if tkt2 and not tkt2.get("invoice_file"):
+                    await db.tickets.update_one({"id": tkt2["id"]}, {"$set": {"invoice_file": url, "updated_at": now}})
+            except Exception:
+                pass
+            await db.pratibha_pending_decisions.update_one({"id": pend["id"]},
+                {"$set": {"status": "resolved", "resolved_at": now, "invoice_path": url}})
+            try:
+                await _pratibha_release_decision(pend)
+            except Exception as e:
+                logger.error(f"release held decision failed for {digits}: {e}")
+            try:
+                await whatsapp_cloud.send_text(digits,
+                    "Dhanyavaad \U0001f64f Aapka invoice mil gaya — main ise aage bhej rahi hoon, jaldi update karti hoon.")
+            except Exception:
+                pass
+            return
     if await _wa_agent_paused(digits):
         return  # human is handling — media is stored + on the ticket, but the bot stays quiet
     # Vision for images/PDFs; for video/audio the agent can't view it — note it so it reacts sensibly.
@@ -76312,12 +76915,33 @@ async def _claude_wa_relay(digits: str, question: str):
     # authed → named actions run as DETERMINISTIC commands (not via the LLM); anything else is
     # read-only Q&A through the sandboxed relay.
     ql = question.strip()
-    if ql.lower().startswith("ship "):
-        await _claude_wa_ship(digits, ql[5:])
-        return
-    if ql.lower() in ("confirm", "confirm ship", "yes confirm"):
+    low = ql.lower()
+    profile = _wa_relay_profiles().get(digits, "full")
+    sess2 = await db.claude_wa_sessions.find_one({"phone": digits}) or {}
+
+    # confirm a pending booking
+    if low in ("confirm", "confirm ship", "yes confirm", "book it", "confirm karo", "haan book"):
         await _claude_wa_confirm_ship(digits)
         return
+
+    # we asked "which order?" last turn — resolve this reply as order id / phone / name
+    if sess2.get("awaiting_ship_order"):
+        await db.claude_wa_sessions.update_one({"phone": digits}, {"$set": {"awaiting_ship_order": False}})
+        if profile == "full" and low not in ("cancel", "stop", "rehne do", "nahi", "no"):
+            if await _claude_wa_ship_lookup(digits, ql, rearm=False):
+                return
+        # nothing matched / cancelled → drop the ship flow and answer normally
+
+    # "ship <order>" / "label bnao / banao / make label" intent → book a Bigship label
+    make_verb = re.search(r"bnao|banao|banwa|bana do|make|create|book|print|nikal", low)
+    ship_intent = low.startswith("ship ") or bool(re.search(r"ship\s*kar", low)) or ("label" in low and make_verb)
+    if ship_intent:
+        if profile != "full":   # booking spends money → admins only
+            await whatsapp_cloud.send_text(digits, "📦 Label booking is restricted to admins — please ask the office.")
+            return
+        await _claude_wa_ship_lookup(digits, ql, rearm=True)
+        return
+
     await _claude_wa_run(digits, question)
 
 
@@ -76333,27 +76957,39 @@ async def _claude_wa_run(digits: str, question: str):
     profile = _wa_relay_profiles().get(digits, "full")   # founder=full data, ops=no financials
     reply = ""
     for attempt in (1, 2):  # retry once on an empty/errored run before giving up
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 "sudo", "-n", "-u", "claude-router", "env", "HOME=/var/lib/claude-router",
                 "CLAUDE_ROUTER_WORK=/var/lib/claude-router/work", f"CRM_READ_PROFILE={profile}",
                 "/var/www/claude-router/escalate.sh", question,
+                stdin=asyncio.subprocess.DEVNULL,  # else claude waits 3s on inherited stdin → empty output
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             out, err = await asyncio.wait_for(proc.communicate(), timeout=CLAUDE_WA_RELAY_TIMEOUT)
             reply = out.decode(errors="replace").strip()
             if not reply:
                 logger.warning(f"MG Brain empty output (attempt {attempt}): {err.decode(errors='replace')[:200]}")
         except asyncio.TimeoutError:
-            reply = "⏳ MG Brain took too long — try a shorter question."
+            if proc:
+                try:
+                    proc.kill()          # don't orphan the headless claude process
+                except Exception:
+                    pass
+            reply = "⏳ MG Brain ko jawab dhoondhne me zyada time lag gaya — thoda chhota sawaal poochein."
             break  # don't retry a timeout
         except Exception as e:
             logger.warning(f"MG Brain relay error (attempt {attempt}): {e}")
             reply = ""
         if reply:
             break
-    if not reply:  # never leak raw stderr to the user
-        reply = "⚠️ MG Brain didn't catch that — please try again."
-    await whatsapp_cloud.send_text(digits, reply[:4000])
+    if not reply:  # never leak raw stderr — and NEVER go silent on the sender
+        reply = "⚠️ MG Brain abhi jawab nahi de paaya — kripya apna sawaal dobara bhejein."
+    # Guaranteed delivery: even an unexpected failure above must not leave the sender hanging.
+    try:
+        await whatsapp_cloud.send_text(digits, reply[:4000])
+    except Exception as e:
+        logger.error(f"MG Brain could not deliver reply to {digits}: {e}")
+        return
     now = datetime.now(timezone.utc).isoformat()
     await db.whatsapp_cloud_messages.insert_one({
         "id": str(uuid.uuid4()), "direction": "outgoing", "phone": digits, "text": reply[:4000],
@@ -76364,6 +77000,61 @@ async def _claude_wa_run(digits: str, question: str):
 # idempotent + dedup-guarded /pending-fulfillment bigship-label flow, behind the PIN session.
 _WA_ACTION_USER = {"id": "15511c11-f2bc-480c-8364-6a1208f0b015", "role": "admin",
                    "first_name": "WhatsApp", "last_name": "Boss"}
+
+
+_SHIP_STATUSES = ["ready_to_dispatch", "pending_dispatch", "in_dispatch_queue",
+                  "awaiting_stock", "awaiting_procurement"]
+
+
+async def _claude_wa_ship_lookup(digits: str, query: str, rearm: bool = True) -> bool:
+    """Resolve a ship request from an order id, a phone number, or a customer name, then
+    preview the booking. Returns True if it handled the turn (shipped/listed/asked), False
+    if nothing matched and the caller should fall through to normal Q&A."""
+    q = (query or "").strip()
+    # 1) explicit Amazon order id wins
+    m = _AMZ_OID_RE.search(q)
+    if m:
+        await _claude_wa_ship(digits, m.group(0))
+        return True
+
+    matches = []
+    # 2) a 10-digit phone number
+    pm = re.search(r"(\d[\d\s\-]{8,}\d)", q)
+    phone = re.sub(r"\D", "", pm.group(1))[-10:] if pm else ""
+    _has_oid = {"order_id": {"$nin": [None, ""]}}  # only records bookable on Bigship
+    if len(phone) == 10:
+        cur = db.pending_fulfillment.find(
+            {"customer_phone": {"$regex": phone}, "status": {"$in": _SHIP_STATUSES}, **_has_oid}).limit(8)
+        matches = [d async for d in cur]
+    # 3) otherwise treat the leftover words as a customer name
+    if not matches:
+        name = re.sub(r"\b(cc|ship|label|bnao|banao|banwa|bana|do|make|create|print|karo|kar|"
+                      r"nikal|nikalo|for|ka|ki|ke|order|parcel|ke liye)\b", " ", q, flags=re.I)
+        name = re.sub(r"[^A-Za-z\s]", " ", name).strip()
+        if len(name) >= 3:
+            cur = db.pending_fulfillment.find(
+                {"customer_name": {"$regex": re.escape(name), "$options": "i"},
+                 "status": {"$in": _SHIP_STATUSES}, **_has_oid}).limit(8)
+            matches = [d async for d in cur]
+
+    if not matches:
+        if rearm:
+            await db.claude_wa_sessions.update_one({"phone": digits}, {"$set": {"awaiting_ship_order": True}})
+            await whatsapp_cloud.send_text(digits,
+                "📦 Couldn't find a shippable order for that. Send the Amazon order id, "
+                "the customer's phone, or their name.")
+            return True
+        return False
+    if len(matches) == 1:
+        await _claude_wa_ship(digits, matches[0].get("order_id"))
+        return True
+    # several candidates → list them and wait for the order id
+    await db.claude_wa_sessions.update_one({"phone": digits}, {"$set": {"awaiting_ship_order": True}})
+    lines = ["📦 Found a few — reply with the order id you want:"]
+    for d in matches[:6]:
+        lines.append(f"• {d.get('order_id')} — {d.get('customer_name') or '?'} · {d.get('status')}")
+    await whatsapp_cloud.send_text(digits, "\n".join(lines))
+    return True
 
 
 async def _claude_wa_ship(digits: str, order_id: str):
@@ -76455,11 +77146,16 @@ async def _pratibha_wa_autoreply(phone: str, text: str, contact_name: str = ""):
     await _wa_agent_respond(digits, contact_name)
 
 
-async def _pratibha_raise_repair_decision(customer_phone: str, customer_name: str = "", product: str = "", ticket_number: str = ""):
+async def _pratibha_raise_repair_decision(customer_phone: str, customer_name: str = "", product: str = "", ticket_number: str = "", _gated: bool = False, prefix_note: str = ""):
     """Gate 1: ask the internal WhatsApp group whether to repair / replace / ask Angad.
     Single-in-flight PER CUSTOMER (no spam) — if a decision is already open for this
     customer, do nothing. Sends ONE message to the main group, then waits for a reply."""
     if await db.repair_decisions.find_one({"customer_phone": customer_phone, "status": "open"}, {"_id": 1}):
+        return False
+    # Invoice-first: hold the decision until the customer's invoice is on file (then auto-fire with it).
+    if not _gated and not await _pratibha_invoice_attachment(customer_phone, ticket_number):
+        await _pratibha_hold_decision_for_invoice(customer_phone, customer_name, "repair_decision",
+            {"product": product, "ticket_number": ticket_number})
         return False
     ref = uuid.uuid4().hex[:6].upper()
     did = str(uuid.uuid4())
@@ -76472,7 +77168,8 @@ async def _pratibha_raise_repair_decision(customer_phone: str, customer_name: st
     who = customer_name or customer_phone
     prod = f" on *{product}*" if product else ""
     tkn = f" (ticket {ticket_number})" if ticket_number else ""
-    msg = (f"\U0001f6e0️ *Decision needed* [{ref}]\n"
+    msg = ((prefix_note + "\n\n") if prefix_note else "") + (
+           f"\U0001f6e0️ *Decision needed* [{ref}]\n"
            f"{who} ({customer_phone}) is asking for a *replacement*{prod}{tkn}.\n\n"
            f"How should I proceed? Reply with one word:\n"
            f"• *repair* — arrange pickup & repair\n"
@@ -76698,7 +77395,8 @@ async def _pratibha_raise_shipback_decision(job: dict) -> bool:
            f"{(' (ticket ' + tkn + ')') if tkn else ''}. Wapas bhejna hai → {where}.\n\n"
            f"Reply: *shipback prepaid {ref}* (hum pay karein) ya *shipback cod <amount> {ref}* (customer se ₹ lein).")
     ok, asked_via = await _wa_send_to_manager(
-        msg, fallback_desc=f"Repair done for {name} ({cust_phone}). Decide ship-back prepaid/COD — ref {ref}.")
+        msg, fallback_desc=f"Repair done for {name} ({cust_phone}). Decide ship-back prepaid/COD — ref {ref}.",
+        customer_phone=cust_phone, ticket_number=tkn)
     await db.repair_shipbacks.update_one({"ref": ref}, {"$set": {"asked": ok, "asked_via": asked_via}})
     return ok
 
