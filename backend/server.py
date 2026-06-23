@@ -84390,6 +84390,162 @@ async def samrat_ai_quote(payload: SamratAiQuoteInput, user: dict = Depends(get_
     return result
 
 
+# ---- Branded proposal generator (dealer → shareable customer proposal) ----
+class SamratProposalInput(BaseModel):
+    customer_name: str
+    customer_phone: Optional[str] = None
+    customer_city: Optional[str] = None
+    # quote figures (typically copied from /samrat/ai/quote; all optional so the dealer can tweak)
+    system_size_kw: Optional[float] = None
+    panel_recommendation: Optional[str] = None
+    inverter_recommendation: Optional[str] = None
+    battery_recommendation: Optional[str] = None
+    estimated_cost_inr: Optional[float] = None
+    subsidy_inr: Optional[float] = 0
+    net_cost_inr: Optional[float] = None
+    monthly_savings_inr: Optional[float] = None
+    payback_years: Optional[float] = None
+    monthly_units_offset: Optional[float] = None
+    summary: Optional[str] = None
+    notes: Optional[str] = None
+
+
+def _inr(n):
+    """Indian-grouped rupee string, e.g. 132000 -> ₹1,32,000."""
+    try:
+        v = int(round(float(n or 0)))
+    except Exception:
+        return "₹0"
+    neg = v < 0
+    s = str(abs(v))
+    if len(s) > 3:
+        last3 = s[-3:]
+        rest = s[:-3]
+        parts = []
+        while len(rest) > 2:
+            parts.insert(0, rest[-2:])
+            rest = rest[:-2]
+        if rest:
+            parts.insert(0, rest)
+        s = ",".join(parts) + "," + last3
+    return ("−₹" if neg else "₹") + s
+
+
+@api_router.post("/samrat/proposals")
+async def samrat_create_proposal(body: SamratProposalInput, user: dict = Depends(get_current_user)):
+    """A dealer turns a quote into a branded, shareable proposal (returns a public link)."""
+    m = await db.samrat_members.find_one({"user_id": user["id"]}, {"_id": 0}) or {}
+    now = datetime.now(timezone.utc).isoformat()
+    pid = str(uuid.uuid4())
+    token = uuid.uuid4().hex[:12]
+    gross = body.estimated_cost_inr or 0
+    net = body.net_cost_inr if body.net_cost_inr is not None else (gross - (body.subsidy_inr or 0))
+    doc = {
+        "id": pid, "token": token, "user_id": user["id"], "member_id": m.get("id"),
+        "dealer": {"business_name": m.get("business_name") or "Solar Partner",
+                   "owner_name": m.get("owner_name"), "phone": m.get("phone"),
+                   "email": m.get("email"), "city": m.get("city"), "state": m.get("state"),
+                   "logo_url": m.get("logo_url"), "rank": m.get("rank")},
+        "customer": {"name": body.customer_name, "phone": body.customer_phone, "city": body.customer_city},
+        "quote": {**body.dict(exclude={"customer_name", "customer_phone", "customer_city"}),
+                  "net_cost_inr": net},
+        "views": 0, "created_at": now, "updated_at": now,
+    }
+    await db.samrat_proposals.insert_one(doc)
+    base = os.environ.get("FRONTEND_URL", "").rstrip("/")
+    return {"id": pid, "token": token, "url": f"{base}/api/samrat/p/{token}"}
+
+
+@api_router.get("/samrat/proposals")
+async def samrat_my_proposals(user: dict = Depends(get_current_user)):
+    rows = [p async for p in db.samrat_proposals.find(
+        {"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).limit(100)]
+    base = os.environ.get("FRONTEND_URL", "").rstrip("/")
+    for r in rows:
+        r["url"] = f"{base}/api/samrat/p/{r.get('token')}"
+    return {"proposals": rows}
+
+
+@api_router.get("/samrat/p/{token}", response_class=Response)
+async def samrat_public_proposal(token: str):
+    """PUBLIC branded proposal page (shareable on WhatsApp; no auth)."""
+    from fastapi.responses import HTMLResponse
+    import urllib.parse
+    p = await db.samrat_proposals.find_one({"token": token})
+    if not p:
+        return HTMLResponse("<h2 style='font-family:sans-serif;text-align:center;padding:60px'>Proposal not found</h2>", status_code=404)
+    await db.samrat_proposals.update_one({"token": token}, {"$inc": {"views": 1}})
+    d = p.get("dealer") or {}
+    c = p.get("customer") or {}
+    q = p.get("quote") or {}
+    gross = q.get("estimated_cost_inr") or 0
+    sub = q.get("subsidy_inr") or 0
+    net = q.get("net_cost_inr") or (gross - sub)
+    save = q.get("monthly_savings_inr") or 0
+    yr_save = save * 12
+    payback = q.get("payback_years")
+    size = q.get("system_size_kw")
+    wa = re.sub(r"\D", "", str(d.get("phone") or ""))[-10:]
+    logo = (f'<img src="{d.get("logo_url")}" alt="" style="height:46px;width:auto;border-radius:8px">'
+            if d.get("logo_url") else
+            f'<div style="font-family:Saira Condensed,sans-serif;font-weight:800;font-size:24px;color:#0E0E0E">{d.get("business_name","")}</div>')
+
+    def spec(label, val):
+        return f'<div style="background:#fff;border:1px solid #eee;border-radius:12px;padding:14px 16px"><div style="color:#888;font-size:12px">{label}</div><div style="font-weight:800;font-size:17px;margin-top:3px">{val}</div></div>' if val else ""
+
+    bom = "".join(
+        f'<tr><td style="padding:9px 4px;border-bottom:1px solid #f0f0f0">{k}</td>'
+        f'<td style="padding:9px 4px;border-bottom:1px solid #f0f0f0;text-align:right;color:#333">{v}</td></tr>'
+        for k, v in [("Solar Panels", q.get("panel_recommendation")),
+                     ("Inverter", q.get("inverter_recommendation")),
+                     ("Battery / Backup", q.get("battery_recommendation"))] if v)
+
+    html = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Solar Proposal for {c.get('name','')} · {d.get('business_name','')}</title>
+<meta property="og:title" content="Your Solar Proposal · {d.get('business_name','')}">
+<meta property="og:description" content="{_inr(net)} after subsidy · save {_inr(save)}/month · {('%.1f'%size)+' kW' if size else 'custom'} rooftop solar.">
+<style>
+body{{margin:0;font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#F4F4F2;color:#1A1A1A}}
+.wrap{{max-width:680px;margin:0 auto;background:#fff;min-height:100vh}}
+.hero{{background:linear-gradient(135deg,#0E0E0E,#2a2a2a);color:#fff;padding:26px 22px}}
+.hero h1{{font-size:24px;margin:14px 0 4px}} .y{{color:#FFC400}}
+.pad{{padding:22px}} .grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:6px 0 4px}}
+.big{{background:linear-gradient(135deg,#FFC400,#E0A800);border-radius:16px;padding:20px;text-align:center;margin:18px 0}}
+.big .n{{font-size:34px;font-weight:800;color:#0E0E0E;line-height:1}} .big small{{color:#5a4a00}}
+.cta{{display:block;text-align:center;background:#0E0E0E;color:#fff;text-decoration:none;padding:15px;border-radius:12px;font-weight:700;margin:10px 0}}
+.cta.wa{{background:#25D366}}
+table{{width:100%;border-collapse:collapse;font-size:14px}}
+.muted{{color:#888;font-size:12.5px}}
+</style></head><body><div class="wrap">
+  <div class="hero">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;background:#fff;border-radius:12px;padding:10px 14px">{logo}
+      <div style="text-align:right"><div style="font-size:11px;color:#888">PROPOSAL</div><div style="font-weight:700;color:#0E0E0E">#{token.upper()}</div></div></div>
+    <h1>Solar proposal for <span class="y">{c.get('name','')}</span></h1>
+    <div style="color:#bbb;font-size:14px">{('Prepared by '+(d.get('business_name') or '')) + (' · '+d.get('city') if d.get('city') else '')}</div>
+  </div>
+  <div class="pad">
+    <div class="grid">
+      {spec('System size', (('%.1f'%size)+' kW') if size else None)}
+      {spec('Monthly savings', _inr(save) if save else None)}
+      {spec('Payback', (str(payback)+' yrs') if payback else None)}
+      {spec('Units offset/mo', (str(int(q.get('monthly_units_offset')))+' kWh') if q.get('monthly_units_offset') else None)}
+    </div>
+    <div class="big"><small>YOUR PRICE AFTER SUBSIDY</small><div class="n">{_inr(net)}</div>
+      <div style="color:#5a4a00;font-size:13px;margin-top:6px">{_inr(gross)} system − {_inr(sub)} subsidy</div></div>
+    {('<h3>What you get</h3><table>'+bom+'</table>') if bom else ''}
+    <div style="background:#FFF8EC;border:1px solid #ffe0b0;border-radius:12px;padding:14px;margin:16px 0">
+      <b>💡 Estimated 25-year savings: {_inr(yr_save*25)}</b><div class="muted" style="margin-top:4px">≈ {_inr(yr_save)}/year at today's tariff.</div></div>
+    {('<p style="color:#444;line-height:1.6">'+q.get('summary')+'</p>') if q.get('summary') else ''}
+    {('<p class="muted">'+q.get('notes')+'</p>') if q.get('notes') else ''}
+    <a class="cta wa" href="https://wa.me/91{wa}?text={urllib.parse.quote('Hi, I am interested in the solar proposal #'+token.upper())}">💬 Chat with {d.get('business_name','us')}</a>
+    {('<a class="cta" href="tel:+91'+wa+'">📞 Call '+(d.get('phone') or '')+'</a>') if wa else ''}
+    <p class="muted" style="text-align:center;margin-top:20px">Indicative estimate. Final price depends on site survey, structure & DISCOM approval. Powered by Solar Samrat ⚡</p>
+  </div>
+</div></body></html>"""
+    return HTMLResponse(html)
+
+
 # ---- Public directory + leaderboard (members) ----
 
 @api_router.get("/samrat/leaderboard")
