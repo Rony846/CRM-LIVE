@@ -88,18 +88,44 @@
 
     // canonical footer (replaces any simplified inline footer)
     document.querySelectorAll('footer').forEach(function(f){ if(!f.hasAttribute('data-mg-chrome')) f.remove(); });
-    var lk=function(h,t){ return '<a href="'+h+'" style="display:block;color:var(--mg-fg-onDark-muted);text-decoration:none;margin:7px 0">'+t+'</a>'; };
-    var foot=document.createElement('footer'); foot.setAttribute('data-mg-chrome','1');
-    foot.style.cssText='background:var(--mg-iron-1000);color:var(--mg-fg-onDark);padding:54px 20px 36px;margin-top:60px';
-    foot.innerHTML='<div style="max-width:1320px;margin:0 auto;display:grid;grid-template-columns:1.8fr 1fr 1fr 1fr;gap:32px" class="mg-foot-grid">'
-      +'<div><div style="font-family:var(--mg-font-display);font-weight:800;font-size:26px"><span style="color:var(--mg-orange)">Muscle</span>Grid</div>'
-      +'<p style="color:var(--mg-fg-onDark-muted);max-width:300px;margin:12px 0 14px;line-height:1.6">Industrial power, engineered for India. Solar inverters, LiFePO₄ batteries & mainline stabilizers — warranty-backed, 12,000+ homes powered.</p>'
-      +'<div style="display:flex;gap:14px"><a href="https://www.instagram.com/musclegrid_industries" style="color:var(--mg-orange)">Instagram</a><a href="https://facebook.com/MuscleGrid" style="color:var(--mg-orange)">Facebook</a><a href="https://wa.me/919999036254" style="color:var(--mg-orange)">WhatsApp</a></div></div>'
-      +'<div><div style="font-weight:700;margin-bottom:8px">Shop</div>'+lk('/store/build-battery/','⚡ Build your battery')+lk('/store/products/','All products')+lk('/store/products/?category=Inverter','Solar inverters')+lk('/store/products/?category=Battery','Lithium batteries')+lk('/store/products/?category=Stabilizer','Stabilizers')+'</div>'
-      +'<div><div style="font-weight:700;margin-bottom:8px">Company</div>'+lk('/store/about/','About us')+lk('/store/dealers/','Become a dealer')+lk('/store/support/','Support & manuals')+lk('/store/contact/','Contact')+'</div>'
-      +'<div><div style="font-weight:700;margin-bottom:8px">Policies</div>'+lk('/store/policies/privacy/','Privacy policy')+lk('/store/policies/terms/','Terms & conditions')+lk('/store/policies/refund/','Refund & returns')+lk('/store/policies/shipping/','Shipping policy')+'</div></div>'
-      +'<div style="max-width:1320px;margin:34px auto 0;padding-top:20px;border-top:1px solid #222;color:var(--mg-fg-onDark-muted);font-size:13px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px"><span>© 2026 MuscleGrid Industries (Electronics Bay) · Made in India</span><span>704, Sector-16, Gurugram · <a href="tel:+919999036254" style="color:var(--mg-orange)">099990 36254</a> · service@musclegrid.in</span></div>'
-      +'<style>@media(max-width:760px){.mg-foot-grid{grid-template-columns:1fr 1fr!important}}</style>';
+    var lk=function(h,t){ return '<a class="mgfl" href="'+h+'">'+t+'</a>'; };
+    var foot=document.createElement('footer'); foot.setAttribute('data-mg-chrome','1'); foot.className='mg-foot';
+    foot.innerHTML=
+      '<style>'
+      +'.mg-foot{background:radial-gradient(1000px 320px at 82% 0,#1d1d1d,var(--mg-iron-1000));color:var(--mg-fg-onDark);border-top:3px solid var(--mg-orange)}'
+      +'.mg-foot a{text-decoration:none}.mg-foot .fw{max-width:1320px;margin:0 auto;padding:0 22px}'
+      +'.mg-foot .trust{display:flex;flex-wrap:wrap;gap:16px;justify-content:space-between;padding:22px 0;border-bottom:1px solid #232323}'
+      +'.mg-foot .trust span{display:inline-flex;align-items:center;gap:9px;color:#dcdcdc;font-size:14px;font-weight:600}'
+      +'.mg-foot .trust b{font-size:18px}'
+      +'.mg-foot .grid{display:grid;grid-template-columns:1.7fr 1fr 1fr 1fr;gap:34px;padding:42px 0 30px}'
+      +'.mg-foot h4{font-family:var(--mg-font-headline);font-weight:700;font-size:12px;letter-spacing:.13em;text-transform:uppercase;color:#fff;margin:0 0 12px}'
+      +'.mg-foot .mgfl{display:block;color:var(--mg-fg-onDark-muted);margin:9px 0;font-size:14px;transition:.15s}'
+      +'.mg-foot .mgfl:hover{color:var(--mg-orange);transform:translateX(3px)}'
+      +'.mg-foot .desc{color:var(--mg-fg-onDark-muted);max-width:330px;margin:12px 0 18px;line-height:1.65;font-size:14px}'
+      +'.mg-foot .socs{display:flex;gap:10px}'
+      +'.mg-foot .mgfs{width:40px;height:40px;border:1px solid #333;border-radius:11px;display:inline-flex;align-items:center;justify-content:center;color:#ddd;font-size:12px;font-weight:800;letter-spacing:.04em;transition:.15s}'
+      +'.mg-foot .mgfs:hover{background:var(--mg-orange);color:#0E0E0E;border-color:var(--mg-orange);transform:translateY(-2px)}'
+      +'.mg-foot .bottom{border-top:1px solid #232323;padding:20px 0 34px;display:flex;flex-wrap:wrap;gap:14px;align-items:center;justify-content:space-between;color:var(--mg-fg-onDark-muted);font-size:12.5px}'
+      +'.mg-foot .bottom a{color:var(--mg-orange)}'
+      +'.mg-foot .pay{display:flex;gap:7px;flex-wrap:wrap;align-items:center}'
+      +'.mg-foot .pay i{font-style:normal;border:1px solid #333;border-radius:6px;padding:4px 10px;font-size:11px;font-weight:700;color:#ccc}'
+      +'@media(max-width:820px){.mg-foot .grid{grid-template-columns:1fr 1fr;gap:26px}.mg-foot .bottom{flex-direction:column;align-items:flex-start}}'
+      +'@media(max-width:480px){.mg-foot .trust span{font-size:12.5px;gap:6px}}'
+      +'</style>'
+      +'<div class="fw">'
+      +'<div class="trust"><span><b>🚚</b> Free shipping pan-India</span><span><b>🛡️</b> Up to 8-year warranty</span><span><b>📞</b> 24×7 technician support</span><span><b>🇮🇳</b> Designed &amp; made in India</span></div>'
+      +'<div class="grid">'
+        +'<div><div style="font-family:var(--mg-font-display);font-weight:800;font-size:28px;line-height:1"><span style="color:var(--mg-orange)">Muscle</span>Grid</div>'
+        +'<div style="font-family:var(--mg-font-mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;margin-top:5px">Consistency Through You</div>'
+        +'<p class="desc">Industrial power, engineered for India. Solar inverters, LiFePO₄ lithium batteries &amp; mainline stabilizers — warranty-backed, 12,000+ homes powered.</p>'
+        +'<div class="socs"><a class="mgfs" href="https://www.instagram.com/musclegrid_industries" aria-label="Instagram">IG</a><a class="mgfs" href="https://facebook.com/MuscleGrid" aria-label="Facebook">FB</a><a class="mgfs" href="https://wa.me/919999036254" aria-label="WhatsApp">WA</a></div></div>'
+        +'<div><h4>Shop</h4>'+lk('/store/build-battery/','⚡ Build your battery')+lk('/store/products/','All products')+lk('/store/products/?category=Inverter','Solar inverters')+lk('/store/products/?category=Battery','Lithium batteries')+lk('/store/products/?category=Stabilizer','Stabilizers')+'</div>'
+        +'<div><h4>Company</h4>'+lk('/store/about/','About us')+lk('/store/dealers/','Become a dealer')+lk('/store/support/','Support &amp; manuals')+lk('/store/contact/','Contact')+'</div>'
+        +'<div><h4>Help &amp; Policies</h4>'+lk('/store/policies/privacy/','Privacy policy')+lk('/store/policies/terms/','Terms &amp; conditions')+lk('/store/policies/refund/','Refund &amp; returns')+lk('/store/policies/shipping/','Shipping policy')+'</div>'
+      +'</div>'
+      +'<div class="bottom"><span>© 2026 MuscleGrid Industries (Electronics Bay) · 704, Sector-16, Gurugram · <a href="tel:+919999036254">099990 36254</a> · <a href="mailto:service@musclegrid.in">service@musclegrid.in</a></span>'
+      +'<span class="pay">We accept <i>UPI</i><i>Cards</i><i>NetBanking</i><i>EMI</i></span></div>'
+      +'</div>';
     document.body.appendChild(foot);
 
     function open(sel){ document.querySelector('[data-scrim]').hidden=false; var d=document.querySelector(sel); if(d) d.hidden=false; document.body.style.overflow='hidden'; }
