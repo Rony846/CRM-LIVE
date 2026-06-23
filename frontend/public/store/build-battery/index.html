@@ -151,13 +151,25 @@
   </div>
   <!-- RIGHT: configurator -->
   <div class="bb-config">
-    <div class="bb-prog" id="bbProg"></div>
-    <div class="bb-step-meta" id="bbMeta">Step 1 of 8</div>
-    <div class="bb-step-title" id="bbTitle"></div>
-    <div class="bb-opts" id="bbOpts"></div>
-    <div class="bb-nav">
-      <button class="bb-btn ghost" id="bbBack">← Back</button>
-      <button class="bb-btn solid" id="bbNext">Next →</button>
+    <div id="bbIntro" style="text-align:center;padding:18px 6px">
+      <div style="width:70px;height:70px;margin:0 auto 16px;border-radius:18px;background:var(--bb-ink);color:var(--bb-yellow);display:flex;align-items:center;justify-content:center;font-size:34px">🔋</div>
+      <h3 style="font-family:var(--mg-font-display);font-weight:800;font-size:26px;text-transform:uppercase;margin:0 0 8px">Let's build your battery</h3>
+      <p style="color:var(--bb-grey);font-size:15px;line-height:1.55;max-width:380px;margin:0 auto 22px">Answer a few quick questions — voltage, capacity, cells, BMS, cabinet, colour &amp; warranty — and get an instant estimated price.</p>
+      <button class="bb-btn yellow" id="bbStart" style="width:100%;font-size:16px;padding:15px">Start building →</button>
+      <div style="color:var(--bb-grey-2);font-size:12px;margin-top:12px">~2 minutes · No obligation · Team confirms final price</div>
+      <div style="display:flex;gap:18px;justify-content:center;flex-wrap:wrap;margin-top:18px;color:var(--bb-grey);font-size:12.5px">
+        <span>✓ Grade-A &amp; Tier-1 cells</span><span>✓ Smart BMS</span><span>✓ Up to 8-yr warranty</span>
+      </div>
+    </div>
+    <div id="bbStepUI" style="display:none">
+      <div class="bb-prog" id="bbProg"></div>
+      <div class="bb-step-meta" id="bbMeta">Step 1</div>
+      <div class="bb-step-title" id="bbTitle"></div>
+      <div class="bb-opts" id="bbOpts"></div>
+      <div class="bb-nav">
+        <button class="bb-btn ghost" id="bbBack">← Back</button>
+        <button class="bb-btn solid" id="bbNext">Next →</button>
+      </div>
     </div>
   </div>
 </div>
@@ -366,6 +378,8 @@ function gotoStep(i, msg){
   step = i;
   document.querySelector('.bb-summary').style.display='none';
   document.getElementById('bbBuilder').style.display='grid';
+  document.getElementById('bbIntro').style.display='none';
+  document.getElementById('bbStepUI').style.display='block';
   renderStep(); updateBattery(); updatePrice();
   document.getElementById('bbBuilder').scrollIntoView({behavior:'smooth'});
   if(msg && window.MG && MG.toast) MG.toast(msg);
@@ -427,7 +441,14 @@ document.getElementById('bbqSubmit').onclick=function(){
   }).catch(()=>{ err.textContent='Network error — please try WhatsApp.'; btn.disabled=false; btn.textContent='Send request'; });
 };
 
-renderStep(); updateBattery(); updatePrice();
+// "Start building" reveals Step 1 (voltage); the battery preview + price prompt show from the start
+document.getElementById('bbStart').onclick=function(){
+  document.getElementById('bbIntro').style.display='none';
+  document.getElementById('bbStepUI').style.display='block';
+  step=0; renderStep(); updateBattery(); updatePrice();
+  document.getElementById('bbBuilder').scrollIntoView({behavior:'smooth',block:'nearest'});
+};
+updateBattery(); updatePrice();   // initial empty-battery preview + "select voltage" price (steps hidden until Start)
 </script>
 
 <!-- contact modal → CRM lead -->
