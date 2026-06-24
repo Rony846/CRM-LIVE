@@ -63395,8 +63395,7 @@ async def _unshipped_audit(window_h: int = None):
             continue
         if str(o.get("crm_status") or "").lower() in ("cancelled", "canceled"):
             continue
-        if await db.amazon_refunds.find_one({"amazon_order_id": oid}, {"_id": 1}):
-            continue  # already refunded → closed, not a fulfilment problem
+        refunded = bool(await db.amazon_refunds.find_one({"amazon_order_id": oid}, {"_id": 1}))
         rep["new"] += 1
         trk = str(o.get("tracking_number") or "")
         cs = cs_status.get(oid)
@@ -63416,6 +63415,11 @@ async def _unshipped_audit(window_h: int = None):
             rep["with_label"] += 1
             if _delhivery_picked(cs.get("status")):
                 rep["picked"] += 1
+            elif refunded:
+                # label still in Bigship but the order was REFUNDED → cancel the label so it doesn't
+                # get picked up and ship a refunded product (double loss).
+                rep["problems"].append({**base, "issue": "refunded_cancel_label",
+                                        "status": f"REFUNDED · {cs.get('status') or 'pickup pending'} — cancel label"})
             else:
                 rep["problems"].append({**base, "issue": "label_not_picked", "status": cs.get("status") or "no movement"})
         elif trk or crm_st in ("amazon_shipped", "dispatched", "tracking_added"):
@@ -63423,6 +63427,8 @@ async def _unshipped_audit(window_h: int = None):
             # count as labelled, not a chase item (verified separately, not a dispatch-team gap).
             rep["with_label"] += 1
             rep["picked"] += 1
+        elif refunded:
+            continue                  # no label + refunded → closed, nothing to ship or cancel
         else:                        # genuinely pending: no label, no tracking, not Amazon-shipped
             rep["problems"].append({**base, "issue": "no_label", "status": "not processed yet"})
     return rep
@@ -63463,6 +63469,7 @@ async def _unshipped_followups_sync(problems):
 def _unshipped_email_html(rep, chase):
     no_label = [p for p in chase if p["issue"] == "no_label"]
     not_picked = [p for p in chase if p["issue"] == "label_not_picked"]
+    cancel_label = [p for p in chase if p["issue"] == "refunded_cancel_label"]
 
     def rows(items):
         out = ""
@@ -63492,6 +63499,11 @@ def _unshipped_email_html(rep, chase):
     if not_picked:
         sections += (f"<h3 style='color:#d35400;margin:18px 0 6px'>📦 {len(not_picked)} label(s) created but Delhivery has NOT picked up</h3>"
                      f"<table style='width:100%;border-collapse:collapse;font-size:13px'>{head}{rows(not_picked)}</table>")
+    if cancel_label:
+        sections += (f"<h3 style='color:#8e44ad;margin:18px 0 6px'>🛑 {len(cancel_label)} label(s) to CANCEL — order was refunded</h3>"
+                     f"<p style='margin:0 0 8px;color:#555;font-size:13px'>These have a Bigship label but the customer was already refunded — "
+                     f"<b>cancel the label so it isn't picked up &amp; shipped</b> (else it's a double loss).</p>"
+                     f"<table style='width:100%;border-collapse:collapse;font-size:13px'>{head}{rows(cancel_label)}</table>")
     if not sections:
         sections = "<p style='color:#1F8A4C'>✅ All new orders are labelled and picked up. Nothing to chase right now.</p>"
     return f"""<div style="font-family:Arial,sans-serif;max-width:680px;margin:auto;color:#1A1A1A">
