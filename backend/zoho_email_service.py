@@ -6,7 +6,27 @@ Handles all email communications across the platform
 import os
 import json
 import logging
-import requests
+import requests as _requests_real
+
+
+class _ReqWithTimeout:
+    """Module-local `requests` wrapper that injects a DEFAULT TIMEOUT on every call, so a hung
+    Zoho connection can never block forever. Without this, a stalled Zoho API call froze the whole
+    async event loop → full backend hang (incident 2026-06-24). Scoped to this module only —
+    other modules' `import requests` are unaffected."""
+    _TIMEOUT = 30
+
+    def __getattr__(self, name):
+        attr = getattr(_requests_real, name)
+        if name in ("post", "get", "put", "delete", "patch", "head"):
+            def _wrapped(*a, **k):
+                k.setdefault("timeout", self._TIMEOUT)
+                return attr(*a, **k)
+            return _wrapped
+        return attr
+
+
+requests = _ReqWithTimeout()
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from pathlib import Path
