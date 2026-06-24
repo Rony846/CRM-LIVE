@@ -77115,6 +77115,22 @@ async def _wa_handle_media(digits: str, contact_name: str, media_id: str, mime: 
         await whatsapp_cloud.send_text(digits,
             "🎙️ Voice note samajh nahi aaya — thoda saaf bol kar dobara bhejein, ya type karein.")
         return
+    # Founder/admin (full-profile relay number) sent a PDF/photo → stage it for a shipping/reverse-pickup
+    # booking, so their next instruction ("reverse pickup" / "label bnao") books from this document.
+    if mtype in ("image", "document") and CLAUDE_WA_RELAY_ENABLED and whatsapp_cloud.enabled() \
+            and _wa_relay_profiles().get(digits) == "full":
+        media = await whatsapp_cloud.download_media(media_id)
+        if media and media.get("bytes"):
+            import base64 as _b64
+            await db.claude_wa_sessions.update_one({"phone": digits}, {"$set": {"ship_doc": {
+                "b64": _b64.b64encode(media["bytes"]).decode("ascii"),
+                "mime": media.get("mime") or ("application/pdf" if mtype == "document" else "image/jpeg"),
+                "kind": "document" if mtype == "document" else "image",
+                "at": datetime.now(timezone.utc).isoformat()}}}, upsert=True)
+            await whatsapp_cloud.send_text(digits,
+                "📄 File mil gayi. Ab batao kya karna hai — e.g. *reverse pickup* (customer se wapas mangwana) "
+                "ya *label bnao* (aage bhejna). PIN poochne par *Rony846* bhej dena.")
+            return
     if not (PRATIBHA_WA_AUTOREPLY and pratibha_brain.available() and whatsapp_cloud.enabled()):
         return
     if await db.whatsapp_optouts.find_one({"phone": digits}, {"_id": 1}):
@@ -77308,7 +77324,7 @@ async def _claude_wa_relay(digits: str, question: str):
                 {"$set": {"phone": digits, "authed_until": until, "pending_question": None}}, upsert=True)
             if pending:
                 await whatsapp_cloud.send_text(digits, f"✅ Verified, boss. Full access for {CLAUDE_WA_SESSION_MIN} min — answering your question…")
-                await _claude_wa_run(digits, pending)
+                await _claude_wa_relay(digits, pending)   # re-dispatch through the full authed flow (ship/reverse/relay)
             else:
                 await whatsapp_cloud.send_text(digits, f"✅ Verified, boss. Full access for the next {CLAUDE_WA_SESSION_MIN} min — ask away.")
             return
@@ -77353,12 +77369,26 @@ async def _claude_wa_relay(digits: str, question: str):
                 return
         # nothing matched / cancelled → drop the ship flow and answer normally
 
+    # "reverse pickup" / "pickup from this customer" → book a reverse Bigship pickup from the PDF/photo
+    if _WA_REVERSE_INTENT.search(low):
+        if profile != "full":
+            await whatsapp_cloud.send_text(digits, "🔄 Reverse pickup booking is restricted to admins.")
+            return
+        await _wa_relay_shipping(digits, ql, reverse_hint=True)
+        return
+
     # "ship <order>" / "label bnao / banao / make label" intent → book a Bigship label
     make_verb = re.search(r"bnao|banao|banwa|bana do|make|create|book|print|nikal", low)
     ship_intent = low.startswith("ship ") or bool(re.search(r"ship\s*kar", low)) or ("label" in low and make_verb)
     if ship_intent:
         if profile != "full":   # booking spends money → admins only
             await whatsapp_cloud.send_text(digits, "📦 Label booking is restricted to admins — please ask the office.")
+            return
+        # if a PDF/photo is staged, treat "label bnao" as an ad-hoc forward booking from that doc;
+        # otherwise it's the order-id forward-label flow.
+        sess_doc = (await db.claude_wa_sessions.find_one({"phone": digits}, {"ship_doc": 1}) or {}).get("ship_doc")
+        if sess_doc:
+            await _wa_relay_shipping(digits, ql)
             return
         await _claude_wa_ship_lookup(digits, ql, rearm=True)
         return
@@ -77445,6 +77475,70 @@ _WA_ACTION_USER = {"id": "15511c11-f2bc-480c-8364-6a1208f0b015", "role": "admin"
 
 _SHIP_STATUSES = ["ready_to_dispatch", "pending_dispatch", "in_dispatch_queue",
                   "awaiting_stock", "awaiting_procurement"]
+
+# Reverse-pickup / ad-hoc shipping intent from the founder's WhatsApp (the PDF + instruction flow).
+_WA_REVERSE_INTENT = re.compile(
+    r"reverse\s*pick\s*up|return\s*pick\s*up|pick\s*up\s*(from|kar|this)|wapas\s*manga|"
+    r"collect\s*from|return\s*kar", re.I)
+
+
+async def _wa_relay_shipping(digits: str, text: str, reverse_hint: bool = False) -> bool:
+    """Founder/full-profile WhatsApp: book a Bigship label from the PDF they sent + their instruction.
+    Handles FORWARD and REVERSE pickup (customer's address → registered as a Bigship warehouse →
+    courier to 213 Vishwakarma Estates, Meerut) and sends back the label PDF. Returns True if handled."""
+    sess = await db.claude_wa_sessions.find_one({"phone": digits}) or {}
+    doc = sess.get("ship_doc")
+    images = None
+    if doc and doc.get("b64"):
+        images = [{"media_type": doc.get("mime", "application/pdf"),
+                   "kind": doc.get("kind", "document"), "b64": doc["b64"]}]
+    try:
+        sh = await pratibha_brain.extract_shipment("WhatsApp shipping request", text, images)
+    except Exception as e:
+        logger.warning(f"relay shipping extract failed: {e}")
+        return False
+    if not sh.get("is_shipment"):
+        if reverse_hint:   # they clearly asked for a pickup but we couldn't read details
+            await whatsapp_cloud.send_text(digits,
+                "🔄 Reverse pickup ke liye customer ka invoice/details bhejein (PDF ya photo), phir bolein 'reverse pickup'.")
+            return True
+        return False
+    rp = sh.get("params") or {}
+    is_rev = bool(rp.get("is_reverse_pickup")) or reverse_hint
+    await whatsapp_cloud.send_text(digits, "🔄 Reverse pickup book kar raha hoon…" if is_rev else "📦 Label book kar raha hoon…")
+    prepared = await _pratibha_prepare_shipment(sh)
+    if not prepared.get("ok"):
+        await whatsapp_cloud.send_text(digits, f"Thoda aur chahiye 🙏 — {prepared.get('error')}")
+        return True
+    f = prepared["fields"]
+    f["is_reverse_pickup"] = is_rev
+    try:
+        resp = (await _pratibha_book_reverse_pickup(f, {"from_addr": f"whatsapp:{digits}"})
+                if is_rev else await _pratibha_book_shipment(f, {"from_addr": f"whatsapp:{digits}"}))
+    except Exception as e:
+        logger.error(f"relay shipping book failed: {e}")
+        await whatsapp_cloud.send_text(digits, f"Book karne me dikkat aayi: {str(e)[:160]}")
+        return True
+    if getattr(resp, "success", False) and getattr(resp, "awb_number", None):
+        await db.claude_wa_sessions.update_one({"phone": digits}, {"$unset": {"ship_doc": ""}})
+        kind = "Reverse pickup" if is_rev else "Shipment"
+        msg = f"✅ {kind} booked\nAWB: {resp.awb_number} ({getattr(resp, 'courier_name', None) or 'courier'})"
+        if is_rev:
+            msg += "\nPickup from customer → 213 Vishwakarma Estates, Meerut"
+        lbl = await _pratibha_fetch_label(getattr(resp, "system_order_id", None), f.get("shipment_type", "b2c"))
+        if lbl:
+            try:
+                await whatsapp_cloud.send_document(digits, lbl, f"label-{resp.awb_number}.pdf", caption="Label 📄")
+                msg += "\nLabel attached 📄"
+            except Exception:
+                if getattr(resp, "label_url", None):
+                    msg += f"\nLabel: {resp.label_url}"
+        elif getattr(resp, "label_url", None):
+            msg += f"\nLabel: {resp.label_url}"
+        await whatsapp_cloud.send_text(digits, msg)
+    else:
+        await whatsapp_cloud.send_text(digits, f"Book nahi hua: {getattr(resp, 'message', 'unknown error')}")
+    return True
 
 
 async def _claude_wa_ship_lookup(digits: str, query: str, rearm: bool = True) -> bool:
