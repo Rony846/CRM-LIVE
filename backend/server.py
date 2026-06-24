@@ -76988,6 +76988,9 @@ CLAUDE_WA_RELAY_TIMEOUT = int(os.environ.get("CLAUDE_WA_RELAY_TIMEOUT", "240"))
 # a successful PIN opens a session for CLAUDE_WA_SESSION_MIN minutes.
 CLAUDE_WA_RELAY_SECRET = os.environ.get("CLAUDE_WA_RELAY_SECRET", "").strip()
 CLAUDE_WA_SESSION_MIN = int(os.environ.get("CLAUDE_WA_SESSION_MIN", "30"))
+# How long the conversation CONTEXT (Claude session) is kept warm for follow-ups, so the relay
+# remembers earlier messages instead of starting fresh each turn. Resets after this idle gap.
+CLAUDE_WA_CONTEXT_MIN = int(os.environ.get("CLAUDE_WA_CONTEXT_MIN", "240"))
 
 
 def _wa_relay_profiles():
@@ -77056,6 +77059,13 @@ async def _claude_wa_relay(digits: str, question: str):
     profile = _wa_relay_profiles().get(digits, "full")
     sess2 = await db.claude_wa_sessions.find_one({"phone": digits}) or {}
 
+    # start a fresh conversation (drop the remembered context)
+    if low in ("new chat", "naya chat", "new", "reset", "clear", "fresh", "naya"):
+        await db.claude_wa_sessions.update_one({"phone": digits},
+            {"$unset": {"claude_session_id": "", "claude_session_at": ""}})
+        await whatsapp_cloud.send_text(digits, "🧠 Fresh chat started — earlier context cleared. Ask away.")
+        return
+
     # confirm a pending booking
     if low in ("confirm", "confirm ship", "yes confirm", "book it", "confirm karo", "haan book"):
         await _claude_wa_confirm_ship(digits)
@@ -77092,20 +77102,36 @@ async def _claude_wa_run(digits: str, question: str):
     except Exception:
         pass
     profile = _wa_relay_profiles().get(digits, "full")   # founder=full data, ops=no financials
-    reply = ""
-    for attempt in (1, 2):  # retry once on an empty/errored run before giving up
+    # Conversation continuity: resume the prior Claude session (so MG Brain remembers earlier turns),
+    # unless it's gone stale past the context window → then start fresh.
+    sess = await db.claude_wa_sessions.find_one({"phone": digits}) or {}
+    resume_sid = sess.get("claude_session_id")
+    sess_at = sess.get("claude_session_at") or ""
+    if resume_sid and sess_at:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=CLAUDE_WA_CONTEXT_MIN)).isoformat()
+        if sess_at < cutoff:
+            resume_sid = None  # stale → fresh conversation
+    reply, new_sid = "", None
+    for attempt in (1, 2):  # attempt 1 resumes context; attempt 2 self-heals fresh on empty/broken resume
         proc = None
         try:
+            args = ["sudo", "-n", "-u", "claude-router", "env", "HOME=/var/lib/claude-router",
+                    "CLAUDE_ROUTER_WORK=/var/lib/claude-router/work", f"CRM_READ_PROFILE={profile}",
+                    "/var/www/claude-router/escalate.sh", question]
+            if resume_sid and attempt == 1:
+                args.append(resume_sid)   # → escalate.sh --resume <id>
             proc = await asyncio.create_subprocess_exec(
-                "sudo", "-n", "-u", "claude-router", "env", "HOME=/var/lib/claude-router",
-                "CLAUDE_ROUTER_WORK=/var/lib/claude-router/work", f"CRM_READ_PROFILE={profile}",
-                "/var/www/claude-router/escalate.sh", question,
+                *args,
                 stdin=asyncio.subprocess.DEVNULL,  # else claude waits 3s on inherited stdin → empty output
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             out, err = await asyncio.wait_for(proc.communicate(), timeout=CLAUDE_WA_RELAY_TIMEOUT)
             reply = out.decode(errors="replace").strip()
+            errs = err.decode(errors="replace")
+            m = re.search(r"session=([0-9a-fA-F-]{8,})", errs)
+            if m:
+                new_sid = m.group(1)
             if not reply:
-                logger.warning(f"MG Brain empty output (attempt {attempt}): {err.decode(errors='replace')[:200]}")
+                logger.warning(f"MG Brain empty output (attempt {attempt}): {errs[:200]}")
         except asyncio.TimeoutError:
             if proc:
                 try:
@@ -77119,6 +77145,10 @@ async def _claude_wa_run(digits: str, question: str):
             reply = ""
         if reply:
             break
+    # remember the (new or continued) session id so the next turn keeps context
+    if new_sid:
+        await db.claude_wa_sessions.update_one({"phone": digits}, {"$set": {
+            "claude_session_id": new_sid, "claude_session_at": datetime.now(timezone.utc).isoformat()}})
     if not reply:  # never leak raw stderr — and NEVER go silent on the sender
         reply = "⚠️ MG Brain abhi jawab nahi de paaya — kripya apna sawaal dobara bhejein."
     # Guaranteed delivery: even an unexpected failure above must not leave the sender hanging.
