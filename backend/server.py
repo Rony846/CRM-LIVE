@@ -63309,7 +63309,7 @@ async def scheduled_collections():
 # have a Bigship label but aren't picked up by Delhivery, and which have no label at all. Routes
 # battery problems to Angad, inverter problems to Gaurav. Follows up per order until it ships.
 UNSHIPPED_BOT_ENABLED = os.environ.get("UNSHIPPED_BOT_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
-UNSHIPPED_BOT_WINDOW_H = int(os.environ.get("UNSHIPPED_BOT_WINDOW_HOURS", "48"))
+UNSHIPPED_BOT_WINDOW_H = int(os.environ.get("UNSHIPPED_BOT_WINDOW_HOURS", "168"))   # last 7 days
 UNSHIPPED_BOT_MIN_AGE_H = int(os.environ.get("UNSHIPPED_BOT_MIN_AGE_HOURS", "12"))   # too-fresh orders aren't "stuck" yet
 UNSHIPPED_BOT_MAX_FOLLOWUPS = int(os.environ.get("UNSHIPPED_BOT_MAX_FOLLOWUPS", "8"))  # ~4 days twice-daily
 _UNSHIP_EMAILS = {
@@ -63322,11 +63322,15 @@ _UNSHIP_EMAILS = {
 
 
 def _classify_product(title: str) -> str:
-    # check inverter FIRST — inverter listings often mention "battery" in the title (combo/compatibility)
+    # Ah (amp-hour) capacity is the defining unit of a battery — and beats a "for inverter" mention.
+    # Then inverter keywords (kW/kVA/PCU). Battery listings say "inverter", inverter listings say
+    # "battery", so order matters: Ah → battery; else inverter words → inverter; else lithium → battery.
     t = (title or "").lower()
-    if re.search(r"inverter|\bpcu\b|\bkw\b|mppt|ongrid|off.?grid|hybrid", t):
+    if re.search(r"\d+\s*ah\b", t):
+        return "battery"
+    if re.search(r"inverter|\bpcu\b|\bk\s?w\b|mppt|ongrid|off.?grid|hybrid", t):
         return "inverter"
-    if re.search(r"batter|lithium|lifepo4|li-ion|\bah\b|\bcell\b", t):
+    if re.search(r"batter|lithium|lifepo4|li-ion|\bcell\b", t):
         return "battery"
     return "other"
 
