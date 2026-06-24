@@ -63363,8 +63363,14 @@ async def _unshipped_audit(window_h: int = None):
     async for o in db.amazon_orders.find(
             {"fulfillment_channel": "MFN", "purchase_date": {"$gte": since, "$lt": too_fresh}},
             {"amazon_order_id": 1, "buyer_name": 1, "phone": 1, "items": 1, "firm_name": 1,
-             "tracking_number": 1, "crm_status": 1, "order_total": 1, "purchase_date": 1}):
+             "tracking_number": 1, "crm_status": 1, "order_status": 1, "order_total": 1, "purchase_date": 1}):
         oid = o.get("amazon_order_id")
+        # Use AMAZON'S authoritative order_status (our crm_status lags): only orders Amazon itself
+        # shows as awaiting/in shipment are real. Skip Canceled (our crm_status often still 'pending')
+        # and Pending (payment unconfirmed — cannot ship yet).
+        ostat = str(o.get("order_status") or "").lower()
+        if ostat in ("canceled", "cancelled", "pending", "pendingavailability"):
+            continue
         if str(o.get("crm_status") or "").lower() in ("cancelled", "canceled"):
             continue
         if await db.amazon_refunds.find_one({"amazon_order_id": oid}, {"_id": 1}):
