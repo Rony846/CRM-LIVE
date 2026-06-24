@@ -63473,8 +63473,7 @@ def _unshipped_email_html(rep, chase):
 
     def rows(items):
         out = ""
-        shown = items[:12]
-        for p in shown:
+        for p in items:
             fu = f" · reminder #{p.get('follow_ups',1)}" if p.get("follow_ups", 1) > 1 else ""
             tag = "🔋 battery" if p["category"] == "battery" else ("⚡ inverter" if p["category"] == "inverter" else "")
             firm = ("<span style='background:#1A1A1A;color:#FFC400;font-size:10px;font-weight:700;"
@@ -63483,8 +63482,6 @@ def _unshipped_email_html(rep, chase):
                     f"<td style='padding:7px 6px;border-bottom:1px solid #eee'>{p['customer']}</td>"
                     f"<td style='padding:7px 6px;border-bottom:1px solid #eee'>{p['product']} {tag}</td>"
                     f"<td style='padding:7px 6px;border-bottom:1px solid #eee'>{p.get('status','')}</td></tr>")
-        if len(items) > 12:
-            out += f"<tr><td colspan='4' style='padding:7px 6px;color:#888'>…+{len(items)-12} more</td></tr>"
         return out
     # per-firm count of the orders to chase
     firm_counts = {}
