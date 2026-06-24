@@ -77526,11 +77526,22 @@ async def _wa_relay_shipping(digits: str, text: str, reverse_hint: bool = False)
         if is_rev:
             msg += "\nPickup from customer → 213 Vishwakarma Estates, Meerut"
         lbl = await _pratibha_fetch_label(getattr(resp, "system_order_id", None), f.get("shipment_type", "b2c"))
-        if lbl:
+        lbl_bytes = None
+        if lbl and lbl.get("content"):
             try:
-                await whatsapp_cloud.send_document(digits, lbl, f"label-{resp.awb_number}.pdf", caption="Label 📄")
-                msg += "\nLabel attached 📄"
+                import base64 as _b64
+                lbl_bytes = _b64.b64decode(lbl["content"])
             except Exception:
+                lbl_bytes = None
+        if lbl_bytes:
+            try:
+                await whatsapp_cloud.send_document(
+                    digits, lbl_bytes,
+                    lbl.get("filename") or f"label-{resp.awb_number}.pdf",
+                    mime=lbl.get("media_type", "application/pdf"), caption="Label 📄")
+                msg += "\nLabel attached 📄"
+            except Exception as _e:
+                logger.warning(f"relay label send failed: {_e}")
                 if getattr(resp, "label_url", None):
                     msg += f"\nLabel: {resp.label_url}"
         elif getattr(resp, "label_url", None):
