@@ -68908,6 +68908,13 @@ async def _pratibha_prepare_shipment(ship: dict) -> dict:
     c = email_agent.cfg()
     pay = "COD" if str(p.get("payment_type", "")).upper() == "COD" else "Prepaid"
     amt = float(p.get("invoice_amount") or 0)
+    # Founder rule: the email bot only books LOW-VALUE shipments (< ₹50k). Higher-value parcels
+    # must be booked manually (insurance / extra checks), so hold and tell the sender.
+    ship_cap = float(os.environ.get("EMAIL_AGENT_SHIP_VALUE_CAP", "50000") or 50000)
+    if amt >= ship_cap:
+        return {"ok": False, "error": (
+            f"This order's value is ₹{amt:,.0f}, which is ₹{ship_cap:,.0f} or above. For safety I only "
+            f"auto-book shipments under ₹{ship_cap:,.0f} — please book this one from the Bigship dashboard manually.")}
     fields = {
         "shipment_type": (p.get("shipment_type") or "b2c").lower(),
         "warehouse_id": c.get("shipping_warehouse_id"),

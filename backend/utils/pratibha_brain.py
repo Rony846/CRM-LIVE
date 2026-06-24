@@ -41,6 +41,12 @@ def support_model() -> str:
     return os.environ.get("PRATIBHA_SUPPORT_MODEL", "claude-opus-4-8")
 
 
+def ship_model() -> str:
+    """Shipping-label extraction runs on the SMARTEST model (Opus 4.8) — a wrong address/product on a
+    real parcel costs far more than the few rupees of API. Founder-mandated for accuracy, no errors."""
+    return os.environ.get("EMAIL_AGENT_SHIP_MODEL", "claude-opus-4-8")
+
+
 def available() -> bool:
     return bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
 
@@ -1259,7 +1265,7 @@ async def extract_shipment(subject: str, body: str, images=None, today: str = No
     content.append({"type": "text", "text": f"Email from the founder.\nSubject: {subject or ''}\n\n{(body or '')[:5000]}"})
     try:
         resp = await client.messages.create(
-            model=model_reply(), max_tokens=900, system=_sys(_SHIP_SYS), messages=[{"role": "user", "content": content}])
+            model=ship_model(), max_tokens=900, system=_sys(_SHIP_SYS), messages=[{"role": "user", "content": content}])
         m = re.search(r"\{.*\}", _text(resp), re.S)
         j = json.loads(m.group(0)) if m else {}
         return {"is_shipment": bool(j.get("is_shipment")), "confidence": j.get("confidence"),
