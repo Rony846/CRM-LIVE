@@ -1099,6 +1099,18 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Unshipped-orders follow-up bot: 11:00 + 16:00 IST (05:30 + 10:30 UTC).
+        from apscheduler.triggers.cron import CronTrigger
+        scheduler.add_job(
+            scheduled_unshipped_bot,
+            CronTrigger(hour="5,10", minute="30", timezone="UTC"),
+            id="unshipped_bot",
+            name="Unshipped-orders dispatch check (11am + 4pm IST)",
+            replace_existing=True,
+            misfire_grace_time=1800,
+            max_instances=1,
+        )
+
         # Collections: daily prioritized external-receivables chase-list to the founder.
         scheduler.add_job(
             scheduled_collections,
@@ -63290,6 +63302,215 @@ async def scheduled_collections():
                         for p, d in ranked[:12]))
     await _alert_founder_free(body, "collections")
     logger.info(f"Collections: {len(ranked)} external parties, Rs {total:,.0f} receivable")
+
+
+# ===================== Unshipped-orders follow-up bot =====================
+# Twice daily, emails the dispatch person (Aman) + cc founder/Shweta: which new Amazon orders
+# have a Bigship label but aren't picked up by Delhivery, and which have no label at all. Routes
+# battery problems to Angad, inverter problems to Gaurav. Follows up per order until it ships.
+UNSHIPPED_BOT_ENABLED = os.environ.get("UNSHIPPED_BOT_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+UNSHIPPED_BOT_WINDOW_H = int(os.environ.get("UNSHIPPED_BOT_WINDOW_HOURS", "48"))
+UNSHIPPED_BOT_MIN_AGE_H = int(os.environ.get("UNSHIPPED_BOT_MIN_AGE_HOURS", "12"))   # too-fresh orders aren't "stuck" yet
+UNSHIPPED_BOT_MAX_FOLLOWUPS = int(os.environ.get("UNSHIPPED_BOT_MAX_FOLLOWUPS", "8"))  # ~4 days twice-daily
+_UNSHIP_EMAILS = {
+    "to": os.environ.get("UNSHIPPED_BOT_TO", "aman@musclegrid.in"),
+    "founder": os.environ.get("UNSHIPPED_BOT_FOUNDER", "founder@musclegrid.in"),
+    "shweta": os.environ.get("UNSHIPPED_BOT_SHWETA", "shweta@musclegrid.in"),
+    "angad": os.environ.get("UNSHIPPED_BOT_ANGAD", "angad@musclegrid.in"),
+    "gaurav": os.environ.get("UNSHIPPED_BOT_GAURAV", "gaurav@musclegrid.in"),
+}
+
+
+def _classify_product(title: str) -> str:
+    # check inverter FIRST — inverter listings often mention "battery" in the title (combo/compatibility)
+    t = (title or "").lower()
+    if re.search(r"inverter|\bpcu\b|\bkw\b|mppt|ongrid|off.?grid|hybrid", t):
+        return "inverter"
+    if re.search(r"batter|lithium|lifepo4|li-ion|\bah\b|\bcell\b", t):
+        return "battery"
+    return "other"
+
+
+def _delhivery_picked(status: str) -> bool:
+    """A Bigship/Delhivery status that means the parcel has actually MOVED (picked up onward)."""
+    s = (status or "").lower()
+    if not s:
+        return False
+    if "not picked" in s or "pickup sched" in s or "manifest" in s or "stale" in s:
+        return False
+    return bool(re.search(r"transit|out for|delivered|picked|dispatched|rto", s))
+
+
+async def _unshipped_audit(window_h: int = None):
+    """Returns the dispatch-truth report: new MFN orders, how many have a Bigship label, how many
+    of those Delhivery actually picked up, and the per-order problem list (label-missing + not-picked).
+    Refunded/cancelled orders are excluded (closed cases, not fulfilment problems)."""
+    window_h = window_h or UNSHIPPED_BOT_WINDOW_H
+    since = (datetime.now(timezone.utc) - timedelta(hours=window_h)).strftime("%Y-%m-%dT%H:%M:%S")
+    # courier (Bigship/Delhivery) status indexed by amazon order id
+    cs_status = {}
+    async for c in db.courier_shipments.find({}, {"invoice_number": 1, "awb_number": 1, "status": 1, "customer_name": 1, "product_name": 1}):
+        m = re.search(r"\d{3}-\d{7}-\d{7}", str(c.get("invoice_number") or ""))
+        if m:
+            prev = cs_status.get(m.group(0))
+            # keep the most-advanced status (picked beats not-picked)
+            if prev is None or (_delhivery_picked(c.get("status")) and not _delhivery_picked(prev.get("status"))):
+                cs_status[m.group(0)] = {"status": c.get("status"), "awb": c.get("awb_number"),
+                                         "customer": c.get("customer_name"), "product": c.get("product_name")}
+    # only orders older than the min-age can be "stuck" (a fresh order legitimately has no label yet)
+    too_fresh = (datetime.now(timezone.utc) - timedelta(hours=UNSHIPPED_BOT_MIN_AGE_H)).strftime("%Y-%m-%dT%H:%M:%S")
+    rep = {"new": 0, "with_label": 0, "picked": 0, "self_ship": 0, "problems": []}
+    async for o in db.amazon_orders.find(
+            {"fulfillment_channel": "MFN", "purchase_date": {"$gte": since, "$lt": too_fresh}},
+            {"amazon_order_id": 1, "buyer_name": 1, "phone": 1, "items": 1, "firm_name": 1,
+             "tracking_number": 1, "crm_status": 1, "order_total": 1, "purchase_date": 1}):
+        oid = o.get("amazon_order_id")
+        if str(o.get("crm_status") or "").lower() in ("cancelled", "canceled"):
+            continue
+        if await db.amazon_refunds.find_one({"amazon_order_id": oid}, {"_id": 1}):
+            continue  # already refunded → closed, not a fulfilment problem
+        rep["new"] += 1
+        trk = str(o.get("tracking_number") or "")
+        cs = cs_status.get(oid)
+        items = o.get("items") or []
+        title = (items[0].get("title") or items[0].get("name") or "") if items else ""
+        cat = _classify_product(title)
+        ot = o.get("order_total"); amt = (ot.get("Amount") if isinstance(ot, dict) else ot) or 0
+        cust = (cs or {}).get("customer") or o.get("buyer_name") or "—"
+        base = {"order_id": oid, "customer": cust, "phone": re.sub(r"\D", "", str(o.get("phone") or ""))[-10:],
+                "product": (title or (cs or {}).get("product") or "—")[:48], "category": cat,
+                "firm": o.get("firm_name"), "amount": round(float(amt or 0), 0)}
+        crm_st = str(o.get("crm_status") or "").lower()
+        if trk.upper().startswith("SLFDY"):
+            rep["self_ship"] += 1   # Amazon Easy-Ship / Delhivery self-ship — handled by Amazon
+            continue
+        if cs:                       # a Bigship label exists → check Delhivery pickup
+            rep["with_label"] += 1
+            if _delhivery_picked(cs.get("status")):
+                rep["picked"] += 1
+            else:
+                rep["problems"].append({**base, "issue": "label_not_picked", "status": cs.get("status") or "no movement"})
+        elif trk or crm_st in ("amazon_shipped", "dispatched", "tracking_added"):
+            # Amazon-confirmed shipped (tracking written back) but no Bigship record — likely Easy-Ship;
+            # count as labelled, not a chase item (verified separately, not a dispatch-team gap).
+            rep["with_label"] += 1
+            rep["picked"] += 1
+        else:                        # genuinely pending: no label, no tracking, not Amazon-shipped
+            rep["problems"].append({**base, "issue": "no_label", "status": "not processed yet"})
+    return rep
+
+
+async def _unshipped_followups_sync(problems):
+    """Track each problem order until it ships. Returns the list to chase now (open problems with
+    a follow-up count) + auto-resolves any previously-open order that has since shipped."""
+    now = datetime.now(timezone.utc).isoformat()
+    open_ids = {p["order_id"] for p in problems}
+    # resolve orders that were open but are no longer a problem (shipped / picked / refunded)
+    async for f in db.unshipped_followups.find({"status": "open"}):
+        if f["order_id"] not in open_ids:
+            await db.unshipped_followups.update_one(
+                {"order_id": f["order_id"]}, {"$set": {"status": "resolved", "resolved_at": now}})
+    chase = []
+    for p in problems:
+        f = await db.unshipped_followups.find_one({"order_id": p["order_id"]})
+        if not f:
+            await db.unshipped_followups.insert_one({
+                "order_id": p["order_id"], "status": "open", "follow_ups": 1,
+                "first_seen": now, "last_emailed": now, **p})
+            p["follow_ups"] = 1
+            chase.append(p)
+        elif f.get("status") == "stopped":
+            continue  # gave up on this one already
+        else:
+            n = (f.get("follow_ups") or 1) + 1
+            new_status = "stopped" if n > UNSHIPPED_BOT_MAX_FOLLOWUPS else "open"
+            await db.unshipped_followups.update_one({"order_id": p["order_id"]},
+                {"$set": {"status": new_status, "follow_ups": n, "last_emailed": now, **p}})
+            if new_status == "open":
+                p["follow_ups"] = n
+                chase.append(p)
+    return chase
+
+
+def _unshipped_email_html(rep, chase):
+    no_label = [p for p in chase if p["issue"] == "no_label"]
+    not_picked = [p for p in chase if p["issue"] == "label_not_picked"]
+
+    def rows(items):
+        out = ""
+        shown = items[:12]
+        for p in shown:
+            fu = f" · reminder #{p.get('follow_ups',1)}" if p.get("follow_ups", 1) > 1 else ""
+            tag = "🔋 battery" if p["category"] == "battery" else ("⚡ inverter" if p["category"] == "inverter" else "")
+            out += (f"<tr><td style='padding:7px 6px;border-bottom:1px solid #eee'><b>{p['order_id']}</b>{fu}</td>"
+                    f"<td style='padding:7px 6px;border-bottom:1px solid #eee'>{p['customer']}</td>"
+                    f"<td style='padding:7px 6px;border-bottom:1px solid #eee'>{p['product']} {tag}</td>"
+                    f"<td style='padding:7px 6px;border-bottom:1px solid #eee'>{p.get('status','')}</td></tr>")
+        if len(items) > 12:
+            out += f"<tr><td colspan='4' style='padding:7px 6px;color:#888'>…+{len(items)-12} more</td></tr>"
+        return out
+    head = "<tr style='text-align:left;color:#888;font-size:12px'><th>Order</th><th>Customer</th><th>Product</th><th>Status</th></tr>"
+    sections = ""
+    if no_label:
+        sections += (f"<h3 style='color:#c0392b;margin:18px 0 6px'>🚫 {len(no_label)} order(s) with NO Bigship label (unshipped)</h3>"
+                     f"<table style='width:100%;border-collapse:collapse;font-size:13px'>{head}{rows(no_label)}</table>")
+    if not_picked:
+        sections += (f"<h3 style='color:#d35400;margin:18px 0 6px'>📦 {len(not_picked)} label(s) created but Delhivery has NOT picked up</h3>"
+                     f"<table style='width:100%;border-collapse:collapse;font-size:13px'>{head}{rows(not_picked)}</table>")
+    if not sections:
+        sections = "<p style='color:#1F8A4C'>✅ All new orders are labelled and picked up. Nothing to chase right now.</p>"
+    return f"""<div style="font-family:Arial,sans-serif;max-width:680px;margin:auto;color:#1A1A1A">
+  <div style="background:#1A1A1A;padding:18px 22px"><span style="color:#F58220;font-weight:800;font-size:20px">Muscle</span><span style="color:#fff;font-weight:800;font-size:20px">Grid</span><span style="color:#aaa;float:right;font-size:13px">Dispatch check</span></div>
+  <div style="padding:22px">
+    <p>Hi Aman,</p>
+    <p>Here's today's dispatch status for the last {UNSHIPPED_BOT_WINDOW_H} hours of Amazon orders:</p>
+    <div style="background:#f7f7f5;border-radius:10px;padding:14px 16px;margin:12px 0;line-height:1.7">
+      📥 <b>{rep['new']}</b> new orders &nbsp;·&nbsp; 🏷️ Bigship label entered for <b>{rep['with_label']}</b>
+      {f"&nbsp;·&nbsp; 📮 {rep['self_ship']} via Amazon Easy-Ship" if rep['self_ship'] else ""}<br>
+      🚚 Delhivery picked up <b>{rep['picked']}</b> &nbsp;·&nbsp; ⚠️ <b style="color:#c0392b">{len(chase)}</b> still need action.
+    </div>
+    {sections}
+    <p style="margin-top:18px">Please ship these (or reply with the reason they can't ship). I'll keep following up until each one moves.</p>
+    <p style="color:#888;font-size:12px;border-top:1px solid #eee;padding-top:12px;margin-top:18px">Automated by MuscleGrid dispatch bot · battery issues cc Angad, inverter issues cc Gaurav.</p>
+  </div></div>"""
+
+
+async def _unshipped_bot_run(sample_to: str = None):
+    """Build the report, sync follow-ups, and email it. If sample_to is given, send ONLY there
+    (review mode) and don't cc anyone. Otherwise email Aman + cc founder/Shweta (+Angad/Gaurav)."""
+    rep = await _unshipped_audit()
+    # Sample/review mode is READ-ONLY — don't persist follow-up state until the founder approves.
+    if sample_to:
+        chase = [{**p, "follow_ups": 1} for p in rep["problems"]]
+    else:
+        chase = await _unshipped_followups_sync(rep["problems"])
+    html = _unshipped_email_html(rep, chase)
+    subject = f"Dispatch check — {len(chase)} order(s) created but not shipped"
+    if sample_to:
+        return await send_email_background(sample_to, "[SAMPLE] " + subject, html, "unshipped_bot")
+    to = _UNSHIP_EMAILS["to"]
+    cc = [_UNSHIP_EMAILS["founder"], _UNSHIP_EMAILS["shweta"]]
+    if any(p["category"] == "battery" for p in chase):
+        cc.append(_UNSHIP_EMAILS["angad"])
+    if any(p["category"] == "inverter" for p in chase):
+        cc.append(_UNSHIP_EMAILS["gaurav"])
+    return zoho_mail.send_email(to, subject, html, cc_address=",".join([c for c in cc if c]))
+
+
+async def scheduled_unshipped_bot():
+    if not UNSHIPPED_BOT_ENABLED:
+        return
+    try:
+        await _unshipped_bot_run()
+    except Exception as e:
+        logger.error(f"unshipped bot failed: {e}")
+
+
+@api_router.post("/admin/unshipped-bot/sample")
+async def unshipped_bot_sample(to: str = "founder@musclegrid.in", user: dict = Depends(require_roles(["admin"]))):
+    """Send a SAMPLE of the dispatch-check email (real data) to one address only."""
+    res = await _unshipped_bot_run(sample_to=to)
+    return {"sent": bool((res or {}).get("success")), "to": to, "detail": res}
 
 
 @api_router.post("/pending-fulfillment/{fulfillment_id}/bigship-label")
