@@ -63439,27 +63439,28 @@ async def _unshipped_followups_sync(problems):
     a follow-up count) + auto-resolves any previously-open order that has since shipped."""
     now = datetime.now(timezone.utc).isoformat()
     open_ids = {p["order_id"] for p in problems}
+    # NB: the follow-up state lives in `fu_status` (NOT `status`, which holds the order's courier status
+    # spread in via **p) — otherwise **p would clobber the tracking state.
     # resolve orders that were open but are no longer a problem (shipped / picked / refunded)
-    async for f in db.unshipped_followups.find({"status": "open"}):
+    async for f in db.unshipped_followups.find({"fu_status": "open"}):
         if f["order_id"] not in open_ids:
             await db.unshipped_followups.update_one(
-                {"order_id": f["order_id"]}, {"$set": {"status": "resolved", "resolved_at": now}})
+                {"order_id": f["order_id"]}, {"$set": {"fu_status": "resolved", "resolved_at": now}})
     chase = []
     for p in problems:
         f = await db.unshipped_followups.find_one({"order_id": p["order_id"]})
         if not f:
             await db.unshipped_followups.insert_one({
-                "order_id": p["order_id"], "status": "open", "follow_ups": 1,
-                "first_seen": now, "last_emailed": now, **p})
+                **p, "fu_status": "open", "follow_ups": 1, "first_seen": now, "last_emailed": now})
             p["follow_ups"] = 1
             chase.append(p)
-        elif f.get("status") == "stopped":
+        elif f.get("fu_status") == "stopped":
             continue  # gave up on this one already
         else:
             n = (f.get("follow_ups") or 1) + 1
             new_status = "stopped" if n > UNSHIPPED_BOT_MAX_FOLLOWUPS else "open"
             await db.unshipped_followups.update_one({"order_id": p["order_id"]},
-                {"$set": {"status": new_status, "follow_ups": n, "last_emailed": now, **p}})
+                {"$set": {**p, "fu_status": new_status, "follow_ups": n, "last_emailed": now}})
             if new_status == "open":
                 p["follow_ups"] = n
                 chase.append(p)
