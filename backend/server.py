@@ -63321,6 +63321,24 @@ _UNSHIP_EMAILS = {
 }
 
 
+def _firm_short(name: str) -> str:
+    """Short firm tag for the dispatch email."""
+    n = (name or "").lower()
+    if "gurgaon" in n or "mgig" in n:
+        return "MGIG"
+    if "delhi" in n:
+        return "MG-Delhi"
+    if "ebay" in n or "ebay up" in n:
+        return "EBAY-UP"
+    if "electronics bay" in n:
+        return "EB"
+    if "spv" in n:
+        return "SPV"
+    if "mgipl" in n or "private" in n:
+        return "MGIPL"
+    return (name or "?")[:10]
+
+
 def _classify_product(title: str) -> str:
     # Ah (amp-hour) capacity is the defining unit of a battery — and beats a "for inverter" mention.
     # Then inverter keywords (kW/kVA/PCU). Battery listings say "inverter", inverter listings say
@@ -63452,14 +63470,21 @@ def _unshipped_email_html(rep, chase):
         for p in shown:
             fu = f" · reminder #{p.get('follow_ups',1)}" if p.get("follow_ups", 1) > 1 else ""
             tag = "🔋 battery" if p["category"] == "battery" else ("⚡ inverter" if p["category"] == "inverter" else "")
-            out += (f"<tr><td style='padding:7px 6px;border-bottom:1px solid #eee'><b>{p['order_id']}</b>{fu}</td>"
+            firm = ("<span style='background:#1A1A1A;color:#FFC400;font-size:10px;font-weight:700;"
+                    "padding:1px 6px;border-radius:4px;white-space:nowrap'>" + _firm_short(p.get("firm")) + "</span>")
+            out += (f"<tr><td style='padding:7px 6px;border-bottom:1px solid #eee'>{firm} <b>{p['order_id']}</b>{fu}</td>"
                     f"<td style='padding:7px 6px;border-bottom:1px solid #eee'>{p['customer']}</td>"
                     f"<td style='padding:7px 6px;border-bottom:1px solid #eee'>{p['product']} {tag}</td>"
                     f"<td style='padding:7px 6px;border-bottom:1px solid #eee'>{p.get('status','')}</td></tr>")
         if len(items) > 12:
             out += f"<tr><td colspan='4' style='padding:7px 6px;color:#888'>…+{len(items)-12} more</td></tr>"
         return out
-    head = "<tr style='text-align:left;color:#888;font-size:12px'><th>Order</th><th>Customer</th><th>Product</th><th>Status</th></tr>"
+    # per-firm count of the orders to chase
+    firm_counts = {}
+    for p in chase:
+        firm_counts[_firm_short(p.get("firm"))] = firm_counts.get(_firm_short(p.get("firm")), 0) + 1
+    firm_summary = " &nbsp;·&nbsp; ".join(f"<b>{f}</b>: {n}" for f, n in sorted(firm_counts.items(), key=lambda x: -x[1]))
+    head = "<tr style='text-align:left;color:#888;font-size:12px'><th>Firm · Order</th><th>Customer</th><th>Product</th><th>Status</th></tr>"
     sections = ""
     if no_label:
         sections += (f"<h3 style='color:#c0392b;margin:18px 0 6px'>🚫 {len(no_label)} order(s) with NO Bigship label (unshipped)</h3>"
@@ -63478,6 +63503,7 @@ def _unshipped_email_html(rep, chase):
       📥 <b>{rep['new']}</b> new orders &nbsp;·&nbsp; 🏷️ Bigship label entered for <b>{rep['with_label']}</b>
       {f"&nbsp;·&nbsp; 📮 {rep['self_ship']} via Amazon Easy-Ship" if rep['self_ship'] else ""}<br>
       🚚 Delhivery picked up <b>{rep['picked']}</b> &nbsp;·&nbsp; ⚠️ <b style="color:#c0392b">{len(chase)}</b> still need action.
+      {f"<br><span style='font-size:13px;color:#555'>By firm — {firm_summary}</span>" if firm_summary else ""}
     </div>
     {sections}
     <p style="margin-top:18px">Please ship these (or reply with the reason they can't ship). I'll keep following up until each one moves.</p>
