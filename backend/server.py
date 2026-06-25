@@ -63528,25 +63528,72 @@ REVIEW_RESCUE_MIN = int(os.environ.get("REVIEW_RESCUE_MIN", "720"))
 REVIEW_RESCUE_DOMAIN = os.environ.get("REVIEW_RESCUE_DOMAIN", "www.amazon.in")
 
 
+def _norm_samesite(v):
+    m = {"lax": "Lax", "strict": "Strict", "none": "None", "no_restriction": "None",
+         "unspecified": "Lax", "": "Lax"}
+    return m.get(str(v or "").lower(), "Lax")
+
+
+async def _load_amazon_cookies() -> list:
+    """Logged-in amazon.in cookies for the review scraper. Prefers the on-disk retail session
+    (data/amazon_cookies.json, has the -acbin retail-auth cookies), falls back to the freshest
+    Mongo browser_sessions backup (host=amazon)."""
+    raw = []
+    fp = Path(__file__).resolve().parent / "data" / "amazon_cookies.json"
+    try:
+        if fp.exists():
+            raw = json.loads(fp.read_text())
+    except Exception:
+        raw = []
+    if not raw:
+        s = await db.browser_sessions.find_one({"host": "amazon"}, sort=[("updated_at", -1)])
+        raw = (s or {}).get("cookies") or []
+    cookies = []
+    for c in raw:
+        if not c.get("name") or "amazon" not in str(c.get("domain") or ""):
+            continue
+        ck = {"name": c["name"], "value": c.get("value", ""), "domain": c["domain"],
+              "path": c.get("path", "/"), "httpOnly": bool(c.get("httpOnly")),
+              "secure": bool(c.get("secure", True)), "sameSite": _norm_samesite(c.get("sameSite"))}
+        if c.get("expires") and float(c["expires"]) > 0:
+            ck["expires"] = float(c["expires"])
+        cookies.append(ck)
+    return cookies
+
+
 async def _scrape_amazon_reviews(asin: str, max_pages: int = 1) -> list:
-    """Scrape recent 1- and 2-star reviews for one ASIN via Playwright. Returns [] on block/empty."""
+    """Scrape recent 1- and 2-star reviews for one ASIN via Playwright, using the logged-in
+    amazon.in session cookies + light stealth. Returns [] on block/empty."""
     out = []
     try:
         from playwright.async_api import async_playwright
     except Exception:
         return out
+    cookies = await _load_amazon_cookies()
     try:
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
             ctx = await browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
                 locale="en-IN")
+            # light stealth: hide the webdriver flag many bot-walls check
+            await ctx.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
+            if cookies:
+                try:
+                    await ctx.add_cookies(cookies)
+                except Exception as e:
+                    logger.warning(f"review scraper add_cookies failed: {e}")
             page = await ctx.new_page()
             for star in ("one_star", "two_star"):
                 url = (f"https://{REVIEW_RESCUE_DOMAIN}/product-reviews/{asin}/"
                        f"?filterByStar={star}&sortBy=recent&pageNumber=1")
                 try:
                     await page.goto(url, timeout=25000, wait_until="domcontentloaded")
+                    if "/ap/signin" in page.url or "/errors/validateCaptcha" in page.url:
+                        logger.warning(f"review scraper blocked (login/captcha) for {asin} — needs a FRESH "
+                                       f"amazon.in RETAIL session in data/amazon_cookies.json")
+                        await browser.close()
+                        return [{"_blocked": "login_required"}]
                     await page.wait_for_selector("[data-hook='review']", timeout=8000)
                 except Exception:
                     continue   # blocked / no reviews of this star
@@ -63597,9 +63644,12 @@ async def _review_rescue_run(digest: bool = False, sample_to_wa: str = "", limit
                 asins.add(it["asin"])
     asins = list(asins)[:limit_asins] if limit_asins else list(asins)
     now = datetime.now(timezone.utc).isoformat()
-    fresh, scraped = [], 0
+    fresh, scraped, blocked = [], 0, False
     for asin in asins:
         revs = await _scrape_amazon_reviews(asin)
+        if revs and revs[0].get("_blocked"):
+            blocked = True
+            break   # session is bad — stop hammering Amazon
         scraped += len(revs)
         for r in revs:
             exists = await db.amazon_low_reviews.find_one({"review_id": r["review_id"]}, {"_id": 1})
@@ -63610,6 +63660,14 @@ async def _review_rescue_run(digest: bool = False, sample_to_wa: str = "", limit
             r["id"] = str(uuid.uuid4())
             await db.amazon_low_reviews.insert_one(r)
             fresh.append(r)
+    if blocked:
+        to = re.sub(r"\D", "", sample_to_wa)[-12:] if sample_to_wa else None
+        msg = ("⚠️ Negative-Review Rescue can't read Amazon — the saved session is expired/seller-only and "
+               "Amazon redirects to login. Drop a FRESH amazon.in shopping-account cookie export into "
+               "backend/data/amazon_cookies.json (Cookie-Editor → Export JSON) and it'll start working.")
+        if to:
+            await whatsapp_cloud.send_text(to, msg)
+        return {"asins_checked": len(asins), "blocked": True, "new_low_reviews": 0}
     if (digest or sample_to_wa) and fresh:
         body = (f"⭐ Negative-Review Rescue: *{len(fresh)}* new 1-2★ review(s) on our listings:\n"
                 + "\n".join(f"• {r['stars']}★ {(_amz_first_words(r.get('title'),6)) or '(no title)'} "
