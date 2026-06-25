@@ -1090,17 +1090,17 @@ async def create_indexes():
                 max_instances=1,
             )
 
-        # Negative-Review Rescue: watch ASINs for fresh 1-2 star reviews (experimental scraper).
-        if REVIEW_RESCUE_ENABLED:
-            scheduler.add_job(
-                scheduled_review_rescue,
-                IntervalTrigger(minutes=REVIEW_RESCUE_MIN),
-                id="review_rescue",
-                name="Negative-Review Rescue (1-2 star Amazon reviews)",
-                replace_existing=True,
-                misfire_grace_time=600,
-                max_instances=1,
-            )
+        # Negative-Review Rescue: always registered; execution is gated by _review_rescue_active()
+        # (env flag OR runtime enable) so an admin can switch it on by uploading valid cookies — no restart.
+        scheduler.add_job(
+            scheduled_review_rescue,
+            IntervalTrigger(minutes=REVIEW_RESCUE_MIN),
+            id="review_rescue",
+            name="Negative-Review Rescue (1-2 star Amazon reviews)",
+            replace_existing=True,
+            misfire_grace_time=600,
+            max_instances=1,
+        )
 
         # Receivables (dealer dues) chaser: dealer-scoped aging report.
         if RECEIVABLES_ENABLED:
@@ -63625,8 +63625,16 @@ def _review_reply_draft(r: dict) -> str:
             f"and we'll resolve it on priority.")
 
 
+async def _review_rescue_active() -> bool:
+    """Active if the env flag is on OR an admin enabled it at runtime (after uploading valid cookies)."""
+    if REVIEW_RESCUE_ENABLED:
+        return True
+    f = await db.agent_flags.find_one({"_id": "review_rescue"})
+    return bool(f and f.get("enabled"))
+
+
 async def scheduled_review_rescue():
-    if not REVIEW_RESCUE_ENABLED:
+    if not await _review_rescue_active():
         return
     await _review_rescue_run(digest=True)
 
@@ -64520,7 +64528,56 @@ async def az_defense_sample(to_wa: str = Query("", description="WhatsApp number 
 async def list_low_reviews(user: dict = Depends(require_roles(["admin", "supervisor"]))):
     """Detected 1-2 star Amazon reviews on our listings, with drafted responses."""
     rows = await db.amazon_low_reviews.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
-    return {"count": len(rows), "reviews": rows}
+    flag = await db.agent_flags.find_one({"_id": "review_rescue"}) or {}
+    return {"count": len(rows), "reviews": rows,
+            "session": {"status": flag.get("cookies_status"), "updated": flag.get("cookies_at"),
+                        "agent_enabled": bool(flag.get("enabled")) or REVIEW_RESCUE_ENABLED}}
+
+
+@api_router.post("/admin/low-reviews/cookies")
+async def upload_review_cookies(payload: Any = Body(..., description="Cookie-Editor JSON export (array) or {cookies:[...]}"),
+                               user: dict = Depends(require_roles(["admin"]))):
+    """Refresh the amazon.in shopping-account session for the review scraper. Paste the Cookie-Editor
+    'Export as JSON' here. Validates it's a real RETAIL session with a live test scrape, saves it to
+    data/amazon_cookies.json, and auto-enables the agent on success. No password is stored — cookies only."""
+    cookies = payload.get("cookies") if isinstance(payload, dict) else payload
+    if not isinstance(cookies, list) or not cookies:
+        raise HTTPException(status_code=400, detail="Expected a JSON array of cookies (Cookie-Editor export) or {cookies:[...]}")
+    amz = [c for c in cookies if isinstance(c, dict) and c.get("name") and "amazon" in str(c.get("domain") or "")]
+    if not amz:
+        raise HTTPException(status_code=400, detail="No amazon.in cookies found in the upload")
+    names = {c["name"] for c in amz}
+    if not (names & {"at-acbin", "sess-at-acbin", "session-token", "x-acbin"}):
+        raise HTTPException(status_code=400, detail="These don't look like a logged-in amazon.in session (no auth cookies). Log into amazon.in first, then export.")
+    fp = Path(__file__).resolve().parent / "data" / "amazon_cookies.json"
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    fp.write_text(json.dumps(amz, indent=2))
+    # live validation: scrape ONE asin — does it get past the login wall?
+    import ast as _ast
+    test_asin = None
+    async for o in db.amazon_orders.find({"items": {"$exists": True}}, {"items": 1}).limit(50):
+        its = o.get("items") or []
+        if isinstance(its, str):
+            try: its = _ast.literal_eval(its)
+            except Exception: its = []
+        for it in its:
+            if it.get("asin"):
+                test_asin = it["asin"]; break
+        if test_asin:
+            break
+    revs = await _scrape_amazon_reviews(test_asin) if test_asin else []
+    blocked = bool(revs and revs[0].get("_blocked"))
+    now = datetime.now(timezone.utc).isoformat()
+    if blocked:
+        await db.agent_flags.update_one({"_id": "review_rescue"},
+            {"$set": {"enabled": False, "cookies_status": "login_required", "cookies_at": now}}, upsert=True)
+        return {"saved": True, "cookies": len(amz), "valid_session": False,
+                "message": "Saved, but Amazon still redirected to login — these aren't a valid live retail session. Re-export while logged into amazon.in."}
+    await db.agent_flags.update_one({"_id": "review_rescue"},
+        {"$set": {"enabled": True, "cookies_status": "ok", "cookies_at": now, "cookies_by": user.get("email")}}, upsert=True)
+    return {"saved": True, "cookies": len(amz), "valid_session": True, "agent_enabled": True,
+            "test_asin": test_asin, "reviews_found_on_test": len(revs),
+            "message": f"Valid session — Negative-Review Rescue is now ON (runs every {REVIEW_RESCUE_MIN} min)."}
 
 
 @api_router.post("/admin/low-reviews/sample")
