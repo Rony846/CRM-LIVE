@@ -77548,7 +77548,17 @@ async def _wa_relay_shipping(digits: str, text: str, reverse_hint: bool = False)
             msg += f"\nLabel: {resp.label_url}"
         await whatsapp_cloud.send_text(digits, msg)
     else:
-        await whatsapp_cloud.send_text(digits, f"Book nahi hua: {getattr(resp, 'message', 'unknown error')}")
+        emsg = str(getattr(resp, "message", "") or "")
+        if re.search(r"already\s*exist", emsg, re.I):
+            # Bigship already has this order reference — almost always a re-attempt of an
+            # order that's already booked. Don't silently fail or auto-duplicate (see the
+            # duplicate-shipment incident); explain clearly and keep the doc staged.
+            await whatsapp_cloud.send_text(digits,
+                "⚠️ Ye order Bigship me *pehle se booked* hai (\"Already Exists\") — isliye dobara label "
+                "nahi bana. Agar purana label chahiye to mujhe order ID ya AWB bhejein, main nikaal deta hoon. "
+                "Sach me naya parcel bhejna hai to invoice/order number badal kar bhejein.")
+        else:
+            await whatsapp_cloud.send_text(digits, f"Book nahi hua: {emsg or 'unknown error'}")
     return True
 
 
