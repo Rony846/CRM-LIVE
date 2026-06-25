@@ -1090,6 +1090,18 @@ async def create_indexes():
                 max_instances=1,
             )
 
+        # Stock-out / Produce-More predictor: per-SKU velocity vs on-hand.
+        if STOCKOUT_ENABLED:
+            scheduler.add_job(
+                scheduled_stockout,
+                IntervalTrigger(minutes=STOCKOUT_MIN),
+                id="stockout",
+                name="Stock-out / Produce-More predictor (velocity vs on-hand)",
+                replace_existing=True,
+                misfire_grace_time=600,
+                max_instances=1,
+            )
+
         # Payout-Reconciliation: audit marketplace settlements for un-reversed fees + recon gaps.
         if PAYOUT_RECON_ENABLED:
             scheduler.add_job(
@@ -63483,6 +63495,67 @@ def _amz_first_words(s, n=4):
     return " ".join(str(s or "").split()[:n])
 
 
+# ===================== Stock-out / Produce-More predictor =====================
+# Per-SKU sales velocity (units sold last 30d) vs on-hand finished goods → days of cover. Flags SKUs
+# that will run out so production gets scheduled. (Make-to-order shop: on-hand is often thin, so the
+# signal is mainly "what's selling fast and needs producing".)
+STOCKOUT_ENABLED = os.environ.get("STOCKOUT_ENABLED", "false").lower() == "true"
+STOCKOUT_MIN = int(os.environ.get("STOCKOUT_AGENT_MIN", "1440"))
+STOCKOUT_COVER_DAYS = int(os.environ.get("STOCKOUT_COVER_DAYS", "14"))
+
+
+async def scheduled_stockout():
+    if not STOCKOUT_ENABLED:
+        return
+    await _stockout_run(digest=True)
+
+
+async def _stockout_run(digest: bool = False, sample_to_wa: str = "", window_days: int = 30) -> dict:
+    import ast as _ast
+    now = datetime.now(timezone.utc)
+    since = (now - timedelta(days=window_days)).date().isoformat()
+    vel, titles = {}, {}
+    async for o in db.amazon_orders.find({"purchase_date": {"$gte": since}}, {"items": 1}):
+        its = o.get("items") or []
+        if isinstance(its, str):
+            try: its = _ast.literal_eval(its)
+            except Exception: its = []
+        for it in its:
+            mid = it.get("master_sku_id")
+            if mid:
+                vel[mid] = vel.get(mid, 0) + (it.get("quantity") or 1)
+                titles[mid] = it.get("title") or titles.get(mid, "")
+    flagged = []
+    for mid, units in vel.items():
+        ms = await db.master_skus.find_one({"id": mid}, {"name": 1, "reorder_level": 1, "is_manufactured": 1}) or {}
+        on_hand = await db.finished_good_serials.count_documents({"master_sku_id": mid, "status": "in_stock"})
+        daily = units / float(window_days)
+        days_cover = (on_hand / daily) if daily > 0 else 999
+        reorder = ms.get("reorder_level") or 10
+        if on_hand <= reorder or days_cover < STOCKOUT_COVER_DAYS:
+            flagged.append({"master_sku_id": mid, "name": ms.get("name") or titles.get(mid, "")[:60],
+                            "sold_30d": units, "daily_rate": round(daily, 1), "on_hand": on_hand,
+                            "days_cover": round(days_cover, 1), "reorder_level": reorder,
+                            "suggest_produce": max(0, int(daily * STOCKOUT_COVER_DAYS * 2) - on_hand)})
+    flagged.sort(key=lambda x: -x["sold_30d"])
+    nowiso = now.isoformat()
+    for fl in flagged[:100]:
+        await db.stockout_alerts.update_one({"master_sku_id": fl["master_sku_id"]},
+            {"$set": {**fl, "updated_at": nowiso}, "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": nowiso}}, upsert=True)
+    if (digest or sample_to_wa) and flagged:
+        body = (f"🏭 Stock-out / Produce-More ({window_days}d velocity vs on-hand): *{len(flagged)}* SKU(s) need production:\n"
+                + "\n".join(f"• {f['name'][:38]} — {f['sold_30d']}u/30d, on-hand {f['on_hand']}, "
+                            f"~{f['days_cover']}d cover → make ~{f['suggest_produce']}"
+                            for f in flagged[:12])
+                + (f"\n…+{len(flagged) - 12} more" if len(flagged) > 12 else ""))
+        to = re.sub(r"\D", "", sample_to_wa)[-12:] if sample_to_wa else None
+        if to:
+            await whatsapp_cloud.send_text(to, body)
+        else:
+            await _alert_founder_free(body, "stockout")
+    return {"flagged": len(flagged), "skus_sold": len(vel)}
+
+
 # ===================== Payout-Reconciliation agent =====================
 # Audit marketplace settlements: when an order is refunded, Amazon should reverse the referral fee.
 # Flag refunded orders that still carry a platform fee (fee-reversal claim candidates) + unmatched rows.
@@ -64174,6 +64247,18 @@ async def az_defense_sample(to_wa: str = Query("", description="WhatsApp number 
     """Recompute the A-to-z rebuttal drafts now; optionally WhatsApp a sample digest.
     (Listing reuses the existing GET /admin/az-claims — each claim now carries defense_draft.)"""
     return await _az_defense_run(digest=False, sample_to_wa=to_wa)
+
+
+@api_router.get("/admin/stockout")
+async def list_stockout(user: dict = Depends(require_roles(["admin", "supervisor"]))):
+    """SKUs needing production: 30d sales velocity vs on-hand finished goods."""
+    rows = await db.stockout_alerts.find({}, {"_id": 0}).sort("sold_30d", -1).to_list(500)
+    return {"count": len(rows), "skus": rows}
+
+
+@api_router.post("/admin/stockout/sample")
+async def stockout_sample(to_wa: str = Query(""), user: dict = Depends(require_roles(["admin"]))):
+    return await _stockout_run(digest=False, sample_to_wa=to_wa)
 
 
 @api_router.get("/admin/payout-recon")
