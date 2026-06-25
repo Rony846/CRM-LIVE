@@ -1077,6 +1077,19 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Reimbursement-Recovery: find delivered-but-unreturned refunds still in the SAFE-T window,
+        # draft each claim, and digest the fileable ones to the founder.
+        if REIMBURSEMENT_AGENT_ENABLED:
+            scheduler.add_job(
+                scheduled_reimbursement_recovery,
+                IntervalTrigger(minutes=REIMBURSEMENT_MIN),
+                id="reimbursement_recovery",
+                name="Reimbursement-Recovery (claim SAFE-T for delivered-but-unreturned refunds)",
+                replace_existing=True,
+                misfire_grace_time=600,
+                max_instances=1,
+            )
+
         # Refund-Defense: pick up new A-to-z claims (live, from email) and alert before deadlines.
         scheduler.add_job(
             scheduled_refund_defense,
@@ -63308,6 +63321,120 @@ async def scheduled_dispatch_guard():
     logger.info(f"Dispatch-Guard: {len(flagged)} do-not-ship, {len(returns)} buyer-returns expected at gate")
 
 
+# ===================== Reimbursement-Recovery agent =====================
+# Amazon owes the seller a SAFE-T / reimbursement when a self-fulfilled order was delivered, the buyer
+# was refunded, but the unit never came back. We identify eligible claims (within the filing window),
+# draft the claim text + evidence, and digest them to the founder to FILE in Seller Central (filing is
+# a Seller-Central action, not reliably an API one — so this is identify + draft + track, founder files).
+REIMBURSEMENT_AGENT_ENABLED = os.environ.get("REIMBURSEMENT_AGENT_ENABLED", "false").lower() == "true"
+REIMBURSEMENT_MIN = int(os.environ.get("REIMBURSEMENT_AGENT_MIN", "720"))   # twice a day
+REIMBURSEMENT_WINDOW_DAYS = int(os.environ.get("REIMBURSEMENT_WINDOW_DAYS", "60"))  # SAFE-T filing window
+
+
+def _reimb_draft(c: dict) -> str:
+    """Deterministic (free) SAFE-T / reimbursement claim narrative for one order."""
+    return (
+        f"SAFE-T / Reimbursement claim — Order {c.get('order_id')}\n"
+        f"Self-fulfilled ({c.get('channel') or 'self-ship'}); shipped on AWB {c.get('awb') or 'N/A'} "
+        f"({c.get('courier') or 'courier'}); delivery proof: delivered {c.get('delivered_date') or 'N/A'} "
+        f"to buyer in {c.get('ship_state') or 'N/A'}.\n"
+        f"Buyer was refunded ₹{c.get('refund_amount')} ({c.get('refund_type') or 'refund'}) on "
+        f"{c.get('refund_date') or 'N/A'}, but the unit was NOT returned to us (no inward return on record).\n"
+        f"Request: reimbursement of ₹{c.get('refund_amount')} for delivered-but-unreturned goods. "
+        f"Evidence attached: AWB delivery tracking, Amazon refund record, no return scan at gate.")
+
+
+async def _reimbursement_scan() -> list:
+    """Build the current list of reimbursement candidates from un-returned refund losses, enriched with
+    the refund date + days left in the filing window. Returns dicts (not persisted)."""
+    today = datetime.now(timezone.utc).date()
+    out = []
+    async for r in db.amazon_refund_losses.find({"returned": {"$in": [False, "False"]}}):
+        # needs delivery proof to claim
+        if not (r.get("delivered_date") and (r.get("awb") or "amazon" in str(r.get("channel") or "").lower())):
+            continue
+        rf = await db.amazon_refunds.find_one({"amazon_order_id": r.get("order_id")},
+                                              {"refund_date": 1, "refund_type": 1})
+        refund_date = (rf or {}).get("refund_date") or r.get("delivered_date")
+        days_left = None
+        try:
+            rd = datetime.fromisoformat(str(refund_date)[:10]).date()
+            days_left = REIMBURSEMENT_WINDOW_DAYS - (today - rd).days
+        except Exception:
+            days_left = None
+        try:
+            amt = float(r.get("refund_amount") or 0)
+        except Exception:
+            amt = 0.0
+        out.append({
+            "order_id": r.get("order_id"), "firm_name": r.get("firm_name"), "amount": amt,
+            "refund_amount": r.get("refund_amount"), "refund_date": refund_date,
+            "refund_type": (rf or {}).get("refund_type"), "channel": r.get("channel"),
+            "awb": r.get("awb"), "courier": r.get("courier"), "delivered_date": r.get("delivered_date"),
+            "ship_state": r.get("ship_state"), "product": r.get("product"), "customer": r.get("customer"),
+            "loss_confidence": r.get("loss_confidence"), "days_left": days_left,
+            "eligible": (days_left is not None and days_left > 0),
+        })
+    out.sort(key=lambda c: (-(c["amount"]), c.get("days_left") if c.get("days_left") is not None else 999))
+    return out
+
+
+async def scheduled_reimbursement_recovery():
+    """Reimbursement-Recovery agent: find delivered-but-unreturned refunds still inside the SAFE-T window,
+    draft each claim, persist to db.reimbursement_claims, and digest the NEW fileable ones to the founder."""
+    if not REIMBURSEMENT_AGENT_ENABLED:
+        return
+    res = await _reimbursement_run(digest=True)
+    logger.info(f"Reimbursement-Recovery: {res.get('eligible')} eligible, ₹{res.get('eligible_value'):,.0f} recoverable")
+
+
+async def _reimbursement_run(digest: bool = False, sample_to_wa: str = "") -> dict:
+    now = datetime.now(timezone.utc).isoformat()
+    cands = await _reimbursement_scan()
+    new_ready = []
+    elig_val = 0.0
+    for c in cands:
+        if not c["eligible"]:
+            status = "expired"
+        else:
+            elig_val += c["amount"]
+            status = "ready"
+        existing = await db.reimbursement_claims.find_one({"order_id": c["order_id"]}, {"status": 1})
+        draft = _reimb_draft(c)
+        await db.reimbursement_claims.update_one(
+            {"order_id": c["order_id"]},
+            {"$set": {**c, "draft": draft, "updated_at": now,
+                      # never downgrade a claim the founder already actioned
+                      "status": (existing.get("status") if existing and existing.get("status") in
+                                 ("filed", "won", "lost") else status)},
+             "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": now}},
+            upsert=True)
+        if status == "ready" and not (existing and existing.get("status") in ("filed", "won", "lost", "ready")):
+            new_ready.append(c)
+    if (digest or sample_to_wa) and (new_ready or sample_to_wa):
+        ready_all = [c for c in cands if c["eligible"]]
+        urgent = [c for c in ready_all if (c.get("days_left") or 99) <= 7]
+        body = (f"💸 Reimbursement-Recovery: *{len(ready_all)}* claim(s) fileable on Amazon = "
+                f"*₹{sum(c['amount'] for c in ready_all):,.0f}* recoverable.\n"
+                + (f"⏰ {len(urgent)} expiring within 7 days!\n" if urgent else "")
+                + "Top:\n"
+                + "\n".join(f"• {c['order_id']} — ₹{c['amount']:,.0f} ({c.get('days_left')}d left) {(_amz_first_words(c.get('product')) )}"
+                            for c in ready_all[:8])
+                + (f"\n…+{len(ready_all) - 8} more" if len(ready_all) > 8 else "")
+                + "\nFile in Seller Central → reply 'filed <order>' / 'won <order>' / 'lost <order>'.")
+        to = sample_to_wa or None
+        if to:
+            await whatsapp_cloud.send_text(re.sub(r"\D", "", to)[-12:], body)
+        else:
+            await _alert_founder_free(body, "reimbursement")
+    return {"total": len(cands), "eligible": len([c for c in cands if c["eligible"]]),
+            "eligible_value": elig_val, "new_ready": len(new_ready)}
+
+
+def _amz_first_words(s, n=4):
+    return " ".join(str(s or "").split()[:n])
+
+
 # ===================== Refund-Defense agent =====================
 REFUND_DEFENSE_MIN = int(os.environ.get("REFUND_DEFENSE_MIN", "120"))
 
@@ -63696,6 +63823,34 @@ async def mark_expected_return_received(order_id: str = Query("", description="A
     if not got:
         raise HTTPException(status_code=404, detail="No buyer return awaiting receipt for that order/phone")
     return {"received": True, "expected_return": {k: got.get(k) for k in ("order_id", "customer_name", "customer_phone", "status", "received_at")}}
+
+
+@api_router.get("/admin/reimbursement-claims")
+async def list_reimbursement_claims(status: str = Query("ready", description="ready | expired | filed | won | lost | all"),
+                                    user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Delivered-but-unreturned refunds the Reimbursement-Recovery agent can claim back from Amazon."""
+    q = {} if status == "all" else {"status": status}
+    rows = await db.reimbursement_claims.find(q, {"_id": 0}).sort("amount", -1).to_list(2000)
+    return {"count": len(rows), "recoverable": round(sum(float(r.get("amount") or 0) for r in rows)), "claims": rows}
+
+
+@api_router.post("/admin/reimbursement-claims/sample")
+async def reimbursement_sample(to_wa: str = Query("", description="WhatsApp number for the sample digest; blank = recompute only"),
+                               user: dict = Depends(require_roles(["admin"]))):
+    """Recompute the reimbursement claim list now; optionally WhatsApp a sample digest to one number."""
+    return await _reimbursement_run(digest=False, sample_to_wa=to_wa)
+
+
+@api_router.post("/admin/reimbursement-claims/status")
+async def set_reimbursement_status(order_id: str = Query(...), status: str = Query(..., description="filed | won | lost"),
+                                   user: dict = Depends(require_roles(["admin", "accountant"]))):
+    if status not in ("filed", "won", "lost"):
+        raise HTTPException(status_code=400, detail="status must be filed|won|lost")
+    r = await db.reimbursement_claims.update_one({"order_id": order_id}, {"$set": {
+        "status": status, "status_by": user.get("email"), "status_at": datetime.now(timezone.utc).isoformat()}})
+    if not r.matched_count:
+        raise HTTPException(status_code=404, detail="No reimbursement claim for that order")
+    return {"order_id": order_id, "status": status}
 
 
 @api_router.post("/pending-fulfillment/{fulfillment_id}/bigship-label")
@@ -77509,6 +77664,20 @@ async def _claude_wa_relay(digits: str, question: str):
             await whatsapp_cloud.send_text(digits,
                 "Hmm, koi pending return nahi mila is order/phone ke liye. Order ID ya 10-digit phone ke saath bhejein.")
         return
+
+    # "filed/won/lost <order>" → update a reimbursement (SAFE-T) claim's status
+    _rb = re.match(r"\s*(filed|won|lost|file\s*kiya|mil\s*gaya|reject)\b", low)
+    if profile == "full" and _rb and _AMZ_OID_RE.search(ql):
+        oid = _AMZ_OID_RE.search(ql).group(0)
+        st = {"file kiya": "filed", "mil gaya": "won", "reject": "lost"}.get(_rb.group(1), _rb.group(1))
+        if st in ("filed", "won", "lost"):
+            r = await db.reimbursement_claims.update_one({"order_id": oid}, {"$set": {
+                "status": st, "status_by": f"wa:{digits}", "status_at": datetime.now(timezone.utc).isoformat()}})
+            if r.matched_count:
+                await whatsapp_cloud.send_text(digits, f"✅ Reimbursement claim {oid} → *{st}*.")
+            else:
+                await whatsapp_cloud.send_text(digits, f"Us order ka koi reimbursement claim nahi mila: {oid}")
+            return
 
     # start a fresh conversation (drop the remembered context)
     if low in ("new chat", "naya chat", "new", "reset", "clear", "fresh", "naya"):
