@@ -77,7 +77,8 @@ import {
   Boxes,
   MapPin,
   Crown,
-  Sun
+  Sun,
+  Star
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -279,6 +280,7 @@ const adminNavGroups = [
       { label: 'Data Management', icon: Database, path: '/admin/data-management' },
       { label: 'Gate Logs', icon: Scan, path: '/admin/gate-logs' },
       { label: 'Files for Claude', icon: Bot, path: '/admin/files-for-claude' },
+      { label: 'Review Rescue', icon: Star, path: '/admin/review-rescue' },
     ]
   },
 ];

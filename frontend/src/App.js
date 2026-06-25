@@ -179,6 +179,7 @@ import AmazonRefundLosses from './pages/admin/AmazonRefundLosses';
 import AdminOnlineOrders from './pages/admin/AdminOnlineOrders';
 import LegalCases from './pages/admin/LegalCases';
 import AZClaims from './pages/admin/AZClaims';
+import AdminReviewRescue from './pages/admin/AdminReviewRescue';
 import AdminWhatsAppAgent from './pages/admin/AdminWhatsAppAgent';
 
 // Leads Pages
@@ -1183,6 +1184,11 @@ function App() {
           <Route path="/admin/az-claims" element={
             <ProtectedRoute allowedRoles={['admin', 'accountant']}>
               <AZClaims />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/review-rescue" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminReviewRescue />
             </ProtectedRoute>
           } />
           <Route path="/admin/whatsapp-agent" element={
