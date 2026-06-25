@@ -63852,19 +63852,122 @@ def _f(x):
     except Exception: return 0.0
 
 
+def _sp_currency_sum(node) -> float:
+    """Recursively sum every CurrencyAmount in an SP-API financial event (charges +, fees/refunds −).
+    Validated to reproduce Seller Central's Transaction-View order net exactly."""
+    t = 0.0
+    if isinstance(node, dict):
+        if "CurrencyAmount" in node:
+            try: return float(node["CurrencyAmount"] or 0)
+            except Exception: return 0.0
+        for v in node.values():
+            t += _sp_currency_sum(v)
+    elif isinstance(node, list):
+        for v in node:
+            t += _sp_currency_sum(v)
+    return t
+
+
+async def _sp_order_finance(creds: dict, order_id: str) -> Optional[dict]:
+    """Pull ALL financial events for one order from SP-API (the Transaction View) and compute the TRUE
+    net. Returns None on error so the caller can back off. Handles 429 by signalling via {'_throttled'}."""
+    try:
+        resp = await make_amazon_api_request(creds, "GET", f"/finances/v0/orders/{order_id}/financialEvents")
+    except Exception as e:
+        logger.warning(f"finances fetch error {order_id}: {e}")
+        return None
+    if resp.get("status") == 429:
+        return {"_throttled": True}
+    if resp.get("status") != 200:
+        return None
+    fe = (resp.get("data") or {}).get("payload", {}).get("FinancialEvents", {}) or {}
+    ship = sum(_sp_currency_sum(e) for e in (fe.get("ShipmentEventList") or []))
+    refund = sum(_sp_currency_sum(e) for e in (fe.get("RefundEventList") or []))
+    other = sum(_sp_currency_sum(e) for lst in
+                ("ServiceFeeEventList", "AdjustmentEventList", "GuaranteeClaimEventList",
+                 "ChargebackEventList", "SAFETClaimEventList")
+                for e in (fe.get(lst) or []))
+    n = sum(len(fe.get(k) or []) for k in fe)
+    return {"order_id": order_id, "net": round(ship + refund + other, 2),
+            "shipment_total": round(ship, 2), "refund_total": round(refund, 2),
+            "other_total": round(other, 2), "events": n,
+            "has_refund": refund != 0, "source": "sp-api-finances"}
+
+
+async def _finances_reingest(order_ids: Optional[list] = None, refunded_only: bool = True,
+                             limit: int = 400, max_age_days: int = 30) -> dict:
+    """Rebuild true per-order net from SP-API Finances into db.amazon_order_finance (the trustworthy
+    settlement source). Throttled to respect the 0.5 req/s Finances limit. Resumable: skips orders
+    already fetched within max_age_days. Scope: explicit order_ids, else refunded orders missing fresh
+    finance data. Returns counts."""
+    fresh_cut = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
+    # build the target list
+    targets = []
+    if order_ids:
+        for oid in order_ids:
+            ao = await db.amazon_orders.find_one({"amazon_order_id": oid}, {"firm_id": 1})
+            if ao:
+                targets.append((oid, ao.get("firm_id")))
+    else:
+        src = db.amazon_refunds if refunded_only else db.amazon_orders
+        idf = "amazon_order_id"
+        async for r in src.find({}, {idf: 1, "firm_id": 1}):
+            oid = r.get(idf)
+            if not oid:
+                continue
+            ex = await db.amazon_order_finance.find_one({"order_id": oid}, {"fetched_at": 1})
+            if ex and str(ex.get("fetched_at") or "") > fresh_cut:
+                continue   # already fresh
+            targets.append((oid, r.get("firm_id")))
+            if len(targets) >= limit:
+                break
+    creds_cache = {}
+    done = throttled = errors = 0
+    for oid, firm_id in targets:
+        if firm_id not in creds_cache:
+            creds_cache[firm_id] = await db.marketplace_credentials.find_one(
+                {"firm_id": firm_id, "platform": "amazon", "is_active": True})
+        creds = creds_cache.get(firm_id)
+        if not creds:
+            errors += 1
+            continue
+        fin = await _sp_order_finance(creds, oid)
+        if fin and fin.get("_throttled"):
+            throttled += 1
+            await asyncio.sleep(5)
+            continue
+        if not fin:
+            errors += 1
+            await asyncio.sleep(2)
+            continue
+        fin["firm_id"] = firm_id
+        fin["fetched_at"] = datetime.now(timezone.utc).isoformat()
+        await db.amazon_order_finance.update_one({"order_id": oid}, {"$set": fin}, upsert=True)
+        done += 1
+        await asyncio.sleep(2)   # 0.5 req/s Finances rate limit
+    return {"targets": len(targets), "ingested": done, "throttled": throttled, "errors": errors}
+
+
 async def _order_economics(order_id: str) -> dict:
     """TRUE per-order economics — the basis for any 'loss' figure. A refund is NOT a loss.
     Sums net_realized across all settlement rows (Amazon's real net payment after sale, fees, refund AND
     fee-reversal), pulls the unit COGS, and checks whether the unit came back. Loss = COGS-at-risk (only
     if not returned) minus any net cash we kept — never the refund amount."""
     import ast as _ast
-    net = refund = gross = 0.0
-    async for p in db.payout_order_summaries.find({"marketplace_order_id": order_id}):
-        net += _f(p.get("net_realized")); refund += _f(p.get("refund_amount")); gross += _f(p.get("gross_sale"))
-    # DATA-QUALITY GUARD: our ingested settlement is unbalanced for some orders — refunds captured but the
-    # matching order-payments missing (gross=0), and/or duplicated rows. On those, net_realized is GARBAGE
-    # (e.g. order 405-5323950 showed -436,949 in our data vs ~-875 on Amazon). Don't assert a loss; flag it.
-    data_incomplete = refund > 0 and gross <= 1
+    # PREFER the SP-API Finances truth (db.amazon_order_finance) — balanced & deduped from the Transaction
+    # View. Fall back to the lossy payout_order_summaries only when we haven't re-ingested this order yet.
+    fin = await db.amazon_order_finance.find_one({"order_id": order_id})
+    if fin:
+        net = _f(fin.get("net")); refund = _f(fin.get("refund_total")); gross = _f(fin.get("shipment_total"))
+        data_incomplete = False        # SP-API is authoritative
+        source = "sp-api"
+    else:
+        net = refund = gross = 0.0
+        async for p in db.payout_order_summaries.find({"marketplace_order_id": order_id}):
+            net += _f(p.get("net_realized")); refund += _f(p.get("refund_amount")); gross += _f(p.get("gross_sale"))
+        # the summary table is unbalanced for some orders (refunds captured, payments missing) → net GARBAGE
+        data_incomplete = refund > 0 and gross <= 1
+        source = "summary"
     cogs = None
     pf = await db.pending_fulfillment.find_one({"amazon_order_id": order_id}, {"master_sku_id": 1})
     msid = (pf or {}).get("master_sku_id")
@@ -63889,7 +63992,7 @@ async def _order_economics(order_id: str) -> dict:
         loss = max(0.0, cogs - net)              # unit gone → loss = COGS minus any net cash kept
     return {"net_realized": round(net), "refund": round(refund), "gross": round(gross),
             "cogs": (round(cogs) if cogs is not None else None), "returned": returned,
-            "data_incomplete": data_incomplete,
+            "data_incomplete": data_incomplete, "source": source,
             "true_loss": (round(loss) if loss is not None else None), "settled": net != 0 or refund != 0}
 
 
@@ -64672,6 +64775,45 @@ async def list_stockout(user: dict = Depends(require_roles(["admin", "supervisor
 @api_router.post("/admin/stockout/sample")
 async def stockout_sample(to_wa: str = Query(""), user: dict = Depends(require_roles(["admin"]))):
     return await _stockout_run(digest=False, sample_to_wa=to_wa)
+
+
+@api_router.get("/admin/finances/order/{order_id}")
+async def finance_order_spotcheck(order_id: str, user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Live SP-API Finances pull for ONE order (the true Transaction-View net) + cache it."""
+    ao = await db.amazon_orders.find_one({"amazon_order_id": order_id}, {"firm_id": 1, "firm_name": 1})
+    if not ao:
+        raise HTTPException(status_code=404, detail="Order not in amazon_orders")
+    creds = await db.marketplace_credentials.find_one(
+        {"firm_id": ao.get("firm_id"), "platform": "amazon", "is_active": True})
+    if not creds:
+        raise HTTPException(status_code=400, detail="No active Amazon credentials for this order's firm")
+    fin = await _sp_order_finance(creds, order_id)
+    if not fin or fin.get("_throttled"):
+        raise HTTPException(status_code=502, detail="SP-API unavailable / throttled — try again")
+    fin["firm_id"] = ao.get("firm_id"); fin["fetched_at"] = datetime.now(timezone.utc).isoformat()
+    await db.amazon_order_finance.update_one({"order_id": order_id}, {"$set": fin}, upsert=True)
+    return {"order_id": order_id, "firm": ao.get("firm_name"), "true_net": fin["net"],
+            "shipment_total": fin["shipment_total"], "refund_total": fin["refund_total"],
+            "other_total": fin["other_total"], "events": fin["events"]}
+
+
+@api_router.post("/admin/finances/reingest")
+async def finances_reingest(refunded_only: bool = Query(True), limit: int = Query(400),
+                            user: dict = Depends(require_roles(["admin"]))):
+    """Background-rebuild true per-order net from SP-API Finances into db.amazon_order_finance (the
+    trustworthy settlement source). Throttled ~0.5 req/s; resumable. Returns immediately."""
+    async def _run():
+        try:
+            res = await _finances_reingest(refunded_only=refunded_only, limit=limit)
+            logger.info(f"Finances re-ingest done: {res}")
+            await _alert_founder_free(
+                f"💾 SP-API Finances re-ingest: {res.get('ingested')} orders rebuilt "
+                f"({res.get('errors')} err, {res.get('throttled')} throttled).", "finances_reingest")
+        except Exception as e:
+            logger.error(f"Finances re-ingest failed: {e}")
+    asyncio.create_task(_run())
+    return {"started": True, "refunded_only": refunded_only, "limit": limit,
+            "note": "Runs in the background (~2s/order). You'll get a WhatsApp when it finishes."}
 
 
 @api_router.get("/admin/payout-recon")
