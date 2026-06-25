@@ -12730,6 +12730,22 @@ async def gate_scan(
         except Exception as _e:
             logger.warning(f"return-OTP match failed: {_e}")
 
+        # ============ EXPECTED-RETURN (buyer return) match — opportunistic ============
+        # If this inward parcel resolves to a customer/order that has a buyer-return awaiting receipt,
+        # mark it received so the replacement is unblocked. Match by linked ticket/dispatch order id
+        # or customer phone (we don't get the Amazon return tracking, so this is best-effort).
+        try:
+            cand_oid = (ticket or {}).get("amazon_order_id") or (dispatch or {}).get("amazon_order_id") or (dispatch or {}).get("order_id")
+            cand_phone = (ticket or {}).get("customer_phone") or (dispatch or {}).get("customer_phone")
+            got = (await _mark_expected_return_received(order_id=_amz_oid(cand_oid) or "", by_name="gate-scan") if cand_oid else None) \
+                  or (await _mark_expected_return_received(phone=cand_phone, by_name="gate-scan") if cand_phone else None)
+            if got:
+                await _alert_founder_free(
+                    f"📥 Return received at gate: {got.get('order_id')} ({got.get('customer_name') or ''}) — "
+                    f"replacement ab bhej sakte hain.", "expected_return")
+        except Exception as _e:
+            logger.warning(f"expected-return match failed: {_e}")
+
     elif scan_data.scan_type == "outward":
         if ticket:
             await db.tickets.update_one(
@@ -63141,13 +63157,42 @@ async def _alert_founder_free(text: str, kind: str = "agent_alert"):
 
 
 # ===================== Dispatch-Guard agent =====================
-async def _dispatch_guard_check(order_id: str) -> Optional[str]:
-    """Reason string if this Amazon order was REFUNDED or CANCELLED (must NOT ship), else None."""
+# refund_type values seen in amazon_refunds: 'return_refund' (BUYER RETURN — item is coming back,
+# expect it at the gate), 'refund' (refund without a clean return), 'a_to_z_claim'.
+_BUYER_RETURN_TYPES = {"return_refund"}
+
+
+async def _refund_reason_detail(order_id: str) -> Optional[dict]:
+    """Classify why an Amazon order is un-shippable. Returns None if it's clean, else a dict:
+    {kind: 'refund'|'cancel', buyer_return: bool, reason: str, amount, date, refund_type, customer, phone, product}.
+    `buyer_return` = a return_refund → the physical unit is being sent back, so we EXPECT it at the gate
+    (don't treat it as a 'do-not-ship' loss; gate the replacement on actually receiving it)."""
     if not order_id:
         return None
-    rf = await db.amazon_refunds.find_one({"amazon_order_id": order_id}, {"refund_amount": 1, "refund_date": 1})
+    rf = await db.amazon_refunds.find_one(
+        {"amazon_order_id": order_id},
+        {"refund_amount": 1, "refund_date": 1, "refund_type": 1, "refund_reason": 1})
     if rf:
-        return f"REFUNDED ₹{rf.get('refund_amount')} on {rf.get('refund_date')}"
+        rtype = str(rf.get("refund_type") or "").lower()
+        buyer_return = rtype in _BUYER_RETURN_TYPES
+        ao = await db.amazon_orders.find_one(
+            {"amazon_order_id": order_id},
+            {"buyer_name": 1, "customer_name_manual": 1, "phone": 1, "phone_manual": 1,
+             "firm_name": 1, "items": 1}) or {}
+        prod = ""
+        its = ao.get("items") or []
+        if isinstance(its, list) and its:
+            prod = its[0].get("title") or ""
+        phone = re.sub(r"\D", "", str(ao.get("phone") or ao.get("phone_manual") or ""))[-10:]
+        return {
+            "kind": "refund", "buyer_return": buyer_return,
+            "refund_type": rtype or "refund",
+            "reason": (f"BUYER RETURN ₹{rf.get('refund_amount')} on {rf.get('refund_date')} — expect unit back at gate"
+                       if buyer_return else f"REFUNDED ₹{rf.get('refund_amount')} on {rf.get('refund_date')}"),
+            "amount": rf.get("refund_amount"), "date": rf.get("refund_date"),
+            "customer": ao.get("buyer_name") or ao.get("customer_name_manual"), "phone": phone,
+            "firm": ao.get("firm_name"), "product": prod[:80],
+        }
     ao = await db.amazon_orders.find_one({"amazon_order_id": order_id},
                                          {"order_status": 1, "amazon_status": 1, "crm_status": 1})
     if ao:
@@ -63155,41 +63200,112 @@ async def _dispatch_guard_check(order_id: str) -> Optional[str]:
         if (str(ao.get("order_status") or "").lower() in cancels
                 or str(ao.get("amazon_status") or "").lower() in cancels
                 or str(ao.get("crm_status") or "").lower() == "cancelled"):
-            return "CANCELLED on Amazon"
+            return {"kind": "cancel", "buyer_return": False, "refund_type": "cancel",
+                    "reason": "CANCELLED on Amazon", "amount": None, "date": None}
     return None
 
 
+async def _dispatch_guard_check(order_id: str) -> Optional[str]:
+    """Back-compat reason string if this Amazon order must NOT ship (refunded/cancelled), else None.
+    Used by the at-booking guard to block the ORIGINAL order. Buyer returns still block the original
+    (you don't re-ship it) — the replacement is gated separately on receiving the unit at the gate."""
+    d = await _refund_reason_detail(order_id)
+    return d.get("reason") if d else None
+
+
+async def _record_expected_return(detail: dict, order_id: str):
+    """A buyer-return refund means the unit is coming back. Register it in the expected_returns queue
+    (status awaiting_return) so the gate can receive it; the replacement stays blocked until it's marked
+    received. Idempotent on order_id."""
+    now = datetime.now(timezone.utc).isoformat()
+    await db.expected_returns.update_one(
+        {"order_id": order_id},
+        {"$setOnInsert": {
+            "id": str(uuid.uuid4()), "order_id": order_id, "status": "awaiting_return",
+            "customer_name": detail.get("customer"), "customer_phone": detail.get("phone"),
+            "product": detail.get("product"), "firm": detail.get("firm"),
+            "refund_amount": detail.get("amount"), "refund_date": detail.get("date"),
+            "refund_type": detail.get("refund_type"), "created_at": now},
+         "$set": {"updated_at": now}},
+        upsert=True)
+
+
+async def _mark_expected_return_received(order_id: str = "", phone: str = "", by_name: str = "gate") -> Optional[dict]:
+    """Mark a buyer-return as physically received at the gate (unblocks its replacement). Matches by
+    order_id or last-10 phone. Returns the updated doc, or None if nothing was awaiting."""
+    q = None
+    if order_id:
+        q = {"order_id": order_id, "status": "awaiting_return"}
+    elif phone:
+        q = {"customer_phone": re.sub(r"\D", "", str(phone))[-10:], "status": "awaiting_return"}
+    if not q:
+        return None
+    now = datetime.now(timezone.utc).isoformat()
+    doc = await db.expected_returns.find_one_and_update(
+        q, {"$set": {"status": "received", "received_at": now, "received_by": by_name, "updated_at": now}},
+        return_document=True)
+    if doc:
+        # clear the awaiting-return hold on the order so a replacement can go out
+        await db.pending_fulfillment.update_many(
+            {"order_id": doc.get("order_id")},
+            {"$set": {"awaiting_return": False, "return_status": "received", "do_not_ship_reason": None}})
+    return doc
+
+
 DISPATCH_GUARD_MIN = int(os.environ.get("DISPATCH_GUARD_MIN", "60"))
+# Only RECENT buyer returns are treated as "expect at gate" (genuinely in transit). Older ones already
+# came/went and stay in the plain do-not-ship bucket so we don't flood the gate with stale expectations.
+EXPECTED_RETURN_WINDOW_DAYS = int(os.environ.get("EXPECTED_RETURN_WINDOW_DAYS", "21"))
 
 
 async def scheduled_dispatch_guard():
-    """Autonomous Dispatch-Guard: flag/alert orders Amazon REFUNDED or CANCELLED that are still queued or
-    booked-but-not-picked, so a refunded parcel never ships. Booking API blocks at source; this catches
-    everything already in flight (incl. panel/Excel bookings the API guard can't see)."""
+    """Autonomous Dispatch-Guard: classify every queued/booked order whose Amazon side is REFUNDED or
+    CANCELLED, so a refunded parcel never ships. Booking API blocks at source; this catches everything
+    already in flight (incl. panel/Excel bookings the API guard can't see). Buyer returns (return_refund)
+    are NOT marked as a do-not-ship loss — the unit is coming back, so they're routed to the
+    expected_returns queue ('expect at gate') and the replacement is gated on receiving it."""
     now = datetime.now(timezone.utc).isoformat()
-    flagged = []
+    return_cutoff = (datetime.now(timezone.utc) - timedelta(days=EXPECTED_RETURN_WINDOW_DAYS)).date().isoformat()
+    flagged, returns = [], []
     async for rec in db.pending_fulfillment.find(
-            {"awb_number": {"$in": [None, ""]}, "do_not_ship": {"$ne": True}}, {"id": 1, "order_id": 1}).limit(3000):
-        reason = await _dispatch_guard_check(rec.get("order_id"))
-        if reason:
+            {"awb_number": {"$in": [None, ""]},
+             "$or": [{"do_not_ship": {"$ne": True}}, {"awaiting_return": {"$ne": True}}]},
+            {"id": 1, "order_id": 1}).limit(3000):
+        d = await _refund_reason_detail(rec.get("order_id"))
+        if not d:
+            continue
+        if d.get("buyer_return") and str(d.get("date") or "") >= return_cutoff:
+            # expect the unit back at the gate — not a loss; lift any prior do-not-ship flag
             await db.pending_fulfillment.update_one({"id": rec["id"]}, {"$set": {
-                "do_not_ship": True, "do_not_ship_reason": reason, "do_not_ship_at": now}})
-            flagged.append((rec.get("order_id"), reason))
+                "awaiting_return": True, "return_status": "awaiting_gate", "do_not_ship": False,
+                "do_not_ship_reason": d["reason"], "do_not_ship_at": now}})
+            await _record_expected_return(d, rec.get("order_id"))
+            returns.append((rec.get("order_id"), d["reason"]))
+        else:
+            await db.pending_fulfillment.update_one({"id": rec["id"]}, {"$set": {
+                "do_not_ship": True, "do_not_ship_reason": d["reason"], "do_not_ship_at": now}})
+            flagged.append((rec.get("order_id"), d["reason"]))
     async for cs in db.courier_shipments.find(
             {"status": {"$regex": "not picked|pickup sched", "$options": "i"}, "do_not_ship": {"$ne": True}},
             {"id": 1, "amazon_order_id": 1, "order_id": 1, "awb_number": 1}).limit(4000):
         oid = _amz_oid(cs.get("amazon_order_id") or cs.get("order_id"))
-        reason = await _dispatch_guard_check(oid) if oid else None
-        if reason:
+        d = await _refund_reason_detail(oid) if oid else None
+        if d and not d.get("buyer_return"):
             await db.courier_shipments.update_one({"_id": cs["_id"]} if cs.get("_id") else {"awb_number": cs.get("awb_number")},
-                {"$set": {"do_not_ship": True, "do_not_ship_reason": f"{reason} (AWB not picked — cancel it)", "do_not_ship_at": now}})
-            flagged.append((oid, f"{reason} · AWB {cs.get('awb_number')}"))
+                {"$set": {"do_not_ship": True, "do_not_ship_reason": f"{d['reason']} (AWB not picked — cancel it)", "do_not_ship_at": now}})
+            flagged.append((oid, f"{d['reason']} · AWB {cs.get('awb_number')}"))
     if flagged:
         body = (f"🚦 Dispatch-Guard: *{len(flagged)}* refunded/cancelled order(s) still queued — DO NOT SHIP:\n"
                 + "\n".join(f"• {o} — {r}" for o, r in flagged[:15])
                 + (f"\n…+{len(flagged) - 15} more" if len(flagged) > 15 else ""))
         await _alert_founder_free(body, "dispatch_guard")
-    logger.info(f"Dispatch-Guard: flagged {len(flagged)} refunded/cancelled queued orders")
+    if returns:
+        body = (f"📥 Dispatch-Guard: *{len(returns)}* buyer return(s) — EXPECT UNIT BACK AT GATE "
+                f"(replacement blocked until received):\n"
+                + "\n".join(f"• {o} — {r}" for o, r in returns[:15])
+                + (f"\n…+{len(returns) - 15} more" if len(returns) > 15 else ""))
+        await _alert_founder_free(body, "dispatch_guard")
+    logger.info(f"Dispatch-Guard: {len(flagged)} do-not-ship, {len(returns)} buyer-returns expected at gate")
 
 
 # ===================== Refund-Defense agent =====================
@@ -63557,6 +63673,29 @@ async def unshipped_bot_sample(to: str = "founder@musclegrid.in", user: dict = D
     """Send a SAMPLE of the dispatch-check email (real data) to one address only."""
     res = await _unshipped_bot_run(sample_to=to)
     return {"sent": bool((res or {}).get("success")), "to": to, "detail": res}
+
+
+@api_router.get("/admin/expected-returns")
+async def list_expected_returns(status: str = Query("awaiting_return", description="awaiting_return | received | all"),
+                                user: dict = Depends(require_roles(["admin", "gate", "dispatcher"]))):
+    """Buyer returns the Dispatch-Guard is expecting back at the gate (a replacement stays blocked until
+    its return is marked received)."""
+    q = {} if status == "all" else {"status": status}
+    rows = await db.expected_returns.find(q, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return {"count": len(rows), "expected_returns": rows}
+
+
+@api_router.post("/admin/expected-returns/received")
+async def mark_expected_return_received(order_id: str = Query("", description="Amazon order id"),
+                                        phone: str = Query("", description="customer phone (10-digit)"),
+                                        user: dict = Depends(require_roles(["admin", "gate", "dispatcher"]))):
+    """Confirm a buyer return physically arrived at the gate → unblocks its replacement."""
+    got = await _mark_expected_return_received(
+        order_id=order_id.strip(), phone=phone.strip(),
+        by_name=f"{user.get('first_name','')} {user.get('last_name','')}".strip() or user.get("email") or "gate")
+    if not got:
+        raise HTTPException(status_code=404, detail="No buyer return awaiting receipt for that order/phone")
+    return {"received": True, "expected_return": {k: got.get(k) for k in ("order_id", "customer_name", "customer_phone", "status", "received_at")}}
 
 
 @api_router.post("/pending-fulfillment/{fulfillment_id}/bigship-label")
@@ -77349,6 +77488,28 @@ async def _claude_wa_relay(digits: str, question: str):
     profile = _wa_relay_profiles().get(digits, "full")
     sess2 = await db.claude_wa_sessions.find_one({"phone": digits}) or {}
 
+    # "return aa gaya <phone/order>" → mark a buyer return received at gate (unblocks the replacement).
+    # Requires an order id / phone in the message so it never hijacks a plain question ("kitne return aaye").
+    _ret_cmd = re.search(r"return\s*(aa\s*gaya|aagaya|received|aa\s*gyi|mil\s*gaya)|maal\s*aa\s*gaya", low)
+    _ret_oid = _AMZ_OID_RE.search(ql)
+    _ret_ph = re.search(r"(\d[\d\s\-]{8,}\d)", ql)
+    if profile == "full" and _ret_cmd and (_ret_oid or _ret_ph):
+        m_oid = _ret_oid
+        m_ph = _ret_ph
+        got = None
+        if m_oid:
+            got = await _mark_expected_return_received(order_id=m_oid.group(0), by_name=f"wa:{digits}")
+        if not got and m_ph:
+            got = await _mark_expected_return_received(phone=re.sub(r"\D", "", m_ph.group(1))[-10:], by_name=f"wa:{digits}")
+        if got:
+            await whatsapp_cloud.send_text(digits,
+                f"✅ Return received: {got.get('order_id')} ({got.get('customer_name') or ''}). "
+                f"Ab replacement bhej sakte hain — invoice bhej kar 'replacement bhejo' bolein.")
+        else:
+            await whatsapp_cloud.send_text(digits,
+                "Hmm, koi pending return nahi mila is order/phone ke liye. Order ID ya 10-digit phone ke saath bhejein.")
+        return
+
     # start a fresh conversation (drop the remembered context)
     if low in ("new chat", "naya chat", "new", "reset", "clear", "fresh", "naya"):
         await db.claude_wa_sessions.update_one({"phone": digits},
@@ -77525,6 +77686,20 @@ async def _wa_relay_shipping(digits: str, text: str, reverse_hint: bool = False,
     rp = sh.get("params") or {}
     is_rev = bool(rp.get("is_reverse_pickup")) or reverse_hint
     is_repl = replacement_hint and not is_rev
+    # Replacement gate: a buyer return must physically come back before we send the new unit. If this
+    # customer has a return still awaiting receipt at the gate, block the replacement (override: "force").
+    if is_repl and not re.search(r"\bforce\b|abhi\s*bhej|jaane\s*do|override", text, re.I):
+        cphone = re.sub(r"\D", "", str(rp.get("phone") or ""))[-10:]
+        if cphone:
+            pend = await db.expected_returns.find_one(
+                {"customer_phone": cphone, "status": "awaiting_return"})
+            if pend:
+                await whatsapp_cloud.send_text(digits,
+                    f"🛑 Replacement rok diya — is customer ka return abhi gate pe *receive nahi hua*.\n"
+                    f"Order {pend.get('order_id')} · {pend.get('product') or ''}\n"
+                    f"Jab unit wapas aa jaaye (gate scan ya 'return aa gaya {cphone}'), tab replacement bhej dena. "
+                    f"Abhi bhejna zaroori ho to dobara bhejein: *replacement force*.")
+                return True
     await whatsapp_cloud.send_text(digits,
         "🔄 Reverse pickup book kar raha hoon…" if is_rev else
         ("📦 Replacement label book kar raha hoon…" if is_repl else "📦 Label book kar raha hoon…"))
