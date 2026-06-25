@@ -1090,6 +1090,18 @@ async def create_indexes():
                 max_instances=1,
             )
 
+        # Negative-Review Rescue: watch ASINs for fresh 1-2 star reviews (experimental scraper).
+        if REVIEW_RESCUE_ENABLED:
+            scheduler.add_job(
+                scheduled_review_rescue,
+                IntervalTrigger(minutes=REVIEW_RESCUE_MIN),
+                id="review_rescue",
+                name="Negative-Review Rescue (1-2 star Amazon reviews)",
+                replace_existing=True,
+                misfire_grace_time=600,
+                max_instances=1,
+            )
+
         # Receivables (dealer dues) chaser: dealer-scoped aging report.
         if RECEIVABLES_ENABLED:
             scheduler.add_job(
@@ -63507,6 +63519,111 @@ def _amz_first_words(s, n=4):
     return " ".join(str(s or "").split()[:n])
 
 
+# ===================== Negative-Review Rescue agent =====================
+# Watch our ASINs for fresh 1-2 star Amazon reviews → alert + drafted goodwill response. Reviews are
+# anonymised (no order link), so this detects + drafts; it can't auto-DM the reviewer. EXPERIMENTAL:
+# Amazon aggressively anti-bots review pages, so this is flag-off and degrades gracefully when blocked.
+REVIEW_RESCUE_ENABLED = os.environ.get("REVIEW_RESCUE_ENABLED", "false").lower() == "true"
+REVIEW_RESCUE_MIN = int(os.environ.get("REVIEW_RESCUE_MIN", "720"))
+REVIEW_RESCUE_DOMAIN = os.environ.get("REVIEW_RESCUE_DOMAIN", "www.amazon.in")
+
+
+async def _scrape_amazon_reviews(asin: str, max_pages: int = 1) -> list:
+    """Scrape recent 1- and 2-star reviews for one ASIN via Playwright. Returns [] on block/empty."""
+    out = []
+    try:
+        from playwright.async_api import async_playwright
+    except Exception:
+        return out
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
+            ctx = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+                locale="en-IN")
+            page = await ctx.new_page()
+            for star in ("one_star", "two_star"):
+                url = (f"https://{REVIEW_RESCUE_DOMAIN}/product-reviews/{asin}/"
+                       f"?filterByStar={star}&sortBy=recent&pageNumber=1")
+                try:
+                    await page.goto(url, timeout=25000, wait_until="domcontentloaded")
+                    await page.wait_for_selector("[data-hook='review']", timeout=8000)
+                except Exception:
+                    continue   # blocked / no reviews of this star
+                blocks = await page.query_selector_all("[data-hook='review']")
+                for b in blocks[:10]:
+                    async def _txt(sel):
+                        el = await b.query_selector(sel)
+                        return (await el.inner_text()).strip() if el else ""
+                    rid = await b.get_attribute("id")
+                    title = await _txt("[data-hook='review-title']")
+                    body = await _txt("[data-hook='review-body']")
+                    when = await _txt("[data-hook='review-date']")
+                    who = await _txt(".a-profile-name")
+                    rating_txt = await _txt("[data-hook='review-star-rating']") or await _txt("[data-hook='cmps-review-star-rating']")
+                    stars = 1 if star == "one_star" else 2
+                    out.append({"review_id": rid or f"{asin}-{hash(title+body) & 0xffffff}",
+                                "asin": asin, "stars": stars, "title": title, "body": body[:600],
+                                "reviewer": who, "review_date": when})
+            await browser.close()
+    except Exception as e:
+        logger.warning(f"review scrape failed {asin}: {e}")
+    return out
+
+
+def _review_reply_draft(r: dict) -> str:
+    return (f"Hi {r.get('reviewer') or 'there'}, we're really sorry your MuscleGrid product didn't meet "
+            f"expectations. We'd like to make this right immediately — free repair/replacement under "
+            f"warranty. Please reach us at service@musclegrid.in or WhatsApp 8282820846 with your order id "
+            f"and we'll resolve it on priority.")
+
+
+async def scheduled_review_rescue():
+    if not REVIEW_RESCUE_ENABLED:
+        return
+    await _review_rescue_run(digest=True)
+
+
+async def _review_rescue_run(digest: bool = False, sample_to_wa: str = "", limit_asins: int = 0) -> dict:
+    import ast as _ast
+    asins = set()
+    async for o in db.amazon_orders.find({"items": {"$exists": True}}, {"items": 1}).limit(3000):
+        its = o.get("items") or []
+        if isinstance(its, str):
+            try: its = _ast.literal_eval(its)
+            except Exception: its = []
+        for it in its:
+            if it.get("asin"):
+                asins.add(it["asin"])
+    asins = list(asins)[:limit_asins] if limit_asins else list(asins)
+    now = datetime.now(timezone.utc).isoformat()
+    fresh, scraped = [], 0
+    for asin in asins:
+        revs = await _scrape_amazon_reviews(asin)
+        scraped += len(revs)
+        for r in revs:
+            exists = await db.amazon_low_reviews.find_one({"review_id": r["review_id"]}, {"_id": 1})
+            if exists:
+                continue
+            r["reply_draft"] = _review_reply_draft(r)
+            r["status"] = "new"; r["created_at"] = now
+            r["id"] = str(uuid.uuid4())
+            await db.amazon_low_reviews.insert_one(r)
+            fresh.append(r)
+    if (digest or sample_to_wa) and fresh:
+        body = (f"⭐ Negative-Review Rescue: *{len(fresh)}* new 1-2★ review(s) on our listings:\n"
+                + "\n".join(f"• {r['stars']}★ {(_amz_first_words(r.get('title'),6)) or '(no title)'} "
+                            f"— {r.get('reviewer') or '?'} [{r['asin']}]"
+                            for r in fresh[:10])
+                + "\nReply 'review reply <asin>' for a drafted goodwill response.")
+        to = re.sub(r"\D", "", sample_to_wa)[-12:] if sample_to_wa else None
+        if to:
+            await whatsapp_cloud.send_text(to, body)
+        else:
+            await _alert_founder_free(body, "review_rescue")
+    return {"asins_checked": len(asins), "reviews_seen": scraped, "new_low_reviews": len(fresh)}
+
+
 # ===================== Receivables (dealer dues) chaser =====================
 # Dealer-scoped only. Ledger sign: POSITIVE running_balance = the party OWES US (debit balance).
 # Hard-excludes intercompany/group entities (they distort everything) by name + internal phone + a
@@ -64339,6 +64456,20 @@ async def az_defense_sample(to_wa: str = Query("", description="WhatsApp number 
     """Recompute the A-to-z rebuttal drafts now; optionally WhatsApp a sample digest.
     (Listing reuses the existing GET /admin/az-claims — each claim now carries defense_draft.)"""
     return await _az_defense_run(digest=False, sample_to_wa=to_wa)
+
+
+@api_router.get("/admin/low-reviews")
+async def list_low_reviews(user: dict = Depends(require_roles(["admin", "supervisor"]))):
+    """Detected 1-2 star Amazon reviews on our listings, with drafted responses."""
+    rows = await db.amazon_low_reviews.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return {"count": len(rows), "reviews": rows}
+
+
+@api_router.post("/admin/low-reviews/sample")
+async def low_reviews_sample(to_wa: str = Query(""), limit_asins: int = Query(5, description="cap ASINs scraped for the test"),
+                             user: dict = Depends(require_roles(["admin"]))):
+    """Test the review scraper on a few ASINs now (Amazon may block — returns what it gets)."""
+    return await _review_rescue_run(digest=False, sample_to_wa=to_wa, limit_asins=limit_asins)
 
 
 @api_router.get("/admin/receivables")
@@ -78262,6 +78393,16 @@ async def _claude_wa_relay(digits: str, question: str):
             await whatsapp_cloud.send_text(digits, _az_draft_defense(c, ev))
         else:
             await whatsapp_cloud.send_text(digits, f"Us order ka koi A-to-z claim nahi mila: {oid}")
+        return
+
+    # "review reply <asin>" → drafted goodwill response for a detected low review
+    if profile == "full" and re.match(r"\s*review\s*reply\b", low):
+        m = re.search(r"\bB0[A-Z0-9]{8}\b", ql)
+        r = await db.amazon_low_reviews.find_one({"asin": m.group(0)} if m else {}, sort=[("created_at", -1)])
+        if r:
+            await whatsapp_cloud.send_text(digits, r.get("reply_draft") or _review_reply_draft(r))
+        else:
+            await whatsapp_cloud.send_text(digits, "Koi low review nahi mila. ASIN ke saath bhejein: 'review reply B0XXXXXXXX'")
         return
 
     # start a fresh conversation (drop the remembered context)
