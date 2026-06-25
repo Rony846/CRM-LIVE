@@ -1090,6 +1090,18 @@ async def create_indexes():
                 max_instances=1,
             )
 
+        # Payout-Reconciliation: audit marketplace settlements for un-reversed fees + recon gaps.
+        if PAYOUT_RECON_ENABLED:
+            scheduler.add_job(
+                scheduled_payout_recon,
+                IntervalTrigger(minutes=PAYOUT_RECON_MIN),
+                id="payout_recon",
+                name="Payout-Reconciliation (fee-on-refund + unmatched settlements)",
+                replace_existing=True,
+                misfire_grace_time=600,
+                max_instances=1,
+            )
+
         # Return-Abuse detector: maintain a watchlist of serial refunders/returners.
         if RETURN_ABUSE_ENABLED:
             scheduler.add_job(
@@ -63471,6 +63483,62 @@ def _amz_first_words(s, n=4):
     return " ".join(str(s or "").split()[:n])
 
 
+# ===================== Payout-Reconciliation agent =====================
+# Audit marketplace settlements: when an order is refunded, Amazon should reverse the referral fee.
+# Flag refunded orders that still carry a platform fee (fee-reversal claim candidates) + unmatched rows.
+PAYOUT_RECON_ENABLED = os.environ.get("PAYOUT_RECON_ENABLED", "false").lower() == "true"
+PAYOUT_RECON_MIN = int(os.environ.get("PAYOUT_RECON_MIN", "1440"))
+
+
+def _f(x):
+    try: return float(x)
+    except Exception: return 0.0
+
+
+async def scheduled_payout_recon():
+    if not PAYOUT_RECON_ENABLED:
+        return
+    await _payout_recon_run(digest=True)
+
+
+async def _payout_recon_run(digest: bool = False, sample_to_wa: str = "") -> dict:
+    now = datetime.now(timezone.utc).isoformat()
+    fee_on_refund_n, fee_on_refund_val = 0, 0.0
+    unmatched_n, unmatched_val = 0, 0.0
+    candidates = []
+    async for p in db.payout_order_summaries.find({}):
+        gross, fee, rf, net = _f(p.get("gross_sale")), _f(p.get("platform_fees")), _f(p.get("refund_amount")), _f(p.get("net_realized"))
+        if rf > 0 and fee > 0:   # refunded but a platform fee is still charged → audit for reversal
+            fee_on_refund_n += 1; fee_on_refund_val += fee
+            candidates.append({"order_id": p.get("marketplace_order_id"), "kind": "fee_on_refund",
+                               "fee": round(fee), "refund": round(rf), "gross": round(gross),
+                               "product": (p.get("product_details") or "")[:60]})
+        if str(p.get("crm_match_status") or "") == "unmatched" and gross > 0:
+            unmatched_n += 1; unmatched_val += net
+    candidates.sort(key=lambda c: -c["fee"])
+    # persist the top fee-reversal candidates for the dashboard
+    for c in candidates[:300]:
+        await db.payout_recon_flags.update_one(
+            {"order_id": c["order_id"], "kind": c["kind"]},
+            {"$set": {**c, "updated_at": now}, "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": now, "status": "open"}},
+            upsert=True)
+    if (digest or sample_to_wa) and (fee_on_refund_n or unmatched_n):
+        body = (f"🧮 Payout-Recon audit:\n"
+                f"• *{fee_on_refund_n}* refunded orders still carry platform fees = *₹{fee_on_refund_val:,.0f}* — "
+                f"verify Amazon reversed the referral fee (claim back if not).\n"
+                f"• *{unmatched_n}* settlement rows unmatched to a CRM order (₹{unmatched_val:,.0f} net) — recon gap.\n"
+                f"Top fee-on-refund:\n"
+                + "\n".join(f"• {c['order_id']} — fee ₹{c['fee']:,} on ₹{c['refund']:,} refund · {_amz_first_words(c['product'],4)}"
+                            for c in candidates[:8]))
+        to = re.sub(r"\D", "", sample_to_wa)[-12:] if sample_to_wa else None
+        if to:
+            await whatsapp_cloud.send_text(to, body)
+        else:
+            await _alert_founder_free(body, "payout_recon")
+    return {"fee_on_refund": fee_on_refund_n, "fee_on_refund_value": round(fee_on_refund_val),
+            "unmatched": unmatched_n}
+
+
 # ===================== Return-Abuse / refund-fraud detector =====================
 # Serial returners and repeat-refunders are a major refund-loss driver. Aggregate refunds by customer
 # phone, score the worst offenders, and maintain a watchlist so ops can ship-with-OBD / block them.
@@ -64106,6 +64174,18 @@ async def az_defense_sample(to_wa: str = Query("", description="WhatsApp number 
     """Recompute the A-to-z rebuttal drafts now; optionally WhatsApp a sample digest.
     (Listing reuses the existing GET /admin/az-claims — each claim now carries defense_draft.)"""
     return await _az_defense_run(digest=False, sample_to_wa=to_wa)
+
+
+@api_router.get("/admin/payout-recon")
+async def list_payout_recon(user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Settlement audit flags — refunded orders still carrying platform fees (claim back)."""
+    rows = await db.payout_recon_flags.find({"status": "open"}, {"_id": 0}).sort("fee", -1).to_list(2000)
+    return {"count": len(rows), "fees_to_verify": round(sum(_f(r.get("fee")) for r in rows)), "flags": rows}
+
+
+@api_router.post("/admin/payout-recon/sample")
+async def payout_recon_sample(to_wa: str = Query(""), user: dict = Depends(require_roles(["admin"]))):
+    return await _payout_recon_run(digest=False, sample_to_wa=to_wa)
 
 
 @api_router.get("/admin/return-abuse")
