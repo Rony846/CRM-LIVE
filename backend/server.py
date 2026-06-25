@@ -63424,7 +63424,9 @@ def _reimb_draft(c: dict) -> str:
         f"to buyer in {c.get('ship_state') or 'N/A'}.\n"
         f"Buyer was refunded ₹{c.get('refund_amount')} ({c.get('refund_type') or 'refund'}) on "
         f"{c.get('refund_date') or 'N/A'}, but the unit was NOT returned to us (no inward return on record).\n"
-        f"Request: reimbursement of ₹{c.get('refund_amount')} for delivered-but-unreturned goods. "
+        f"Settlement net to us on this order: ₹{c.get('net_realized')}; unit COGS: ₹{c.get('cogs')}; "
+        f"our real loss: ₹{c.get('true_loss') if c.get('true_loss') is not None else '?'}.\n"
+        f"Request: SAFE-T reimbursement for the delivered-but-unreturned unit. "
         f"Evidence attached: AWB delivery tracking, Amazon refund record, no return scan at gate.")
 
 
@@ -63446,18 +63448,23 @@ async def _reimbursement_scan() -> list:
             days_left = REIMBURSEMENT_WINDOW_DAYS - (today - rd).days
         except Exception:
             days_left = None
-        try:
-            amt = float(r.get("refund_amount") or 0)
-        except Exception:
-            amt = 0.0
+        # TRUE economics — loss is COGS-at-risk net of cash kept, NOT the refund amount.
+        econ = await _order_economics(r.get("order_id"))
+        true_loss = econ.get("true_loss")
+        # the amount worth recovering = the real loss (fall back to refund only if COGS unknown)
+        amt = float(true_loss) if true_loss is not None else _f(r.get("refund_amount"))
+        in_window = days_left is not None and days_left > 0
         out.append({
-            "order_id": r.get("order_id"), "firm_name": r.get("firm_name"), "amount": amt,
-            "refund_amount": r.get("refund_amount"), "refund_date": refund_date,
+            "order_id": r.get("order_id"), "firm_name": r.get("firm_name"),
+            "amount": amt, "true_loss": true_loss, "net_realized": econ.get("net_realized"),
+            "cogs": econ.get("cogs"), "refund_amount": r.get("refund_amount"), "refund_date": refund_date,
             "refund_type": (rf or {}).get("refund_type"), "channel": r.get("channel"),
             "awb": r.get("awb"), "courier": r.get("courier"), "delivered_date": r.get("delivered_date"),
             "ship_state": r.get("ship_state"), "product": r.get("product"), "customer": r.get("customer"),
             "loss_confidence": r.get("loss_confidence"), "days_left": days_left,
-            "eligible": (days_left is not None and days_left > 0),
+            # eligible = in the SAFE-T window AND we actually lost money (true loss > ₹500)
+            "eligible": in_window and (true_loss is None or true_loss > 500),
+            "cogs_unknown": true_loss is None,
         })
     out.sort(key=lambda c: (-(c["amount"]), c.get("days_left") if c.get("days_left") is not None else 999))
     return out
@@ -63498,11 +63505,13 @@ async def _reimbursement_run(digest: bool = False, sample_to_wa: str = "") -> di
     if (digest or sample_to_wa) and (new_ready or sample_to_wa):
         ready_all = [c for c in cands if c["eligible"]]
         urgent = [c for c in ready_all if (c.get("days_left") or 99) <= 7]
-        body = (f"💸 Reimbursement-Recovery: *{len(ready_all)}* claim(s) fileable on Amazon = "
-                f"*₹{sum(c['amount'] for c in ready_all):,.0f}* recoverable.\n"
+        body = (f"💸 Reimbursement-Recovery: *{len(ready_all)}* claim(s) fileable = "
+                f"*₹{sum(c['amount'] for c in ready_all):,.0f}* REAL loss recoverable "
+                f"(true loss = COGS-at-risk net of cash kept, NOT the refund amount).\n"
                 + (f"⏰ {len(urgent)} expiring within 7 days!\n" if urgent else "")
                 + "Top:\n"
-                + "\n".join(f"• {c['order_id']} — ₹{c['amount']:,.0f} ({c.get('days_left')}d left) {(_amz_first_words(c.get('product')) )}"
+                + "\n".join(f"• {c['order_id']} — loss ₹{c['amount']:,.0f} (refund was ₹{_f(c.get('refund_amount')):,.0f}) "
+                            f"({c.get('days_left')}d left) {_amz_first_words(c.get('product'))}"
                             for c in ready_all[:8])
                 + (f"\n…+{len(ready_all) - 8} more" if len(ready_all) > 8 else "")
                 + "\nFile in Seller Central → reply 'filed <order>' / 'won <order>' / 'lost <order>'.")
@@ -63843,6 +63852,42 @@ def _f(x):
     except Exception: return 0.0
 
 
+async def _order_economics(order_id: str) -> dict:
+    """TRUE per-order economics — the basis for any 'loss' figure. A refund is NOT a loss.
+    Sums net_realized across all settlement rows (Amazon's real net payment after sale, fees, refund AND
+    fee-reversal), pulls the unit COGS, and checks whether the unit came back. Loss = COGS-at-risk (only
+    if not returned) minus any net cash we kept — never the refund amount."""
+    import ast as _ast
+    net = refund = 0.0
+    async for p in db.payout_order_summaries.find({"marketplace_order_id": order_id}):
+        net += _f(p.get("net_realized")); refund += _f(p.get("refund_amount"))
+    cogs = None
+    pf = await db.pending_fulfillment.find_one({"amazon_order_id": order_id}, {"master_sku_id": 1})
+    msid = (pf or {}).get("master_sku_id")
+    if not msid:
+        ao = await db.amazon_orders.find_one({"amazon_order_id": order_id}, {"items": 1})
+        its = (ao or {}).get("items") or []
+        if isinstance(its, str):
+            try: its = _ast.literal_eval(its)
+            except Exception: its = []
+        if its:
+            msid = its[0].get("master_sku_id")
+    if msid:
+        ms = await db.master_skus.find_one({"id": msid}, {"cost_price": 1})
+        cogs = _f((ms or {}).get("cost_price")) or None
+    rl = await db.amazon_refund_losses.find_one({"order_id": order_id}, {"returned": 1})
+    returned = (rl or {}).get("returned") in (True, "True")
+    if cogs is None:
+        loss = None                              # can't compute without COGS — flag separately
+    elif returned:
+        loss = max(0.0, -net)                    # inventory recovered → loss = net cash short only
+    else:
+        loss = max(0.0, cogs - net)              # unit gone → loss = COGS minus any net cash kept
+    return {"net_realized": round(net), "refund": round(refund),
+            "cogs": (round(cogs) if cogs is not None else None), "returned": returned,
+            "true_loss": (round(loss) if loss is not None else None), "settled": net != 0 or refund != 0}
+
+
 async def scheduled_payout_recon():
     if not PAYOUT_RECON_ENABLED:
         return
@@ -63850,40 +63895,48 @@ async def scheduled_payout_recon():
 
 
 async def _payout_recon_run(digest: bool = False, sample_to_wa: str = "") -> dict:
+    """Settlement integrity, corrected. The old 'fee-on-refund' count double-counted fees Amazon had
+    ALREADY reversed (net nets to 0). Now: aggregate net_realized PER ORDER across all rows, and flag
+    only orders that ended genuinely NET-NEGATIVE (Amazon paid us less than the sale, after the refund
+    AND fee-reversal) — the real cash shortfall — plus settlement rows unmatched to any CRM order."""
     now = datetime.now(timezone.utc).isoformat()
-    fee_on_refund_n, fee_on_refund_val = 0, 0.0
+    per_order = {}   # order_id -> {net, refund, gross, product}
     unmatched_n, unmatched_val = 0, 0.0
-    candidates = []
     async for p in db.payout_order_summaries.find({}):
-        gross, fee, rf, net = _f(p.get("gross_sale")), _f(p.get("platform_fees")), _f(p.get("refund_amount")), _f(p.get("net_realized"))
-        if rf > 0 and fee > 0:   # refunded but a platform fee is still charged → audit for reversal
-            fee_on_refund_n += 1; fee_on_refund_val += fee
-            candidates.append({"order_id": p.get("marketplace_order_id"), "kind": "fee_on_refund",
-                               "fee": round(fee), "refund": round(rf), "gross": round(gross),
-                               "product": (p.get("product_details") or "")[:60]})
+        oid = p.get("marketplace_order_id")
+        net, rf, gross = _f(p.get("net_realized")), _f(p.get("refund_amount")), _f(p.get("gross_sale"))
+        if oid:
+            e = per_order.setdefault(oid, {"order_id": oid, "net": 0.0, "refund": 0.0, "gross": 0.0,
+                                           "product": (p.get("product_details") or "")[:60]})
+            e["net"] += net; e["refund"] += rf; e["gross"] += gross
         if str(p.get("crm_match_status") or "") == "unmatched" and gross > 0:
             unmatched_n += 1; unmatched_val += net
-    candidates.sort(key=lambda c: -c["fee"])
-    # persist the top fee-reversal candidates for the dashboard
-    for c in candidates[:300]:
+    # genuine cash shortfall = orders whose SUMMED net is negative
+    shortfalls = [e for e in per_order.values() if e["net"] < -1]
+    shortfalls.sort(key=lambda e: e["net"])   # most negative first
+    short_total = sum(-e["net"] for e in shortfalls)
+    await db.payout_recon_flags.delete_many({"kind": "fee_on_refund"})  # purge the old inflated flags
+    for e in shortfalls[:300]:
         await db.payout_recon_flags.update_one(
-            {"order_id": c["order_id"], "kind": c["kind"]},
-            {"$set": {**c, "updated_at": now}, "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": now, "status": "open"}},
-            upsert=True)
-    if (digest or sample_to_wa) and (fee_on_refund_n or unmatched_n):
-        body = (f"🧮 Payout-Recon audit:\n"
-                f"• *{fee_on_refund_n}* refunded orders still carry platform fees = *₹{fee_on_refund_val:,.0f}* — "
-                f"verify Amazon reversed the referral fee (claim back if not).\n"
-                f"• *{unmatched_n}* settlement rows unmatched to a CRM order (₹{unmatched_val:,.0f} net) — recon gap.\n"
-                f"Top fee-on-refund:\n"
-                + "\n".join(f"• {c['order_id']} — fee ₹{c['fee']:,} on ₹{c['refund']:,} refund · {_amz_first_words(c['product'],4)}"
-                            for c in candidates[:8]))
+            {"order_id": e["order_id"], "kind": "net_shortfall"},
+            {"$set": {"order_id": e["order_id"], "kind": "net_shortfall", "net_realized": round(e["net"]),
+                      "refund": round(e["refund"]), "gross": round(e["gross"]), "product": e["product"],
+                      "updated_at": now},
+             "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": now, "status": "open"}}, upsert=True)
+    if (digest or sample_to_wa) and (shortfalls or unmatched_n):
+        body = (f"🧮 Payout-Recon (corrected): *{len(shortfalls)}* orders ended NET-NEGATIVE after the "
+                f"refund + Amazon's own fee-reversal = *₹{short_total:,.0f}* real cash shortfall to verify "
+                f"(note: if the unit came back, much of this is offset by recovered stock).\n"
+                f"• *{unmatched_n}* settlement rows unmatched to a CRM order — recon gap.\n"
+                f"Worst:\n"
+                + "\n".join(f"• {e['order_id']} — net ₹{e['net']:,.0f} (refund ₹{e['refund']:,.0f}) · {_amz_first_words(e['product'],4)}"
+                            for e in shortfalls[:8]))
         to = re.sub(r"\D", "", sample_to_wa)[-12:] if sample_to_wa else None
         if to:
             await whatsapp_cloud.send_text(to, body)
         else:
             await _alert_founder_free(body, "payout_recon")
-    return {"fee_on_refund": fee_on_refund_n, "fee_on_refund_value": round(fee_on_refund_val),
+    return {"net_negative_orders": len(shortfalls), "cash_shortfall": round(short_total),
             "unmatched": unmatched_n}
 
 
@@ -64613,9 +64666,9 @@ async def stockout_sample(to_wa: str = Query(""), user: dict = Depends(require_r
 
 @api_router.get("/admin/payout-recon")
 async def list_payout_recon(user: dict = Depends(require_roles(["admin", "accountant"]))):
-    """Settlement audit flags — refunded orders still carrying platform fees (claim back)."""
-    rows = await db.payout_recon_flags.find({"status": "open"}, {"_id": 0}).sort("fee", -1).to_list(2000)
-    return {"count": len(rows), "fees_to_verify": round(sum(_f(r.get("fee")) for r in rows)), "flags": rows}
+    """Settlement audit flags — orders that ended net-negative after refund + fee-reversal."""
+    rows = await db.payout_recon_flags.find({"status": "open"}, {"_id": 0}).sort("net_realized", 1).to_list(2000)
+    return {"count": len(rows), "cash_shortfall": round(sum(-_f(r.get("net_realized")) for r in rows)), "flags": rows}
 
 
 @api_router.post("/admin/payout-recon/sample")
