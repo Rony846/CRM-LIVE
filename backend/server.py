@@ -1090,6 +1090,18 @@ async def create_indexes():
                 max_instances=1,
             )
 
+        # Receivables (dealer dues) chaser: dealer-scoped aging report.
+        if RECEIVABLES_ENABLED:
+            scheduler.add_job(
+                scheduled_receivables,
+                IntervalTrigger(minutes=RECEIVABLES_MIN),
+                id="receivables",
+                name="Receivables chaser (dealer dues + aging, intercompany excluded)",
+                replace_existing=True,
+                misfire_grace_time=600,
+                max_instances=1,
+            )
+
         # Stock-out / Produce-More predictor: per-SKU velocity vs on-hand.
         if STOCKOUT_ENABLED:
             scheduler.add_job(
@@ -63495,6 +63507,86 @@ def _amz_first_words(s, n=4):
     return " ".join(str(s or "").split()[:n])
 
 
+# ===================== Receivables (dealer dues) chaser =====================
+# Dealer-scoped only. Ledger sign: POSITIVE running_balance = the party OWES US (debit balance).
+# Hard-excludes intercompany/group entities (they distort everything) by name + internal phone + a
+# sanity cap, so we never "chase" Amazon or our own group companies.
+RECEIVABLES_ENABLED = os.environ.get("RECEIVABLES_ENABLED", "false").lower() == "true"
+RECEIVABLES_MIN = int(os.environ.get("RECEIVABLES_AGENT_MIN", "1440"))
+RECEIVABLES_FLOOR = float(os.environ.get("RECEIVABLES_FLOOR", "1000"))      # ignore dues below this
+RECEIVABLES_CAP = float(os.environ.get("RECEIVABLES_CAP", "5000000"))       # above this = almost certainly intercompany
+_GROUP_ENTITY_RX = re.compile(
+    r"electronic[as]?\s*bay|musclegrid\s*indust|muscle\s*grid|\bmgipl\b|\bspv\b|vivek|kanta|"
+    r"amazon|flipkart|razorpay|escrow|internal\s*ac|intermedi", re.I)
+
+
+async def _receivable_balance(d: dict):
+    """Latest party_ledger entry for a dealer (by party_id, else name)."""
+    if d.get("party_id"):
+        e = await db.party_ledger.find_one({"party_id": d["party_id"]}, sort=[("created_at", -1)])
+        if e:
+            return e
+    for nm in (d.get("firm_name"), d.get("contact_person")):
+        if nm and str(nm).strip():
+            e = await db.party_ledger.find_one(
+                {"party_name": {"$regex": f"^{re.escape(str(nm).strip())}$", "$options": "i"}},
+                sort=[("created_at", -1)])
+            if e:
+                return e
+    return None
+
+
+async def scheduled_receivables():
+    if not RECEIVABLES_ENABLED:
+        return
+    await _receivables_run(digest=True)
+
+
+async def _receivables_run(digest: bool = False, sample_to_wa: str = "") -> dict:
+    now = datetime.now(timezone.utc)
+    today = now.date()
+    dues = []
+    async for d in db.dealers.find({}):
+        name = str(d.get("firm_name") or d.get("contact_person") or "").strip()
+        phone = re.sub(r"\D", "", str(d.get("phone") or ""))[-10:]
+        if _GROUP_ENTITY_RX.search(name) or phone in _ABUSE_EXCLUDE_PHONES:
+            continue   # intercompany / internal — never a real dealer receivable
+        e = await _receivable_balance(d)
+        if not e:
+            continue
+        bal = _f(e.get("running_balance"))
+        if bal < RECEIVABLES_FLOOR or bal > RECEIVABLES_CAP:
+            continue
+        last = str(e.get("created_at") or "")[:10]
+        age = None
+        try:
+            age = (today - datetime.fromisoformat(last).date()).days
+        except Exception:
+            pass
+        dues.append({"dealer_id": d.get("id"), "name": name, "phone": phone, "amount": round(bal),
+                     "last_txn": last, "age_days": age, "firm": e.get("firm_name")})
+    dues.sort(key=lambda x: -x["amount"])
+    nowiso = now.isoformat()
+    for r in dues:
+        await db.receivables_flags.update_one({"dealer_id": r["dealer_id"]},
+            {"$set": {**r, "updated_at": nowiso}, "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": nowiso}}, upsert=True)
+    total = sum(r["amount"] for r in dues)
+    if (digest or sample_to_wa) and dues:
+        body = (f"📒 Receivables (dealer dues): *{len(dues)}* dealers owe *₹{total:,.0f}*:\n"
+                + "\n".join(f"• {r['name'][:24]} — ₹{r['amount']:,.0f}"
+                            + (f" ({r['age_days']}d old)" if r['age_days'] is not None else "")
+                            + (f" 📞{r['phone']}" if r['phone'] else "")
+                            for r in dues[:12])
+                + (f"\n…+{len(dues) - 12} more" if len(dues) > 12 else "")
+                + "\n(Intercompany/group entities excluded.)")
+        to = re.sub(r"\D", "", sample_to_wa)[-12:] if sample_to_wa else None
+        if to:
+            await whatsapp_cloud.send_text(to, body)
+        else:
+            await _alert_founder_free(body, "receivables")
+    return {"dealers_owing": len(dues), "total": total}
+
+
 # ===================== Stock-out / Produce-More predictor =====================
 # Per-SKU sales velocity (units sold last 30d) vs on-hand finished goods → days of cover. Flags SKUs
 # that will run out so production gets scheduled. (Make-to-order shop: on-hand is often thin, so the
@@ -64247,6 +64339,18 @@ async def az_defense_sample(to_wa: str = Query("", description="WhatsApp number 
     """Recompute the A-to-z rebuttal drafts now; optionally WhatsApp a sample digest.
     (Listing reuses the existing GET /admin/az-claims — each claim now carries defense_draft.)"""
     return await _az_defense_run(digest=False, sample_to_wa=to_wa)
+
+
+@api_router.get("/admin/receivables")
+async def list_receivables(user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Dealer dues (receivables) with aging — intercompany/group entities excluded."""
+    rows = await db.receivables_flags.find({}, {"_id": 0}).sort("amount", -1).to_list(1000)
+    return {"count": len(rows), "total_due": round(sum(_f(r.get("amount")) for r in rows)), "dealers": rows}
+
+
+@api_router.post("/admin/receivables/sample")
+async def receivables_sample(to_wa: str = Query(""), user: dict = Depends(require_roles(["admin"]))):
+    return await _receivables_run(digest=False, sample_to_wa=to_wa)
 
 
 @api_router.get("/admin/stockout")
