@@ -1077,6 +1077,18 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Finances-Refresh: keep db.amazon_order_finance (SP-API true net) fresh for recent refunds.
+        if FINANCES_REFRESH_ENABLED:
+            scheduler.add_job(
+                scheduled_finances_refresh,
+                IntervalTrigger(minutes=FINANCES_REFRESH_MIN),
+                id="finances_refresh",
+                name="SP-API Finances refresh (keep true per-order net fresh)",
+                replace_existing=True,
+                misfire_grace_time=600,
+                max_instances=1,
+            )
+
         # Reimbursement-Recovery: find delivered-but-unreturned refunds still in the SAFE-T window,
         # draft each claim, and digest the fileable ones to the founder.
         if REIMBURSEMENT_AGENT_ENABLED:
@@ -63895,11 +63907,12 @@ async def _sp_order_finance(creds: dict, order_id: str) -> Optional[dict]:
 
 
 async def _finances_reingest(order_ids: Optional[list] = None, refunded_only: bool = True,
-                             limit: int = 400, max_age_days: int = 30) -> dict:
+                             limit: int = 400, max_age_days: int = 30, recent_days: int = 0) -> dict:
     """Rebuild true per-order net from SP-API Finances into db.amazon_order_finance (the trustworthy
     settlement source). Throttled to respect the 0.5 req/s Finances limit. Resumable: skips orders
-    already fetched within max_age_days. Scope: explicit order_ids, else refunded orders missing fresh
-    finance data. Returns counts."""
+    already fetched within max_age_days. Scope: explicit order_ids, else refunded/all orders missing
+    fresh finance data; recent_days>0 restricts to refunds posted within that window (for the steady-
+    state refresh job). Returns counts."""
     fresh_cut = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
     # build the target list
     targets = []
@@ -63911,7 +63924,10 @@ async def _finances_reingest(order_ids: Optional[list] = None, refunded_only: bo
     else:
         src = db.amazon_refunds if refunded_only else db.amazon_orders
         idf = "amazon_order_id"
-        async for r in src.find({}, {idf: 1, "firm_id": 1}):
+        q = {}
+        if recent_days and refunded_only:
+            q = {"refund_date": {"$gte": (datetime.now(timezone.utc) - timedelta(days=recent_days)).date().isoformat()}}
+        async for r in src.find(q, {idf: 1, "firm_id": 1, "refund_date": 1}):
             oid = r.get(idf)
             if not oid:
                 continue
@@ -63946,6 +63962,23 @@ async def _finances_reingest(order_ids: Optional[list] = None, refunded_only: bo
         done += 1
         await asyncio.sleep(2)   # 0.5 req/s Finances rate limit
     return {"targets": len(targets), "ingested": done, "throttled": throttled, "errors": errors}
+
+
+FINANCES_REFRESH_ENABLED = os.environ.get("FINANCES_REFRESH_ENABLED", "true").lower() == "true"
+FINANCES_REFRESH_MIN = int(os.environ.get("FINANCES_REFRESH_MIN", "1440"))   # daily
+FINANCES_REFRESH_RECENT_DAYS = int(os.environ.get("FINANCES_REFRESH_RECENT_DAYS", "45"))
+FINANCES_REFRESH_BATCH = int(os.environ.get("FINANCES_REFRESH_BATCH", "150"))
+
+
+async def scheduled_finances_refresh():
+    """Keep db.amazon_order_finance fresh: re-pull SP-API true net for recently-refunded orders that are
+    new or stale (>3 days old), so settlement-based figures never drift. Bounded by recency + batch size."""
+    if not FINANCES_REFRESH_ENABLED:
+        return
+    res = await _finances_reingest(refunded_only=True, recent_days=FINANCES_REFRESH_RECENT_DAYS,
+                                   max_age_days=3, limit=FINANCES_REFRESH_BATCH)
+    if res.get("ingested"):
+        logger.info(f"Finances refresh: {res}")
 
 
 async def _order_economics(order_id: str) -> dict:
