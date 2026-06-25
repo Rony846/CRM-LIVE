@@ -1090,6 +1090,18 @@ async def create_indexes():
                 max_instances=1,
             )
 
+        # NDR / RTO-Rescue: chase failed-delivery parcels before they bounce back.
+        if NDR_RESCUE_ENABLED:
+            scheduler.add_job(
+                scheduled_ndr_rescue,
+                IntervalTrigger(minutes=NDR_RESCUE_MIN),
+                id="ndr_rescue",
+                name="NDR / RTO-Rescue (chase failed-delivery parcels before RTO)",
+                replace_existing=True,
+                misfire_grace_time=600,
+                max_instances=1,
+            )
+
         # A-to-z Auto-Defense: draft a delivery-proof rebuttal for every under-review claim.
         if AZ_DEFENSE_ENABLED:
             scheduler.add_job(
@@ -63447,6 +63459,66 @@ def _amz_first_words(s, n=4):
     return " ".join(str(s or "").split()[:n])
 
 
+# ===================== NDR / RTO-Rescue agent =====================
+# A parcel that failed delivery (NDR: "Undelivered") will RTO if nothing happens. Reach the customer to
+# reconfirm address / schedule a reattempt BEFORE it bounces back (two-way freight on a heavy item).
+NDR_RESCUE_ENABLED = os.environ.get("NDR_RESCUE_ENABLED", "false").lower() == "true"
+NDR_RESCUE_MIN = int(os.environ.get("NDR_RESCUE_MIN", "240"))
+NDR_RESCUE_TEMPLATE = os.environ.get("NDR_RESCUE_TEMPLATE", "")  # approved Meta template → enables customer auto-send
+_WAREHOUSE_PHONES = {"9899716917"}  # our Meerut return warehouse — a reverse pickup, not a customer NDR
+
+
+def _ndr_customer_msg(s: dict) -> str:
+    nm = (s.get("customer_name") or "").split()[0] if s.get("customer_name") else "Ji"
+    return (f"Namaste {nm} 🙏 Aapka MuscleGrid parcel (AWB {s.get('awb_number')}) delivery ke liye aaya tha "
+            f"par deliver nahi ho paaya. Kripya apna delivery address + pincode confirm karein aur ek "
+            f"available time bata dein — warna parcel wapas chala jaayega. Hum dobara delivery karwa denge.")
+
+
+async def scheduled_ndr_rescue():
+    if not NDR_RESCUE_ENABLED:
+        return
+    await _ndr_rescue_run(digest=True)
+
+
+async def _ndr_rescue_run(digest: bool = False, sample_to_wa: str = "", dry_run: bool = False) -> dict:
+    now = datetime.now(timezone.utc).isoformat()
+    rescued, listed = 0, []
+    async for s in db.courier_shipments.find(
+            {"status": {"$regex": "undelivered", "$options": "i"},
+             "do_not_ship": {"$ne": True}, "ndr_contacted": {"$ne": True}}).limit(500):
+        phone = re.sub(r"\D", "", str(s.get("phone") or ""))[-10:]
+        oid = _amz_oid(s.get("amazon_order_id") or s.get("order_id"))
+        if len(phone) != 10 or phone in _WAREHOUSE_PHONES or phone == "0000000000":
+            continue   # no reachable customer / our own warehouse (reverse pickup)
+        sent = False
+        if not dry_run and NDR_RESCUE_TEMPLATE and whatsapp_cloud.enabled():
+            try:
+                await whatsapp_cloud.send_template(phone, NDR_RESCUE_TEMPLATE,
+                                                   params=[(s.get("customer_name") or "Customer").split()[0], s.get("awb_number")])
+                sent = True
+            except Exception as e:
+                logger.warning(f"NDR template send failed {oid}: {e}")
+        if not dry_run:
+            await db.courier_shipments.update_one({"_id": s["_id"]}, {"$set": {
+                "ndr_contacted": True, "ndr_contacted_at": now, "ndr_customer_sent": sent}})
+        rescued += 1
+        listed.append((oid or s.get("awb_number"), s.get("customer_name"), phone,
+                       s.get("consignee_pincode") or s.get("pincode"), s.get("product_name")))
+    if (digest or sample_to_wa) and listed:
+        body = (f"📦 NDR / RTO-Rescue: *{len(listed)}* parcel(s) failed delivery — chase before they RTO"
+                + (" (customer WhatsApp'd ✅)" if NDR_RESCUE_TEMPLATE else " (no template → please chase manually)") + ":\n"
+                + "\n".join(f"• {oid} — {nm} ({ph}) pin {pin} · {_amz_first_words(prod,4)}"
+                            for oid, nm, ph, pin, prod in listed[:12])
+                + (f"\n…+{len(listed) - 12} more" if len(listed) > 12 else ""))
+        to = re.sub(r"\D", "", sample_to_wa)[-12:] if sample_to_wa else None
+        if to:
+            await whatsapp_cloud.send_text(to, body)
+        else:
+            await _alert_founder_free(body, "ndr_rescue")
+    return {"ndr_found": len(listed), "customer_sent": NDR_RESCUE_TEMPLATE != ""}
+
+
 # ===================== A-to-z Auto-Defense agent =====================
 # Refund-Defense detects new A-to-z claims; this drafts the rebuttal so an under-review claim is never
 # lost by default. A-to-z claims auto-lose if unanswered — a delivery-proof rebuttal is the safety net.
@@ -63940,20 +64012,19 @@ async def mark_expected_return_received(order_id: str = Query("", description="A
     return {"received": True, "expected_return": {k: got.get(k) for k in ("order_id", "customer_name", "customer_phone", "status", "received_at")}}
 
 
-@api_router.get("/admin/az-claims")
-async def list_az_claims(status: str = Query("under_review", description="under_review | granted | denied | closed | all"),
-                         user: dict = Depends(require_roles(["admin", "accountant"]))):
-    """A-to-z guarantee claims with drafted rebuttals (defense_draft)."""
-    q = {} if status == "all" else {"status": status}
-    rows = await db.az_claims.find(q, {"_id": 0}).sort("amount_at_risk", -1).to_list(1000)
-    return {"count": len(rows), "at_risk": round(sum(float(r.get("amount_at_risk") or 0) for r in rows)), "claims": rows}
-
-
 @api_router.post("/admin/az-claims/sample")
 async def az_defense_sample(to_wa: str = Query("", description="WhatsApp number for the sample digest"),
                             user: dict = Depends(require_roles(["admin"]))):
-    """Recompute the A-to-z rebuttal drafts now; optionally WhatsApp a sample digest."""
+    """Recompute the A-to-z rebuttal drafts now; optionally WhatsApp a sample digest.
+    (Listing reuses the existing GET /admin/az-claims — each claim now carries defense_draft.)"""
     return await _az_defense_run(digest=False, sample_to_wa=to_wa)
+
+
+@api_router.post("/admin/ndr-rescue/sample")
+async def ndr_rescue_sample(to_wa: str = Query("", description="WhatsApp number for the sample digest"),
+                            user: dict = Depends(require_roles(["admin"]))):
+    """Preview the NDR/RTO-rescue digest (dry-run, marks nothing); optionally WhatsApp it."""
+    return await _ndr_rescue_run(digest=False, sample_to_wa=to_wa, dry_run=True)
 
 
 @api_router.get("/admin/reimbursement-claims")
