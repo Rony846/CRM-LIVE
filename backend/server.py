@@ -63451,7 +63451,7 @@ async def _reimbursement_scan() -> list:
         # TRUE economics — loss is COGS-at-risk net of cash kept, NOT the refund amount.
         econ = await _order_economics(r.get("order_id"))
         true_loss = econ.get("true_loss")
-        # the amount worth recovering = the real loss (fall back to refund only if COGS unknown)
+        incomplete = econ.get("data_incomplete")
         amt = float(true_loss) if true_loss is not None else _f(r.get("refund_amount"))
         in_window = days_left is not None and days_left > 0
         out.append({
@@ -63462,9 +63462,9 @@ async def _reimbursement_scan() -> list:
             "awb": r.get("awb"), "courier": r.get("courier"), "delivered_date": r.get("delivered_date"),
             "ship_state": r.get("ship_state"), "product": r.get("product"), "customer": r.get("customer"),
             "loss_confidence": r.get("loss_confidence"), "days_left": days_left,
-            # eligible = in the SAFE-T window AND we actually lost money (true loss > ₹500)
-            "eligible": in_window and (true_loss is None or true_loss > 500),
-            "cogs_unknown": true_loss is None,
+            # eligible = in window AND a REAL computed loss (COGS known, settlement complete)
+            "eligible": in_window and (true_loss is not None) and true_loss > 500,
+            "data_incomplete": incomplete, "needs_verify": bool(incomplete) or true_loss is None,
         })
     out.sort(key=lambda c: (-(c["amount"]), c.get("days_left") if c.get("days_left") is not None else 999))
     return out
@@ -63858,9 +63858,13 @@ async def _order_economics(order_id: str) -> dict:
     fee-reversal), pulls the unit COGS, and checks whether the unit came back. Loss = COGS-at-risk (only
     if not returned) minus any net cash we kept — never the refund amount."""
     import ast as _ast
-    net = refund = 0.0
+    net = refund = gross = 0.0
     async for p in db.payout_order_summaries.find({"marketplace_order_id": order_id}):
-        net += _f(p.get("net_realized")); refund += _f(p.get("refund_amount"))
+        net += _f(p.get("net_realized")); refund += _f(p.get("refund_amount")); gross += _f(p.get("gross_sale"))
+    # DATA-QUALITY GUARD: our ingested settlement is unbalanced for some orders — refunds captured but the
+    # matching order-payments missing (gross=0), and/or duplicated rows. On those, net_realized is GARBAGE
+    # (e.g. order 405-5323950 showed -436,949 in our data vs ~-875 on Amazon). Don't assert a loss; flag it.
+    data_incomplete = refund > 0 and gross <= 1
     cogs = None
     pf = await db.pending_fulfillment.find_one({"amazon_order_id": order_id}, {"master_sku_id": 1})
     msid = (pf or {}).get("master_sku_id")
@@ -63877,14 +63881,15 @@ async def _order_economics(order_id: str) -> dict:
         cogs = _f((ms or {}).get("cost_price")) or None
     rl = await db.amazon_refund_losses.find_one({"order_id": order_id}, {"returned": 1})
     returned = (rl or {}).get("returned") in (True, "True")
-    if cogs is None:
-        loss = None                              # can't compute without COGS — flag separately
+    if data_incomplete or cogs is None:
+        loss = None                              # unreliable settlement or no COGS → don't assert a loss
     elif returned:
         loss = max(0.0, -net)                    # inventory recovered → loss = net cash short only
     else:
         loss = max(0.0, cogs - net)              # unit gone → loss = COGS minus any net cash kept
-    return {"net_realized": round(net), "refund": round(refund),
+    return {"net_realized": round(net), "refund": round(refund), "gross": round(gross),
             "cogs": (round(cogs) if cogs is not None else None), "returned": returned,
+            "data_incomplete": data_incomplete,
             "true_loss": (round(loss) if loss is not None else None), "settled": net != 0 or refund != 0}
 
 
@@ -63911,8 +63916,12 @@ async def _payout_recon_run(digest: bool = False, sample_to_wa: str = "") -> dic
             e["net"] += net; e["refund"] += rf; e["gross"] += gross
         if str(p.get("crm_match_status") or "") == "unmatched" and gross > 0:
             unmatched_n += 1; unmatched_val += net
-    # genuine cash shortfall = orders whose SUMMED net is negative
-    shortfalls = [e for e in per_order.values() if e["net"] < -1]
+    # DATA-QUALITY: orders with refunds but NO captured payment (gross=0) have unreliable net (missing
+    # payment rows / duplicated refunds in our ingestion) — exclude from the shortfall, report separately.
+    incomplete = [e for e in per_order.values() if e["refund"] > 0 and e["gross"] <= 1]
+    incomplete_n = len(incomplete)
+    # genuine cash shortfall = BALANCED orders (have payment data) whose SUMMED net is negative
+    shortfalls = [e for e in per_order.values() if e["net"] < -1 and e["gross"] > 1]
     shortfalls.sort(key=lambda e: e["net"])   # most negative first
     short_total = sum(-e["net"] for e in shortfalls)
     await db.payout_recon_flags.delete_many({"kind": "fee_on_refund"})  # purge the old inflated flags
@@ -63923,21 +63932,22 @@ async def _payout_recon_run(digest: bool = False, sample_to_wa: str = "") -> dic
                       "refund": round(e["refund"]), "gross": round(e["gross"]), "product": e["product"],
                       "updated_at": now},
              "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": now, "status": "open"}}, upsert=True)
-    if (digest or sample_to_wa) and (shortfalls or unmatched_n):
-        body = (f"🧮 Payout-Recon (corrected): *{len(shortfalls)}* orders ended NET-NEGATIVE after the "
-                f"refund + Amazon's own fee-reversal = *₹{short_total:,.0f}* real cash shortfall to verify "
-                f"(note: if the unit came back, much of this is offset by recovered stock).\n"
+    if (digest or sample_to_wa) and (shortfalls or unmatched_n or incomplete_n):
+        body = (f"🧮 Payout-Recon (balanced orders only): *{len(shortfalls)}* orders net-negative after "
+                f"refund + Amazon's fee-reversal = *₹{short_total:,.0f}* cash shortfall to verify "
+                f"(if the unit came back, mostly offset by recovered stock).\n"
                 f"• *{unmatched_n}* settlement rows unmatched to a CRM order — recon gap.\n"
-                f"Worst:\n"
-                + "\n".join(f"• {e['order_id']} — net ₹{e['net']:,.0f} (refund ₹{e['refund']:,.0f}) · {_amz_first_words(e['product'],4)}"
-                            for e in shortfalls[:8]))
+                f"⚠️ *{incomplete_n}* orders EXCLUDED — our settlement data is incomplete (refunds captured "
+                f"but order-payments missing/duplicated); net unreliable. Needs SP-API re-ingest.\n"
+                + ("Worst:\n" + "\n".join(f"• {e['order_id']} — net ₹{e['net']:,.0f} · {_amz_first_words(e['product'],4)}"
+                            for e in shortfalls[:6]) if shortfalls else ""))
         to = re.sub(r"\D", "", sample_to_wa)[-12:] if sample_to_wa else None
         if to:
             await whatsapp_cloud.send_text(to, body)
         else:
             await _alert_founder_free(body, "payout_recon")
     return {"net_negative_orders": len(shortfalls), "cash_shortfall": round(short_total),
-            "unmatched": unmatched_n}
+            "unmatched": unmatched_n, "data_incomplete_orders": incomplete_n}
 
 
 # ===================== Return-Abuse / refund-fraud detector =====================
