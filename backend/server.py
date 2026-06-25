@@ -77377,6 +77377,15 @@ async def _claude_wa_relay(digits: str, question: str):
         await _wa_relay_shipping(digits, ql, reverse_hint=True)
         return
 
+    # "replacement bhejo" / "naya unit bhejo" → forward label under a FRESH reference (so it doesn't
+    # collide with the reverse-pickup booking that already used the invoice number).
+    if _WA_REPLACEMENT_INTENT.search(low):
+        if profile != "full":
+            await whatsapp_cloud.send_text(digits, "📦 Label booking is restricted to admins — please ask the office.")
+            return
+        await _wa_relay_shipping(digits, ql, replacement_hint=True)
+        return
+
     # "ship <order>" / "label bnao / banao / make label" intent → book a Bigship label
     make_verb = re.search(r"bnao|banao|banwa|bana do|make|create|book|print|nikal", low)
     ship_intent = low.startswith("ship ") or bool(re.search(r"ship\s*kar", low)) or ("label" in low and make_verb)
@@ -77481,11 +77490,21 @@ _WA_REVERSE_INTENT = re.compile(
     r"reverse\s*pick\s*up|return\s*pick\s*up|pick\s*up\s*(from|kar|this)|wapas\s*manga|"
     r"collect\s*from|return\s*kar", re.I)
 
+# A REPLACEMENT goes out as a normal FORWARD label, but the original invoice ref is usually
+# already booked (the reverse pickup used it) → Bigship rejects it "Already Exists". So a
+# replacement always books under a fresh, dash-suffixed reference.
+_WA_REPLACEMENT_INTENT = re.compile(
+    r"replace\w*|\brepl\b|naya[\w\s]{0,14}?(bhej|bnao|banao|bana|send)|naya\s*(maal|unit|piece)|"
+    r"dobara\s*bhej|new\s*(unit|piece|one)|badli\s*me|replacement", re.I)
 
-async def _wa_relay_shipping(digits: str, text: str, reverse_hint: bool = False) -> bool:
+
+async def _wa_relay_shipping(digits: str, text: str, reverse_hint: bool = False,
+                             replacement_hint: bool = False) -> bool:
     """Founder/full-profile WhatsApp: book a Bigship label from the PDF they sent + their instruction.
-    Handles FORWARD and REVERSE pickup (customer's address → registered as a Bigship warehouse →
-    courier to 213 Vishwakarma Estates, Meerut) and sends back the label PDF. Returns True if handled."""
+    Handles FORWARD shipments, REPLACEMENTS (forward, but under a fresh dash-suffixed reference so they
+    don't collide with the reverse-pickup booking that already used the invoice number), and REVERSE
+    pickup (customer's address → registered as a Bigship warehouse → courier to 213 Vishwakarma Estates,
+    Meerut). Sends back the label PDF. Returns True if handled."""
     sess = await db.claude_wa_sessions.find_one({"phone": digits}) or {}
     doc = sess.get("ship_doc")
     images = None
@@ -77505,23 +77524,41 @@ async def _wa_relay_shipping(digits: str, text: str, reverse_hint: bool = False)
         return False
     rp = sh.get("params") or {}
     is_rev = bool(rp.get("is_reverse_pickup")) or reverse_hint
-    await whatsapp_cloud.send_text(digits, "🔄 Reverse pickup book kar raha hoon…" if is_rev else "📦 Label book kar raha hoon…")
+    is_repl = replacement_hint and not is_rev
+    await whatsapp_cloud.send_text(digits,
+        "🔄 Reverse pickup book kar raha hoon…" if is_rev else
+        ("📦 Replacement label book kar raha hoon…" if is_repl else "📦 Label book kar raha hoon…"))
     prepared = await _pratibha_prepare_shipment(sh)
     if not prepared.get("ok"):
         await whatsapp_cloud.send_text(digits, f"Thoda aur chahiye 🙏 — {prepared.get('error')}")
         return True
     f = prepared["fields"]
     f["is_reverse_pickup"] = is_rev
+    # A replacement re-uses the original invoice, whose reference is already booked on Bigship (the
+    # reverse pickup). Bigship dedups on `invoice_number`, so give the replacement a fresh suffix.
+    if is_repl:
+        base = re.sub(r"\W+", "", str(f.get("invoice_number") or rp.get("order_id") or "REPL"))[:16] or "REPL"
+        f["invoice_number"] = f"{base}-R{uuid.uuid4().hex[:4].upper()}"
+        f["order_id"] = f["invoice_number"]
+        f["payment_type"] = "Prepaid"; f["cod_amount"] = 0.0   # replacements never collect COD
     try:
         resp = (await _pratibha_book_reverse_pickup(f, {"from_addr": f"whatsapp:{digits}"})
                 if is_rev else await _pratibha_book_shipment(f, {"from_addr": f"whatsapp:{digits}"}))
+        # Forward booking hit an existing reference → retry once under a fresh suffix (replacement-style).
+        if not is_rev and not getattr(resp, "success", False) \
+                and re.search(r"already\s*exist", str(getattr(resp, "message", "") or ""), re.I):
+            base = re.sub(r"\W+", "", str(f.get("invoice_number") or "REPL"))[:16] or "REPL"
+            f["invoice_number"] = f"{base}-R{uuid.uuid4().hex[:4].upper()}"
+            f["order_id"] = f["invoice_number"]
+            await whatsapp_cloud.send_text(digits, "♻️ Ye reference already booked tha — replacement ke roop me naye reference se book kar raha hoon…")
+            resp = await _pratibha_book_shipment(f, {"from_addr": f"whatsapp:{digits}"})
     except Exception as e:
         logger.error(f"relay shipping book failed: {e}")
         await whatsapp_cloud.send_text(digits, f"Book karne me dikkat aayi: {str(e)[:160]}")
         return True
     if getattr(resp, "success", False) and getattr(resp, "awb_number", None):
         await db.claude_wa_sessions.update_one({"phone": digits}, {"$unset": {"ship_doc": ""}})
-        kind = "Reverse pickup" if is_rev else "Shipment"
+        kind = "Reverse pickup" if is_rev else ("Replacement shipment" if is_repl else "Shipment")
         msg = f"✅ {kind} booked\nAWB: {resp.awb_number} ({getattr(resp, 'courier_name', None) or 'courier'})"
         if is_rev:
             msg += "\nPickup from customer → 213 Vishwakarma Estates, Meerut"
