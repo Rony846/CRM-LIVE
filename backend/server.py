@@ -1090,6 +1090,18 @@ async def create_indexes():
                 max_instances=1,
             )
 
+        # Return-Abuse detector: maintain a watchlist of serial refunders/returners.
+        if RETURN_ABUSE_ENABLED:
+            scheduler.add_job(
+                scheduled_return_abuse,
+                IntervalTrigger(minutes=RETURN_ABUSE_MIN),
+                id="return_abuse",
+                name="Return-Abuse detector (flag serial refunders)",
+                replace_existing=True,
+                misfire_grace_time=600,
+                max_instances=1,
+            )
+
         # NDR / RTO-Rescue: chase failed-delivery parcels before they bounce back.
         if NDR_RESCUE_ENABLED:
             scheduler.add_job(
@@ -63459,6 +63471,82 @@ def _amz_first_words(s, n=4):
     return " ".join(str(s or "").split()[:n])
 
 
+# ===================== Return-Abuse / refund-fraud detector =====================
+# Serial returners and repeat-refunders are a major refund-loss driver. Aggregate refunds by customer
+# phone, score the worst offenders, and maintain a watchlist so ops can ship-with-OBD / block them.
+RETURN_ABUSE_ENABLED = os.environ.get("RETURN_ABUSE_ENABLED", "false").lower() == "true"
+RETURN_ABUSE_MIN = int(os.environ.get("RETURN_ABUSE_MIN", "1440"))   # daily
+RETURN_ABUSE_THRESHOLD = int(os.environ.get("RETURN_ABUSE_THRESHOLD", "3"))  # refunds to land on the list
+# Internal/test numbers + junk placeholders never count as customers.
+_ABUSE_EXCLUDE_PHONES = set(filter(None, (os.environ.get("RETURN_ABUSE_EXCLUDE", "") +
+    ",9560377363,9899716917,9800006416,8279619312").split(",")))
+
+
+def _is_junk_phone(ph: str) -> bool:
+    return (len(ph) != 10 or ph in _ABUSE_EXCLUDE_PHONES or ph == "0000000000"
+            or len(set(ph)) <= 1 or ph[0] in "012345")  # 10-digit Indian mobiles start 6-9
+
+
+async def scheduled_return_abuse():
+    if not RETURN_ABUSE_ENABLED:
+        return
+    await _return_abuse_run(digest=True)
+
+
+async def _return_abuse_run(digest: bool = False, sample_to_wa: str = "") -> dict:
+    now = datetime.now(timezone.utc).isoformat()
+    agg = {}
+    # phone cache to avoid re-reading the same order
+    async for r in db.amazon_refunds.find({}, {"amazon_order_id": 1, "refund_amount": 1, "firm_id": 1}):
+        oid = r.get("amazon_order_id")
+        ao = await db.amazon_orders.find_one({"amazon_order_id": oid},
+                                             {"phone_manual": 1, "phone": 1, "buyer_name": 1,
+                                              "customer_name_manual": 1, "state": 1}) or {}
+        ph = re.sub(r"\D", "", str(ao.get("phone") or ao.get("phone_manual") or ""))[-10:]
+        if _is_junk_phone(ph):
+            continue
+        e = agg.setdefault(ph, {"phone": ph, "refunds": 0, "value": 0.0, "name": "", "orders": [], "states": set()})
+        e["refunds"] += 1
+        try: e["value"] += float(r.get("refund_amount") or 0)
+        except Exception: pass
+        e["name"] = ao.get("buyer_name") or ao.get("customer_name_manual") or e["name"]
+        e["orders"].append(oid)
+        if ao.get("state"): e["states"].add(ao.get("state"))
+    # un-returned loss count per phone (the costliest signal)
+    loss_by_phone = {}
+    async for rl in db.amazon_refund_losses.find({"returned": {"$in": [False, "False"]}}, {"phone": 1}):
+        p = re.sub(r"\D", "", str(rl.get("phone") or ""))[-10:]
+        if not _is_junk_phone(p):
+            loss_by_phone[p] = loss_by_phone.get(p, 0) + 1
+    flagged = []
+    for ph, e in agg.items():
+        unret = loss_by_phone.get(ph, 0)
+        if e["refunds"] < RETURN_ABUSE_THRESHOLD and unret < 2:
+            continue
+        score = e["refunds"] * 2 + unret * 5 + (e["value"] / 20000)
+        rec = {"phone": ph, "name": e["name"], "refund_count": e["refunds"], "refund_value": round(e["value"]),
+               "unreturned_count": unret, "states": sorted(e["states"]), "order_ids": e["orders"][:25],
+               "risk_score": round(score, 1), "updated_at": now}
+        await db.return_abuse_watchlist.update_one(
+            {"phone": ph}, {"$set": rec, "$setOnInsert": {"id": str(uuid.uuid4()), "created_at": now,
+                            "action": "watch"}}, upsert=True)
+        flagged.append(rec)
+    flagged.sort(key=lambda x: -x["risk_score"])
+    if (digest or sample_to_wa) and flagged:
+        body = (f"🚩 Return-Abuse watchlist: *{len(flagged)}* repeat refunders flagged "
+                f"(₹{sum(f['refund_value'] for f in flagged):,.0f} refunded total). Ship these with extra care / OBD:\n"
+                + "\n".join(f"• {f['name'] or '—'} ({f['phone']}) — {f['refund_count']} refunds, "
+                            f"{f['unreturned_count']} un-returned, ₹{f['refund_value']:,.0f}"
+                            for f in flagged[:12])
+                + (f"\n…+{len(flagged) - 12} more" if len(flagged) > 12 else ""))
+        to = re.sub(r"\D", "", sample_to_wa)[-12:] if sample_to_wa else None
+        if to:
+            await whatsapp_cloud.send_text(to, body)
+        else:
+            await _alert_founder_free(body, "return_abuse")
+    return {"flagged": len(flagged), "top_score": flagged[0]["risk_score"] if flagged else 0}
+
+
 # ===================== NDR / RTO-Rescue agent =====================
 # A parcel that failed delivery (NDR: "Undelivered") will RTO if nothing happens. Reach the customer to
 # reconfirm address / schedule a reattempt BEFORE it bounces back (two-way freight on a heavy item).
@@ -64018,6 +64106,19 @@ async def az_defense_sample(to_wa: str = Query("", description="WhatsApp number 
     """Recompute the A-to-z rebuttal drafts now; optionally WhatsApp a sample digest.
     (Listing reuses the existing GET /admin/az-claims — each claim now carries defense_draft.)"""
     return await _az_defense_run(digest=False, sample_to_wa=to_wa)
+
+
+@api_router.get("/admin/return-abuse")
+async def list_return_abuse(user: dict = Depends(require_roles(["admin", "accountant", "dispatcher"]))):
+    """Watchlist of serial refunders/returners (ship these with extra care / OBD)."""
+    rows = await db.return_abuse_watchlist.find({}, {"_id": 0}).sort("risk_score", -1).to_list(1000)
+    return {"count": len(rows), "watchlist": rows}
+
+
+@api_router.post("/admin/return-abuse/sample")
+async def return_abuse_sample(to_wa: str = Query(""), user: dict = Depends(require_roles(["admin"]))):
+    """Recompute the return-abuse watchlist now; optionally WhatsApp a sample digest."""
+    return await _return_abuse_run(digest=False, sample_to_wa=to_wa)
 
 
 @api_router.post("/admin/ndr-rescue/sample")
