@@ -1090,6 +1090,18 @@ async def create_indexes():
                 max_instances=1,
             )
 
+        # A-to-z Auto-Defense: draft a delivery-proof rebuttal for every under-review claim.
+        if AZ_DEFENSE_ENABLED:
+            scheduler.add_job(
+                scheduled_az_defense,
+                IntervalTrigger(minutes=AZ_DEFENSE_MIN),
+                id="az_defense",
+                name="A-to-z Auto-Defense (draft rebuttals so claims aren't lost by default)",
+                replace_existing=True,
+                misfire_grace_time=600,
+                max_instances=1,
+            )
+
         # Refund-Defense: pick up new A-to-z claims (live, from email) and alert before deadlines.
         scheduler.add_job(
             scheduled_refund_defense,
@@ -63435,6 +63447,109 @@ def _amz_first_words(s, n=4):
     return " ".join(str(s or "").split()[:n])
 
 
+# ===================== A-to-z Auto-Defense agent =====================
+# Refund-Defense detects new A-to-z claims; this drafts the rebuttal so an under-review claim is never
+# lost by default. A-to-z claims auto-lose if unanswered — a delivery-proof rebuttal is the safety net.
+AZ_DEFENSE_ENABLED = os.environ.get("AZ_DEFENSE_ENABLED", "false").lower() == "true"
+AZ_DEFENSE_MIN = int(os.environ.get("AZ_DEFENSE_MIN", "360"))
+
+
+async def _az_gather_evidence(order_id: str) -> dict:
+    """Pull whatever delivery proof we have for an order (AWB, courier, delivered/dispatched dates)."""
+    ao = await db.amazon_orders.find_one({"amazon_order_id": order_id}, {
+        "bigship_awb": 1, "tracking_number": 1, "bigship_courier": 1, "carrier_code": 1,
+        "bigship_status": 1, "order_status": 1, "dispatched_at": 1, "purchase_date": 1}) or {}
+    rl = await db.amazon_refund_losses.find_one({"order_id": order_id},
+                                                {"delivered_date": 1, "awb": 1, "courier": 1, "ship_state": 1}) or {}
+    awb = ao.get("bigship_awb") or ao.get("tracking_number") or rl.get("awb")
+    status = str(ao.get("bigship_status") or "")
+    is_rto = "rto" in status.lower()   # RTO = returned to origin → NOT delivered to the buyer
+    delivered_to_buyer = bool(awb and not is_rto and
+                              (rl.get("delivered_date") or "deliver" in status.lower()))
+    return {
+        "awb": awb, "courier": ao.get("bigship_courier") or rl.get("courier") or ao.get("carrier_code"),
+        "tracking_status": status or None, "delivered_date": (None if is_rto else rl.get("delivered_date")),
+        "dispatched_at": str(ao.get("dispatched_at") or "")[:10], "purchase_date": str(ao.get("purchase_date") or "")[:10],
+        "order_status": ao.get("order_status"), "ship_state": rl.get("ship_state"),
+        "is_rto": is_rto, "has_delivery_proof": delivered_to_buyer,
+    }
+
+
+def _az_draft_defense(claim: dict, ev: dict) -> str:
+    """Deterministic A-to-z rebuttal built from delivery evidence (free, no LLM)."""
+    head = [
+        f"A-to-z claim rebuttal — Order {claim.get('order_id')}",
+        f"Product: {claim.get('product')} · ₹{claim.get('amount_at_risk')} at risk · claim filed {claim.get('claim_date')}",
+        "",
+    ]
+    if ev.get("is_rto"):
+        # honest: an RTO order was NOT delivered — don't fabricate a delivery defense
+        return "\n".join(head + [
+            "⚠️ WEAK CLAIM — this order was RTO (returned to origin), so it was NOT delivered to the buyer.",
+            f"Shipped via {ev.get('courier') or 'courier'}, AWB {ev.get('awb')}; latest status: {ev.get('tracking_status')}.",
+            "Don't defend on delivery grounds. Check first: was the buyer already refunded? If yes, an A-to-z "
+            "payout would be a DOUBLE refund — contest on that basis. If the buyer was NOT refunded and the unit "
+            "is back with us, a refund is fair — consider granting to avoid an account-health hit.",
+        ])
+    lines = head + ["Our response: This order was fulfilled and shipped in full and on time."]
+    if ev.get("awb"):
+        ship = f"Shipped via {ev.get('courier') or 'courier'}, AWB {ev['awb']}"
+        if ev.get("dispatched_at"): ship += f" (dispatched {ev['dispatched_at']})"
+        lines.append(ship + ".")
+    if ev.get("delivered_date"):
+        lines.append(f"Carrier confirms DELIVERED on {ev['delivered_date']}"
+                     + (f" to the buyer in {ev['ship_state']}" if ev.get("ship_state") else "") + ".")
+    elif ev.get("tracking_status"):
+        lines.append(f"Latest carrier status: {ev['tracking_status']}.")
+    lines += [
+        "",
+        "If the claim is 'item not received': the carrier delivery scan above is proof of delivery — "
+        "please deny the claim.",
+        "If 'item defective / not as described': the product carries a manufacturer warranty; we have "
+        "offered the buyer a free repair/replacement (reverse pickup), so a guarantee claim is not warranted.",
+        "Attached evidence: AWB tracking with delivery scan, dispatch record, product listing.",
+    ]
+    if not ev.get("awb"):
+        lines.append("⚠️ No AWB/tracking on file for this order — pull the shipping proof before responding.")
+    return "\n".join(lines)
+
+
+async def scheduled_az_defense():
+    """For every under-review A-to-z claim without a drafted rebuttal, build one and digest to founder."""
+    if not AZ_DEFENSE_ENABLED:
+        return
+    await _az_defense_run(digest=True)
+
+
+async def _az_defense_run(digest: bool = False, sample_to_wa: str = "") -> dict:
+    now = datetime.now(timezone.utc).isoformat()
+    drafted, fresh = [], []
+    async for c in db.az_claims.find({"status": "under_review"}):
+        ev = await _az_gather_evidence(c.get("order_id"))
+        draft = _az_draft_defense(c, ev)
+        had = bool(c.get("defense_draft"))
+        await db.az_claims.update_one({"id": c.get("id")} if c.get("id") else {"_id": c["_id"]},
+            {"$set": {"defense_draft": draft, "defense_evidence": ev, "defense_drafted_at": now}})
+        drafted.append(c)
+        if not had:
+            fresh.append((c, ev))
+    if (digest or sample_to_wa) and (fresh or sample_to_wa):
+        items = fresh or [(c, await _az_gather_evidence(c.get("order_id")))
+                          async for c in db.az_claims.find({"status": "under_review"}).limit(8)]
+        body = (f"⚖️ A-to-z Auto-Defense: *{len(drafted)}* claim(s) under review — rebuttals drafted "
+                f"(₹{sum(float(c.get('amount_at_risk') or 0) for c in drafted):,.0f} at risk).\n"
+                + "\n".join(f"• {c.get('order_id')} — ₹{c.get('amount_at_risk')} "
+                            f"{'✅has delivery proof' if ev.get('has_delivery_proof') else '⚠️no delivery scan'}"
+                            for c, ev in items[:8])
+                + "\nReply 'defense <order>' to get the full drafted text to paste into Seller Central.")
+        to = re.sub(r"\D", "", sample_to_wa)[-12:] if sample_to_wa else None
+        if to:
+            await whatsapp_cloud.send_text(to, body)
+        else:
+            await _alert_founder_free(body, "az_defense")
+    return {"under_review": len(drafted), "newly_drafted": len(fresh)}
+
+
 # ===================== Refund-Defense agent =====================
 REFUND_DEFENSE_MIN = int(os.environ.get("REFUND_DEFENSE_MIN", "120"))
 
@@ -63823,6 +63938,22 @@ async def mark_expected_return_received(order_id: str = Query("", description="A
     if not got:
         raise HTTPException(status_code=404, detail="No buyer return awaiting receipt for that order/phone")
     return {"received": True, "expected_return": {k: got.get(k) for k in ("order_id", "customer_name", "customer_phone", "status", "received_at")}}
+
+
+@api_router.get("/admin/az-claims")
+async def list_az_claims(status: str = Query("under_review", description="under_review | granted | denied | closed | all"),
+                         user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """A-to-z guarantee claims with drafted rebuttals (defense_draft)."""
+    q = {} if status == "all" else {"status": status}
+    rows = await db.az_claims.find(q, {"_id": 0}).sort("amount_at_risk", -1).to_list(1000)
+    return {"count": len(rows), "at_risk": round(sum(float(r.get("amount_at_risk") or 0) for r in rows)), "claims": rows}
+
+
+@api_router.post("/admin/az-claims/sample")
+async def az_defense_sample(to_wa: str = Query("", description="WhatsApp number for the sample digest"),
+                            user: dict = Depends(require_roles(["admin"]))):
+    """Recompute the A-to-z rebuttal drafts now; optionally WhatsApp a sample digest."""
+    return await _az_defense_run(digest=False, sample_to_wa=to_wa)
 
 
 @api_router.get("/admin/reimbursement-claims")
@@ -77678,6 +77809,19 @@ async def _claude_wa_relay(digits: str, question: str):
             else:
                 await whatsapp_cloud.send_text(digits, f"Us order ka koi reimbursement claim nahi mila: {oid}")
             return
+
+    # "defense <order>" → return the full drafted A-to-z rebuttal to paste into Seller Central
+    if profile == "full" and re.match(r"\s*defen[cs]e\b|defense\s*do\b|jawab\s*do\b", low) and _AMZ_OID_RE.search(ql):
+        oid = _AMZ_OID_RE.search(ql).group(0)
+        c = await db.az_claims.find_one({"order_id": oid})
+        if c and c.get("defense_draft"):
+            await whatsapp_cloud.send_text(digits, c["defense_draft"])
+        elif c:
+            ev = await _az_gather_evidence(oid)
+            await whatsapp_cloud.send_text(digits, _az_draft_defense(c, ev))
+        else:
+            await whatsapp_cloud.send_text(digits, f"Us order ka koi A-to-z claim nahi mila: {oid}")
+        return
 
     # start a fresh conversation (drop the remembered context)
     if low in ("new chat", "naya chat", "new", "reset", "clear", "fresh", "naya"):
