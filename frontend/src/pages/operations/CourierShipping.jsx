@@ -102,6 +102,14 @@ export default function CourierShipping() {
     }
   }, [activeTab, statusFilter]);
 
+  // Live board: while viewing shipments, auto-refresh so new Bigship bookings appear and rows turn
+  // green as the tracking poller marks them picked-up — no manual refresh needed.
+  useEffect(() => {
+    if (activeTab !== 'history') return;
+    const id = setInterval(() => { fetchShipments(); fetchStatusSummary(); }, 60000);
+    return () => clearInterval(id);
+  }, [activeTab, statusFilter]);
+
   const fetchStatusSummary = async () => {
     try {
       const res = await axios.get(`${API}/courier/shipments/status-summary`, {
@@ -426,6 +434,12 @@ export default function CourierShipping() {
   };
 
   const isNotPicked = (status) => (status || '').toUpperCase() === 'NOT PICKED';
+  // Picked up = courier has collected it and it's moving forward (not pre-pickup, not RTO/cancelled).
+  const isPickedUp = (status) => {
+    const s = (status || '').toUpperCase();
+    if (!s || s === 'NOT PICKED' || s.includes('PICKUP SCHEDULED') || s === 'MANIFESTED' || s.includes('CANCEL') || s.includes('RTO')) return false;
+    return s.includes('TRANSIT') || s.includes('OUT FOR DELIVERY') || s.includes('DELIVERED');
+  };
 
   return (
     <DashboardLayout>
@@ -1150,6 +1164,7 @@ export default function CourierShipping() {
                     <TableBody>
                       {shipments.map((shipment) => {
                         const np = isNotPicked(shipment.status);
+                        const pickedUp = isPickedUp(shipment.status);
                         const age = daysSince(shipment.created_at);
                         const stale = np && age != null && age > 30;
                         return (
@@ -1157,7 +1172,8 @@ export default function CourierShipping() {
                           key={shipment.id}
                           className={np ? (stale
                             ? 'bg-red-50/40 dark:bg-red-950/10 opacity-60'
-                            : 'bg-red-50 dark:bg-red-950/20 border-l-2 border-l-red-500') : ''}
+                            : 'bg-red-50 dark:bg-red-950/20 border-l-2 border-l-red-500')
+                            : (pickedUp ? 'bg-green-50 dark:bg-green-950/20 border-l-2 border-l-green-500' : '')}
                         >
                           <TableCell className="font-mono text-sm">
                             {shipment.bigship_order_id}
@@ -1187,6 +1203,9 @@ export default function CourierShipping() {
                               <span className={`block text-xs mt-0.5 ${stale ? 'text-muted-foreground' : 'text-red-600 font-medium'}`}>
                                 {age}d {stale ? '· stale' : 'waiting'}
                               </span>
+                            )}
+                            {pickedUp && (
+                              <span className="block text-xs mt-0.5 text-green-600 font-medium">✓ picked up</span>
                             )}
                           </TableCell>
                           <TableCell>
