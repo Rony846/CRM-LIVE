@@ -21,11 +21,26 @@ from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
-STORE = os.environ.get("SHOPIFY_STORE", "").strip().replace("https://", "").rstrip("/")
-TOKEN = os.environ.get("SHOPIFY_ADMIN_TOKEN", "").strip()
-CLIENT_ID = os.environ.get("SHOPIFY_CLIENT_ID", "").strip()
-CLIENT_SECRET = os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
-VER = os.environ.get("SHOPIFY_API_VERSION", "2024-10").strip()
+
+def _arg(flag):
+    """Return the value following `flag` in argv (e.g. --store hk), or None."""
+    if flag in sys.argv:
+        i = sys.argv.index(flag)
+        if i + 1 < len(sys.argv):
+            return sys.argv[i + 1].strip()
+    return None
+
+
+# Multi-store: `--store hk` reads SHOPIFY_HK_* and writes to exports/shopify_hk/.
+# No flag → the original single-store behaviour (SHOPIFY_* → exports/shopify/).
+STORE_KEY = (_arg("--store") or "").strip().lower()
+PREFIX = f"SHOPIFY_{STORE_KEY.upper()}_" if STORE_KEY else "SHOPIFY_"
+
+STORE = os.environ.get(f"{PREFIX}STORE", "").strip().replace("https://", "").rstrip("/")
+TOKEN = os.environ.get(f"{PREFIX}ADMIN_TOKEN", "").strip()
+CLIENT_ID = os.environ.get(f"{PREFIX}CLIENT_ID", "").strip()
+CLIENT_SECRET = os.environ.get(f"{PREFIX}CLIENT_SECRET", "").strip()
+VER = os.environ.get(f"{PREFIX}API_VERSION", "2024-10").strip()
 
 
 def _fetch_client_credentials_token():
@@ -39,7 +54,8 @@ def _fetch_client_credentials_token():
                                  headers={"Content-Type": "application/x-www-form-urlencoded"})
     body = json.loads(urllib.request.urlopen(req, timeout=30).read().decode())
     return body.get("access_token")
-OUT = pathlib.Path(__file__).resolve().parent.parent / "exports" / "shopify"
+_OUT_DIR = "shopify_" + STORE_KEY if STORE_KEY else "shopify"
+OUT = pathlib.Path(__file__).resolve().parent.parent / "exports" / _OUT_DIR
 WANT_IMAGES = "--images" in sys.argv
 
 # resource -> (endpoint, top-level json key). 250 = Shopify's max page size.
@@ -121,8 +137,10 @@ def download_images(products):
 
 def main():
     global TOKEN
+    if STORE_KEY:
+        print(f"• Store: {STORE_KEY}  (env {PREFIX}* → exports/{_OUT_DIR}/)\n")
     if not STORE:
-        print("✗ Missing SHOPIFY_STORE in backend/.env (e.g. yourstore.myshopify.com).")
+        print(f"✗ Missing {PREFIX}STORE in backend/.env (e.g. yourstore.myshopify.com).")
         sys.exit(1)
     if not TOKEN:
         if CLIENT_ID and CLIENT_SECRET:
@@ -133,7 +151,7 @@ def main():
                 sys.exit(1)
             print("  ✓ got access token\n")
         else:
-            print("✗ Need SHOPIFY_ADMIN_TOKEN, or SHOPIFY_CLIENT_ID + SHOPIFY_CLIENT_SECRET, in backend/.env.")
+            print(f"✗ Need {PREFIX}ADMIN_TOKEN, or {PREFIX}CLIENT_ID + {PREFIX}CLIENT_SECRET, in backend/.env.")
             sys.exit(1)
     OUT.mkdir(parents=True, exist_ok=True)
     # sanity: shop.json

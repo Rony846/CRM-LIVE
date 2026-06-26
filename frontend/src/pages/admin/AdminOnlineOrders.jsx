@@ -9,6 +9,10 @@ import { Loader2, ShoppingCart, IndianRupee, Truck, Package, ChevronDown, Refres
 
 const STATUSES = ['confirmed', 'packed', 'shipped', 'delivered', 'cancelled'];
 const fmt = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 });
+const CUR_SYM = { INR: '₹', HKD: 'HK$', USD: '$', GBP: '£', EUR: '€', AUD: 'A$', CAD: 'C$', SGD: 'S$' };
+const cfmt = (n, cur) => (CUR_SYM[cur] || (cur ? cur + ' ' : '₹')) + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 });
+const STORE_NAMES = { in: 'India', hk: 'Hong Kong' };
+const storeLabel = (s) => `${STORE_NAMES[s.store] || (s.store || 'in').toUpperCase()} · ${CUR_SYM[s.currency] || s.currency || '₹'}`;
 const when = (s) => (s ? new Date(s).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '—');
 const gstRates = (o) => [...new Set((o.items || []).map((it) => it.gst_rate).filter(Boolean))].sort((a, b) => a - b).map((r) => r + '%').join(' / ');
 const SHOP_PAGE = 50;
@@ -46,11 +50,12 @@ export default function AdminOnlineOrders() {
   const [shopInput, setShopInput] = useState('');   // text box value
   const [shopPage, setShopPage] = useState(0);
   const [shopOpen, setShopOpen] = useState(null);
+  const [shopStore, setShopStore] = useState('in');
 
   const loadShop = useCallback(async () => {
     setShopLoading(true);
     try {
-      const params = new URLSearchParams({ limit: SHOP_PAGE, skip: shopPage * SHOP_PAGE });
+      const params = new URLSearchParams({ store: shopStore, limit: SHOP_PAGE, skip: shopPage * SHOP_PAGE });
       if (shopQuery) params.set('q', shopQuery);
       const res = await axios.get(`${API}/admin/shopify-orders?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -61,7 +66,7 @@ export default function AdminOnlineOrders() {
     } finally {
       setShopLoading(false);
     }
-  }, [token, shopQuery, shopPage]);
+  }, [token, shopQuery, shopPage, shopStore]);
 
   useEffect(() => { if (tab === 'shopify') loadShop(); }, [loadShop, tab]);
 
@@ -231,10 +236,22 @@ export default function AdminOnlineOrders() {
       {/* ════════════════════ SHOPIFY HISTORY ════════════════════ */}
       {tab === 'shopify' && (
         <>
+          {(shop.stores || []).length > 1 && (
+            <div className="flex gap-2 mb-4 flex-wrap items-center">
+              <span className="text-xs text-slate-500 uppercase tracking-wide">Store</span>
+              {(shop.stores || []).map((st) => (
+                <button key={st.store} onClick={() => { setShopStore(st.store); setShopPage(0); setShopOpen(null); }}
+                  className={`px-3 py-1.5 rounded text-sm ${shopStore === st.store ? 'bg-cyan-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}>
+                  {storeLabel(st)} <span className="opacity-70">({st.count.toLocaleString('en-IN')})</span>
+                </button>
+              ))}
+            </div>
+          )}
+
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-5">
             {[
               { label: 'Imported orders', val: (ss.store_orders || 0).toLocaleString('en-IN'), icon: History, c: 'text-cyan-400' },
-              { label: 'Lifetime revenue', val: fmt(ss.store_revenue), icon: IndianRupee, c: 'text-green-400' },
+              { label: 'Lifetime revenue', val: cfmt(ss.store_revenue, ss.currency), icon: IndianRupee, c: 'text-green-400' },
               { label: shopQuery ? `Matching “${shopQuery}”` : 'Showing', val: (ss.matching ?? 0).toLocaleString('en-IN'), icon: Search, c: 'text-amber-400' },
             ].map((k) => (
               <Card key={k.label} className="bg-slate-800 border-slate-700">
@@ -283,7 +300,7 @@ export default function AdminOnlineOrders() {
                         <span className="flex-1" />
                         {shopBadge(o)}
                         {fulfBadge(o)}
-                        <span className="font-bold text-green-400">{fmt(o.total_price)}</span>
+                        <span className="font-bold text-green-400">{cfmt(o.total_price, o.currency)}</span>
                       </div>
 
                       {shopOpen === o.id && (
@@ -293,13 +310,13 @@ export default function AdminOnlineOrders() {
                             {(o.line_items || []).map((it, i) => (
                               <div key={i} className="text-sm text-slate-300 flex justify-between py-0.5 gap-3">
                                 <span>{it.quantity}× {it.title}{it.variant ? <span className="text-slate-500"> · {it.variant}</span> : null}{it.resolved_sku ? <span className="text-slate-500"> [{it.resolved_sku}]</span> : null}</span>
-                                <span className="whitespace-nowrap">{fmt((it.price || 0) * (it.quantity || 1))}</span>
+                                <span className="whitespace-nowrap">{cfmt((it.price || 0) * (it.quantity || 1), o.currency)}</span>
                               </div>
                             ))}
                             <div className="mt-2 pt-2 border-t border-slate-700/50 text-sm">
-                              <div className="flex justify-between py-0.5 text-slate-400"><span>Subtotal</span><span>{fmt(o.subtotal_price)}</span></div>
-                              {o.total_tax > 0 && <div className="flex justify-between py-0.5 text-slate-400"><span>Tax {o.price_tax_inclusive ? '(incl.)' : ''}</span><span>{fmt(o.total_tax)}</span></div>}
-                              <div className="flex justify-between py-0.5 font-bold text-white"><span>Total</span><span>{fmt(o.total_price)}</span></div>
+                              <div className="flex justify-between py-0.5 text-slate-400"><span>Subtotal</span><span>{cfmt(o.subtotal_price, o.currency)}</span></div>
+                              {o.total_tax > 0 && <div className="flex justify-between py-0.5 text-slate-400"><span>Tax {o.price_tax_inclusive ? '(incl.)' : ''}</span><span>{cfmt(o.total_tax, o.currency)}</span></div>}
+                              <div className="flex justify-between py-0.5 font-bold text-white"><span>Total</span><span>{cfmt(o.total_price, o.currency)}</span></div>
                             </div>
                           </div>
                           <div>

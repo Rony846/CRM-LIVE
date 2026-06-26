@@ -22,11 +22,28 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 from utils import shopify_service          # reuse the SAME normaliser the live webhook uses
 
-BATCH = "shopify_phase1"
-P = pathlib.Path(__file__).resolve().parent.parent / "exports" / "shopify"
+def _arg(flag):
+    if flag in sys.argv:
+        i = sys.argv.index(flag)
+        if i + 1 < len(sys.argv):
+            return sys.argv[i + 1].strip()
+    return None
+
+
+# Multi-store: `--store hk` → batch shopify_hk_phase1, reads exports/shopify_hk/, tags store="hk".
+# No flag → original India store: batch shopify_phase1, exports/shopify/, store="in".
+STORE_KEY = (_arg("--store") or "").strip().lower()
+STORE_TAG = STORE_KEY or "in"
+BATCH = f"shopify_{STORE_KEY}_phase1" if STORE_KEY else "shopify_phase1"
+ENV_PREFIX = f"SHOPIFY_{STORE_KEY.upper()}_" if STORE_KEY else "SHOPIFY_"
+_IN_DIR = "shopify_" + STORE_KEY if STORE_KEY else "shopify"
+P = pathlib.Path(__file__).resolve().parent.parent / "exports" / _IN_DIR
 DRY = "--dry-run" in sys.argv
 db = MongoClient(os.environ["MONGO_URL"])[os.environ["DB_NAME"]]
 NOW = datetime.now(timezone.utc).isoformat()
+# Named stores use only their own firm var (never inherit the India default).
+FIRM_ID = (os.environ.get(f"{ENV_PREFIX}DEFAULT_FIRM_ID") or None) if STORE_KEY \
+    else (os.environ.get("SHOPIFY_DEFAULT_FIRM_ID") or None)
 
 
 def _phone10(s):
@@ -90,8 +107,9 @@ def import_products():
             "product_type": "traded",
             "weight_kg": float(v0.get("weight") or 0) or None,
             "image_url": img,
-            "is_active": p.get("status") == "active",
-            "source": "shopify", "import_batch": BATCH,
+            # Foreign-currency stores: keep their products OFF the India storefront (recorded only).
+            "is_active": (p.get("status") == "active") if not STORE_KEY else False,
+            "source": "shopify", "import_batch": BATCH, "store": STORE_TAG,
             "shopify_product_id": pid, "shopify_handle": p.get("handle"),
             "shopify_variants": [{"sku": v.get("sku"), "title": v.get("title"),
                                   "price": v.get("price"), "compare_at_price": v.get("compare_at_price")}
@@ -133,7 +151,7 @@ def import_customers():
             "city": addr.get("city"), "state": addr.get("province"),
             "address": addr.get("address1"), "pincode": addr.get("zip"),
             "party_type": "customer", "party_types": ["customer"],
-            "source": "shopify", "import_batch": BATCH, "shopify_customer_id": cid,
+            "source": "shopify", "import_batch": BATCH, "store": STORE_TAG, "shopify_customer_id": cid,
             "shopify_orders_count": c.get("orders_count"), "shopify_total_spent": c.get("total_spent"),
             "is_active": True, "created_at": NOW, "updated_at": NOW,
         }
@@ -186,7 +204,7 @@ def import_orders():
                 stat["items_resolved"] += 1
         party_id = _resolve_party(norm)
         doc = {**norm, "party_id": party_id, "ingest_source": "phase1_import",
-               "import_batch": BATCH, "firm_id": os.environ.get("SHOPIFY_DEFAULT_FIRM_ID") or None,
+               "import_batch": BATCH, "store": STORE_TAG, "firm_id": FIRM_ID,
                "updated_at": NOW, "raw": o}
         if not DRY:
             db.shopify_orders.update_one(
@@ -201,16 +219,21 @@ def rollback():
     r1 = db.master_skus.delete_many({"import_batch": BATCH})
     r2 = db.parties.delete_many({"import_batch": BATCH})
     r3 = db.shopify_orders.delete_many({"import_batch": BATCH})
-    # also unset shopify links we added onto pre-existing records
-    db.master_skus.update_many({"shopify_product_id": {"$exists": True}, "import_batch": {"$ne": BATCH}},
-                               {"$unset": {"shopify_product_id": ""}})
-    print(f"rollback: removed {r1.deleted_count} SKUs, {r2.deleted_count} parties, {r3.deleted_count} orders")
+    # Only the default (India) store unsets links added onto pre-existing records — doing this for a
+    # named store would clobber another store's links (they share the master_skus collection).
+    if not STORE_KEY:
+        db.master_skus.update_many({"shopify_product_id": {"$exists": True}, "import_batch": {"$ne": BATCH}},
+                                   {"$unset": {"shopify_product_id": ""}})
+    print(f"rollback[{STORE_TAG}]: removed {r1.deleted_count} SKUs, {r2.deleted_count} parties, {r3.deleted_count} orders")
 
 
 def main():
     if "--rollback" in sys.argv:
         rollback(); return
-    print(f"{'DRY-RUN — no writes' if DRY else 'WRITING'} · batch={BATCH}\n")
+    print(f"{'DRY-RUN — no writes' if DRY else 'WRITING'} · store={STORE_TAG} · batch={BATCH} · src=exports/{_IN_DIR}/ · firm={FIRM_ID or '(unassigned)'}\n")
+    if not P.exists():
+        print(f"✗ Export folder not found: {P}\n  Run: venv/bin/python scripts/shopify_export.py{f' --store {STORE_KEY}' if STORE_KEY else ''} --images")
+        return
     ps = import_products();  print(f"products  → {ps}")
     cs = import_customers(); print(f"customers → {cs}")
     os_ = import_orders();   print(f"orders    → {os_}")
