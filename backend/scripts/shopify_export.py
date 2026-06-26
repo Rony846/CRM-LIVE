@@ -165,7 +165,7 @@ def main():
             rows = paginate(endpoint, key)
             (OUT / f"{name}.json").write_text(json.dumps(rows, indent=1, default=str))
             manifest["counts"][name] = len(rows)
-            print(f"  {name:20} {len(rows):>6}  → exports/shopify/{name}.json")
+            print(f"  {name:20} {len(rows):>6}  → exports/{_OUT_DIR}/{name}.json")
             if name == "products" and WANT_IMAGES:
                 download_images(rows)
         except Exception as e:

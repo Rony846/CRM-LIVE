@@ -248,16 +248,18 @@ export default function AdminOnlineOrders() {
             </div>
           )}
 
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-5">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
             {[
-              { label: 'Imported orders', val: (ss.store_orders || 0).toLocaleString('en-IN'), icon: History, c: 'text-cyan-400' },
-              { label: 'Lifetime revenue', val: cfmt(ss.store_revenue, ss.currency), icon: IndianRupee, c: 'text-green-400' },
-              { label: shopQuery ? `Matching “${shopQuery}”` : 'Showing', val: (ss.matching ?? 0).toLocaleString('en-IN'), icon: Search, c: 'text-amber-400' },
+              { label: 'Imported orders', val: (ss.store_orders || 0).toLocaleString('en-IN'), sub: ss.cancelled_count ? `${ss.cancelled_count} cancelled` : null, icon: History, c: 'text-cyan-400' },
+              { label: 'Paid revenue', val: cfmt(ss.paid_revenue, ss.currency), sub: 'paid, excl. cancelled', icon: IndianRupee, c: 'text-green-400' },
+              { label: 'Pending payment', val: cfmt(ss.pending_value, ss.currency), sub: 'placed, not captured', icon: Truck, c: 'text-amber-400' },
+              { label: shopQuery ? `Matching “${shopQuery}”` : 'Showing', val: (ss.matching ?? 0).toLocaleString('en-IN'), sub: null, icon: Search, c: 'text-slate-300' },
             ].map((k) => (
               <Card key={k.label} className="bg-slate-800 border-slate-700">
                 <CardContent className="p-4">
                   <div className="flex items-center gap-2 text-slate-400 text-xs"><k.icon className={`w-4 h-4 ${k.c}`} />{k.label}</div>
                   <div className={`text-xl font-bold mt-1 ${k.c}`}>{k.val}</div>
+                  {k.sub && <div className="text-[11px] text-slate-500 mt-0.5">{k.sub}</div>}
                 </CardContent>
               </Card>
             ))}

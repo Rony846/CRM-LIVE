@@ -74482,11 +74482,23 @@ async def admin_shopify_orders(q: Optional[str] = None, status: Optional[str] = 
     cursor = (db.shopify_orders.find(query, {"_id": 0, "raw": 0})
               .sort("shopify_created_at", -1).skip(skip).limit(limit))
     orders = [o async for o in cursor]
-    # store-wide totals (this store only — keeps currencies separate)
+    # store-wide totals (this store only — keeps currencies separate).
+    # ACCURATE sales: paid_revenue counts only paid, non-cancelled orders; pending (uncaptured) and
+    # cancelled/refunded/voided are surfaced separately and never folded into realized revenue.
+    not_cancelled = {"$not": ["$cancelled_at"]}
     agg = await db.shopify_orders.aggregate([
         {"$match": {"store": store}},
-        {"$group": {"_id": None, "n": {"$sum": 1}, "rev": {"$sum": "$total_price"},
-                    "cur": {"$first": "$currency"}}},
+        {"$group": {
+            "_id": None,
+            "n": {"$sum": 1},
+            "cur": {"$first": "$currency"},
+            "gross": {"$sum": "$total_price"},
+            "paid": {"$sum": {"$cond": [
+                {"$and": [{"$eq": ["$financial_status", "paid"]}, not_cancelled]}, "$total_price", 0]}},
+            "pending": {"$sum": {"$cond": [
+                {"$and": [{"$eq": ["$financial_status", "pending"]}, not_cancelled]}, "$total_price", 0]}},
+            "cancelled": {"$sum": {"$cond": [{"$ifNull": ["$cancelled_at", False]}, 1, 0]}},
+        }},
     ]).to_list(1)
     st = agg[0] if agg else {}
     # available stores for the UI switch (count + currency per store)
@@ -74503,7 +74515,10 @@ async def admin_shopify_orders(q: Optional[str] = None, status: Optional[str] = 
             "store": store,
             "currency": st.get("cur") or "INR",
             "store_orders": st.get("n", 0),
-            "store_revenue": round(st.get("rev") or 0, 2),
+            "paid_revenue": round(st.get("paid") or 0, 2),      # realized sales (paid, not cancelled)
+            "pending_value": round(st.get("pending") or 0, 2),  # placed but payment not captured
+            "gross_revenue": round(st.get("gross") or 0, 2),    # every order incl. pending/cancelled
+            "cancelled_count": st.get("cancelled", 0),
             "matching": matching,
             "returned": len(orders),
             "skip": skip,
