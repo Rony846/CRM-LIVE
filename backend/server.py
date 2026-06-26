@@ -74461,6 +74461,42 @@ async def admin_online_order_update(oid: str, body: dict,
     return {"success": True}
 
 
+@api_router.get("/admin/shopify-orders")
+async def admin_shopify_orders(q: Optional[str] = None, status: Optional[str] = None,
+                               limit: int = 50, skip: int = 0,
+                               user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Historical orders imported from the legacy Shopify store (read-only browse).
+    Searchable by order #, customer name, phone or email; paginated. These are records-only
+    (the live storefront orders live in /admin/online-orders)."""
+    query = {}
+    if status:
+        query["financial_status"] = status
+    if q and q.strip():
+        rx = {"$regex": re.escape(q.strip()), "$options": "i"}
+        query["$or"] = [{"order_number": rx}, {"customer_name": rx}, {"phone": rx}, {"email": rx}]
+    limit = min(max(1, limit), 200)
+    skip = max(0, skip)
+    matching = await db.shopify_orders.count_documents(query)
+    cursor = (db.shopify_orders.find(query, {"_id": 0, "raw": 0})
+              .sort("shopify_created_at", -1).skip(skip).limit(limit))
+    orders = [o async for o in cursor]
+    agg = await db.shopify_orders.aggregate(
+        [{"$group": {"_id": None, "n": {"$sum": 1}, "rev": {"$sum": "$total_price"}}}]
+    ).to_list(1)
+    store = agg[0] if agg else {}
+    return {
+        "orders": orders,
+        "summary": {
+            "store_orders": store.get("n", 0),
+            "store_revenue": round(store.get("rev") or 0, 2),
+            "matching": matching,
+            "returned": len(orders),
+            "skip": skip,
+            "limit": limit,
+        },
+    }
+
+
 class BatteryQuoteCreate(BaseModel):
     name: str
     phone: str
