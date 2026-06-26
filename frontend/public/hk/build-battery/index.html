@@ -122,9 +122,9 @@
 <body class="template-page"><div class="bb-wrap">
 
 <section class="bb-hero">
-  <span class="eb">⚡ Custom Engineered · Made in India</span>
+  <span class="eb">⚡ Custom Engineered · Shipped duty-paid from Hong Kong</span>
   <h1>Build Your <em>Custom Lithium Battery</em></h1>
-  <p>Choose your cells, protection system, cabinet, color and warranty. Get an instant estimated price before checkout — engineered for Indian inverter, solar &amp; industrial backup.</p>
+  <p>Choose your cells, protection system, cabinet, color and warranty. Get an instant estimated price before checkout — engineered for inverter, solar &amp; industrial backup, shipped from Hong Kong with all duties included.</p>
 </section>
 
 <div class="bb-main" id="bbBuilder">
@@ -181,11 +181,11 @@
   <div class="bb-sum-card">
     <div id="bbSumRows"></div>
     <div class="bb-sum-total"><span style="font-weight:700">Estimated Total</span><span class="t" id="bbSumTotal">₹0</span></div>
-    <p style="color:var(--bb-grey);font-size:12.5px;margin-top:14px;line-height:1.5">⚠️ Final pricing depends on battery capacity, cell batch, cabinet size and dispatch location. Our team will confirm the exact price before order processing. GST as applicable.</p>
+    <p style="color:var(--bb-grey);font-size:12.5px;margin-top:14px;line-height:1.5">⚠️ Final pricing depends on battery capacity, cell batch, cabinet size and dispatch location. Our team will confirm the exact price before order processing. All customs &amp; import duties included.</p>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:18px">
       <button class="bb-btn yellow" id="bbCheckout">Checkout Now</button>
       <button class="bb-btn solid" id="bbQuote" style="flex:none">Request Final Quote</button>
-      <a class="bb-btn ghost" id="bbWa" style="grid-column:1/-1;text-align:center;text-decoration:none" href="#">💬 Chat on WhatsApp</a>
+      <a class="bb-btn ghost" id="bbWa" style="grid-column:1/-1;text-align:center;text-decoration:none" href="#">✉ Email this build</a>
     </div>
     <button class="bb-btn ghost" id="bbEdit" style="width:100%;margin-top:10px">← Edit configuration</button>
   </div>
@@ -195,7 +195,7 @@
 <div class="bb-price">
   <div class="bb-price-in">
     <div class="tot" id="bbBarTotal">₹25,000<small>Estimated total</small></div>
-    <div class="note">Prices are indicative and may vary based on capacity, cell availability and final configuration. GST as applicable.</div>
+    <div class="note">Prices are indicative and may vary based on capacity, cell availability and final configuration. All customs &amp; import duties included.</div>
     <div class="acts">
       <a class="bb-btn ghost" href="mailto:service@musclegrid.in" style="text-decoration:none;color:#fff;border-color:#3a3a3a">✉ Email</a>
       <button class="bb-btn yellow" id="bbReview">Review &amp; Checkout →</button>
@@ -361,7 +361,7 @@ function renderStep(){
 
 function updatePrice(){
   if(!priceReady()){ document.getElementById('bbBarTotal').innerHTML = 'Select voltage &amp; capacity<small>to see your price</small>'; return; }
-  document.getElementById('bbBarTotal').innerHTML = inr(total())+'<small>incl. '+BB.gstRate+'% GST · '+inr(gstAmt())+' GST</small>';
+  document.getElementById('bbBarTotal').innerHTML = inr(total())+'<small>all customs &amp; import duties included</small>';
 }
 
 function go(d){
@@ -393,11 +393,11 @@ function showSummary(){
   const baseRow = '<div class="bb-sum-row"><span class="k">Battery pack · '+nominalV()+'V '+capAh()+'Ah · ~'+(wh()/1000).toFixed(2)+' kWh <small style="color:var(--bb-grey)">@ ₹'+BB.ratePerWh+'/Wh</small></span><span class="v">'+inr(baseBattery())+'</span></div>';
   const compRows = BB.steps.map(s=>{ const o=opt(s.key,sel[s.key]); if(typeof o.add!=='number') return ''; return '<div class="bb-sum-row"><span class="k">'+s.label+'</span><span class="v">'+o.name+(o.add>0?'<small>+'+inr(o.add)+'</small>':'<small style="color:var(--bb-grey)">included</small>')+'</span></div>'; }).join('');
   document.getElementById('bbSumRows').innerHTML = baseRow + compRows
-    + '<div class="bb-sum-row"><span class="k">Subtotal (before GST)</span><span class="v">'+inr(subtotal())+'</span></div>'
-    + '<div class="bb-sum-row"><span class="k">GST @ '+BB.gstRate+'%</span><span class="v">'+inr(gstAmt())+'</span></div>';
+    + '<div class="bb-sum-row"><span class="k">Subtotal</span><span class="v">'+inr(subtotal())+'</span></div>'
+    + '<div class="bb-sum-row"><span class="k">Customs &amp; import duties</span><span class="v">included</span></div>';
   document.getElementById('bbSumTotal').textContent = inr(total());
-  const wa='https://wa.me/'+BB.whatsapp+'?text='+encodeURIComponent('Hi MuscleGrid, I built a custom lithium battery:\n\n'+configText()+'\n\nEstimated total: '+inr(total())+'\n\nPlease confirm the final price.');
-  document.getElementById('bbWa').href=wa;
+  const mail='mailto:service@musclegrid.in?subject='+encodeURIComponent('Custom lithium battery build')+'&body='+encodeURIComponent('Hi MuscleGrid, I built a custom lithium battery:\n\n'+configText()+'\n\nEstimated total: '+inr(total())+'\n\nPlease confirm the final price.');
+  document.getElementById('bbWa').href=mail;
   document.querySelector('.bb-summary').scrollIntoView({behavior:'smooth'});
 }
 
@@ -414,7 +414,7 @@ function openQuote(intent){
   document.getElementById('bbqTitle').textContent = intent==='order' ? 'Confirm your order' : 'Request your final quote';
   document.getElementById('bbqSub').textContent = intent==='order'
     ? 'Share your details — our team confirms the exact price and sends a secure payment link.'
-    : 'Share your details — our team confirms the exact price and calls you back.';
+    : 'Share your details — our team confirms the exact price and emails you back.';
   document.getElementById('bbqBody').style.display='block';
   document.getElementById('bbqDone').style.display='none';
   document.getElementById('bbqErr').textContent='';
@@ -428,18 +428,18 @@ document.getElementById('bbqSubmit').onclick=function(){
   const name=document.getElementById('bbqName').value.trim();
   const phone=document.getElementById('bbqPhone').value.replace(/\D/g,'');
   if(!name){ err.textContent='Please enter your name.'; return; }
-  if(phone.length<10){ err.textContent='Please enter a valid 10-digit phone.'; return; }
+  if(phone.length<6){ err.textContent='Please enter a valid phone number.'; return; }
   const btn=this; btn.disabled=true; btn.textContent='Sending…';
   fetch('/api/shop/battery-quote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
     name:name, phone:phone, city:document.getElementById('bbqCity').value.trim(), email:document.getElementById('bbqEmail').value.trim(),
-    gstin:document.getElementById('bbqGstin').value.trim().toUpperCase(),
+    gstin:'',
     total:total(), subtotal:subtotal(), gst:gstAmt(), gst_rate:BB.gstRate, intent:document.getElementById('bbqIntent').value,
     config:BB.steps.map(s=>({label:s.label, option:opt(s.key,sel[s.key]).name}))
   })}).then(r=>r.json().then(d=>({ok:r.ok,d}))).then(res=>{
-    if(!res.ok){ err.textContent=res.d.detail||'Could not send. Try WhatsApp instead.'; btn.disabled=false; btn.textContent='Send request'; return; }
+    if(!res.ok){ err.textContent=res.d.detail||'Could not send. Please email service@musclegrid.in instead.'; btn.disabled=false; btn.textContent='Send request'; return; }
     document.getElementById('bbqBody').style.display='none';
     document.getElementById('bbqDone').style.display='block';
-  }).catch(()=>{ err.textContent='Network error — please try WhatsApp.'; btn.disabled=false; btn.textContent='Send request'; });
+  }).catch(()=>{ err.textContent='Network error — please email service@musclegrid.in.'; btn.disabled=false; btn.textContent='Send request'; });
 };
 
 // "Start building" reveals Step 1 (voltage); the battery preview + price prompt show from the start
@@ -458,23 +458,22 @@ updateBattery(); updatePrice();   // initial empty-battery preview + "select vol
   <div style="background:#fff;border-radius:18px;max-width:440px;width:100%;padding:26px;box-shadow:0 30px 80px rgba(0,0,0,.4)">
     <div id="bbqBody">
       <h3 id="bbqTitle" style="font-family:var(--mg-font-display);font-weight:800;font-size:24px;text-transform:uppercase;margin:0 0 4px">Request your final quote</h3>
-      <p id="bbqSub" style="color:var(--bb-grey);font-size:13.5px;margin:0 0 16px">Share your details — our team confirms the exact price and calls you back.</p>
+      <p id="bbqSub" style="color:var(--bb-grey);font-size:13.5px;margin:0 0 16px">Share your details — our team confirms the exact price and emails you back.</p>
       <input type="hidden" id="bbqIntent" value="quote">
       <input id="bbqName"  placeholder="Full name *"        style="width:100%;padding:12px;border:1px solid var(--bb-line);border-radius:9px;margin:5px 0;font-size:15px">
-      <input id="bbqPhone" placeholder="Phone (10-digit) *" type="tel" style="width:100%;padding:12px;border:1px solid var(--bb-line);border-radius:9px;margin:5px 0;font-size:15px">
+      <input id="bbqPhone" placeholder="Phone *" type="tel" style="width:100%;padding:12px;border:1px solid var(--bb-line);border-radius:9px;margin:5px 0;font-size:15px">
       <input id="bbqCity"  placeholder="City (optional)"    style="width:100%;padding:12px;border:1px solid var(--bb-line);border-radius:9px;margin:5px 0;font-size:15px">
       <input id="bbqEmail" placeholder="Email (optional)" type="email" style="width:100%;padding:12px;border:1px solid var(--bb-line);border-radius:9px;margin:5px 0;font-size:15px">
-      <input id="bbqGstin" placeholder="GSTIN (optional — for GST invoice)" style="width:100%;padding:12px;border:1px solid var(--bb-line);border-radius:9px;margin:5px 0;font-size:15px;text-transform:uppercase">
-      <div style="font-size:12px;color:var(--bb-grey);margin:2px 0 4px">🧾 Buying for a business? Add your GSTIN for a GST invoice &amp; input-tax credit. Price shown includes <b>18% GST</b>.</div>
+      <div style="font-size:12px;color:var(--bb-grey);margin:2px 0 4px">🇭🇰 Ships from Hong Kong — price includes <b>all customs &amp; import duties</b>, delivered to your door.</div>
       <div id="bbqErr" style="color:#c0392b;font-size:13px;margin:4px 0;min-height:16px"></div>
       <button class="bb-btn yellow" id="bbqSubmit" style="width:100%;margin-top:6px">Send request</button>
-      <a id="bbqWa" href="#" class="bb-btn ghost" style="display:block;text-align:center;text-decoration:none;margin-top:8px">💬 Or chat on WhatsApp</a>
+      <a id="bbqWa" href="#" class="bb-btn ghost" style="display:block;text-align:center;text-decoration:none;margin-top:8px">✉ Or email this build</a>
       <button class="bb-btn ghost" id="bbqClose" style="width:100%;margin-top:8px;border:none;color:var(--bb-grey)">Cancel</button>
     </div>
     <div id="bbqDone" style="display:none;text-align:center;padding:14px 0">
       <div style="font-size:54px">✅</div>
       <h3 style="font-family:var(--mg-font-display);font-weight:800;text-transform:uppercase;margin:10px 0 6px">Request received!</h3>
-      <p style="color:var(--bb-grey);font-size:14px">Our team has your configuration and will call you shortly to confirm the exact price &amp; dispatch. For anything urgent, email <a href="mailto:service@musclegrid.in" style="color:var(--bb-yellow-deep);font-weight:700">service@musclegrid.in</a>.</p>
+      <p style="color:var(--bb-grey);font-size:14px">Our team has your configuration and will email you shortly to confirm the exact price &amp; dispatch. For anything urgent, email <a href="mailto:service@musclegrid.in" style="color:var(--bb-yellow-deep);font-weight:700">service@musclegrid.in</a>.</p>
       <button class="bb-btn ghost" onclick="document.getElementById('bbQModal').style.display='none'" style="margin-top:14px;width:100%">Close</button>
     </div>
   </div>

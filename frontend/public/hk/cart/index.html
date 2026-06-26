@@ -50,16 +50,15 @@ function renderCart(){
      +'<h3 style="font-family:var(--mg-font-display);font-weight:800;text-transform:uppercase;margin-bottom:14px">Checkout</h3>'
      +'<div style="display:flex;justify-content:space-between;margin-bottom:6px"><span style="color:var(--mg-iron-500)">Subtotal</span><b>₹'+inr(total)+'</b></div>'
      +'<div style="display:flex;justify-content:space-between;margin-bottom:6px"><span style="color:var(--mg-iron-500)">Shipping</span><b style="color:var(--mg-success)">FREE</b></div>'
-     +'<div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:13px"><span style="color:var(--mg-iron-500)">Incl. GST</span><span style="color:var(--mg-iron-500)">₹'+inr(MGCart.gstIncluded())+'</span></div>'
+     +'<div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:13px"><span style="color:var(--mg-iron-500)">Incl. duties &amp; taxes</span><span style="color:var(--mg-iron-500)">₹'+inr(MGCart.gstIncluded())+'</span></div>'
      +'<div style="display:flex;justify-content:space-between;font-size:20px;font-weight:800;margin:12px 0 2px;padding-top:12px;border-top:1px solid var(--mg-iron-200)"><span>Total</span><span>₹'+inr(total)+'</span></div>'
-     +'<div style="font-size:11.5px;color:var(--mg-iron-400);margin-bottom:10px">Prices are inclusive of GST (5% on inverters, 18% on batteries & other products).</div>'
+     +'<div style="font-size:11.5px;color:var(--mg-iron-400);margin-bottom:10px">Price includes all customs & import duties — delivered to your door, nothing extra to pay on arrival.</div>'
      +'<div style="display:grid;gap:10px;margin-top:8px">'
-       +fld('name','Full name','text')+fld('phone','Phone (10-digit)','tel')+fld('email','Email (optional)','email')
+       +fld('name','Full name','text')+fld('phone','Phone','tel')+fld('email','Email (optional)','email')
        +fld('address','Address','text')
-       +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'+fld('city','City','text')+fld('pincode','PIN code','text')+'</div>'
-       +fld('gstin','GSTIN (optional — for GST invoice)','text')
+       +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'+fld('city','City','text')+fld('pincode','Postal / ZIP code','text')+'</div>'
      +'</div>'
-     +'<div style="background:var(--mg-bg);border:1px dashed var(--mg-iron-300);border-radius:8px;padding:10px 12px;margin-top:14px;font-size:13px;color:var(--mg-iron-600)">💵 <b>Cash on delivery</b> — our team will call to confirm your order &amp; delivery.</div>'
+     +'<div style="background:var(--mg-bg);border:1px dashed var(--mg-iron-300);border-radius:8px;padding:10px 12px;margin-top:14px;font-size:13px;color:var(--mg-iron-600)">💵 <b>Cash on delivery</b> — our team will email to confirm your order &amp; delivery.</div>'
      +'<button class="mg-btn mg-btn-primary" id="placeBtn" style="width:100%;margin-top:16px" onclick="placeOrder()">Place order · ₹'+inr(total)+'</button>'
      +'<div id="coErr" style="color:var(--mg-danger);font-size:13px;margin-top:8px"></div>'
      +'<div style="text-align:center;color:var(--mg-iron-400);font-size:11px;margin-top:10px">No online payment — pay on delivery.</div>'
@@ -91,7 +90,7 @@ function success(onum,cod){
    +'<div style="font-size:56px">✅</div>'
    +'<h2 style="font-family:var(--mg-font-display);font-weight:800;text-transform:uppercase;margin:14px 0 8px">Order placed!</h2>'
    +'<p style="color:var(--mg-iron-500)">Order <b style="color:var(--mg-fg)">'+onum+'</b> '+(cod?'is confirmed — pay cash on delivery.':'is confirmed and paid. 🎉')+'</p>'
-   +'<p style="color:var(--mg-iron-500);margin-top:10px">Our team will call you to schedule delivery & installation. For help: <a href="mailto:service@musclegrid.in" style="color:var(--mg-orange)">service@musclegrid.in</a></p>'
+   +'<p style="color:var(--mg-iron-500);margin-top:10px">Our team will email you to schedule delivery & installation. For help: <a href="mailto:service@musclegrid.in" style="color:var(--mg-orange)">service@musclegrid.in</a></p>'
    +'<a class="mg-btn mg-btn-primary" href="/hk/products/" style="margin-top:20px">Continue shopping</a></div>';
 }
 document.addEventListener('DOMContentLoaded',renderCart);
