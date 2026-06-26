@@ -13,6 +13,9 @@
   MG.inr = INR;
   var esc = function(s){ return String(s||'').replace(/"/g,'&quot;').replace(/</g,'&lt;'); };
   var PHONE='099990 36254';
+  var IS_HK = STORE==='hk';           // Hong Kong store: email-only, no phone / WhatsApp
+  var EMAIL='service@musclegrid.in';
+  var WA='919999036254';
   var ICON={
     menu:'<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>',
     search:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.3-4.3"/></svg>',
@@ -67,7 +70,7 @@
     var marquee=''; for(var r=0;r<2;r++){ promoItems.forEach(function(p){ marquee+='<span class="mg-promo-item"><span class="mg-promo-dot"></span><b>'+p[0]+'</b>·<span style="color:#B5B5B5;font-weight:500">'+p[1]+'</span></span>'; }); }
     var head=document.createElement('div'); head.setAttribute('data-mg-chrome','1');
     head.innerHTML=
-      '<div class="mg-promo" style="position:relative;z-index:101"><div class="mg-promo-marquee">'+marquee+'</div><span class="mg-promo-meta">+91 '+PHONE+'</span></div>'
+      '<div class="mg-promo" style="position:relative;z-index:101"><div class="mg-promo-marquee">'+marquee+'</div><span class="mg-promo-meta">'+(IS_HK?EMAIL:('+91 '+PHONE))+'</span></div>'
       +'<header class="mg-header" style="position:sticky;top:0;z-index:100">'
       +'<div class="mg-header-inner" style="display:flex;align-items:center;justify-content:space-between;gap:16px;max-width:1320px;margin:0 auto;padding:12px 20px">'
       +'<button type="button" class="mg-icon-btn" data-toggle="mobile-nav" aria-label="Menu">'+ICON.menu+'</button>'
@@ -88,10 +91,10 @@
       +'<div class="mg-drawer-body" data-cart-body></div>'
       +'<div class="mg-drawer-foot" data-cart-foot hidden><div class="mg-drawer-totals"><div class="row total" style="display:flex;justify-content:space-between;font-weight:800;font-size:18px;padding:10px 0"><span>Total</span><span data-cart-total></span></div></div>'
       +'<a class="mg-btn mg-btn-primary" href="'+BASE+'/cart/" style="width:100%">Checkout →</a>'
-      +'<div style="text-align:center;color:var(--mg-iron-400);font-size:11px;margin-top:8px">🔒 UPI · Cards · Net Banking · EMI</div></div></aside>'
+      +'<div style="text-align:center;color:var(--mg-iron-400);font-size:11px;margin-top:8px">'+(IS_HK?'💵 Cash on delivery':'🔒 UPI · Cards · Net Banking · EMI')+'</div></div></aside>'
       +'<aside class="mg-mnav" data-mnav hidden><div class="mg-mnav-head"><a class="mg-logo" href="'+BASE+'/" style="display:flex;gap:8px;align-items:center;text-decoration:none;color:inherit"><img src="/shop/logo-mark.png" width="30" height="30"><div class="mg-logo-word" style="font-weight:800"><span style="color:var(--mg-orange)">Muscle</span>Grid</div></a><button class="mg-icon-btn" data-close>'+ICON.close+'</button></div>'
-      +'<div class="mg-mnav-body"><a href="'+BASE+'/build-battery/" style="color:var(--mg-orange);font-weight:800">⚡ Build Your Battery</a><a href="'+BASE+'/products/">All products</a><a href="'+BASE+'/products/?category=Inverter">Solar Inverters</a><a href="'+BASE+'/products/?category=Battery">Lithium Batteries</a><a href="'+BASE+'/products/?category=Stabilizer">Stabilizers</a><a href="tel:+91'+PHONE.replace(/ /g,'')+'">📞 24×7 · '+PHONE+'</a><a href="https://wa.me/919999036254">💬 Chat on WhatsApp</a></div>'
-      +'<div class="mg-mnav-foot"><a class="mg-btn mg-btn-primary" href="tel:+91'+PHONE.replace(/ /g,'')+'" style="width:100%">Free Consultation</a></div></aside>'
+      +'<div class="mg-mnav-body"><a href="'+BASE+'/build-battery/" style="color:var(--mg-orange);font-weight:800">⚡ Build Your Battery</a><a href="'+BASE+'/products/">All products</a><a href="'+BASE+'/products/?category=Inverter">Solar Inverters</a><a href="'+BASE+'/products/?category=Battery">Lithium Batteries</a><a href="'+BASE+'/products/?category=Stabilizer">Stabilizers</a>'+(IS_HK?'<a href="mailto:'+EMAIL+'">✉ '+EMAIL+'</a>':'<a href="tel:+91'+PHONE.replace(/ /g,'')+'">📞 24×7 · '+PHONE+'</a><a href="https://wa.me/'+WA+'">💬 Chat on WhatsApp</a>')+'</div>'
+      +'<div class="mg-mnav-foot"><a class="mg-btn mg-btn-primary" href="'+(IS_HK?'mailto:'+EMAIL:'tel:+91'+PHONE.replace(/ /g,''))+'" style="width:100%">'+(IS_HK?'Email us':'Free Consultation')+'</a></div></aside>'
       +'<div data-search-overlay hidden style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:200;display:flex;align-items:flex-start;justify-content:center;padding-top:14vh"><form data-search-form style="background:#fff;border-radius:14px;padding:18px;width:min(560px,92vw);display:flex;gap:10px"><input name="q" placeholder="Search inverters, batteries, stabilizers…" autocomplete="off" style="flex:1;padding:14px;border:1px solid var(--mg-iron-200);border-radius:10px;font-size:16px"><button class="mg-btn mg-btn-primary" type="submit">Search</button></form></div>';
     document.body.appendChild(aux);
 
@@ -127,13 +130,15 @@
         +'<div><div style="font-family:var(--mg-font-display);font-weight:800;font-size:28px;line-height:1"><span style="color:var(--mg-orange)">Muscle</span>Grid</div>'
         +'<div style="font-family:var(--mg-font-mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;margin-top:5px">Consistency Through You</div>'
         +'<p class="desc">Industrial power, engineered for India. Solar inverters, LiFePO₄ lithium batteries &amp; mainline stabilizers — warranty-backed, 12,000+ homes powered.</p>'
-        +'<div class="socs"><a class="mgfs" href="https://www.instagram.com/musclegrid_industries" aria-label="Instagram">IG</a><a class="mgfs" href="https://facebook.com/MuscleGrid" aria-label="Facebook">FB</a><a class="mgfs" href="https://wa.me/919999036254" aria-label="WhatsApp">WA</a></div></div>'
+        +'<div class="socs"><a class="mgfs" href="https://www.instagram.com/musclegrid_industries" aria-label="Instagram">IG</a><a class="mgfs" href="https://facebook.com/MuscleGrid" aria-label="Facebook">FB</a>'+(IS_HK?'<a class="mgfs" href="mailto:'+EMAIL+'" aria-label="Email">✉</a>':'<a class="mgfs" href="https://wa.me/'+WA+'" aria-label="WhatsApp">WA</a>')+'</div></div>'
         +'<div><h4>Shop</h4>'+lk(BASE+'/build-battery/','⚡ Build your battery')+lk(BASE+'/products/','All products')+lk(BASE+'/products/?category=Inverter','Solar inverters')+lk(BASE+'/products/?category=Battery','Lithium batteries')+lk(BASE+'/products/?category=Stabilizer','Stabilizers')+'</div>'
         +'<div><h4>Company</h4>'+lk(BASE+'/about/','About us')+lk(BASE+'/dealers/','Become a dealer')+lk(BASE+'/support/','Support &amp; manuals')+lk(BASE+'/contact/','Contact')+'</div>'
         +'<div><h4>Help &amp; Policies</h4>'+lk(BASE+'/policies/privacy/','Privacy policy')+lk(BASE+'/policies/terms/','Terms &amp; conditions')+lk(BASE+'/policies/refund/','Refund &amp; returns')+lk(BASE+'/policies/shipping/','Shipping policy')+'</div>'
       +'</div>'
-      +'<div class="bottom"><span>© 2026 MuscleGrid Industries (Electronics Bay) · 704, Sector-16, Gurugram · <a href="tel:+919999036254">099990 36254</a> · <a href="mailto:service@musclegrid.in">service@musclegrid.in</a></span>'
-      +'<span class="pay">We accept <i>UPI</i><i>Cards</i><i>NetBanking</i><i>EMI</i></span></div>'
+      +'<div class="bottom"><span>'+(IS_HK
+          ? '© 2026 MuscleGrid Industries HK Limited · <a href="mailto:'+EMAIL+'">'+EMAIL+'</a>'
+          : '© 2026 MuscleGrid Industries (Electronics Bay) · 704, Sector-16, Gurugram · <a href="tel:+919999036254">099990 36254</a> · <a href="mailto:service@musclegrid.in">service@musclegrid.in</a>')+'</span>'
+      +(IS_HK?'<span class="pay"><i>Cash on delivery</i></span>':'<span class="pay">We accept <i>UPI</i><i>Cards</i><i>NetBanking</i><i>EMI</i></span>')+'</div>'
       +'</div>';
     document.body.appendChild(foot);
 

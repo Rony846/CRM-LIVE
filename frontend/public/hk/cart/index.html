@@ -23,7 +23,7 @@
 
 <footer style="background:var(--mg-iron-1000);color:var(--mg-fg-onDark);padding:40px 20px;text-align:center;margin-top:40px">
  <div style="font-family:var(--mg-font-display);font-weight:800;font-size:22px"><span style="color:var(--mg-orange)">Muscle</span>Grid</div>
- <div style="color:var(--mg-fg-onDark-muted);font-size:13px;margin-top:10px">© 2026 MuscleGrid Industries · <a href="tel:+919999036254" style="color:var(--mg-orange)">099990 36254</a> · service@musclegrid.in</div>
+ <div style="color:var(--mg-fg-onDark-muted);font-size:13px;margin-top:10px">© 2026 MuscleGrid Industries HK Limited · service@musclegrid.in</div>
 </footer>
 
 <script>
@@ -82,18 +82,7 @@ function placeOrder(){
   fetch('/api/shop/checkout/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
    .then(r=>r.json().then(d=>({ok:r.ok,d:d}))).then(function(res){
      if(!res.ok){ err.textContent=res.d.detail||'Could not place order.'; btn.disabled=false; btn.textContent='Place order'; return; }
-     var d=res.d;
-     if(d.cod){ success(d.order_number,true); return; }
-     var rzp=new Razorpay({key:d.key_id,order_id:d.razorpay_order_id,amount:d.amount,currency:'INR',
-       name:'MuscleGrid',description:'Order '+d.order_number,image:'/shop/logo-mark.png',
-       prefill:d.prefill,theme:{color:'#F58220'},
-       handler:function(r){
-         fetch('/api/shop/checkout/verify',{method:'POST',headers:{'Content-Type':'application/json'},
-           body:JSON.stringify({order_id:d.order_id,razorpay_order_id:r.razorpay_order_id,razorpay_payment_id:r.razorpay_payment_id,razorpay_signature:r.razorpay_signature})})
-          .then(x=>x.json()).then(function(v){ if(v.success){ success(v.order_number,false); } else { err.textContent='Payment verification failed — contact us.'; btn.disabled=false; btn.textContent='Place order'; } });
-       },
-       modal:{ondismiss:function(){ btn.disabled=false; btn.textContent='Place order · ₹'+inr(MGCart.total()); }}});
-     rzp.open();
+     success(res.d.order_number,true);   // HK is COD-only — backend always returns cod:true
    }).catch(function(){ err.textContent='Network error — try again.'; btn.disabled=false; btn.textContent='Place order'; });
 }
 function success(onum,cod){
@@ -102,7 +91,7 @@ function success(onum,cod){
    +'<div style="font-size:56px">✅</div>'
    +'<h2 style="font-family:var(--mg-font-display);font-weight:800;text-transform:uppercase;margin:14px 0 8px">Order placed!</h2>'
    +'<p style="color:var(--mg-iron-500)">Order <b style="color:var(--mg-fg)">'+onum+'</b> '+(cod?'is confirmed — pay cash on delivery.':'is confirmed and paid. 🎉')+'</p>'
-   +'<p style="color:var(--mg-iron-500);margin-top:10px">Our team will call you to schedule delivery & installation. For help: <a href="tel:+919999036254" style="color:var(--mg-orange)">099990 36254</a></p>'
+   +'<p style="color:var(--mg-iron-500);margin-top:10px">Our team will call you to schedule delivery & installation. For help: <a href="mailto:service@musclegrid.in" style="color:var(--mg-orange)">service@musclegrid.in</a></p>'
    +'<a class="mg-btn mg-btn-primary" href="/hk/products/" style="margin-top:20px">Continue shopping</a></div>';
 }
 document.addEventListener('DOMContentLoaded',renderCart);

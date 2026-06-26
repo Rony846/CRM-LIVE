@@ -197,7 +197,7 @@
     <div class="tot" id="bbBarTotal">₹25,000<small>Estimated total</small></div>
     <div class="note">Prices are indicative and may vary based on capacity, cell availability and final configuration. GST as applicable.</div>
     <div class="acts">
-      <a class="bb-btn ghost" href="https://wa.me/919999036254" style="text-decoration:none;color:#fff;border-color:#3a3a3a">💬 WhatsApp</a>
+      <a class="bb-btn ghost" href="mailto:service@musclegrid.in" style="text-decoration:none;color:#fff;border-color:#3a3a3a">✉ Email</a>
       <button class="bb-btn yellow" id="bbReview">Review &amp; Checkout →</button>
     </div>
   </div>
@@ -214,7 +214,7 @@ document.addEventListener('DOMContentLoaded', function(){
 const BB = {
   ratePerWh: 11,                            // ◀ battery base price = ₹11 per Wh (V × Ah) — edit here
   gstRate: 18,                              // ◀ GST % on batteries (18%); inverters are 5% elsewhere
-  whatsapp: '919999036254',                 // ◀ enquiry number
+  email: 'service@musclegrid.in',                 // ◀ enquiry number
   steps: [
     { key:'system', label:'Battery System · Voltage', icon:'⚙️', options:[
       { id:'24v',  name:'24V (25.6V) · 8S',  ic:'🔋', desc:'8 × 3.2V LFP cells in series (25.6V nominal). Great for smaller inverters & home backup.', volt:25.6, series:8,  badge:'Compact' },
@@ -474,7 +474,7 @@ updateBattery(); updatePrice();   // initial empty-battery preview + "select vol
     <div id="bbqDone" style="display:none;text-align:center;padding:14px 0">
       <div style="font-size:54px">✅</div>
       <h3 style="font-family:var(--mg-font-display);font-weight:800;text-transform:uppercase;margin:10px 0 6px">Request received!</h3>
-      <p style="color:var(--bb-grey);font-size:14px">Our team has your configuration and will call you shortly to confirm the exact price &amp; dispatch. For anything urgent, call <a href="tel:+919999036254" style="color:var(--bb-yellow-deep);font-weight:700">099990 36254</a>.</p>
+      <p style="color:var(--bb-grey);font-size:14px">Our team has your configuration and will call you shortly to confirm the exact price &amp; dispatch. For anything urgent, email <a href="mailto:service@musclegrid.in" style="color:var(--bb-yellow-deep);font-weight:700">service@musclegrid.in</a>.</p>
       <button class="bb-btn ghost" onclick="document.getElementById('bbQModal').style.display='none'" style="margin-top:14px;width:100%">Close</button>
     </div>
   </div>
