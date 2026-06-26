@@ -11,7 +11,15 @@ export default function DispatcherTVMode() {
   const navigate = useNavigate();
   const [queue, setQueue] = useState([]);
   const [stats, setStats] = useState(null);
+  const [bigship, setBigship] = useState([]);
   const [refreshKey, setRefreshKey] = useState(0);
+
+  const isNotPicked = (s) => (s || '').toUpperCase() === 'NOT PICKED';
+  const isPickedUp = (s) => {
+    const u = (s || '').toUpperCase();
+    if (!u || u === 'NOT PICKED' || u.includes('PICKUP SCHEDULED') || u === 'MANIFESTED' || u.includes('CANCEL') || u.includes('RTO')) return false;
+    return u.includes('TRANSIT') || u.includes('OUT FOR DELIVERY') || u.includes('DELIVERED');
+  };
 
   useEffect(() => {
     fetchData();
@@ -28,6 +36,8 @@ export default function DispatcherTVMode() {
       const headers = { Authorization: `Bearer ${token}` };
       const queueRes = await axios.get(`${API}/dispatcher/queue`, { headers });
       const dispatchData = queueRes.data;
+      axios.get(`${API}/courier/shipments?page_size=30`, { headers })
+        .then(r => setBigship(r.data?.shipments || [])).catch(() => {});
       
       // Filter for ready_for_dispatch items
       const readyItems = dispatchData.filter(d => d.status === 'ready_for_dispatch');
@@ -163,6 +173,39 @@ export default function DispatcherTVMode() {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Bigship Live Board — latest bookings, green once picked up */}
+      {bigship.length > 0 && (
+        <div className="mt-8 mb-24 bg-slate-900 rounded-xl border border-slate-700 overflow-hidden">
+          <div className="flex items-center gap-3 p-4 bg-slate-800">
+            <Truck className="w-6 h-6 text-blue-400" />
+            <h2 className="text-2xl font-bold font-['Barlow_Condensed'] tracking-wider">BIGSHIP — LIVE</h2>
+            <span className="text-slate-400 text-lg ml-2">🟢 picked up · 🔴 not picked</span>
+          </div>
+          <div className="grid grid-cols-5 gap-4 p-3 bg-slate-800/60 text-slate-400 uppercase text-sm font-medium tracking-wider">
+            <div>Order</div><div>Customer</div><div>AWB</div><div>Courier</div><div>Status</div>
+          </div>
+          <div className="divide-y divide-slate-700/60">
+            {bigship.map((s) => {
+              const np = isNotPicked(s.status);
+              const picked = isPickedUp(s.status);
+              return (
+                <div key={s.id}
+                  className={`grid grid-cols-5 gap-4 p-4 ${np ? 'bg-red-950/40 border-l-4 border-l-red-500'
+                    : picked ? 'bg-green-950/40 border-l-4 border-l-green-500' : 'bg-slate-900/50'}`}>
+                  <div className="font-mono text-lg">{s.bigship_order_id || s.order_id || '-'}</div>
+                  <div className="text-lg truncate">{s.customer_name || '-'}</div>
+                  <div className="font-mono text-base text-slate-300">{s.awb_number || '-'}</div>
+                  <div className="text-base">{s.courier_name || '-'}</div>
+                  <div className={`text-lg font-bold ${np ? 'text-red-400' : picked ? 'text-green-400' : 'text-slate-400'}`}>
+                    {(s.status || 'UNKNOWN').toUpperCase()}{picked ? ' ✓' : ''}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
