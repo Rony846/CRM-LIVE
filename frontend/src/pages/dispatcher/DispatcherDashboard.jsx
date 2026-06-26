@@ -45,6 +45,7 @@ export default function DispatcherDashboard() {
   const [queue, setQueue] = useState([]);
   const [recentDispatches, setRecentDispatches] = useState([]);
   const [stuck, setStuck] = useState({ count: 0, stale_count: 0, shipments: [] });
+  const [bigship, setBigship] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedItem, setSelectedItem] = useState(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -69,14 +70,16 @@ export default function DispatcherDashboard() {
   const fetchData = async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const [queueRes, recentRes, stuckRes] = await Promise.all([
+      const [queueRes, recentRes, stuckRes, bigshipRes] = await Promise.all([
         axios.get(`${API}/dispatcher/queue`, { headers }),
         axios.get(`${API}/dispatcher/recent`, { headers }).catch(() => ({ data: [] })),
-        axios.get(`${API}/dispatcher/stuck-shipments`, { headers }).catch(() => ({ data: { count: 0, stale_count: 0, shipments: [] } }))
+        axios.get(`${API}/dispatcher/stuck-shipments`, { headers }).catch(() => ({ data: { count: 0, stale_count: 0, shipments: [] } })),
+        axios.get(`${API}/courier/shipments?page_size=40`, { headers }).catch(() => ({ data: { shipments: [] } }))
       ]);
       setQueue(queueRes.data);
       setRecentDispatches(recentRes.data || []);
       setStuck(stuckRes.data || { count: 0, stale_count: 0, shipments: [] });
+      setBigship(bigshipRes.data?.shipments || []);
 
       // Compute stats locally
       const readyToDispatch = queueRes.data.filter(d => d.status === 'ready_for_dispatch' || d.status === 'ready_to_dispatch').length;
@@ -91,6 +94,14 @@ export default function DispatcherDashboard() {
     } finally {
       setLoading(false);
     }
+  };
+
+  // Bigship pickup status (mirrors the Courier Shipping board).
+  const isNotPicked = (s) => (s || '').toUpperCase() === 'NOT PICKED';
+  const isPickedUp = (s) => {
+    const u = (s || '').toUpperCase();
+    if (!u || u === 'NOT PICKED' || u.includes('PICKUP SCHEDULED') || u === 'MANIFESTED' || u.includes('CANCEL') || u.includes('RTO')) return false;
+    return u.includes('TRANSIT') || u.includes('OUT FOR DELIVERY') || u.includes('DELIVERED');
   };
 
   const openConfirmDialog = (dispatch) => {
@@ -328,6 +339,61 @@ export default function DispatcherDashboard() {
           </div>
         </div>
       )}
+
+      {/* ── Bigship Live Board (latest bookings; green once picked up) ─────── */}
+      <div className="mg-card mb-6 rounded-lg border border-border bg-card">
+        <div className="flex items-center justify-between border-b border-border px-6 py-4">
+          <div>
+            <h3 className="text-[17px] font-semibold tracking-tight text-foreground flex items-center gap-2">
+              <span className="flex h-7 w-7 items-center justify-center rounded bg-primary/15">
+                <Truck className="w-4 h-4 text-primary" />
+              </span>
+              Bigship Shipments — Live
+            </h3>
+            <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground mt-0.5">
+              latest bookings · auto-refresh 30s · 🟢 picked up · 🔴 not picked
+            </p>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          {bigship.length === 0 ? (
+            <p className="px-6 py-8 text-center text-sm text-muted-foreground">No recent Bigship bookings.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Order</TableHead>
+                  <TableHead className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Customer</TableHead>
+                  <TableHead className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">AWB</TableHead>
+                  <TableHead className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Courier</TableHead>
+                  <TableHead className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {bigship.map((s) => {
+                  const np = isNotPicked(s.status);
+                  const picked = isPickedUp(s.status);
+                  return (
+                    <TableRow key={s.id}
+                      className={np ? 'bg-red-50 dark:bg-red-950/20 border-l-2 border-l-red-500'
+                        : (picked ? 'bg-green-50 dark:bg-green-950/20 border-l-2 border-l-green-500' : '')}>
+                      <TableCell className="font-mono text-xs">{s.bigship_order_id || s.order_id || '-'}</TableCell>
+                      <TableCell className="text-sm">{s.customer_name || '-'}</TableCell>
+                      <TableCell className="font-mono text-xs">{s.awb_number || '-'}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{s.courier_name || '-'}</TableCell>
+                      <TableCell className="text-sm">
+                        <span className={np ? 'text-red-600 font-medium' : (picked ? 'text-green-600 font-medium' : 'text-muted-foreground')}>
+                          {(s.status || 'unknown').toUpperCase()}{picked ? ' ✓' : ''}
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
+        </div>
+      </div>
 
       {/* ── Dispatch Queue ───────────────────────────────────────────────── */}
       <div className="mg-card mb-6 rounded-lg border border-border bg-card">
