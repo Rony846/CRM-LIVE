@@ -859,6 +859,17 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Bot 1: auto-confirm provisional payments that already cleared the bank (gated, default OFF).
+        scheduler.add_job(
+            scheduled_payment_autoconfirm,
+            IntervalTrigger(minutes=int(os.environ.get("PAYMENT_AUTOCONFIRM_INTERVAL_MIN", "30"))),
+            id="payment_autoconfirm",
+            name="Payment Auto-Confirm (finalize provisional payments matched to a bank credit)",
+            replace_existing=True,
+            misfire_grace_time=600,
+            max_instances=1,
+        )
+
         # "Payment received but material not dispatched" watch — reminds every 2 days until shipped.
         scheduler.add_job(
             scheduled_pratibha_dispatch_watch,
@@ -66266,7 +66277,7 @@ async def _pratibha_customer_360(query: str, allow_finance: bool = False) -> dic
 
     tq = {"customer_phone": prx} if phone else {"customer_name": rx}
     out["tickets"] = {"count": await db.tickets.count_documents(tq), "recent": []}
-    for t in await db.tickets.find(tq, {"_id": 0, "ticket_number": 1, "status": 1, "issue_description": 1,
+    async for t in db.tickets.find(tq, {"_id": 0, "ticket_number": 1, "status": 1, "issue_description": 1,
                                         "sla_breached": 1}).sort("created_at", -1).limit(4):
         out["tickets"]["recent"].append({"ticket": t.get("ticket_number"), "status": t.get("status"),
                                          "sla_breached": t.get("sla_breached"), "issue": (t.get("issue_description") or "")[:60]})
@@ -67756,7 +67767,7 @@ async def _pratibha_build_digest(include_finance: bool) -> str:
     L += ["SERVICE TICKETS",
           f"  Open: {open_n}   SLA-breached: {sla_n}   Escalated: {esc_n}   Open >7 days: {aged_n}"]
     top = []
-    for t in await db.tickets.find(esc_q, {"_id": 0, "ticket_number": 1, "customer_name": 1,
+    async for t in db.tickets.find(esc_q, {"_id": 0, "ticket_number": 1, "customer_name": 1,
             "issue_description": 1, "created_at": 1}).sort("created_at", 1).limit(5):
         age = (now - _pr_parse_iso(t.get("created_at"))).days
         top.append(f"   - {t.get('ticket_number')} ({age}d) {t.get('customer_name') or ''} — "
@@ -68548,7 +68559,7 @@ async def _pratibha_crm_brief(sender: str, body: str, subject: str = "", from_na
         if who.get("name"):
             tq["$or"].append({"customer_name": {"$regex": re.escape(who["name"]), "$options": "i"}})
         tix = []
-        for t in await db.tickets.find(tq, {"_id": 0, "ticket_number": 1, "status": 1, "issue_description": 1}
+        async for t in db.tickets.find(tq, {"_id": 0, "ticket_number": 1, "status": 1, "issue_description": 1}
                                        ).sort("created_at", -1).limit(3):
             tix.append(f"{t.get('ticket_number')} [{t.get('status')}] {(t.get('issue_description') or '')[:50]}")
         if tix:
@@ -68568,7 +68579,7 @@ async def _pratibha_crm_brief(sender: str, body: str, subject: str = "", from_na
             lines.append(f"No CRM customer/lead master match. Phone(s) in the email: {', '.join(email_phones)}.")
             for p in email_phones[:2]:
                 prx = {"$regex": re.escape(p) + "$"}
-                for t in await db.tickets.find({"customer_phone": prx},
+                async for t in db.tickets.find({"customer_phone": prx},
                         {"_id": 0, "ticket_number": 1, "status": 1, "issue_description": 1}
                         ).sort("created_at", -1).limit(2):
                     lines.append(f"  ↳ ticket for {p}: {t.get('ticket_number')} [{t.get('status')}] "
@@ -69443,7 +69454,7 @@ async def scheduled_pratibha_sla_watch():
     recent_cut = (now - timedelta(days=fresh_days)).isoformat()
     q = {**base, "sla_due": {"$gte": recent_cut}, "sla_chase_count": {"$not": {"$gte": cap}}}
     due = []
-    for t in await db.tickets.find(
+    async for t in db.tickets.find(
             q, {"_id": 0, "ticket_number": 1, "status": 1, "customer_name": 1, "sla_due": 1,
                 "assigned_to_name": 1, "sla_chase_reminded_at": 1}).sort("sla_due", 1):
         if (t.get("sla_chase_reminded_at") or "") > cooldown:
@@ -69583,6 +69594,156 @@ async def scheduled_pratibha_payment_nudge():
         await _pratibha_payment_remind_founder(rec, nudge_n=n)
         await db.pratibha_payments.update_one({"id": rec["id"]}, {"$set": {"nudge_count": n}})
         logger.info(f"Pratibha payment nudge {n} to founder for {rec.get('ref')} ({rec.get('matched_name')})")
+
+
+# ---- Bot 1: Payment Auto-Confirm — finalize provisional payments that already cleared the bank ----
+# The founder otherwise types 'confirm <REF>' for every payment, nudged every few hours. But the
+# bank statements are already ingested + reconciled (bank_recon_v3). So when a reconciled bank CREDIT
+# uniquely matches a provisional payment (amount + date window + a party signal), we post it to the
+# ledger for him and just tell him it's done. Anything ambiguous stays provisional for him to confirm.
+def _pay_amt2(x) -> float:
+    try:
+        return round(float(x or 0), 2)
+    except Exception:
+        return 0.0
+
+
+def _pay_name_tokens(name: str) -> list:
+    """Significant uppercase tokens of a party name, for soft-matching against terse bank narrations."""
+    toks = re.findall(r"[A-Za-z]{4,}", (name or "").upper())
+    drop = {"PVT", "PRIVATE", "LIMITED", "LTD", "ENTERPRISES", "ENTERPRISE", "TRADERS",
+            "TRADING", "INDIA", "AND", "THE", "SONS", "COMPANY"}
+    return [t for t in toks if t not in drop]
+
+
+async def _payment_find_bank_credit(rec: dict, consumed: set):
+    """Find a UNIQUE reconciled bank CREDIT that matches this provisional payment.
+    Returns (match_dict | None, ambiguous: bool). Conservative by design: requires an exact amount,
+    a date within the window, AND a party signal (linked party_id, the UTR/reference, or a name token).
+    If more than one credit qualifies we return ambiguous=True and DO NOT auto-confirm."""
+    amt = _pay_amt2(rec.get("amount"))
+    if amt <= 0 or not rec.get("party_id"):
+        return None, False
+    tol = _pay_amt2(os.environ.get("PAYMENT_AUTOCONFIRM_AMOUNT_TOLERANCE", "0"))
+    window = int(os.environ.get("PAYMENT_AUTOCONFIRM_DATE_WINDOW_DAYS", "12"))
+    require_party = os.environ.get("PAYMENT_AUTOCONFIRM_REQUIRE_PARTY", "true").lower() in ("1", "true", "yes", "on")
+    reported = (rec.get("provisional_at") or rec.get("created_at") or "")[:10]
+    lo = hi = None
+    if reported:
+        try:
+            d0 = datetime.fromisoformat(reported)
+            lo = (d0 - timedelta(days=window)).date().isoformat()
+            hi = (d0 + timedelta(days=window)).date().isoformat()
+        except Exception:
+            lo = hi = None
+    ref = re.sub(r"\s+", "", str(rec.get("reference") or ""))
+    ref = ref if len(ref) >= 4 else ""
+    tokens = _pay_name_tokens(rec.get("matched_name") or rec.get("party_name") or "")
+
+    candidates = []
+    async for stmt in db.bank_statements.find({}, {"_id": 0, "id": 1, "bank_name": 1, "transactions": 1}):
+        txns = stmt.get("transactions") or []
+        if isinstance(txns, dict):
+            txns = list(txns.values())
+        for t in txns:
+            cr = _pay_amt2(t.get("credit"))
+            if cr <= 0 or _pay_amt2(t.get("debit")) > 0:
+                continue
+            if abs(cr - amt) > tol:
+                continue
+            tdate = (t.get("transaction_date") or "")[:10]
+            if lo and tdate and not (lo <= tdate <= hi):
+                continue
+            bank_key = f"{stmt.get('id')}:{t.get('row_number')}"
+            if bank_key in consumed:
+                continue
+            desc = (str(t.get("description") or "") + " " + str(t.get("beneficiary") or "")).upper()
+            txn_ref = re.sub(r"\s+", "", str(t.get("reference") or ""))
+            sig = None
+            if rec.get("party_id") and t.get("party_id") == rec.get("party_id"):
+                sig = "party_id"
+            elif ref and (ref in re.sub(r"\s+", "", desc) or (txn_ref and ref in txn_ref)):
+                sig = "reference"
+            elif tokens and any(tok in desc for tok in tokens):
+                sig = "name"
+            if require_party and not sig:
+                continue
+            candidates.append({"bank_key": bank_key, "statement_id": stmt.get("id"),
+                               "bank_name": stmt.get("bank_name"), "row_number": t.get("row_number"),
+                               "credit": cr, "transaction_date": tdate, "signal": sig or "amount_date",
+                               "description": (t.get("description") or "")[:120]})
+    if not candidates:
+        return None, False
+    if len(candidates) > 1:
+        return None, True
+    return candidates[0], False
+
+
+async def scheduled_payment_autoconfirm():
+    """Bot 1 — auto-finalize PROVISIONAL payments whose money has already cleared the bank, by matching
+    them to a reconciled bank credit. Ambiguous/unmatched ones are left for the founder's 'confirm <REF>'."""
+    if os.environ.get("PAYMENT_AUTOCONFIRM_ENABLED", "").lower() not in ("1", "true", "yes", "on"):
+        return
+    if not email_agent.is_configured():
+        return
+    cap = int(os.environ.get("PAYMENT_AUTOCONFIRM_MAX_PER_RUN", "25"))
+    # Trial/observe mode: report what WOULD be auto-confirmed but DON'T post to the ledger — lets the
+    # founder validate the matching for a while before trusting it with real money.
+    dry_run = os.environ.get("PAYMENT_AUTOCONFIRM_DRY_RUN", "").lower() in ("1", "true", "yes", "on")
+    # Bank credits already consumed by a previous auto-confirm — never double-post the same credit.
+    consumed = set()
+    async for p in db.pratibha_payments.find({"auto_bank_match.bank_key": {"$exists": True}},
+                                             {"_id": 0, "auto_bank_match": 1}):
+        bk = (p.get("auto_bank_match") or {}).get("bank_key")
+        if bk:
+            consumed.add(bk)
+    done = 0
+    async for rec in db.pratibha_payments.find({"status": "provisional"}, {"_id": 0}):
+        if done >= cap:
+            break
+        match, ambiguous = await _payment_find_bank_credit(rec, consumed)
+        if ambiguous:
+            logger.info(f"Payment auto-confirm: {rec.get('ref')} has multiple bank-credit matches — leaving for founder")
+            continue
+        if not match:
+            continue
+        now = datetime.now(timezone.utc).isoformat()
+        party = rec.get("matched_name") or rec.get("party_name") or "(party)"
+        amt = _pay_amt2(rec.get("amount"))
+        if dry_run:
+            if rec.get("auto_confirm_suggested_at"):  # already flagged this one — don't repeat
+                continue
+            consumed.add(match["bank_key"])
+            done += 1
+            await db.pratibha_payments.update_one({"id": rec["id"]},
+                {"$set": {"auto_confirm_suggested_at": now, "auto_confirm_suggested_match": match}})
+            note = (f"👀 *(trial)* Main is payment ko auto-confirm karti — *{rec.get('ref')}*\n"
+                    f"*{party}* — ₹{amt:,.0f}\nBank credit ({match.get('bank_name')}, {match.get('transaction_date')}, "
+                    f"match: {match.get('signal')}). Sahi ho to *'confirm {rec.get('ref')}'* reply kijiye; "
+                    f"galat ho to bataiye — main seekh lungi 🙏")
+            try:
+                await send_whatsapp_message(await _pr_wa_target(_pr_founder_wa_target()), note)
+            except Exception as e:
+                logger.error(f"payment auto-confirm (trial) WA note failed: {e}")
+            logger.info(f"Payment auto-confirm TRIAL would-confirm {rec.get('ref')} ({party} ₹{amt:,.0f}) via {match.get('bank_key')} [{match.get('signal')}]")
+            continue
+        ok = await _pratibha_payment_finalize(rec, by="auto_bank_match")
+        if not ok:
+            continue
+        consumed.add(match["bank_key"])
+        done += 1
+        await db.pratibha_payments.update_one({"id": rec["id"]},
+            {"$set": {"auto_bank_match": match, "auto_confirmed_at": now}})
+        note = (f"✅ Auto-confirmed payment *{rec.get('ref')}*\n*{party}* — ₹{amt:,.0f}\n"
+                f"Bank credit mil gaya ({match.get('bank_name')}, {match.get('transaction_date')}, "
+                f"match: {match.get('signal')}). Ledger me post kar diya — aapko 'confirm' karne ki zarurat nahi 🙏")
+        try:
+            await send_whatsapp_message(await _pr_wa_target(_pr_founder_wa_target()), note)
+        except Exception as e:
+            logger.error(f"payment auto-confirm WA note failed: {e}")
+        logger.info(f"Payment AUTO-CONFIRMED {rec.get('ref')} ({party} ₹{amt:,.0f}) via bank {match.get('bank_key')} [{match.get('signal')}]")
+    if done:
+        logger.info(f"Payment auto-confirm run ({'TRIAL' if dry_run else 'LIVE'}): {done} provisional payment(s) handled")
 
 
 _PR_PAY_KW = re.compile(r"\b(pay(ment|ed|)|paid|paisa|paise|rupee|rupees|amount|neft|imps|rtgs|upi|cheque|"
@@ -74171,31 +74332,44 @@ def _shop_card(m: dict) -> dict:
 _SHOP_BASEQ = {"is_active": {"$ne": False}, "selling_price": {"$gt": 0}, "image_url": {"$nin": [None, ""]}}
 
 
+def _shop_query(store: Optional[str] = None) -> dict:
+    """Sellable-product filter for a storefront. Default (None / "in") = the India catalogue
+    (active, priced, imaged). A named store (e.g. "hk") returns ONLY that store's own products by
+    `store` tag, priced + imaged — and deliberately ignores is_active, since second-store products
+    are imported inactive so they never appear on the India storefront."""
+    if store and store.strip().lower() not in ("", "in"):
+        return {"store": store.strip().lower(), "selling_price": {"$gt": 0},
+                "image_url": {"$nin": [None, ""]}}
+    return dict(_SHOP_BASEQ)
+
+
 @api_router.get("/shop/products")
-async def shop_products(limit: int = 300, category: Optional[str] = None, q: Optional[str] = None):
+async def shop_products(limit: int = 300, category: Optional[str] = None, q: Optional[str] = None,
+                        store: Optional[str] = None):
     """All sellable products for the storefront (active, priced, with an image)."""
-    query = dict(_SHOP_BASEQ)
+    base = _shop_query(store)
+    query = dict(base)
     if category:
         query["category"] = {"$regex": f"^{re.escape(category)}$", "$options": "i"}
     if q:
         query["name"] = {"$regex": re.escape(q), "$options": "i"}
     cur = db.master_skus.find(query).sort("mrp", -1).limit(min(limit, 500))
     items = [_shop_card(m) async for m in cur]
-    cats = await db.master_skus.distinct("category", _SHOP_BASEQ)
+    cats = await db.master_skus.distinct("category", base)
     return {"products": items, "count": len(items), "categories": sorted([c for c in cats if c])}
 
 
 @api_router.get("/shop/featured")
-async def shop_featured(limit: int = 8):
-    cur = db.master_skus.find(_SHOP_BASEQ).sort("mrp", -1).limit(min(limit, 24))
+async def shop_featured(limit: int = 8, store: Optional[str] = None):
+    cur = db.master_skus.find(_shop_query(store)).sort("mrp", -1).limit(min(limit, 24))
     return {"products": [_shop_card(m) async for m in cur]}
 
 
 @api_router.get("/shop/product/{pid}")
-async def shop_product(pid: str):
+async def shop_product(pid: str, store: Optional[str] = None):
     m = await db.master_skus.find_one(
-        {"$and": [_SHOP_BASEQ, {"$or": [{"id": pid}, {"sku_code": pid}, {"shopify_handle": pid},
-                                        {"web_slug": pid}]}]})
+        {"$and": [_shop_query(store), {"$or": [{"id": pid}, {"sku_code": pid}, {"shopify_handle": pid},
+                                               {"web_slug": pid}]}]})
     if not m:
         raise HTTPException(status_code=404, detail="Product not found")
     return {"product": _shop_card(m)}
@@ -74219,6 +74393,7 @@ class ShopCheckoutCreate(BaseModel):
     pincode: Optional[str] = None
     gstin: Optional[str] = None        # B2B GST purchase → GST invoice
     payment_method: str = "razorpay"   # "razorpay" | "cod"
+    store: Optional[str] = None        # storefront the order came from ("in" default, "hk", …)
 
 
 class ShopCheckoutVerify(BaseModel):
@@ -74237,10 +74412,12 @@ async def shop_checkout_create(body: ShopCheckoutCreate):
         raise HTTPException(status_code=400, detail="A valid 10-digit phone number is required")
     if not (body.name or "").strip():
         raise HTTPException(status_code=400, detail="Name is required")
+    store = (body.store or "in").strip().lower() or "in"
+    shopq = _shop_query(store)
     line_items, subtotal, gst_total = [], 0.0, 0.0
     for it in body.items:
         m = await db.master_skus.find_one(
-            {"$and": [_SHOP_BASEQ, {"$or": [{"id": it.id}, {"sku_code": it.id}]}]})
+            {"$and": [shopq, {"$or": [{"id": it.id}, {"sku_code": it.id}]}]})
         if not m:
             continue
         qty = max(1, int(it.qty or 1))
@@ -74263,7 +74440,7 @@ async def shop_checkout_create(body: ShopCheckoutCreate):
     onum = "MGW-" + oid.replace("-", "")[:8].upper()
     party = await db.parties.find_one({"phone": {"$regex": phone + "$"}}, {"id": 1})
     await db.marketplace_orders.insert_one({
-        "id": oid, "order_number": onum, "source": "storefront",
+        "id": oid, "order_number": onum, "source": "storefront", "store": store,
         "customer_name": body.name.strip(), "customer_phone": phone, "customer_email": body.email,
         "party_id": (party or {}).get("id"),
         "items": line_items, "subtotal": total, "discount": 0, "total": total,

@@ -33,13 +33,14 @@
   if($('qtyInc')) $('qtyInc').addEventListener('click',function(){ qty++; $('qtyVal').textContent=qty; });
   if($('qtyDec')) $('qtyDec').addEventListener('click',function(){ if(qty>1){ qty--; $('qtyVal').textContent=qty; } });
   if($('addBtn')) $('addBtn').addEventListener('click',function(){ if(prod){ MGCart.add(prod,qty); MG.toast('Added '+qty+' to cart ✓'); } });
-  if($('buyBtn')) $('buyBtn').addEventListener('click',function(){ if(prod){ MGCart.add(prod,qty); location.href='/store/cart/'; } });
+  var BASE=(MG&&MG.base)||'/store';
+  if($('buyBtn')) $('buyBtn').addEventListener('click',function(){ if(prod){ MGCart.add(prod,qty); location.href=BASE+'/cart/'; } });
 
   if(window.__MGPRODUCT){ render(window.__MGPRODUCT); return; }
   var id=new URLSearchParams(location.search).get('id');
-  if(!id){ var m=location.pathname.match(/\/store\/p\/([^\/]+)/); if(m) id=decodeURIComponent(m[1]); }
-  if(!id){ location.href='/store/products/'; return; }
-  fetch('/api/shop/product/'+encodeURIComponent(id)).then(function(r){ return r.json(); }).then(function(d){
+  if(!id){ var m=location.pathname.match(/\/(?:store|hk)\/p\/([^\/]+)/); if(m) id=decodeURIComponent(m[1]); }
+  if(!id){ location.href=BASE+'/products/'; return; }
+  fetch((MG&&MG.api?MG.api('/api/shop/product/'+encodeURIComponent(id)):'/api/shop/product/'+encodeURIComponent(id))).then(function(r){ return r.json(); }).then(function(d){
     if(d && d.product) render(d.product);
     else document.querySelector('.mg-pdp').innerHTML='<p style="padding:80px;text-align:center">Product not found.</p>';
   });

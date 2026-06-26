@@ -2,6 +2,13 @@
    (promo bar + sticky header + cart drawer + mobile nav). Injected on every /store page. */
 (function(){
   window.MG = window.MG || {};
+  /* base-path + store awareness: the SAME runtime drives /store/ (India) and /hk/ (Hong Kong). */
+  var P = location.pathname;
+  var BASE = (P === '/hk' || P.indexOf('/hk/') === 0) ? '/hk' : '/store';
+  var STORE = BASE === '/hk' ? 'hk' : 'in';
+  MG.base = BASE; MG.store = STORE;
+  /* append ?store= to /api/shop calls for named stores (India omits it = default catalogue) */
+  MG.api = function(path){ if(STORE==='in') return path; return path + (path.indexOf('?')>=0?'&':'?') + 'store=' + STORE; };
   var INR = function(n){ return Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:0}); };
   MG.inr = INR;
   var esc = function(s){ return String(s||'').replace(/"/g,'&quot;').replace(/</g,'&lt;'); };
@@ -32,13 +39,15 @@
 
   /* ---------------- product card (listing/home) ---------------- */
   window.__mgProducts={};
-  MG.card=function(p){ var pct=p.compare_at?Math.round((p.compare_at-p.price)/p.compare_at*100):0;
+  /* India has pre-baked SEO pages at /store/p/{slug}/; named stores use the dynamic product page. */
+  MG.pdp=function(p){ return STORE==='in' ? (BASE+'/p/'+(p.slug||p.id)+'/') : (BASE+'/product/?id='+p.id); };
+  MG.card=function(p){ var pct=p.compare_at?Math.round((p.compare_at-p.price)/p.compare_at*100):0; var href=MG.pdp(p);
     return '<article class="mg-pc spec" data-product-id="'+p.id+'">'
-      +'<a class="mg-pc-img" href="/store/p/'+(p.slug||p.id)+'/" aria-label="'+esc(p.title)+'">'
+      +'<a class="mg-pc-img" href="'+href+'" aria-label="'+esc(p.title)+'">'
       +(p.compare_at?'<span class="mg-pc-tag mg-pc-tag-sale">Sale</span>':'')
       +(p.image?'<img src="'+p.image+'" alt="'+esc(p.title)+'" loading="lazy">':'<img src="/shop/inverter.png" alt="">')+'</a>'
       +'<div class="mg-pc-body">'+(p.type?'<div class="mg-pc-cat">'+p.type+'</div>':'')
-      +'<h3 class="mg-pc-title"><a href="/store/p/'+(p.slug||p.id)+'/">'+p.title+'</a></h3>'
+      +'<h3 class="mg-pc-title"><a href="'+href+'">'+p.title+'</a></h3>'
       +'<div class="mg-pc-price-row"><span class="mg-pc-now">₹'+INR(p.price)+'</span>'
       +(p.compare_at?'<span class="mg-pc-was">₹'+INR(p.compare_at)+'</span><span class="mg-pc-pct">−'+pct+'%</span>':'')+'</div>'
       +'<button class="mg-btn mg-btn-primary mg-pc-cta" type="button" data-add="'+p.id+'">Add to cart</button></div></article>'; };
@@ -62,7 +71,7 @@
       +'<header class="mg-header" style="position:sticky;top:0;z-index:100">'
       +'<div class="mg-header-inner" style="display:flex;align-items:center;justify-content:space-between;gap:16px;max-width:1320px;margin:0 auto;padding:12px 20px">'
       +'<button type="button" class="mg-icon-btn" data-toggle="mobile-nav" aria-label="Menu">'+ICON.menu+'</button>'
-      +'<a class="mg-logo" href="/store/" style="display:flex;align-items:center;gap:10px;text-decoration:none;color:inherit">'
+      +'<a class="mg-logo" href="'+BASE+'/" style="display:flex;align-items:center;gap:10px;text-decoration:none;color:inherit">'
       +'<img src="/shop/logo-mark.png" width="40" height="40" alt="MuscleGrid">'
       +'<div class="mg-logo-text"><div class="mg-logo-word" style="font-family:var(--mg-font-display);font-weight:800;font-size:22px;line-height:1"><span style="color:var(--mg-orange)">Muscle</span>Grid</div><div class="mg-logo-tag" style="font-size:10.5px;color:var(--mg-fg-muted)">Consistency Through You</div></div></a>'
       +'<div class="mg-header-actions" style="display:flex;gap:6px;align-items:center">'
@@ -78,10 +87,10 @@
       +'<aside class="mg-drawer" data-cart-drawer hidden><div class="mg-drawer-head"><span>Cart · <span data-cart-count-text>0</span></span><button class="mg-icon-btn" data-close>'+ICON.close+'</button></div>'
       +'<div class="mg-drawer-body" data-cart-body></div>'
       +'<div class="mg-drawer-foot" data-cart-foot hidden><div class="mg-drawer-totals"><div class="row total" style="display:flex;justify-content:space-between;font-weight:800;font-size:18px;padding:10px 0"><span>Total</span><span data-cart-total></span></div></div>'
-      +'<a class="mg-btn mg-btn-primary" href="/store/cart/" style="width:100%">Checkout →</a>'
+      +'<a class="mg-btn mg-btn-primary" href="'+BASE+'/cart/" style="width:100%">Checkout →</a>'
       +'<div style="text-align:center;color:var(--mg-iron-400);font-size:11px;margin-top:8px">🔒 UPI · Cards · Net Banking · EMI</div></div></aside>'
-      +'<aside class="mg-mnav" data-mnav hidden><div class="mg-mnav-head"><a class="mg-logo" href="/store/" style="display:flex;gap:8px;align-items:center;text-decoration:none;color:inherit"><img src="/shop/logo-mark.png" width="30" height="30"><div class="mg-logo-word" style="font-weight:800"><span style="color:var(--mg-orange)">Muscle</span>Grid</div></a><button class="mg-icon-btn" data-close>'+ICON.close+'</button></div>'
-      +'<div class="mg-mnav-body"><a href="/store/build-battery/" style="color:var(--mg-orange);font-weight:800">⚡ Build Your Battery</a><a href="/store/products/">All products</a><a href="/store/products/?category=Inverter">Solar Inverters</a><a href="/store/products/?category=Battery">Lithium Batteries</a><a href="/store/products/?category=Stabilizer">Stabilizers</a><a href="tel:+91'+PHONE.replace(/ /g,'')+'">📞 24×7 · '+PHONE+'</a><a href="https://wa.me/919999036254">💬 Chat on WhatsApp</a></div>'
+      +'<aside class="mg-mnav" data-mnav hidden><div class="mg-mnav-head"><a class="mg-logo" href="'+BASE+'/" style="display:flex;gap:8px;align-items:center;text-decoration:none;color:inherit"><img src="/shop/logo-mark.png" width="30" height="30"><div class="mg-logo-word" style="font-weight:800"><span style="color:var(--mg-orange)">Muscle</span>Grid</div></a><button class="mg-icon-btn" data-close>'+ICON.close+'</button></div>'
+      +'<div class="mg-mnav-body"><a href="'+BASE+'/build-battery/" style="color:var(--mg-orange);font-weight:800">⚡ Build Your Battery</a><a href="'+BASE+'/products/">All products</a><a href="'+BASE+'/products/?category=Inverter">Solar Inverters</a><a href="'+BASE+'/products/?category=Battery">Lithium Batteries</a><a href="'+BASE+'/products/?category=Stabilizer">Stabilizers</a><a href="tel:+91'+PHONE.replace(/ /g,'')+'">📞 24×7 · '+PHONE+'</a><a href="https://wa.me/919999036254">💬 Chat on WhatsApp</a></div>'
       +'<div class="mg-mnav-foot"><a class="mg-btn mg-btn-primary" href="tel:+91'+PHONE.replace(/ /g,'')+'" style="width:100%">Free Consultation</a></div></aside>'
       +'<div data-search-overlay hidden style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:200;display:flex;align-items:flex-start;justify-content:center;padding-top:14vh"><form data-search-form style="background:#fff;border-radius:14px;padding:18px;width:min(560px,92vw);display:flex;gap:10px"><input name="q" placeholder="Search inverters, batteries, stabilizers…" autocomplete="off" style="flex:1;padding:14px;border:1px solid var(--mg-iron-200);border-radius:10px;font-size:16px"><button class="mg-btn mg-btn-primary" type="submit">Search</button></form></div>';
     document.body.appendChild(aux);
@@ -119,9 +128,9 @@
         +'<div style="font-family:var(--mg-font-mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;margin-top:5px">Consistency Through You</div>'
         +'<p class="desc">Industrial power, engineered for India. Solar inverters, LiFePO₄ lithium batteries &amp; mainline stabilizers — warranty-backed, 12,000+ homes powered.</p>'
         +'<div class="socs"><a class="mgfs" href="https://www.instagram.com/musclegrid_industries" aria-label="Instagram">IG</a><a class="mgfs" href="https://facebook.com/MuscleGrid" aria-label="Facebook">FB</a><a class="mgfs" href="https://wa.me/919999036254" aria-label="WhatsApp">WA</a></div></div>'
-        +'<div><h4>Shop</h4>'+lk('/store/build-battery/','⚡ Build your battery')+lk('/store/products/','All products')+lk('/store/products/?category=Inverter','Solar inverters')+lk('/store/products/?category=Battery','Lithium batteries')+lk('/store/products/?category=Stabilizer','Stabilizers')+'</div>'
-        +'<div><h4>Company</h4>'+lk('/store/about/','About us')+lk('/store/dealers/','Become a dealer')+lk('/store/support/','Support &amp; manuals')+lk('/store/contact/','Contact')+'</div>'
-        +'<div><h4>Help &amp; Policies</h4>'+lk('/store/policies/privacy/','Privacy policy')+lk('/store/policies/terms/','Terms &amp; conditions')+lk('/store/policies/refund/','Refund &amp; returns')+lk('/store/policies/shipping/','Shipping policy')+'</div>'
+        +'<div><h4>Shop</h4>'+lk(BASE+'/build-battery/','⚡ Build your battery')+lk(BASE+'/products/','All products')+lk(BASE+'/products/?category=Inverter','Solar inverters')+lk(BASE+'/products/?category=Battery','Lithium batteries')+lk(BASE+'/products/?category=Stabilizer','Stabilizers')+'</div>'
+        +'<div><h4>Company</h4>'+lk(BASE+'/about/','About us')+lk(BASE+'/dealers/','Become a dealer')+lk(BASE+'/support/','Support &amp; manuals')+lk(BASE+'/contact/','Contact')+'</div>'
+        +'<div><h4>Help &amp; Policies</h4>'+lk(BASE+'/policies/privacy/','Privacy policy')+lk(BASE+'/policies/terms/','Terms &amp; conditions')+lk(BASE+'/policies/refund/','Refund &amp; returns')+lk(BASE+'/policies/shipping/','Shipping policy')+'</div>'
       +'</div>'
       +'<div class="bottom"><span>© 2026 MuscleGrid Industries (Electronics Bay) · 704, Sector-16, Gurugram · <a href="tel:+919999036254">099990 36254</a> · <a href="mailto:service@musclegrid.in">service@musclegrid.in</a></span>'
       +'<span class="pay">We accept <i>UPI</i><i>Cards</i><i>NetBanking</i><i>EMI</i></span></div>'
@@ -137,15 +146,15 @@
     var so=document.querySelector('[data-search-overlay]');
     document.querySelector('[data-toggle="search"]').addEventListener('click',function(){ so.hidden=false; var i=so.querySelector('input'); setTimeout(function(){i.focus();},50); });
     so.addEventListener('click',function(e){ if(e.target===so) so.hidden=true; });
-    document.querySelector('[data-search-form]').addEventListener('submit',function(e){ e.preventDefault(); var q=e.target.q.value.trim(); if(q) location.href='/store/products/?q='+encodeURIComponent(q); });
+    document.querySelector('[data-search-form]').addEventListener('submit',function(e){ e.preventDefault(); var q=e.target.q.value.trim(); if(q) location.href=BASE+'/products/?q='+encodeURIComponent(q); });
 
     MG.renderDrawer=function(){
       var c=MGCart.get(), body=document.querySelector('[data-cart-body]'), foot=document.querySelector('[data-cart-foot]');
       if(!body) return;
-      if(!c.length){ body.innerHTML='<div class="mg-drawer-empty" style="text-align:center;padding:40px 20px;color:var(--mg-iron-500)"><div style="font-size:48px">🛒</div><div style="margin-top:10px">Your cart is empty.</div><a class="mg-btn mg-btn-primary" style="margin-top:18px" href="/store/products/">Shop catalogue</a></div>'; foot.hidden=true; MGCart.badge(); return; }
+      if(!c.length){ body.innerHTML='<div class="mg-drawer-empty" style="text-align:center;padding:40px 20px;color:var(--mg-iron-500)"><div style="font-size:48px">🛒</div><div style="margin-top:10px">Your cart is empty.</div><a class="mg-btn mg-btn-primary" style="margin-top:18px" href="'+BASE+'/products/">Shop catalogue</a></div>'; foot.hidden=true; MGCart.badge(); return; }
       body.innerHTML=c.map(function(it){ return '<div class="mg-drawer-item" data-id="'+it.id+'" style="display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--mg-iron-200)">'
         +'<div class="mg-drawer-thumb" style="width:60px;height:60px;border:1px solid var(--mg-iron-200);border-radius:8px;overflow:hidden;flex-shrink:0;background:#fff"><img src="'+(it.image||'/shop/inverter.png')+'" style="width:100%;height:100%;object-fit:contain"></div>'
-        +'<div style="flex:1;min-width:0"><a class="mg-drawer-title" href="/store/product/?id='+it.id+'" style="font-weight:600;font-size:13px;color:var(--mg-fg);text-decoration:none;display:block;line-height:1.3">'+it.title+'</a>'
+        +'<div style="flex:1;min-width:0"><a class="mg-drawer-title" href="'+BASE+'/product/?id='+it.id+'" style="font-weight:600;font-size:13px;color:var(--mg-fg);text-decoration:none;display:block;line-height:1.3">'+it.title+'</a>'
         +'<div class="mg-drawer-qty" style="display:inline-flex;align-items:center;border:1px solid var(--mg-iron-200);border-radius:6px;margin-top:6px"><button data-dec style="padding:4px 10px;border:none;background:none;cursor:pointer">−</button><span style="min-width:22px;text-align:center;font-weight:700">'+it.qty+'</span><button data-inc style="padding:4px 10px;border:none;background:none;cursor:pointer">+</button></div></div>'
         +'<div style="text-align:right"><div style="font-weight:800;font-size:14px">₹'+INR(it.price*it.qty)+'</div><button data-remove style="border:none;background:none;color:var(--mg-iron-400);cursor:pointer;font-size:18px;margin-top:6px">×</button></div></div>'; }).join('');
       document.querySelector('[data-cart-total]').textContent='₹'+INR(MGCart.total());
