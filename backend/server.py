@@ -870,6 +870,17 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Bot 2: transcribe + analyze Smartflo call recordings (gated, default OFF).
+        scheduler.add_job(
+            scheduled_call_intelligence,
+            IntervalTrigger(minutes=int(os.environ.get("CALL_INTEL_INTERVAL_MIN", "30"))),
+            id="call_intelligence",
+            name="Call Intelligence (transcribe + analyze Smartflo recordings)",
+            replace_existing=True,
+            misfire_grace_time=3600,
+            max_instances=1,
+        )
+
         # "Payment received but material not dispatched" watch — reminds every 2 days until shipped.
         scheduler.add_job(
             scheduled_pratibha_dispatch_watch,
@@ -14785,6 +14796,93 @@ async def get_supervisor_stats(user: dict = Depends(require_roles(["supervisor",
         "urgent_tickets": customer_escalated,
         "resolved_today": resolved_today
     }
+
+@api_router.get("/supervisor/team-overview")
+async def get_supervisor_team_overview(user: dict = Depends(require_roles(["supervisor", "admin"]))):
+    """Team-management view for the supervisor: for every sales+support staffer (role call_support)
+    what they are working on RIGHT NOW (live workload) and how they are performing.
+    Sales = leads (pipeline/conversions/follow-ups); Support = tickets (open/resolved/SLA);
+    plus call activity. One row per staffer + a team roll-up."""
+    now = datetime.now(timezone.utc)
+    today0 = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    d7 = (now - timedelta(days=7)).isoformat()
+    d30 = (now - timedelta(days=30)).isoformat()
+    LEAD_ACTIVE = ["new", "contacted", "qualified", "proposal_sent", "negotiation"]
+    TICKET_CLOSED = ["closed", "closed_by_agent", "resolved_on_call"]
+
+    staff = await db.users.find({"role": "call_support"},
+                                {"_id": 0, "id": 1, "first_name": 1, "last_name": 1, "email": 1}).to_list(50)
+    rows = []
+    for a in staff:
+        aid = a["id"]
+        full = f"{a.get('first_name', '')} {a.get('last_name', '')}".strip()
+
+        # ---- Sales (leads) ----
+        lead_q = {"assigned_to": aid}
+        assigned = await db.leads.count_documents(lead_q)
+        active = await db.leads.count_documents({**lead_q, "status": {"$in": LEAD_ACTIVE}})
+        converted = await db.leads.count_documents({**lead_q, "status": "converted"})
+        conv7 = await db.leads.count_documents({**lead_q, "status": "converted", "converted_at": {"$gte": d7}})
+        conv30 = await db.leads.count_documents({**lead_q, "status": "converted", "converted_at": {"$gte": d30}})
+        fu_due_today = await db.leads.count_documents(
+            {**lead_q, "status": {"$in": LEAD_ACTIVE}, "follow_up_date": {"$ne": None, "$lt": now.isoformat(), "$gte": today0}})
+        fu_overdue = await db.leads.count_documents(
+            {**lead_q, "status": {"$in": LEAD_ACTIVE}, "follow_up_date": {"$ne": None, "$lt": today0}})
+        conv_rate = round(converted / assigned * 100, 1) if assigned else 0.0
+
+        # ---- Support (tickets) ----
+        open_tk = await db.tickets.count_documents({"assigned_to": aid, "status": {"$nin": TICKET_CLOSED}})
+        # resolved_by is rarely stamped, so attribute closes to the assignee via status+closed_at.
+        res_today = await db.tickets.count_documents(
+            {"assigned_to": aid, "status": {"$in": TICKET_CLOSED}, "closed_at": {"$gte": today0}})
+        res_7d = await db.tickets.count_documents(
+            {"assigned_to": aid, "status": {"$in": TICKET_CLOSED}, "closed_at": {"$gte": d7}})
+        sla_breaches = await db.tickets.count_documents(
+            {"assigned_to": aid, "sla_due": {"$lt": now.isoformat()}, "status": {"$nin": TICKET_CLOSED}})
+        closed_t = await db.tickets.find(
+            {"assigned_to": aid, "closed_at": {"$ne": None}, "created_at": {"$gte": d30}},
+            {"_id": 0, "created_at": 1, "closed_at": 1}).to_list(500)
+        avg_hours = 0.0
+        if closed_t:
+            tot = 0.0
+            for t in closed_t:
+                try:
+                    c = datetime.fromisoformat(str(t["created_at"]).replace("Z", "+00:00"))
+                    cl = datetime.fromisoformat(str(t["closed_at"]).replace("Z", "+00:00"))
+                    tot += (cl - c).total_seconds() / 3600
+                except Exception:
+                    pass
+            avg_hours = round(tot / len(closed_t), 1)
+
+        # ---- Calls (outbound, attributed by the CRM user who placed them) ----
+        calls_today = await db.smartflo_outbound_calls.count_documents(
+            {"initiated_by_name": full, "created_at": {"$gte": today0}})
+        calls_7d = await db.smartflo_outbound_calls.count_documents(
+            {"initiated_by_name": full, "created_at": {"$gte": d7}})
+
+        rows.append({
+            "agent_id": aid, "name": full or a.get("email") or "—", "email": a.get("email"),
+            "sales": {"assigned": assigned, "active_pipeline": active, "converted_total": converted,
+                      "converted_7d": conv7, "converted_30d": conv30, "conversion_rate": conv_rate,
+                      "followups_due_today": fu_due_today, "followups_overdue": fu_overdue},
+            "support": {"open_tickets": open_tk, "resolved_today": res_today, "resolved_7d": res_7d,
+                        "sla_breaches": sla_breaches, "avg_resolution_hours": avg_hours},
+            "calls": {"today": calls_today, "last_7d": calls_7d},
+            "workload": active + open_tk + fu_due_today,  # live items needing attention
+        })
+
+    rows.sort(key=lambda r: r["workload"], reverse=True)
+    summary = {
+        "staff_count": len(rows),
+        "open_tickets": sum(r["support"]["open_tickets"] for r in rows),
+        "active_leads": sum(r["sales"]["active_pipeline"] for r in rows),
+        "converted_7d": sum(r["sales"]["converted_7d"] for r in rows),
+        "resolved_7d": sum(r["support"]["resolved_7d"] for r in rows),
+        "sla_breaches": sum(r["support"]["sla_breaches"] for r in rows),
+        "followups_overdue": sum(r["sales"]["followups_overdue"] for r in rows),
+    }
+    return {"as_of": now.isoformat(), "summary": summary, "team": rows}
+
 
 @api_router.get("/supervisor/customer-warranties")
 async def get_customer_warranties_for_supervisor(
@@ -69746,6 +69844,190 @@ async def scheduled_payment_autoconfirm():
         logger.info(f"Payment auto-confirm run ({'TRIAL' if dry_run else 'LIVE'}): {done} provisional payment(s) handled")
 
 
+# ---- Bot 2: Call Intelligence — transcribe + analyze Smartflo recordings, surface tickets/leads/flags ----
+# 3,700+ answered call recordings sit un-analyzed. This job transcribes a small batch each run with the
+# LOCAL whisper util (free, CPU) and runs a cheap Claude classification, storing the result on the call.
+# In LIVE mode it auto-opens tickets for complaints/failures and leads for buying-intent, and flags
+# negative calls to the founder. In TRIAL mode it still transcribes+analyses (the valuable enrichment)
+# but only REPORTS what it would create — so the founder can judge accuracy before it acts.
+_CALL_INTEL_SYS = ("You analyze customer phone-call transcripts for MuscleGrid (solar inverters, batteries, "
+                   "stabilizers). Hinglish is common. Reply with ONLY valid minified JSON, no prose.")
+
+
+def _ci_device_type(text: str) -> str:
+    t = (text or "").lower()
+    if "batter" in t or "cell" in t or "lithium" in t:
+        return "battery"
+    if "stabil" in t:
+        return "stabilizer"
+    if "solar" in t or "panel" in t:
+        return "solar"
+    return "inverter"
+
+
+def _ci_prompt(transcript: str) -> str:
+    return (
+        "Analyze this customer phone-call transcript and classify it.\n"
+        f'TRANSCRIPT:\n"""{transcript[:6000]}"""\n\n'
+        "Return ONLY this JSON:\n"
+        '{"summary":"<=2 sentence summary of what the customer wanted",'
+        '"sentiment":"positive|neutral|negative",'
+        '"category":"complaint|sales_enquiry|service_request|warranty|delivery_status|payment|other",'
+        '"is_complaint":true|false,'
+        '"product_mentioned":"<product/model or empty>",'
+        '"product_failure":true|false,'
+        '"buying_intent":true|false,'
+        '"urgency":"low|medium|high",'
+        '"customer_name":"<name if clearly stated, else empty>",'
+        '"suggested_action":"none|open_ticket|create_lead|callback",'
+        '"red_flags":["<short phrases: anger, threat to return, repeat issue, etc.>"],'
+        '"action_reason":"<one short line>"}'
+    )
+
+
+async def _ci_open_ticket(call: dict, analysis: dict, phone: str, name: str) -> str:
+    tn = await generate_ticket_number()
+    now = datetime.now(timezone.utc).isoformat()
+    issue = (analysis.get("summary") or "Issue reported on phone call")[:2000]
+    pri = "high" if (analysis.get("urgency") == "high" or analysis.get("product_failure")) else "medium"
+    await db.tickets.insert_one({
+        "id": str(uuid.uuid4()), "ticket_number": tn,
+        "device_type": _ci_device_type(analysis.get("product_mentioned") or analysis.get("summary")),
+        "issue_description": issue, "customer_name": name or None, "customer_phone": phone,
+        "customer_id": None, "status": "new_request", "priority": pri,
+        "source": "call_intelligence", "created_by": "call_intelligence",
+        "created_at": now, "updated_at": now, "call_id": call.get("id"),
+        "status_history": [{"status": "new_request", "at": now, "by": "Call Intelligence"}]})
+    return tn
+
+
+async def _ci_create_lead(call: dict, analysis: dict, phone: str, name: str):
+    """Create a lead from a buying-intent call, deduping against existing open leads. Returns (id, is_new)."""
+    now = datetime.now(timezone.utc).isoformat()
+    d10 = re.sub(r"\D", "", phone or "")[-10:]
+    variants = [v for v in {d10, "+91" + d10, "91" + d10, phone} if v]
+    interaction = {"at": now, "channel": "call", "note": (analysis.get("summary") or "")[:500],
+                   "source": "call_intelligence", "call_id": call.get("id")}
+    if d10:
+        existing = await db.leads.find_one(
+            {"phone": {"$in": variants}, "status": {"$nin": ["converted", "lost"]}}, {"_id": 0, "id": 1})
+        if existing:
+            await db.leads.update_one({"id": existing["id"]},
+                {"$push": {"interactions": interaction}, "$set": {"updated_at": now}})
+            return existing["id"], False
+    lid = str(uuid.uuid4())
+    await db.leads.insert_one({
+        "id": lid, "phone": d10 or "", "name": name or (f"Caller {d10}" if d10 else "Call lead"),
+        "email": None, "product_interest": analysis.get("product_mentioned") or analysis.get("category"),
+        "source": "call_intelligence", "status": "new", "notes": analysis.get("summary"),
+        "created_by": "call_intelligence", "created_at": now, "updated_at": now,
+        "interactions": [interaction], "call_id": call.get("id")})
+    return lid, True
+
+
+async def scheduled_call_intelligence():
+    """Bot 2 — transcribe + analyze a batch of answered Smartflo recordings; route to tickets/leads/flags."""
+    if os.environ.get("CALL_INTEL_ENABLED", "").lower() not in ("1", "true", "yes", "on"):
+        return
+    try:
+        from utils import voice_transcribe
+    except Exception as e:
+        logger.warning(f"call intelligence: import failed: {e}")
+        return
+    if not voice_transcribe.available():
+        logger.warning("call intelligence: faster_whisper not available — skipping")
+        return
+    dry_run = os.environ.get("CALL_INTEL_DRY_RUN", "").lower() in ("1", "true", "yes", "on")
+    batch = int(os.environ.get("CALL_INTEL_BATCH", "6"))
+    min_dur = int(os.environ.get("CALL_INTEL_MIN_DURATION", "30"))
+    q = {"ai_analysis": {"$exists": False},
+         "answered_agent_name": {"$nin": [None, ""]},
+         "call_intel_attempts": {"$not": {"$gte": 3}},
+         "$or": [{"recording_url": {"$nin": [None, ""]}}, {"raw_data.recording_url": {"$nin": [None, ""]}}]}
+    processed, actions = 0, []
+    async for call in db.smartflo_calls.find(q, {"_id": 0}).sort("received_at", -1).limit(batch * 4):
+        if processed >= batch:
+            break
+        raw = call.get("raw_data") or {}
+        rec_url = call.get("recording_url") or raw.get("recording_url")
+        try:
+            dur = int(float(call.get("duration") or raw.get("duration") or 0))
+        except Exception:
+            dur = 0
+        if not rec_url or dur < min_dur:
+            await db.smartflo_calls.update_one({"id": call["id"]}, {"$inc": {"call_intel_attempts": 1}})
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=90) as cl:
+                r = await cl.get(rec_url)
+                r.raise_for_status()
+                audio = r.content
+        except Exception as e:
+            logger.warning(f"call intel: download failed {call.get('id')}: {e}")
+            await db.smartflo_calls.update_one({"id": call["id"]}, {"$inc": {"call_intel_attempts": 1}})
+            continue
+        transcript = await asyncio.to_thread(voice_transcribe.transcribe, audio)  # CPU-bound → off the loop
+        if not transcript or len(transcript) < 8:
+            await db.smartflo_calls.update_one({"id": call["id"]}, {"$inc": {"call_intel_attempts": 1}})
+            continue
+        analysis = await _claude_json(_ci_prompt(transcript), system=_CALL_INTEL_SYS, max_tokens=900)
+        now = datetime.now(timezone.utc).isoformat()
+        upd = {"ai_analysis": {"transcript": transcript, "analysis": analysis, "analyzed_at": now,
+                               "analyzed_by": "call_intelligence", "model": VOLT_MODEL}, "processed": True}
+        if analysis.get("customer_name") and not call.get("matched_customer_name"):
+            upd["ai_detected_customer_name"] = analysis["customer_name"]
+        await db.smartflo_calls.update_one({"id": call["id"]}, {"$set": upd})
+        processed += 1
+
+        phone = re.sub(r"\D", "", str(call.get("caller_phone") or call.get("caller_id_number") or ""))[-10:]
+        name = analysis.get("customer_name") or call.get("matched_customer_name") or ""
+        sa = (analysis.get("suggested_action") or "none").lower()
+        wants_ticket = analysis.get("is_complaint") or analysis.get("product_failure") or sa == "open_ticket"
+        wants_lead = analysis.get("buying_intent") or sa == "create_lead"
+        negative = analysis.get("sentiment") == "negative" or bool(analysis.get("red_flags"))
+        if not (wants_ticket or wants_lead or negative):
+            continue
+        item = {"call_id": call.get("id"), "phone": phone, "name": name,
+                "summary": (analysis.get("summary") or "")[:160], "sentiment": analysis.get("sentiment"),
+                "category": analysis.get("category"), "urgency": analysis.get("urgency"),
+                "product": analysis.get("product_mentioned"), "would": None, "did": None}
+        if dry_run:
+            item["would"] = "open_ticket" if wants_ticket else ("create_lead" if wants_lead else "flag")
+            await db.smartflo_calls.update_one({"id": call["id"]},
+                {"$set": {"call_intel_suggestion": {k: item[k] for k in ("would", "summary", "sentiment", "urgency")}}})
+        else:
+            if wants_ticket and phone:
+                tn = await _ci_open_ticket(call, analysis, phone, name)
+                item["did"] = f"ticket {tn}"
+                await db.smartflo_calls.update_one({"id": call["id"]},
+                    {"$set": {"matched_ticket_number": tn, "call_intel_action": f"ticket:{tn}"}})
+            elif wants_lead and phone:
+                lid, is_new = await _ci_create_lead(call, analysis, phone, name)
+                item["did"] = "lead (new)" if is_new else "lead (updated)"
+                await db.smartflo_calls.update_one({"id": call["id"]}, {"$set": {"call_intel_action": "lead"}})
+            else:
+                item["did"] = "flagged"
+        actions.append(item)
+
+    # Founder digest. Trial: everything it WOULD do. Live: only negatives/high-urgency need eyes.
+    notable = actions if dry_run else [a for a in actions if a["sentiment"] == "negative" or a["urgency"] == "high"]
+    if notable:
+        head = ("👀 *(trial)* Call Intelligence — ye actions main leti" if dry_run
+                else "📞 Call Intelligence — calls needing attention")
+        lines = [head, ""]
+        for a in notable[:10]:
+            tag = a["would"] or a["did"] or "flag"
+            lines.append(f"• {a['name'] or a['phone'] or '?'} [{a['sentiment']}/{a['urgency']}] — "
+                         f"{a['summary']}  → *{tag}*")
+        try:
+            await send_whatsapp_message(await _pr_wa_target(_pr_founder_wa_target()), "\n".join(lines)[:3500])
+        except Exception as e:
+            logger.error(f"call intel founder digest failed: {e}")
+    if processed:
+        logger.info(f"Call intelligence run ({'TRIAL' if dry_run else 'LIVE'}): analyzed {processed}, "
+                    f"{len(actions)} actionable")
+
+
 _PR_PAY_KW = re.compile(r"\b(pay(ment|ed|)|paid|paisa|paise|rupee|rupees|amount|neft|imps|rtgs|upi|cheque|"
                         r"chq|cash|transfer|received|recd|credited|de diya|kar diye|kar diya|aa gaye|aa gaya|mil gaye)\b", re.I)
 _PR_CONFIRM_KW = re.compile(r"\b(confirm|confirmed|received|recd|credited|done|haan|ha|yes|mil gaya|aa gaya|ok)\b", re.I)
@@ -78826,7 +79108,7 @@ async def _maybe_feedback_to_review(digits: str, low: str, contact_name: str = "
     cutoff = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
     fb = await db.whatsapp_cloud_messages.find_one(
         {"phone": digits, "direction": "outgoing",
-         "kind": {"$in": ["purchase_feedback", "feedback_request"]},
+         "kind": {"$in": ["purchase_feedback", "feedback_request", "review_rating"]},
          "review_link_sent": {"$ne": True}, "ts": {"$gte": cutoff}},
         sort=[("ts", -1)])
     if not fb:
@@ -78835,6 +79117,13 @@ async def _maybe_feedback_to_review(digits: str, low: str, contact_name: str = "
     neg = bool(toks & _FB_NEG_WORDS) or any(p in low for p in _FB_NEG_PHRASES)
     pos = (bool(toks & _FB_POS_WORDS) or any(p in low for p in _FB_POS_PHRASES)
            or any(e in low for e in _FB_POS_EMOJI))
+    # Star-rating button tap (review_rating template) — "5 Star - Excellent" etc., or ⭐ emoji.
+    # An explicit tapped rating is deterministic, so it overrides the keyword guess:
+    # 4-5★ → happy (gets the Google link), 1-2★ → unhappy, 3★ → neutral (both to support).
+    _m = re.search(r"\b([1-5])\s*star", low)
+    star_ct = int(_m.group(1)) if _m else low.count("⭐")
+    if star_ct:
+        pos, neg = star_ct >= 4, star_ct <= 2
     now = datetime.now(timezone.utc).isoformat()
     if neg or not pos:
         # Unhappy or ambiguous: mark it, let the agent reply (it will help / escalate).
@@ -79427,6 +79716,36 @@ async def _maybe_missed_call_opener(digits: str, customer_text: str = "", contac
     return True
 
 
+async def _maybe_cod_rescue_ack(digits: str, text: str, now: str) -> bool:
+    """COD re-delivery campaign reply handler. If this phone was messaged by the
+    COD-rescue campaign and replies within the campaign window, record the reply,
+    send ONE fixed acknowledgement, and return True so the AI brain stays out of it.
+    Returns False for non-campaign phones / stale rows → normal handling resumes."""
+    row = await db.cod_redelivery_outreach.find_one({"phone": digits, "whatsapp_status": "sent"})
+    if not row:
+        return False
+    sent_at = row.get("sent_at") or ""
+    if sent_at and sent_at < (datetime.now(timezone.utc) - timedelta(days=14)).isoformat():
+        return False  # campaign window closed — let the normal agent handle it
+    low = (text or "").lower()
+    accepted = None
+    if re.search(r"\b(yes|haan|haa|ok|okay|chahiye|cod|resend|y)\b", low) or "resend on cod" in low:
+        accepted = True
+    elif re.search(r"\b(no|nahi|nai|cancel|not interested)\b", low):
+        accepted = False
+    upd = {"reply_text": (text or "")[:200], "reply_at": now}
+    if accepted is not None and row.get("cod_accepted") is None:
+        upd["cod_accepted"] = accepted
+    await db.cod_redelivery_outreach.update_one({"_id": row["_id"]}, {"$set": upd})
+    if not row.get("ack_sent"):
+        await whatsapp_cloud.send_text(digits,
+            "Thank you \U0001f64f We've noted your response. Our team will contact you shortly to "
+            "arrange the Cash-on-Delivery re-delivery. — MuscleGrid")
+        await db.cod_redelivery_outreach.update_one({"_id": row["_id"]},
+            {"$set": {"ack_sent": True, "ack_at": now}})
+    return True
+
+
 async def _pratibha_wa_autoreply(phone: str, text: str, contact_name: str = ""):
     """Generate + send a real Claude reply to an inbound WhatsApp message, safely."""
     if not (PRATIBHA_WA_AUTOREPLY and pratibha_brain.available() and whatsapp_cloud.enabled()):
@@ -79457,6 +79776,12 @@ async def _pratibha_wa_autoreply(phone: str, text: str, contact_name: str = ""):
         return  # previously opted out
     if await _wa_agent_paused(digits):
         return  # a human has taken over this chat — bot stays quiet
+
+    # COD re-delivery campaign: a reply from a queued customer gets ONE fixed
+    # acknowledgement and the AI brain stays muted (founder reviews before any
+    # reship). Bounded to the campaign window so it never mutes them for good.
+    if await _maybe_cod_rescue_ack(digits, t, now):
+        return
 
     # Feedback follow-up: a happy reply to our feedback request gets the Google
     # review link and we're done; otherwise fall through to the agent.
