@@ -4,6 +4,7 @@ import { useLocation } from 'react-router-dom';
 import { motion, useReducedMotion } from 'framer-motion';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
+import SupervisorTeam from './SupervisorTeam';
 import './SupervisorDashboard.css';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { Button } from '@/components/ui/button';
@@ -229,7 +230,7 @@ export default function SupervisorDashboard() {
           <div>
             <div className="cd-eyebrow"><span className="cd-dot" /> Live · 30 s refresh</div>
             <h2 className="cd-title">Supervisor <span className="thin">Command</span></h2>
-            <p className="cd-sub">Escalations and urgent tickets that need a decision</p>
+            <p className="cd-sub">Your sales &amp; support team, plus escalations that need a decision</p>
           </div>
           <motion.button whileHover={hover} whileTap={tap} onClick={fetchData} className="cd-btn">
             <RefreshCw className="h-4 w-4" /> Refresh
@@ -255,6 +256,11 @@ export default function SupervisorDashboard() {
           <CdStat icon={AlertTriangle} tone="orange" title="Customer Escalations" value={stats?.customer_escalated || 0} />
           <CdStat icon={Clock} tone="rose" title="Urgent (SLA)" value={stats?.urgent_tickets || 0} />
           <CdStat icon={CheckCircle} tone="emerald" title="Resolved Today" value={stats?.resolved_today || 0} />
+        </div>
+
+        {/* Sales & Support team — live workload + performance (supervisor manages this team) */}
+        <div className="cd-in">
+          <SupervisorTeam />
         </div>
 
         {/* ── Urgent banner ── */}
