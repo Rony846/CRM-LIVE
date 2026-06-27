@@ -4,6 +4,7 @@ import './DashboardLayout.css';
 import { useAuth, API } from '@/App';
 import NotificationBell from '@/components/notifications/NotificationBell';
 import ThemeSwitcher from '@/components/ui/ThemeSwitcher';
+import PowerSearch from '@/components/PowerSearch';
 import ScreenPop from '@/components/calls/ScreenPop';
 import TermsAcceptanceGuard from '@/components/dealer/TermsAcceptanceGuard';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -977,6 +978,9 @@ export default function DashboardLayout({ children, title }) {
           </div>
 
           <div className="flex items-center gap-3">
+            {/* Admin global power search */}
+            {user?.role === 'admin' && <PowerSearch />}
+
             {/* Shift Timer & Controls - Only for employees, not customers or dealers */}
             {user?.role && !['customer', 'dealer'].includes(user.role) && (
               <ShiftTimer token={token} user={user} />

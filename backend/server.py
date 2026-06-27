@@ -14492,6 +14492,108 @@ async def get_agent_performance(
     
     return performance
 
+@api_router.get("/admin/power-search")
+async def admin_power_search(q: str, user: dict = Depends(require_roles(["admin"]))):
+    """Global omni-search for admin: type a customer name, phone, order id, tracking,
+    serial, invoice no, GSTIN… and find the record ANYWHERE — CRM + Amazon + everything.
+    Fans out across every relevant collection in parallel and returns grouped results."""
+    q = (q or "").strip()
+    if len(q) < 2:
+        return {"query": q, "groups": []}
+    rx = {"$regex": re.escape(q), "$options": "i"}
+    digits = re.sub(r"\D", "", q)
+    phone_rx = {"$regex": digits} if len(digits) >= 6 else None
+    LIM = 8
+
+    def nm(r, *keys):
+        for k in keys:
+            v = r.get(k)
+            if v:
+                return v
+        return "—"
+
+    # (key, label, collection, text-fields, phone-fields, base-filter, title fn, subtitle fn, route fn)
+    SPECS = [
+        ("customer", "Customers", "parties", ["name", "gstin", "email"], ["phone"], {},
+         lambda r: nm(r, "name"), lambda r: f"{r.get('phone', '')} · {r.get('party_type', 'party')}",
+         lambda r: f"/admin/parties?q={r.get('phone') or r.get('name', '')}"),
+        ("account", "Customer Accounts", "users", ["first_name", "last_name", "email"], ["phone"],
+         {"role": "customer"}, lambda r: f"{r.get('first_name', '')} {r.get('last_name', '')}".strip(),
+         lambda r: f"{r.get('phone', '')} · {r.get('email', '')}", lambda r: f"/admin/customers?q={r.get('phone') or ''}"),
+        ("lead", "Leads", "leads", ["name", "email", "product_interest"], ["phone"], {},
+         lambda r: nm(r, "name"), lambda r: f"{r.get('phone', '')} · {r.get('status', '')} · {r.get('product_interest', '')}",
+         lambda r: "/admin/leads"),
+        ("ticket", "Support Tickets", "tickets",
+         ["ticket_number", "customer_name", "serial_number", "order_id", "tracking_id"], ["customer_phone"], {},
+         lambda r: f"{r.get('ticket_number', '')} · {r.get('customer_name', '')}",
+         lambda r: f"{r.get('status', '')} · {r.get('customer_phone', '')} · {r.get('product_name', '')}",
+         lambda r: f"/admin/tickets/{r.get('id', '')}"),
+        ("amazon", "Amazon Orders", "amazon_orders", ["amazon_order_id", "order_id", "buyer_name"],
+         ["phone_manual", "phone"], {},
+         lambda r: f"{r.get('amazon_order_id', '')} · {nm(r, 'customer_name_manual', 'buyer_name')}",
+         lambda r: f"{r.get('order_status') or r.get('crm_status', '')} · {r.get('phone_manual') or r.get('phone', '')}",
+         lambda r: "/admin/orders"),
+        ("sale", "Sales Orders", "sales_orders", ["order_number", "customer_name", "order_id", "marketplace_order_id"],
+         ["customer_phone", "phone"], {}, lambda r: f"{r.get('order_number', '')} · {r.get('customer_name', '')}",
+         lambda r: f"{r.get('status', '')} · {r.get('order_source', '')}", lambda r: "/admin/orders"),
+        ("dispatch", "Dispatches", "dispatches", ["dispatch_number", "tracking_id", "order_id", "serial_number"],
+         ["phone"], {}, lambda r: f"{r.get('dispatch_number', '')} · {nm(r, 'customer_name')}",
+         lambda r: f"{r.get('status', '')} · {r.get('tracking_id', '')}", lambda r: "/admin/orders"),
+        ("shipment", "Courier Shipments", "courier_shipments",
+         ["awb_number", "tracking_id", "customer_name", "amazon_order_id", "invoice_number"], ["phone"], {},
+         lambda r: f"{nm(r, 'customer_name')} · {r.get('awb_number') or r.get('tracking_id', '')}",
+         lambda r: f"{r.get('status', '')} · {r.get('amazon_order_id', '')}", lambda r: "/admin/orders"),
+        ("warranty", "Warranties", "warranties",
+         ["warranty_number", "first_name", "last_name", "serial_number", "order_id"], ["phone"], {},
+         lambda r: f"{r.get('first_name', '')} {r.get('last_name', '')}".strip() + f" · {r.get('serial_number', '')}",
+         lambda r: f"{r.get('product_name', '')} · {r.get('phone', '')}", lambda r: "/admin/warranties"),
+        ("dealer", "Dealers", "dealers", ["name", "firm_name", "gst_number", "email"], ["phone"], {},
+         lambda r: nm(r, "firm_name", "name"), lambda r: f"{r.get('phone', '')} · {r.get('email', '')}",
+         lambda r: f"/admin/dealers/{r.get('id', '')}"),
+        ("invoice", "Invoices", "sales_invoices", ["invoice_number", "party_name", "party_gstin"], [], {},
+         lambda r: f"{r.get('invoice_number', '')} · {r.get('party_name', '')}",
+         lambda r: f"₹{r.get('total_amount', 0)} · {r.get('invoice_date', '')}", lambda r: "/admin/reports"),
+        ("quotation", "Quotations", "quotations", ["quotation_number", "customer_name"], ["customer_phone"], {},
+         lambda r: f"{r.get('quotation_number', '')} · {r.get('customer_name', '')}",
+         lambda r: f"{r.get('status', '')}", lambda r: "/quotations"),
+        ("gate", "Gate Scans", "gate_logs", ["tracking_id", "ticket_number", "customer_name"], [], {},
+         lambda r: f"{nm(r, 'customer_name', 'ticket_number')} · {r.get('tracking_id', '')}",
+         lambda r: f"{r.get('scan_type', '')} · {(r.get('scanned_at') or '')[:16]}", lambda r: "/admin/gate-logs"),
+        ("return", "Returns / Refunds", "expected_returns", ["order_id", "customer_name"], ["customer_phone"], {},
+         lambda r: f"{nm(r, 'customer_name')} · {r.get('order_id', '')}",
+         lambda r: f"{r.get('status', '')} · ₹{r.get('refund_amount', 0)}", lambda r: "/admin/refunds"),
+        ("zoho", "Zoho Tickets", "zoho_tickets", ["ticket_number", "subject", "contact_name", "email"], ["phone"], {},
+         lambda r: f"{r.get('ticket_number', '')} · {r.get('contact_name', '')}",
+         lambda r: f"{r.get('status', '')} · {str(r.get('subject', ''))[:40]}", lambda r: "/admin/zoho-tickets"),
+        ("call", "Voice Calls", "omnidim_calls", ["customer_name", "product"], ["phone"], {},
+         lambda r: f"{nm(r, 'customer_name')} · {r.get('phone', '')}",
+         lambda r: f"{r.get('sentiment', '')} · {str(r.get('summary', ''))[:40]}", lambda r: "/admin/omnidim-calls"),
+    ]
+
+    async def run(spec):
+        key, label, coll, fields, phones, base, title, sub, route = spec
+        ors = [{f: rx} for f in fields]
+        if phone_rx and phones:
+            ors += [{f: phone_rx} for f in phones]
+        try:
+            rows = await db[coll].find({**base, "$or": ors}, {"_id": 0}).limit(LIM).to_list(LIM)
+        except Exception:
+            rows = []
+        items = []
+        for r in rows:
+            try:
+                items.append({"title": title(r) or "—", "subtitle": sub(r), "route": route(r),
+                              "id": r.get("id"), "phone": r.get("phone") or r.get("customer_phone")})
+            except Exception:
+                pass
+        return {"key": key, "label": label, "count": len(items), "items": items}
+
+    groups = await asyncio.gather(*[run(s) for s in SPECS])
+    groups = [g for g in groups if g["count"] > 0]
+    total = sum(g["count"] for g in groups)
+    return {"query": q, "total": total, "groups": groups}
+
+
 @api_router.get("/admin/tickets")
 async def get_all_tickets_admin(
     search: Optional[str] = None,
