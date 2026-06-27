@@ -18,13 +18,31 @@ export default function GateDashboard() {
   const [tracking, setTracking] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null); // {ok, msg}
+  const [histSearch, setHistSearch] = useState('');
+  const [histType, setHistType] = useState('all');
+  const [hist, setHist] = useState([]);
+  const [histLoading, setHistLoading] = useState(false);
+
+  // Searchable scan history — up to 200 inward/outward entries (backend /gate/logs
+  // already supports search + scan_type + limit).
+  const loadHistory = async (search = histSearch, type = histType) => {
+    setHistLoading(true);
+    try {
+      const qs = new URLSearchParams({ limit: '200' });
+      if ((search || '').trim()) qs.set('search', search.trim());
+      if (type !== 'all') qs.set('scan_type', type);
+      const l = await api('/gate/logs?' + qs.toString());
+      setHist(Array.isArray(l) ? l : []);
+    } catch { setHist([]); }
+    finally { setHistLoading(false); }
+  };
 
   const refresh = async () => {
     try { const s = await api('/gate/scheduled'); setScheduled(s?.scheduled_incoming || []); } catch { /* */ }
     try { const l = await api('/gate/logs?limit=8'); setLogs(Array.isArray(l) ? l : []); } catch { /* */ }
     try { const r = await api('/gate/return-batches?days=7'); setReturnBatches(r?.batches || []); } catch { /* */ }
   };
-  useEffect(() => { refresh(); /* eslint-disable-next-line */ }, []);
+  useEffect(() => { refresh(); loadHistory(); /* eslint-disable-next-line */ }, []);
 
   const today = todayISO();
   const scansToday = logs.filter((l) => (l.scanned_at || '').slice(0, 10) === today).length;
@@ -42,6 +60,7 @@ export default function GateDashboard() {
       setResult({ ok: true, msg: `${tab === 'inward' ? 'Inward' : 'Outward'} scan recorded${matched ? ` · ${matched}` : ' (no ticket/dispatch matched)'}${r.status ? ` → ${r.status}` : ''}` });
       setTracking('');
       await refresh();
+      await loadHistory();
     } catch (e) {
       setResult({ ok: false, msg: e.data?.detail || e.message || 'Scan failed' });
     } finally { setBusy(false); }
@@ -158,11 +177,33 @@ export default function GateDashboard() {
         </div>
       </GlassPanel>
 
-      {/* Recent logs (real) */}
-      <GlassPanel title="Recent Scans" icon="receipt_long">
-        <div className="divide-y divide-border-subtle/30">
-          {logs.length === 0 && <div className="p-stack-lg text-center text-text-secondary font-mono-data text-mono-data">No scans yet.</div>}
-          {logs.map((l) => {
+      {/* Scan history — searchable, up to 200 inward/outward entries */}
+      <GlassPanel title="Scan History" icon="history"
+        right={<span className="font-mono-data text-mono-data text-text-secondary">{hist.length}</span>}>
+        <div className="p-stack-md space-y-stack-sm">
+          <div className="relative">
+            <Icon name="search" className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant" style={{ fontSize: 18 }} />
+            <input
+              value={histSearch}
+              onChange={(e) => setHistSearch(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && loadHistory(e.target.value, histType)}
+              placeholder="Search tracking ID, ticket no, customer…"
+              className="w-full h-touch-target pl-10 pr-3 bg-surface-container border border-border-subtle rounded-lg text-on-surface font-mono-data text-mono-data focus:ring-2 focus:ring-primary/15 focus:border-primary outline-none"
+            />
+          </div>
+          <div className="flex gap-2">
+            {['all', 'inward', 'outward'].map((t) => (
+              <button key={t} onClick={() => { setHistType(t); loadHistory(histSearch, t); }}
+                className={`flex-1 py-1.5 rounded-lg font-label-caps text-[11px] uppercase transition-all active:scale-95 ${histType === t ? 'bg-primary-container text-on-primary-container' : 'bg-surface-container-low/60 text-on-surface-variant border border-border-subtle'}`}>
+                {t}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="divide-y divide-border-subtle/30 max-h-96 overflow-y-auto">
+          {histLoading && <div className="p-stack-lg text-center text-text-secondary font-mono-data text-mono-data">Loading…</div>}
+          {!histLoading && hist.length === 0 && <div className="p-stack-lg text-center text-text-secondary font-mono-data text-mono-data">No scans found.</div>}
+          {!histLoading && hist.map((l) => {
             const inward = l.scan_type === 'inward';
             return (
               <div key={l.id} className="px-stack-md py-stack-md flex items-center gap-stack-md">
