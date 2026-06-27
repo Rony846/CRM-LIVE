@@ -13,6 +13,7 @@ const todayISO = () => new Date().toISOString().slice(0, 10);
 export default function GateDashboard() {
   const [scheduled, setScheduled] = useState([]);
   const [logs, setLogs] = useState([]);
+  const [returnBatches, setReturnBatches] = useState([]);
   const [tab, setTab] = useState('inward');
   const [tracking, setTracking] = useState('');
   const [busy, setBusy] = useState(false);
@@ -21,6 +22,7 @@ export default function GateDashboard() {
   const refresh = async () => {
     try { const s = await api('/gate/scheduled'); setScheduled(s?.scheduled_incoming || []); } catch { /* */ }
     try { const l = await api('/gate/logs?limit=8'); setLogs(Array.isArray(l) ? l : []); } catch { /* */ }
+    try { const r = await api('/gate/return-batches?days=7'); setReturnBatches(r?.batches || []); } catch { /* */ }
   };
   useEffect(() => { refresh(); /* eslint-disable-next-line */ }, []);
 
@@ -87,6 +89,54 @@ export default function GateDashboard() {
           </div>
         )}
       </div>
+
+      {/* Amazon Return-OTP gate — OTP stays masked until every parcel is scanned inward */}
+      {returnBatches.length > 0 && (
+        <GlassPanel title="Amazon Returns — OTP Gate" icon="lock_open" iconClass="text-warning"
+          right={<span className="font-mono-data text-mono-data text-text-secondary">Scan all to unlock</span>}>
+          <div className="space-y-stack-md p-stack-md">
+            {returnBatches.map((b) => {
+              const done = !b.otp_locked;
+              const expired = b.status === 'expired';
+              return (
+                <div key={b.id}
+                  className={`rounded-xl border p-stack-md ${done ? 'border-success/40 bg-success/10' : expired ? 'border-error/40 bg-error/10' : 'border-border-subtle bg-surface-container/40'}`}>
+                  <div className="flex items-center justify-between gap-stack-sm flex-wrap">
+                    <p className="font-mono-data text-text-secondary text-[11px] truncate">
+                      {b.firm} · {b.email_date}{b.agent_name ? ` · ${b.agent_name}` : ''}{b.valid_through ? ` · valid ${b.valid_through}` : ''}{expired ? ' · EXPIRED' : ''}
+                    </p>
+                    <span className={`px-2 py-1 rounded font-label-caps text-[10px] uppercase shrink-0 ${done ? 'bg-success/15 text-success border border-success/20' : expired ? 'bg-error/15 text-error border border-error/20' : 'bg-warning/15 text-warning border border-warning/20'}`}>
+                      {b.scanned_count}/{b.total} scanned
+                    </span>
+                  </div>
+                  {done ? (
+                    <div className="mt-stack-sm flex items-center gap-stack-sm rounded-lg border border-success/40 bg-success/15 px-stack-md py-stack-sm">
+                      <Icon name="lock_open" className="text-success" />
+                      <span className="font-mono-data text-success font-bold text-2xl tracking-[0.3em]">{b.otp}</span>
+                    </div>
+                  ) : (
+                    <div className="mt-stack-sm flex items-center gap-stack-sm rounded-lg border border-border-subtle bg-surface-container/60 px-stack-md py-stack-sm">
+                      <Icon name="lock" className="text-text-secondary" />
+                      <span className="font-mono-data text-text-secondary text-2xl tracking-[0.3em]">••••••</span>
+                      <span className="font-mono-data text-text-secondary text-[11px] ml-auto">Scan all parcels to reveal</span>
+                    </div>
+                  )}
+                  <div className="mt-stack-sm space-y-1">
+                    {(b.items || []).map((it, i) => (
+                      <div key={i} className="flex items-center gap-2 text-[11px] font-mono-data">
+                        <Icon name={it.scanned ? 'check_circle' : 'radio_button_unchecked'}
+                          className={it.scanned ? 'text-success' : 'text-text-secondary'} style={{ fontSize: 14 }} />
+                        <span className="text-text-secondary">{it.tracking_id}</span>
+                        <span className="text-text-primary truncate flex-1">{it.product || it.order_id}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </GlassPanel>
+      )}
 
       {/* Scheduled incoming (real) */}
       <GlassPanel title="Scheduled Incoming" icon="schedule" iconClass="text-info"
