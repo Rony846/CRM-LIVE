@@ -23,7 +23,6 @@ import EmailTicketInbox from './pages/support/EmailTicketInbox';
 import ServiceAgentDashboard from './pages/service/ServiceAgentDashboard';
 import AccountantDashboard from './pages/accountant/AccountantDashboard';
 import CADashboard from './pages/ca/CADashboard';
-import LawyerDashboard from './pages/legal/LawyerDashboard';
 import DispatcherDashboard from './pages/dispatcher/DispatcherDashboard';
 import DispatcherTVMode from './pages/dispatcher/DispatcherTVMode';
 import AdminDashboard from './pages/admin/AdminDashboard';
@@ -514,10 +513,11 @@ function App() {
             </ProtectedRoute>
           } />
 
-          {/* Legal Portal (read-only flagged-orders view for external lawyer) */}
+          {/* Legal Portal — the lawyer's cases live in the legal_cases system, so
+              /legal redirects to the populated case page (was an empty parallel view). */}
           <Route path="/legal" element={
             <ProtectedRoute allowedRoles={['lawyer', 'admin']}>
-              <LawyerDashboard />
+              <Navigate to="/admin/legal-cases" replace />
             </ProtectedRoute>
           } />
 
