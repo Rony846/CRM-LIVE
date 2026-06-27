@@ -66,7 +66,9 @@
     if(document.querySelector('[data-mg-chrome]')) return;
     // remove any simplified inline header/footer-promo
     document.querySelectorAll('header.mg-header, .mg-promo').forEach(function(e){ if(!e.hasAttribute('data-mg-chrome')) e.remove(); });
-    var promoItems=[['Free shipping pan-India','On orders above ₹999'],['5-Year Warranty','On all lithium batteries'],['24×7 Support','Talk to a technician anytime'],['BIS Certified','IS 16242 inverter safety']];
+    var promoItems = IS_HK
+      ? [['🇭🇰 Ships from Hong Kong','Direct to your door'],['Customs & import duties INCLUDED','Nothing extra to pay on delivery'],['5-Year Warranty','On all lithium batteries'],['Fully landed price','No hidden charges']]
+      : [['Free shipping pan-India','On orders above ₹999'],['5-Year Warranty','On all lithium batteries'],['24×7 Support','Talk to a technician anytime'],['BIS Certified','IS 16242 inverter safety']];
     var marquee=''; for(var r=0;r<2;r++){ promoItems.forEach(function(p){ marquee+='<span class="mg-promo-item"><span class="mg-promo-dot"></span><b>'+p[0]+'</b>·<span style="color:#B5B5B5;font-weight:500">'+p[1]+'</span></span>'; }); }
     var head=document.createElement('div'); head.setAttribute('data-mg-chrome','1');
     head.innerHTML=
@@ -76,11 +78,12 @@
       +'<button type="button" class="mg-icon-btn" data-toggle="mobile-nav" aria-label="Menu">'+ICON.menu+'</button>'
       +'<a class="mg-logo" href="'+BASE+'/" style="display:flex;align-items:center;gap:10px;text-decoration:none;color:inherit">'
       +'<img src="/shop/logo-mark.png" width="40" height="40" alt="MuscleGrid">'
-      +'<div class="mg-logo-text"><div class="mg-logo-word" style="font-family:var(--mg-font-display);font-weight:800;font-size:22px;line-height:1"><span style="color:var(--mg-orange)">Muscle</span>Grid</div><div class="mg-logo-tag" style="font-size:10.5px;color:var(--mg-fg-muted)">Consistency Through You</div></div></a>'
+      +'<div class="mg-logo-text"><div class="mg-logo-word" style="font-family:var(--mg-font-display);font-weight:800;font-size:22px;line-height:1"><span style="color:var(--mg-orange)">Muscle</span>Grid'+(IS_HK?' <span style="font-size:12px;font-weight:700;color:var(--mg-fg-muted)">Hong Kong</span>':'')+'</div><div class="mg-logo-tag" style="font-size:10.5px;color:var(--mg-fg-muted)">'+(IS_HK?'🇭🇰 Ships duty-paid worldwide':'Consistency Through You')+'</div></div></a>'
       +'<div class="mg-header-actions" style="display:flex;gap:6px;align-items:center">'
       +'<button type="button" class="mg-icon-btn" data-toggle="search" aria-label="Search">'+ICON.search+'</button>'
       +'<button type="button" class="mg-icon-btn" data-toggle="cart" aria-label="Cart" style="position:relative">'+ICON.cart+'<span class="mg-cart-badge" data-cart-count hidden>0</span></button>'
-      +'</div></div></header>';
+      +'</div></div></header>'
+      +(IS_HK?'<div class="mg-hk-duty" style="background:#0E0E0E;color:#FFC400;text-align:center;font-size:13px;font-weight:700;padding:8px 14px;line-height:1.4">🇭🇰 Buying from <b>MuscleGrid Hong Kong</b> — <span style="color:#fff">price includes ALL customs &amp; import duties</span>. Delivered to your door, nothing extra to pay.</div>':'');
     document.body.insertBefore(head, document.body.firstChild);
 
     // cart drawer + mobile nav + search overlay
@@ -125,11 +128,15 @@
       +'@media(max-width:480px){.mg-foot .trust span{font-size:12.5px;gap:6px}}'
       +'</style>'
       +'<div class="fw">'
-      +'<div class="trust"><span><b>🚚</b> Free shipping pan-India</span><span><b>🛡️</b> Up to 8-year warranty</span><span><b>📞</b> 24×7 technician support</span><span><b>🇮🇳</b> Designed &amp; made in India</span></div>'
+      +'<div class="trust">'+(IS_HK
+          ? '<span><b>🇭🇰</b> Ships from Hong Kong</span><span><b>✅</b> Customs &amp; import duties included</span><span><b>🚚</b> Free door delivery</span><span><b>🛡️</b> Up to 8-year warranty</span>'
+          : '<span><b>🚚</b> Free shipping pan-India</span><span><b>🛡️</b> Up to 8-year warranty</span><span><b>📞</b> 24×7 technician support</span><span><b>🇮🇳</b> Designed &amp; made in India</span>')+'</div>'
       +'<div class="grid">'
         +'<div><div style="font-family:var(--mg-font-display);font-weight:800;font-size:28px;line-height:1"><span style="color:var(--mg-orange)">Muscle</span>Grid</div>'
-        +'<div style="font-family:var(--mg-font-mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;margin-top:5px">Consistency Through You</div>'
-        +'<p class="desc">Industrial power, engineered for India. Solar inverters, LiFePO₄ lithium batteries &amp; mainline stabilizers — warranty-backed, 12,000+ homes powered.</p>'
+        +'<div style="font-family:var(--mg-font-mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#8a8a8a;margin-top:5px">'+(IS_HK?'Hong Kong':'Consistency Through You')+'</div>'
+        +'<p class="desc">'+(IS_HK
+            ? 'MuscleGrid Hong Kong. Solar inverters, LiFePO₄ lithium batteries &amp; mainline stabilizers, shipped worldwide from Hong Kong with <b style="color:#fff">all customs &amp; import duties included</b> — delivered to your door, nothing extra to pay.'
+            : 'Industrial power, engineered for India. Solar inverters, LiFePO₄ lithium batteries &amp; mainline stabilizers — warranty-backed, 12,000+ homes powered.')+'</p>'
         +'<div class="socs"><a class="mgfs" href="https://www.instagram.com/musclegrid_industries" aria-label="Instagram">IG</a><a class="mgfs" href="https://facebook.com/MuscleGrid" aria-label="Facebook">FB</a>'+(IS_HK?'<a class="mgfs" href="mailto:'+EMAIL+'" aria-label="Email">✉</a>':'<a class="mgfs" href="https://wa.me/'+WA+'" aria-label="WhatsApp">WA</a>')+'</div></div>'
         +'<div><h4>Shop</h4>'+lk(BASE+'/build-battery/','⚡ Build your battery')+lk(BASE+'/products/','All products')+lk(BASE+'/products/?category=Inverter','Solar inverters')+lk(BASE+'/products/?category=Battery','Lithium batteries')+lk(BASE+'/products/?category=Stabilizer','Stabilizers')+'</div>'
         +'<div><h4>Company</h4>'+lk(BASE+'/about/','About us')+lk(BASE+'/dealers/','Become a dealer')+lk(BASE+'/support/','Support &amp; manuals')+lk(BASE+'/contact/','Contact')+'</div>'
