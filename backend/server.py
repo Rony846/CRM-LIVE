@@ -14616,6 +14616,53 @@ async def admin_missed_leads(days: int = 14, user: dict = Depends(require_roles(
     }
 
 
+@api_router.get("/admin/review-rewards")
+async def admin_review_rewards(status: Optional[str] = None,
+                               user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """₹100 Google-review reward payouts: who to pay (review screenshot received, not yet paid),
+    plus already-paid and still-awaiting-screenshot. The 'pending' list = numbers to credit ₹100."""
+    rows = await db.review_rewards.find({} if not status else {"status": status}, {"_id": 0}) \
+        .sort("screenshot_at", -1).to_list(5000)
+    pending = [r for r in rows if r.get("status") == "pending_payment"]
+    paid = [r for r in rows if r.get("status") == "paid"]
+    awaiting = [r for r in rows if r.get("status") == "awaiting_screenshot"]
+    return {
+        "summary": {"to_pay": len(pending), "to_pay_amount": sum(r.get("amount", 0) for r in pending),
+                    "paid": len(paid), "awaiting_screenshot": len(awaiting)},
+        "pending": pending, "paid": paid, "awaiting": awaiting,
+    }
+
+
+class MarkPaidBody(BaseModel):
+    ref: Optional[str] = None
+
+
+@api_router.post("/admin/review-rewards/{reward_id}/mark-paid")
+async def mark_review_reward_paid(reward_id: str, body: MarkPaidBody,
+                                  user: dict = Depends(require_roles(["admin", "accountant"]))):
+    res = await db.review_rewards.update_one({"id": reward_id, "status": "pending_payment"}, {"$set": {
+        "status": "paid", "paid_at": datetime.now(timezone.utc).isoformat(),
+        "paid_by": user.get("id"), "paid_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+        "payment_ref": (body.ref or "").strip() or None}})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Reward not found or not pending payment")
+    return {"success": True}
+
+
+@api_router.get("/admin/review-rewards/{reward_id}/screenshot")
+async def review_reward_screenshot(reward_id: str, user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Stream the customer's review screenshot (downloaded on demand from WhatsApp)."""
+    from fastapi.responses import Response
+    rec = await db.review_rewards.find_one({"id": reward_id}, {"_id": 0, "screenshot_media_id": 1})
+    mid = (rec or {}).get("screenshot_media_id")
+    if not mid:
+        raise HTTPException(status_code=404, detail="No screenshot on file")
+    media = await whatsapp_cloud.download_media(mid)
+    if not media or not media.get("bytes"):
+        raise HTTPException(status_code=404, detail="Screenshot unavailable")
+    return Response(content=media["bytes"], media_type=media.get("mime") or "image/jpeg")
+
+
 @api_router.get("/admin/tickets")
 async def get_all_tickets_admin(
     search: Optional[str] = None,
@@ -79287,6 +79334,9 @@ async def _wa_handle_media(digits: str, contact_name: str, media_id: str, mime: 
                 "📄 File mil gayi. Ab batao kya karna hai — e.g. *reverse pickup* (customer se wapas mangwana) "
                 "ya *label bnao* (aage bhejna). PIN poochne par *Rony846* bhej dena.")
             return
+    # A customer we offered the ₹100 review reward just sent an image → it's their review screenshot.
+    if mtype in ("image", "document") and await _capture_review_reward_screenshot(digits, contact_name, media_id):
+        return
     if not (PRATIBHA_WA_AUTOREPLY and pratibha_brain.available() and whatsapp_cloud.enabled()):
         return
     if await db.whatsapp_optouts.find_one({"phone": digits}, {"_id": 1}):
@@ -79366,6 +79416,44 @@ async def _wa_handle_media(digits: str, contact_name: str, media_id: str, mime: 
 # Google review link; an UNHAPPY reply is left to the agent (empathy + fix),
 # never the public link.
 GOOGLE_REVIEW_LINK = os.environ.get("GOOGLE_REVIEW_LINK", "https://g.page/r/CY0W_g0eEX53EBM/review").strip()
+# ₹100 token gift for a posted Google review (screenshot proof). NOTE: this is an INCENTIVISED public
+# review — against Google's review policy and a deliberate override of the "no incentive on public
+# reviews" rule, enabled at the founder's explicit request. Toggle off via REVIEW_REWARD_ENABLED=false.
+REVIEW_REWARD_ENABLED = os.environ.get("REVIEW_REWARD_ENABLED", "true").lower() == "true"
+REVIEW_REWARD_AMOUNT = int(os.environ.get("REVIEW_REWARD_AMOUNT", "100"))
+
+
+async def _offer_review_reward(digits: str, name: str):
+    """After a 5★ happy reply + review link, offer ₹100 for a screenshot of the posted Google review.
+    One offer per customer (no re-offer if already offered / paid)."""
+    if not REVIEW_REWARD_ENABLED:
+        return
+    if await db.review_rewards.find_one({"phone": digits}, {"_id": 1}):
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    await db.review_rewards.insert_one({
+        "id": str(uuid.uuid4()), "phone": digits, "name": name or "", "amount": REVIEW_REWARD_AMOUNT,
+        "status": "awaiting_screenshot", "offered_at": now, "created_at": now, "updated_at": now})
+    await whatsapp_cloud.send_text(digits,
+        f"Ek chhota sa thank-you \U0001f381 — apna Google review post karke uska *screenshot* yahin bhej "
+        f"dijiye, aur hum ₹{REVIEW_REWARD_AMOUNT} ka token gift isi WhatsApp number par credit kar denge. "
+        "Aapke support ke liye dhanyavaad! — Team MuscleGrid")
+
+
+async def _capture_review_reward_screenshot(digits: str, name: str, media_id: str) -> bool:
+    """A customer who was offered the review reward sent an image → treat it as their review-proof
+    screenshot, queue the ₹100 payout, and acknowledge. Returns True when it handled the media."""
+    rec = await db.review_rewards.find_one({"phone": digits, "status": "awaiting_screenshot"})
+    if not rec:
+        return False
+    now = datetime.now(timezone.utc).isoformat()
+    await db.review_rewards.update_one({"_id": rec["_id"]}, {"$set": {
+        "status": "pending_payment", "screenshot_media_id": media_id, "screenshot_at": now,
+        "name": rec.get("name") or name or "", "updated_at": now}})
+    await whatsapp_cloud.send_text(digits,
+        f"Shukriya! \U0001f64f Aapka review screenshot mil gaya. ₹{REVIEW_REWARD_AMOUNT} ka token gift "
+        "jald hi isi number par credit kar diya jayega. — Team MuscleGrid")
+    return True
 _FB_POS_WORDS = {"haan", "han", "ji", "yes", "good", "achha", "accha", "acha", "theek", "thik",
                  "sahi", "happy", "satisfied", "great", "nice", "badhiya", "ekdum", "perfect",
                  "ok", "okay", "working", "best", "awesome", "mast", "superb", "thanks", "thank",
@@ -79426,6 +79514,7 @@ async def _maybe_feedback_to_review(digits: str, low: str, contact_name: str = "
             "id": str(uuid.uuid4()), "direction": "outgoing", "phone": digits, "text": msg,
             "msg_type": "text", "wamid": res["wamid"], "ts": now, "received_at": now,
             "source": "whatsapp_cloud", "kind": "review_link"})
+        await _offer_review_reward(digits, contact_name)  # ₹100-for-screenshot offer (founder opt-in)
         return True
     return False
 
