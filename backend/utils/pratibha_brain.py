@@ -594,8 +594,10 @@ WHAT YOU CAN DO (tools — use your judgement on when)
 - ask_manager: escalate a decision to the manager (Pawan/Shweta). The manager replies later (not instantly).
 - arrange_pickup: book a courier pickup of the unit for repair — ONLY after a manager approved repair.
 - notify_technician: WhatsApp the technician (Gaurav) in Hinglish.
-- handoff_to_sales: the customer wants to BUY/purchase, wants a price/quote, or wants to become a dealer — call this to log a \
+- handoff_to_sales: the customer wants to BUY/purchase or wants a price/quote — call this to log a \
 sales lead + alert the sales team, then tell them sales will contact them. You are SUPPORT, not sales — never quote prices or sell.
+- handoff_to_dealer: the customer wants to BECOME a dealer / distributor / reseller, or asks about dealership / wholesale / bulk \
+partnership — call this to log a DEALERSHIP lead + alert the dealer team, then tell them our dealer team will contact them.
 - send_manual: send the customer the actual PDF user manual for their series. If they ask for the manual/guide, CALL THIS and \
 send the PDF directly — never tell them to download it from the website or that it's "in our records". If you don't know the \
 series, find it (get_customer_info / invoice photo) or ask, then send.
@@ -694,14 +696,24 @@ SUPPORT_TOOLS = [
      "description": "Send a WhatsApp message (in Hinglish) to the technician Gaurav — e.g. a unit has arrived, ask how long the repair will take.",
      "input_schema": {"type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"]}},
     {"name": "handoff_to_sales",
-     "description": ("Use when the customer wants to BUY / purchase a product, wants a price or quote, or wants to "
-                     "become a dealer — i.e. a SALES inquiry, not a support problem. This logs a sales lead and alerts "
-                     "the sales team. After calling it, tell the customer (Hinglish) that our sales team will contact "
-                     "them shortly. NEVER quote prices or try to sell yourself — you are support, not sales."),
+     "description": ("Use when the customer wants to BUY / purchase a product or wants a price or quote — i.e. a SALES "
+                     "inquiry, not a support problem (and NOT a dealership request — use handoff_to_dealer for that). "
+                     "This logs a sales lead and alerts the sales team. After calling it, tell the customer (Hinglish) "
+                     "that our sales team will contact them shortly. NEVER quote prices or try to sell yourself."),
      "input_schema": {"type": "object", "properties": {
          "product_interest": {"type": "string", "description": "what they want to buy, e.g. 'Inverter + Lithium Battery'"},
          "city": {"type": "string", "description": "customer's city/location, if mentioned"},
          "summary": {"type": "string", "description": "one line in English: what the customer wants"}},
+         "required": ["product_interest"]}},
+    {"name": "handoff_to_dealer",
+     "description": ("Use when the customer wants to BECOME a dealer / distributor / reseller, or asks about a "
+                     "dealership / wholesale / bulk-partnership. This logs a DEALERSHIP lead and alerts the dealer-"
+                     "onboarding team. After calling it, tell the customer (Hinglish) our dealer team will contact "
+                     "them about the dealership. Do NOT quote dealer prices or terms yourself."),
+     "input_schema": {"type": "object", "properties": {
+         "product_interest": {"type": "string", "description": "what they want to deal in / context, e.g. 'inverters + batteries dealership'"},
+         "city": {"type": "string", "description": "customer's city/location, if mentioned"},
+         "summary": {"type": "string", "description": "one line in English: the dealership request"}},
          "required": ["product_interest"]}},
     {"name": "send_manual",
      "description": ("Send the customer the actual PDF user manual for their product series, on WhatsApp. "

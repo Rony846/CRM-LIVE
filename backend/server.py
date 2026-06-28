@@ -14594,6 +14594,28 @@ async def admin_power_search(q: str, user: dict = Depends(require_roles(["admin"
     return {"query": q, "total": total, "groups": groups}
 
 
+@api_router.get("/admin/missed-leads")
+async def admin_missed_leads(days: int = 14, user: dict = Depends(require_roles(["admin", "supervisor"]))):
+    """Audit of sales/dealership intent detected on customer WhatsApp: which became leads (captured)
+    and which need a human look (possible interest, or a capture that failed) — so no lead slips through."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    rows = await db.whatsapp_lead_audit.find({"created_at": {"$gte": cutoff}}, {"_id": 0}) \
+        .sort("created_at", -1).to_list(2000)
+    missed = [r for r in rows if not r.get("captured")]
+    captured = [r for r in rows if r.get("captured")]
+    by_intent = {}
+    for r in rows:
+        k = r.get("intent", "?")
+        by_intent[k] = by_intent.get(k, 0) + 1
+    return {
+        "days": days,
+        "summary": {"detected": len(rows), "captured": len(captured), "needs_review": len(missed),
+                    "by_intent": by_intent},
+        "missed": missed,      # possible-interest + any failed captures → review these
+        "captured": captured,  # auto-created/assigned leads
+    }
+
+
 @api_router.get("/admin/tickets")
 async def get_all_tickets_admin(
     search: Optional[str] = None,
@@ -78856,6 +78878,161 @@ async def _wa_tool_handoff_to_sales(digits: str, name: str, inp: dict) -> dict:
                     "Tell the customer (Hinglish) our sales team will contact them shortly. Do not quote prices."}
 
 
+# ===================== Dealership handoff + deterministic lead safety-net =====================
+_DEALER_ROSTER = {"loaded": False, "list": []}
+
+
+async def _get_dealer_assignees():
+    """Dealer-onboarding roster (round-robin for dealership leads). db.pratibha_settings
+    key 'dealer_assignees' = [{name, phone, user_id}]. Empty → leads go to admins."""
+    if not _DEALER_ROSTER["loaded"]:
+        doc = await db.pratibha_settings.find_one({"key": "dealer_assignees"}, {"_id": 0, "value": 1})
+        _DEALER_ROSTER["list"] = (doc or {}).get("value") or []
+        _DEALER_ROSTER["loaded"] = True
+    return _DEALER_ROSTER["list"]
+
+
+async def _next_dealer_assignee():
+    roster = await _get_dealer_assignees()
+    if not roster:
+        return None
+    doc = await db.pratibha_settings.find_one({"key": "dealer_rr"}, {"_id": 0, "value": 1})
+    idx = int((doc or {}).get("value") or 0)
+    await db.pratibha_settings.update_one({"key": "dealer_rr"}, {"$set": {"value": idx + 1}}, upsert=True)
+    return roster[idx % len(roster)]
+
+
+async def _wa_tool_handoff_to_dealer(digits: str, name: str, inp: dict) -> dict:
+    """Dealership handoff: the customer wants to BECOME a dealer / distributor / reseller. Create or
+    enrich a DEALERSHIP lead (lead_type=dealership), route it to the dealer-onboarding owner (round-robin,
+    or admins if no roster), and alert them. One handoff per customer per day."""
+    now = datetime.now(timezone.utc).isoformat()
+    today = now[:10]
+    interest = (inp.get("product_interest") or "").strip() or "Dealership / distributor enquiry"
+    city = (inp.get("city") or "").strip()
+    summary = (inp.get("summary") or "").strip()
+    lead = await db.leads.find_one({"phone": {"$regex": re.escape(digits) + "$"}})
+    if lead and str(lead.get("dealer_handoff_at") or "")[:10] == today:
+        return {"status": "already_handed", "lead_id": lead.get("id"),
+                "note": "Already passed to the dealer team today — just reassure the customer; do not hand off again."}
+    note = (f"WhatsApp {today}: DEALERSHIP enquiry via support line — {interest}."
+            + (f" Location: {city}." if city else "") + (f" {summary}" if summary else ""))
+    interaction = {"id": str(uuid.uuid4()), "type": "whatsapp", "channel": "whatsapp_cloud",
+                   "note": f"Dealership enquiry: {interest}" + (f" ({city})" if city else ""),
+                   "at": now, "by": "pratibha_agent"}
+    new_assignee = None if (lead and lead.get("assigned_to_name")) else await _next_dealer_assignee()
+    if lead:
+        new_notes = ((lead.get("notes") or "").strip() + ("\n\n" if lead.get("notes") else "") + note).strip()
+        status = lead.get("status") if lead.get("status") in ("converted", "won", "lost") else "new"
+        setf = {"lead_type": "dealership", "product_interest": interest, "notes": new_notes,
+                "status": status, "dealer_handoff_at": now, "updated_at": now}
+        if new_assignee:
+            setf.update({"assigned_to": new_assignee.get("user_id"), "assigned_to_name": new_assignee.get("name"),
+                         "assigned_phone": new_assignee.get("phone"), "assigned_at": now})
+        await db.leads.update_one({"id": lead["id"]}, {"$set": setf, "$push": {"interactions": interaction}})
+        lead_id, created = lead["id"], False
+        eff = new_assignee or {"name": lead.get("assigned_to_name"), "phone": lead.get("assigned_phone"),
+                               "user_id": lead.get("assigned_to")}
+    else:
+        lead_id = str(uuid.uuid4())
+        await db.leads.insert_one({
+            "id": lead_id, "phone": digits, "name": name or "", "email": "", "product_interest": interest,
+            "lead_type": "dealership", "source": "whatsapp_dealer", "status": "new", "notes": note, "city": city,
+            "assigned_to": (new_assignee or {}).get("user_id"), "assigned_to_name": (new_assignee or {}).get("name"),
+            "assigned_phone": (new_assignee or {}).get("phone"), "assigned_at": now if new_assignee else None,
+            "follow_up_date": None, "interactions": [interaction], "dealer_handoff_at": now,
+            "created_by": "pratibha_agent", "created_at": now, "updated_at": now})
+        created = True
+        eff = new_assignee or {}
+    assignee_name = eff.get("name")
+    await create_notification(
+        title="\U0001f91d New DEALERSHIP lead (WhatsApp)",
+        message=f"{name or digits} wants a dealership/distributorship" + (f" — {city}" if city else "")
+                + (f" · assigned to {assignee_name}" if assignee_name else "") + ".",
+        notification_type="lead_created", link="/leads",
+        target_user_ids=[eff["user_id"]] if eff.get("user_id") else None,
+        target_roles=None if eff.get("user_id") else ["admin"], priority="high")
+    ap = re.sub(r"\D", "", str(eff.get("phone") or ""))[-10:]
+    if len(ap) == 10:
+        alines = ["\U0001f91d New dealership lead (aapko assign)", f"Name: {name or '-'}", f"Phone: {digits}"]
+        if city:
+            alines.append(f"City: {city}")
+        alines.append(f"Wants: {interest}")
+        alines.append("Customer ko contact karke dealership process samjha dijiye.")
+        try:
+            await send_whatsapp_message("91" + ap, "\n".join(alines), force=True)
+        except Exception as e:
+            logger.warning(f"dealer assignee WhatsApp failed: {e}")
+    group = await _pr_get_main_group()
+    if group:
+        glines = ["\U0001f91d Dealership Lead", f"Name: {name or '-'}", f"Phone: {digits}"]
+        if city:
+            glines.append(f"City: {city}")
+        if summary:
+            glines.append(f"Detail: {summary}")
+        if assignee_name:
+            glines.append(f"Assigned: {assignee_name}")
+        try:
+            await send_whatsapp_message(group, "\n".join(glines), force=True)
+        except Exception as e:
+            logger.warning(f"dealership lead group message failed: {e}")
+    return {"success": True, "lead_id": lead_id, "created": created, "assigned_to": assignee_name,
+            "note": f"Dealership lead saved + routed to {assignee_name or 'the dealer team'} + alerted. "
+                    "Tell the customer (Hinglish) our dealer team will contact them about the dealership."}
+
+
+# Deterministic intent patterns — a backstop so sales/dealership leads are captured even when the
+# LLM doesn't call the handoff tool. Dealer is checked first (more specific).
+_WA_DEALER_RX = re.compile(
+    r"deal[e]?rship|\bdealer\b|distributor|distributorship|distribut|wholesale|whole\s?sale|"
+    r"reseller|re-?sell|franchise|\bthok\b|थोक|डीलर|डिस्ट्रिब|bulk\s+(order|purchas|qty|quantity|deal)", re.I)
+_WA_SALES_RX = re.compile(
+    r"\bprice\b|\bcost\b|\brate\b|quotation|\bquote\b|\bbuy\b|purchas|kharid|खरीद|"
+    r"kitne?\s*ka|kitna\s*(h|price|rate)|how\s+much|\bemi\b|book\s+kar|booking|"
+    r"want\s+to\s+(buy|purchase|order)|interested\s+in\s+(buy|purchas|order)|order\s+karna|lena\s+hai", re.I)
+_WA_PRODUCT_RX = re.compile(r"inverter|invertor|battery|batter|lithium|stabiliz|solar|\bups\b|\bkva\b", re.I)
+_WA_WEAK_RX = re.compile(r"interested|chahiye|चाहिए|kaun\s?sa|kaunsa|konsa|which\s+model|recommend|suggest|details?\b|\?", re.I)
+
+
+async def _wa_capture_lead_intent(digits: str, text: str, name: str = ""):
+    """SAFETY-NET + AUDIT: on every inbound customer WhatsApp message, deterministically detect
+    sales/dealership intent. Strong intent → guarantee a lead via the handoff tool (which dedups,
+    so it's safe even if the LLM also calls it). Weaker product-interest → log for human review.
+    Every detection is recorded in db.whatsapp_lead_audit so missed leads are visible."""
+    try:
+        t = (text or "").strip()
+        if len(t) < 3 or t.startswith("["):
+            return
+        if await _is_internal_number(digits):
+            return
+        if await db.whatsapp_optouts.find_one({"phone": digits}, {"_id": 1}):
+            return
+        is_dealer = bool(_WA_DEALER_RX.search(t))
+        is_sales = bool(_WA_SALES_RX.search(t))
+        weak = bool(_WA_PRODUCT_RX.search(t) and _WA_WEAK_RX.search(t))
+        if not (is_dealer or is_sales or weak):
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        audit = {"id": str(uuid.uuid4()), "phone": digits, "name": name or "", "text": t[:500],
+                 "source": "whatsapp_cloud", "created_at": now, "captured": False, "lead_id": None}
+        if is_dealer:
+            res = await _wa_tool_handoff_to_dealer(digits, name, {"product_interest": "Dealership / distributor enquiry", "summary": t[:200]})
+            audit.update({"intent": "dealership", "via": "safety_net",
+                          "captured": bool(res and (res.get("success") or res.get("status") == "already_handed")),
+                          "lead_id": (res or {}).get("lead_id")})
+        elif is_sales:
+            res = await _wa_tool_handoff_to_sales(digits, name, {"product_interest": ("from message: " + t[:80]), "summary": t[:200]})
+            audit.update({"intent": "sales", "via": "safety_net",
+                          "captured": bool(res and (res.get("success") or res.get("status") == "already_handed")),
+                          "lead_id": (res or {}).get("lead_id")})
+        else:
+            # weak signal → review-only, no auto lead (avoid noise); founder reviews in /admin/missed-leads
+            audit.update({"intent": "possible", "via": "weak_signal", "captured": False})
+        await db.whatsapp_lead_audit.insert_one(audit)
+    except Exception as e:
+        logger.warning(f"wa lead-intent capture failed: {e}")
+
+
 SALES_FOLLOWUP_HOURS = int(os.environ.get("SALES_FOLLOWUP_HOURS", "24"))
 SALES_FOLLOWUP_MAX = int(os.environ.get("SALES_FOLLOWUP_MAX", "3"))
 
@@ -78947,6 +79124,8 @@ def _wa_support_executor(digits: str, name: str):
             return await _wa_tool_notify_technician(digits, name, inp.get("message", ""))
         if tool == "handoff_to_sales":
             return await _wa_tool_handoff_to_sales(digits, name, inp)
+        if tool == "handoff_to_dealer":
+            return await _wa_tool_handoff_to_dealer(digits, name, inp)
         if tool == "send_manual":
             return await _wa_tool_send_manual(digits, inp.get("series", ""))
         return {"error": f"unknown tool {tool}"}
@@ -80721,6 +80900,8 @@ async def whatsapp_cloud_webhook(request: Request):
                     import asyncio
                     if text and mtype in ("text", "button", "interactive"):
                         asyncio.create_task(_pratibha_wa_autoreply(digits, text, names.get(wa_from)))
+                        # Deterministic sales/dealer lead safety-net + audit (runs regardless of autoreply gate).
+                        asyncio.create_task(_wa_capture_lead_intent(digits, text, names.get(wa_from)))
                     elif mtype in ("image", "document", "video", "audio", "voice", "sticker") and media_id:
                         asyncio.create_task(_wa_handle_media(digits, names.get(wa_from), media_id, media_mime or "", mtype))
             for s in (val.get("statuses") or []):

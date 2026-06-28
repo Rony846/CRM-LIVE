@@ -36,6 +36,7 @@ import AdminTickets from './pages/admin/AdminTickets';
 import AdminTicketDetail from './pages/admin/AdminTicketDetail';
 import AdminCampaigns from './pages/admin/AdminCampaigns';
 import AdminGateLogs from './pages/admin/AdminGateLogs';
+import MissedLeads from './pages/admin/MissedLeads';
 import AdminAnalytics from './pages/admin/AdminAnalytics';
 import AdminActivityLogs from './pages/admin/AdminActivityLogs';
 import AdminDataManagement from './pages/admin/AdminDataManagement';
@@ -594,6 +595,11 @@ function App() {
           <Route path="/admin/gate-logs" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <AdminGateLogs />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/missed-leads" element={
+            <ProtectedRoute allowedRoles={['admin', 'supervisor']}>
+              <MissedLeads />
             </ProtectedRoute>
           } />
           <Route path="/admin/analytics" element={
