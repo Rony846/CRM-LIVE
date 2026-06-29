@@ -66941,9 +66941,10 @@ async def scheduled_repair_arrival_check():
         digits = p.get("customer_phone")
         if not digits or awb.upper().startswith(("SIM-", "SBSIM-")):  # test/sim AWBs aren't trackable
             continue
-        # already in repair (or repaired)? don't re-notify — just retire the pickup from the check.
+        # already in the repair loop? don't re-notify — just retire the pickup from the check.
         if await db.repair_jobs.find_one(
-                {"customer_phone": digits, "status": {"$in": ["awaiting_estimate", "in_repair", "repaired"]}}, {"_id": 1}):
+                {"customer_phone": digits, "status": {"$in": ["awaiting_receipt", "awaiting_estimate",
+                                                              "received", "in_repair", "repaired"]}}, {"_id": 1}):
             await db.repair_pickups.update_one({"id": p["id"]}, {"$set": {"status": "arrived"}})
             continue
         try:
@@ -66963,15 +66964,21 @@ async def scheduled_repair_arrival_check():
             name = p.get("customer_name") or ""
             product = (p.get("address") or {}).get("product_name") or "unit"
             await _wa_tool_notify_technician(digits, name, (
-                f"Gaurav ji, {name or 'customer'} ka {product} repair ke liye service centre pe aa gaya hai "
-                f"(AWB {awb}). Aap dekh kar bata dijiye — kitna time lagega repair me?"))
+                f"Gaurav ji, {name or 'customer'} ka {product} repair ke liye service centre aa gaya hai "
+                f"(AWB {awb}). Aapko mil gaya? Reply *received* (ya 'haan mil gaya') jab unit aapke paas aa jaaye — "
+                f"phir repair ka time bata dena. \U0001f64f"))
+            # Hold at receipt-confirmation: the repair clock starts when GAURAV confirms he has it,
+            # not on the courier's delivered-scan (which can be premature / the unit may sit unopened).
+            await db.repair_jobs.update_one(
+                {"customer_phone": digits, "status": "awaiting_estimate"},
+                {"$set": {"status": "awaiting_receipt"}})
             await db.repair_pickups.update_one({"id": p["id"]}, {"$set": {"status": "arrived", "arrived_at": now}})
             try:
                 await _wa_agent_respond(digits, name, manager_note=(
-                    f"The customer's {product} has REACHED our Meerut service centre. The technician has ALREADY been "
-                    f"notified by the system — do NOT call any tool and do NOT message the technician again. ONLY send the "
-                    f"customer a short, professional Hinglish update that their unit reached us safely and repair is "
-                    f"starting; we'll share the time estimate shortly."))
+                    f"The customer's {product} has REACHED our Meerut service centre (courier delivered). Send the "
+                    f"customer a short, professional Hinglish update that their unit has safely reached our service "
+                    f"centre and our technician will confirm and begin the repair shortly. Do NOT call any tool or "
+                    f"message the technician."))
             except Exception as e:
                 logger.warning(f"repair arrival customer update failed: {e}")
         await asyncio.sleep(BIGSHIP_POLL_DELAY)
@@ -81705,7 +81712,8 @@ async def _pratibha_wa_technician_reply(message):
     if len(frm) != 10:
         return None
     job = await db.repair_jobs.find_one(
-        {"technician_phone": frm, "status": {"$in": ["awaiting_estimate", "in_repair"]}}, sort=[("created_at", -1)])
+        {"technician_phone": frm, "status": {"$in": ["awaiting_receipt", "awaiting_estimate",
+                                                     "received", "in_repair"]}}, sort=[("created_at", -1)])
     if not job:
         return None
     text = (getattr(message, "text", "") or "").strip()
@@ -81717,6 +81725,16 @@ async def _pratibha_wa_technician_reply(message):
     cust_phone = job.get("customer_phone")
     cust_name = job.get("customer_name") or "the customer"
     product = job.get("product") or "unit"
+
+    if kind == "received":
+        # Gaurav confirms he physically has the unit — the repair clock starts HERE (not the courier scan).
+        await db.repair_jobs.update_one({"id": job["id"]}, {"$set": {"status": "received", "received_at": now}})
+        if cust_phone:
+            await _wa_agent_respond(cust_phone, cust_name, manager_note=(
+                f"Our technician has CONFIRMED he received the {product} at the service centre and is starting to look "
+                f"at it. Give the customer a short, professional Hinglish update that their unit is now with our "
+                f"technician and the repair has begun; we'll share the time estimate shortly. Do not quote any charge."))
+        return f"Mil gaya — noted. {cust_name} ko bata diya ki repair shuru ho gayi. Time mil jaaye to bata dena. \U0001f64f"
 
     if kind == "estimate" and eta:
         await db.repair_jobs.update_one({"id": job["id"]}, {"$set": {"status": "in_repair", "eta": eta, "eta_at": now}})

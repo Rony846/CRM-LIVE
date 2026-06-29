@@ -865,29 +865,57 @@ async def support_agent(conversation: list, situation: str, tool_executor, brain
 
 _TECH_REPLY_SYS = """Gaurav, a repair technician at MuscleGrid, replied on WhatsApp about a unit he is repairing \
 (message may be Hindi/Hinglish/English). Interpret his message.
-Respond with ONLY compact JSON: {"kind": "estimate|done|problem|other", "eta": "<his time estimate exactly as said, \
+Respond with ONLY compact JSON: {"kind": "received|estimate|done|problem|other", "eta": "<his time estimate exactly as said, \
 e.g. '2 din', '3 ghante', else empty>", "note": "<short summary in Hinglish/English>"}
-- "estimate" = he gives a time to finish (kitne din/ghante).
+- "received" = he CONFIRMS the unit reached him / he has it / he's opening or starting to look at it, but gives NO time \
+estimate (e.g. "mil gaya", "received", "aa gaya", "haan mil gaya", "dekh raha hoon", "open kar raha hoon").
+- "estimate" = he gives a time to finish (kitne din/ghante). If he BOTH confirms receipt AND gives a time, choose "estimate".
 - "done" = repair finished / ready / ho gaya.
 - "problem" = he reports an issue, a part needed, or a delay.
 - "other" = greeting/unclear/anything else."""
 
 
-async def interpret_technician_reply(text: str) -> dict:
-    """Interpret the technician's WhatsApp reply about a repair. Fail-safe to 'other'."""
-    client = _client_or_none()
-    if client is None or not (text or "").strip():
-        return {"kind": "other", "eta": "", "note": ""}
+def _parse_tech_json(raw: str):
+    m = re.search(r"\{.*\}", raw or "", re.S)
+    if not m:
+        return None
     try:
-        resp = await client.messages.create(
-            model=model(), max_tokens=120, system=_sys(_TECH_REPLY_SYS),
-            messages=[{"role": "user", "content": text[:1000]}])
-        m = re.search(r"\{.*\}", _text(resp), re.S)
-        d = json.loads(m.group(0)) if m else {}
-        return {"kind": str(d.get("kind") or "other"), "eta": str(d.get("eta") or ""), "note": str(d.get("note") or "")}
-    except Exception as e:
-        logger.error(f"interpret_technician_reply failed: {e}")
+        d = json.loads(m.group(0))
+    except Exception:
+        return None
+    return {"kind": str(d.get("kind") or "other"), "eta": str(d.get("eta") or ""), "note": str(d.get("note") or "")}
+
+
+async def interpret_technician_reply(text: str) -> dict:
+    """Interpret the technician's WhatsApp reply about a repair. LOCAL-FIRST (free + API-cap-proof):
+    classify on the local brain, fall back to the cheap Claude model, then fail-safe to 'other'."""
+    if not (text or "").strip():
         return {"kind": "other", "eta": "", "note": ""}
+    # 1) local brain (free) — keeps the repair loop running even when the paid API is capped.
+    try:
+        from utils import brain_registry
+        if brain_registry.available("pratibha"):
+            r = await brain_registry.complete("pratibha", system=_TECH_REPLY_SYS, prompt=text[:1000],
+                                              max_tokens=120, temperature=0.1, timeout=30.0)
+            if r.get("model_ok"):
+                p = _parse_tech_json(r.get("text"))
+                if p:
+                    return p
+    except Exception as e:
+        logger.warning(f"interpret_technician_reply local failed: {e}")
+    # 2) Claude fallback
+    client = _client_or_none()
+    if client is not None:
+        try:
+            resp = await client.messages.create(
+                model=model(), max_tokens=120, system=_sys(_TECH_REPLY_SYS),
+                messages=[{"role": "user", "content": text[:1000]}])
+            p = _parse_tech_json(_text(resp))
+            if p:
+                return p
+        except Exception as e:
+            logger.error(f"interpret_technician_reply claude failed: {e}")
+    return {"kind": "other", "eta": "", "note": ""}
 
 
 async def sense_escalation(text: str, context: str = "") -> dict:
