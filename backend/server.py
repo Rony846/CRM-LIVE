@@ -63849,11 +63849,24 @@ class ImporterLineItem(BaseModel):
     notes: Optional[str] = None
 
 
+class ImporterSupplierPayment(BaseModel):
+    amount: float = 0                       # INR debited from the importer's bank
+    date: Optional[str] = None              # YYYY-MM-DD
+    type: Optional[str] = "advance"         # advance | balance | other
+    percent: Optional[float] = None         # e.g. 30 (advance) / 70 (post-BoE balance)
+    reference: Optional[str] = None         # UTR / invoice ref
+    notes: Optional[str] = None
+
+
 class ImporterConsignmentCreate(BaseModel):
     importer_id: Optional[str] = None       # set from the user for importer role
     date: Optional[str] = None              # YYYY-MM-DD
     supplier_name: Optional[str] = None
-    supplier_payment_inr: float = 0         # bank debit for the goods
+    # Total paid to the supplier. Either a single number (supplier_payment_inr) OR an
+    # itemised list of payments (e.g. 30% advance vs 70% post-BoE) — when the list is
+    # present it is authoritative and supplier_payment_inr is set to its sum.
+    supplier_payment_inr: float = 0         # bank debit for the goods (total)
+    supplier_payments: Optional[List[ImporterSupplierPayment]] = None
     customs_bcd: float = 0
     customs_surcharge: float = 0
     customs_igst: float = 0
@@ -63953,7 +63966,10 @@ async def create_consignment(payload: ImporterConsignmentCreate,
         raise HTTPException(status_code=404, detail="Importer not found")
     pct = payload.commission_percent if payload.commission_percent is not None \
         else imp.get("default_commission_percent", 5.0)
-    totals = _consignment_totals(payload.supplier_payment_inr, payload.customs_bcd,
+    sp_list = [p.dict() for p in (payload.supplier_payments or [])]
+    supplier_total = round(sum(p.get("amount", 0) or 0 for p in sp_list), 2) if sp_list \
+        else payload.supplier_payment_inr
+    totals = _consignment_totals(supplier_total, payload.customs_bcd,
                                  payload.customs_surcharge, payload.customs_igst,
                                  payload.shipping_charges, pct)
     now = datetime.now(timezone.utc)
@@ -63964,7 +63980,8 @@ async def create_consignment(payload: ImporterConsignmentCreate,
         "firm_id": imp.get("firm_id"),
         "date": payload.date or now.strftime("%Y-%m-%d"),
         "supplier_name": payload.supplier_name,
-        "supplier_payment_inr": payload.supplier_payment_inr,
+        "supplier_payment_inr": supplier_total,
+        "supplier_payments": sp_list,
         "customs_bcd": payload.customs_bcd, "customs_surcharge": payload.customs_surcharge,
         "customs_igst": payload.customs_igst, "shipping_charges": payload.shipping_charges,
         "commission_percent": pct,
@@ -63998,6 +64015,7 @@ async def list_consignments(importer_id: str = None,
         "total_commission": round(sum(r.get("commission_amount", 0) for r in rows), 2),
         "billed_count": sum(1 for r in rows if r.get("status") in ("billed", "paid")),
     }
+    sign_file_urls_deep(rows, user["id"])   # BoE/doc links open via plain browser link
     return {"consignments": rows, "summary": summary}
 
 
@@ -64009,6 +64027,7 @@ async def get_consignment(cid: str, user: dict = Depends(require_roles(["importe
     iid = await _importer_for_user(user)
     if iid and c.get("importer_id") != iid:
         raise HTTPException(status_code=403, detail="Not your consignment")
+    sign_file_urls_deep(c, user["id"])
     return c
 
 
@@ -64024,11 +64043,15 @@ async def update_consignment(cid: str, payload: ImporterConsignmentCreate,
     if c.get("status") != "draft":
         raise HTTPException(status_code=400, detail="Only draft consignments can be edited")
     pct = payload.commission_percent if payload.commission_percent is not None else c.get("commission_percent", 5.0)
-    totals = _consignment_totals(payload.supplier_payment_inr, payload.customs_bcd,
+    sp_list = [p.dict() for p in (payload.supplier_payments or [])]
+    supplier_total = round(sum(p.get("amount", 0) or 0 for p in sp_list), 2) if sp_list \
+        else payload.supplier_payment_inr
+    totals = _consignment_totals(supplier_total, payload.customs_bcd,
                                  payload.customs_surcharge, payload.customs_igst,
                                  payload.shipping_charges, pct)
     upd = {"date": payload.date or c.get("date"), "supplier_name": payload.supplier_name,
-           "supplier_payment_inr": payload.supplier_payment_inr, "customs_bcd": payload.customs_bcd,
+           "supplier_payment_inr": supplier_total, "supplier_payments": sp_list,
+           "customs_bcd": payload.customs_bcd,
            "customs_surcharge": payload.customs_surcharge, "customs_igst": payload.customs_igst,
            "shipping_charges": payload.shipping_charges, "commission_percent": pct,
            "line_items": [li.dict() for li in payload.line_items], "boe_number": payload.boe_number,
@@ -64075,6 +64098,7 @@ async def submit_consignment(cid: str, user: dict = Depends(require_roles(["impo
                              "landed_cost", "total_billed")},
         "customs_igst_itc_eligible": c.get("customs_igst"),
         "attachments": c.get("attachments") or [],
+        "supplier_payments": c.get("supplier_payments") or [],
         "boe_number": c.get("boe_number"),
         "items": items_text, "notes": f"Importer consignment {c.get('consignment_number')} via importer portal",
         "source": "importer_portal", "status": "recorded", "payment_status": "credit",
@@ -64100,6 +64124,7 @@ async def importer_reconciliation(user: dict = Depends(require_roles(["admin", "
         b["landed"] += r.get("landed_cost", 0)
         b["commission"] += r.get("commission_amount", 0)
         b["billed"] += r.get("total_billed", 0)
+    sign_file_urls_deep(rows, user["id"])   # BoE/doc links open via plain browser link
     return {"by_importer": by_imp, "rows": rows,
             "grand_total_billed": round(sum(r.get("total_billed", 0) for r in rows), 2)}
 

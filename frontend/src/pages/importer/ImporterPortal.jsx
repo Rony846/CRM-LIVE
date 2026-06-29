@@ -9,15 +9,18 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Plus, Trash2, Send, Loader2, Package, IndianRupee, Percent, Upload, FileText, CheckCircle2, AlertCircle } from 'lucide-react';
 
 const fmt = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 const num = (v) => parseFloat(v) || 0;
 
+const today = () => new Date().toISOString().split('T')[0];
+
 const EMPTY = {
-  date: new Date().toISOString().split('T')[0],
+  date: today(),
   supplier_name: '',
-  supplier_payment_inr: '',
+  supplier_payments: [{ amount: '', type: 'advance', percent: '', date: today(), reference: '' }],
   customs_bcd: '', customs_surcharge: '', customs_igst: '',
   shipping_charges: '',
   commission_percent: 5,
@@ -26,6 +29,12 @@ const EMPTY = {
   line_items: [{ description: '', quantity: 1 }],
   attachments: [],
 };
+
+const PAY_TYPES = [
+  { value: 'advance', label: 'Advance' },
+  { value: 'balance', label: 'Balance (post-BoE)' },
+  { value: 'other', label: 'Other' },
+];
 
 const DOC_KINDS = [
   { kind: 'boe', label: 'Bill of Entry', required: true },
@@ -63,6 +72,8 @@ export default function ImporterPortal() {
 
   const removeDoc = (i) => setForm(f => ({ ...f, attachments: f.attachments.filter((_, x) => x !== i) }));
 
+  const boeAtt = (c) => (c.attachments || []).find(a => a.kind === 'boe');
+
   const fetchData = async () => {
     try {
       const r = await axios.get(`${API}/importer/consignments`, h);
@@ -73,12 +84,14 @@ export default function ImporterPortal() {
   useEffect(() => { if (token) fetchData(); }, [token]);
 
   // live landed-cost + commission + total (mirrors the backend, commission on FULL landed cost)
+  const supplierTotal = useMemo(
+    () => (form.supplier_payments || []).reduce((s, p) => s + num(p.amount), 0), [form.supplier_payments]);
   const calc = useMemo(() => {
     const customs = num(form.customs_bcd) + num(form.customs_surcharge) + num(form.customs_igst);
-    const landed = num(form.supplier_payment_inr) + customs + num(form.shipping_charges);
+    const landed = supplierTotal + customs + num(form.shipping_charges);
     const commission = landed * num(form.commission_percent) / 100;
     return { customs, landed, commission, total: landed + commission };
-  }, [form]);
+  }, [form, supplierTotal]);
 
   const setField = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const setItem = (i, k, v) => setForm(f => {
@@ -87,9 +100,18 @@ export default function ImporterPortal() {
   const addItem = () => setForm(f => ({ ...f, line_items: [...f.line_items, { description: '', quantity: 1 }] }));
   const delItem = (i) => setForm(f => ({ ...f, line_items: f.line_items.filter((_, x) => x !== i) }));
 
+  const setPay = (i, k, v) => setForm(f => {
+    const sp = [...f.supplier_payments]; sp[i] = { ...sp[i], [k]: v }; return { ...f, supplier_payments: sp };
+  });
+  const addPay = () => setForm(f => ({ ...f, supplier_payments: [...f.supplier_payments, { amount: '', type: 'balance', percent: '', date: today(), reference: '' }] }));
+  const delPay = (i) => setForm(f => ({ ...f, supplier_payments: f.supplier_payments.filter((_, x) => x !== i) }));
+
   const payload = () => ({
     date: form.date, supplier_name: form.supplier_name,
-    supplier_payment_inr: num(form.supplier_payment_inr),
+    supplier_payments: (form.supplier_payments || []).filter(p => num(p.amount) > 0).map(p => ({
+      amount: num(p.amount), type: p.type || 'other', percent: num(p.percent) || null,
+      date: p.date || null, reference: p.reference || null,
+    })),
     customs_bcd: num(form.customs_bcd), customs_surcharge: num(form.customs_surcharge),
     customs_igst: num(form.customs_igst), shipping_charges: num(form.shipping_charges),
     commission_percent: num(form.commission_percent), boe_number: form.boe_number, notes: form.notes,
@@ -154,8 +176,39 @@ export default function ImporterPortal() {
               <div><Label>Bill of Entry No. (optional)</Label><Input value={form.boe_number} onChange={e => setField('boe_number', e.target.value)} /></div>
             </div>
 
+            {/* Supplier payments — supports staged payments e.g. 30% advance + 70% post-BoE */}
+            <div>
+              <div className="flex items-center justify-between">
+                <Label>Supplier Payments — bank debits</Label>
+                <span className="text-xs text-muted-foreground">Total paid to supplier: <span className="font-semibold text-foreground">{fmt(supplierTotal)}</span></span>
+              </div>
+              <div className="space-y-2 mt-1">
+                {form.supplier_payments.map((p, i) => (
+                  <div key={i} className="grid grid-cols-2 md:grid-cols-12 gap-2 items-end">
+                    <div className="md:col-span-3"><Label className="text-[11px] text-muted-foreground">Amount (₹)</Label>
+                      <Input type="number" value={p.amount} onChange={e => setPay(i, 'amount', e.target.value)} /></div>
+                    <div className="md:col-span-3"><Label className="text-[11px] text-muted-foreground">Type</Label>
+                      <Select value={p.type} onValueChange={v => setPay(i, 'type', v)}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>{PAY_TYPES.map(t => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}</SelectContent>
+                      </Select></div>
+                    <div className="md:col-span-2"><Label className="text-[11px] text-muted-foreground">%</Label>
+                      <Input type="number" placeholder="e.g. 30" value={p.percent} onChange={e => setPay(i, 'percent', e.target.value)} /></div>
+                    <div className="md:col-span-2"><Label className="text-[11px] text-muted-foreground">Date</Label>
+                      <Input type="date" value={p.date} onChange={e => setPay(i, 'date', e.target.value)} /></div>
+                    <div className="md:col-span-2 flex gap-1">
+                      <Input placeholder="UTR/ref" value={p.reference} onChange={e => setPay(i, 'reference', e.target.value)} />
+                      {form.supplier_payments.length > 1 && (
+                        <Button variant="outline" size="icon" onClick={() => delPay(i)} className="text-rose-400 shrink-0"><Trash2 className="w-4 h-4" /></Button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                <Button variant="outline" size="sm" onClick={addPay}><Plus className="w-4 h-4 mr-1" /> Add payment (e.g. post-BoE balance)</Button>
+              </div>
+            </div>
+
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-              <div><Label>Supplier Payment (₹) — bank debit</Label><Input type="number" value={form.supplier_payment_inr} onChange={e => setField('supplier_payment_inr', e.target.value)} /></div>
               <div><Label>Customs — BCD (₹)</Label><Input type="number" value={form.customs_bcd} onChange={e => setField('customs_bcd', e.target.value)} /></div>
               <div><Label>Customs — Surcharge (₹)</Label><Input type="number" value={form.customs_surcharge} onChange={e => setField('customs_surcharge', e.target.value)} /></div>
               <div><Label>Customs — IGST (₹)</Label><Input type="number" value={form.customs_igst} onChange={e => setField('customs_igst', e.target.value)} /></div>
@@ -213,7 +266,7 @@ export default function ImporterPortal() {
 
             {/* Live reconciliation */}
             <div className="rounded-lg border border-border bg-muted/40 p-4 space-y-1.5 text-sm">
-              <div className="flex justify-between"><span className="text-muted-foreground">Supplier payment</span><span>{fmt(num(form.supplier_payment_inr))}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">Supplier payment{(form.supplier_payments || []).filter(p => num(p.amount) > 0).length > 1 ? ` (${(form.supplier_payments || []).filter(p => num(p.amount) > 0).length} payments)` : ''}</span><span>{fmt(supplierTotal)}</span></div>
               <div className="flex justify-between"><span className="text-muted-foreground">Customs duty (BCD + surcharge + IGST)</span><span>{fmt(calc.customs)}</span></div>
               <div className="flex justify-between"><span className="text-muted-foreground">Shipping</span><span>{fmt(num(form.shipping_charges))}</span></div>
               <div className="flex justify-between font-medium border-t border-border pt-1.5"><span>Landed cost</span><span>{fmt(calc.landed)}</span></div>
@@ -243,7 +296,7 @@ export default function ImporterPortal() {
                   <TableHead className="text-right">Supplier ₹</TableHead><TableHead className="text-right">Customs ₹</TableHead>
                   <TableHead className="text-right">Shipping ₹</TableHead><TableHead className="text-right">Landed ₹</TableHead>
                   <TableHead className="text-right">Comm.</TableHead><TableHead className="text-right">Billed ₹</TableHead>
-                  <TableHead>Status</TableHead><TableHead></TableHead>
+                  <TableHead>BoE</TableHead><TableHead>Status</TableHead><TableHead></TableHead>
                 </TableRow></TableHeader>
                 <TableBody>
                   {consignments.map(c => (
@@ -257,6 +310,9 @@ export default function ImporterPortal() {
                       <TableCell className="text-right">{fmt(c.landed_cost)}</TableCell>
                       <TableCell className="text-right text-amber-500">{c.commission_percent}% · {fmt(c.commission_amount)}</TableCell>
                       <TableCell className="text-right font-semibold text-emerald-500">{fmt(c.total_billed)}</TableCell>
+                      <TableCell>{boeAtt(c)
+                        ? <a href={boeAtt(c).url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-sky-400 hover:underline"><FileText className="w-3.5 h-3.5" />View</a>
+                        : <span className="text-xs text-rose-400">missing</span>}</TableCell>
                       <TableCell><Badge variant="outline" className={c.status === 'draft' ? 'text-amber-400 border-amber-500/30' : 'text-emerald-400 border-emerald-500/30'}>{c.status}</Badge></TableCell>
                       <TableCell>{c.status === 'draft' && (
                         <Button size="sm" className="bg-emerald-600 hover:bg-emerald-500 text-white" onClick={() => billExisting(c.id)}>Bill</Button>

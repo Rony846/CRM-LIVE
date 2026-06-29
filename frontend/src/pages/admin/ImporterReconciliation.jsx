@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Users, IndianRupee, Percent, Package } from 'lucide-react';
+import { Users, IndianRupee, Percent, Package, FileText } from 'lucide-react';
 
 const fmt = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 
@@ -120,7 +120,7 @@ export default function ImporterReconciliation() {
                   <TableHead className="text-right">Supplier ₹</TableHead><TableHead className="text-right">Customs ₹</TableHead>
                   <TableHead className="text-right">Shipping ₹</TableHead><TableHead className="text-right">Landed ₹</TableHead>
                   <TableHead className="text-right">Comm.</TableHead><TableHead className="text-right">Billed ₹</TableHead>
-                  <TableHead>Status</TableHead>
+                  <TableHead>BoE</TableHead><TableHead>Status</TableHead>
                 </TableRow></TableHeader>
                 <TableBody>
                   {rows.map(c => (
@@ -135,6 +135,9 @@ export default function ImporterReconciliation() {
                       <TableCell className="text-right">{fmt(c.landed_cost)}</TableCell>
                       <TableCell className="text-right text-amber-500">{c.commission_percent}% · {fmt(c.commission_amount)}</TableCell>
                       <TableCell className="text-right font-semibold text-emerald-500">{fmt(c.total_billed)}</TableCell>
+                      <TableCell>{(() => { const b = (c.attachments || []).find(a => a.kind === 'boe'); return b
+                        ? <a href={b.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-sky-400 hover:underline"><FileText className="w-3.5 h-3.5" />View</a>
+                        : <span className="text-xs text-muted-foreground">—</span>; })()}</TableCell>
                       <TableCell><Badge variant="outline" className={c.status === 'draft' ? 'text-amber-400 border-amber-500/30' : 'text-emerald-400 border-emerald-500/30'}>{c.status}</Badge></TableCell>
                     </TableRow>
                   ))}
@@ -145,6 +148,7 @@ export default function ImporterReconciliation() {
                     <TableCell className="text-right">{fmt(totals.landed)}</TableCell>
                     <TableCell className="text-right text-amber-500">{fmt(totals.commission)}</TableCell>
                     <TableCell className="text-right text-emerald-500">{fmt(totals.billed)}</TableCell>
+                    <TableCell></TableCell>
                     <TableCell></TableCell>
                   </TableRow>
                 </tfoot>
