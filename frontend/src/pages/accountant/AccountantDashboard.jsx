@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
@@ -26,7 +27,8 @@ import { toast } from 'sonner';
 import { 
   Package, Truck, FileText, Wrench, Loader2, Upload, 
   Eye, CheckCircle, Send, ArrowDownToLine, ArrowUpFromLine, RefreshCw, Building2,
-  Search, AlertTriangle, CheckCircle2, XCircle, Clock, AlertCircle, Filter, Zap
+  Search, AlertTriangle, CheckCircle2, XCircle, Clock, AlertCircle, Filter, Zap,
+  Receipt, ShoppingCart
 } from 'lucide-react';
 
 // Helper to extract error message from API responses
@@ -69,8 +71,23 @@ function CdStat({ title, value, icon: Icon, tone = 'indigo' }) {
   );
 }
 
+// Clickable variant of CdStat — same styling, navigates/acts on click.
+function CdAction({ title, value, icon, tone = 'indigo', onClick }) {
+  return (
+    <div onClick={onClick} role="button" tabIndex={0} className="cursor-pointer"
+         onKeyDown={(e) => { if (e.key === 'Enter') onClick && onClick(); }}>
+      <CdStat title={title} value={value} icon={icon} tone={tone} />
+    </div>
+  );
+}
+
+const fmtMoney = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 });
+
 export default function AccountantDashboard() {
   const { token } = useAuth();
+  const navigate = useNavigate();
+  const [finance, setFinance] = useState(null);
+  const [waDraftCount, setWaDraftCount] = useState(0);
   const [stats, setStats] = useState(null);
   const [dispatches, setDispatches] = useState([]);
   const [tickets, setTickets] = useState([]);
@@ -121,6 +138,31 @@ export default function AccountantDashboard() {
   useEffect(() => {
     fetchData();
   }, [token]);
+
+  // Financial cockpit data — receivables / payables / GST / WhatsApp purchase drafts,
+  // scoped to the accountant's firm. Loads once firms are known.
+  const fetchFinance = async (fid) => {
+    if (!fid) return;
+    const h = { headers: { Authorization: `Bearer ${token}` } };
+    try {
+      const [rec, pay, gst, wa] = await Promise.all([
+        axios.get(`${API}/reports/receivables?firm_id=${fid}`, h).catch(() => ({ data: {} })),
+        axios.get(`${API}/reports/payables?firm_id=${fid}`, h).catch(() => ({ data: {} })),
+        axios.get(`${API}/finance/analytics/gst-summary?firm_id=${fid}`, h).catch(() => ({ data: {} })),
+        axios.get(`${API}/purchases/wa-drafts`, h).catch(() => ({ data: { count: 0 } })),
+      ]);
+      setFinance({
+        receivable: rec.data.total_receivable || 0,
+        payable: pay.data.total_payable ?? pay.data.total_outstanding ?? 0,
+        gst: gst.data?.output_tax?.total ?? gst.data?.total_outward?.total_gst ?? 0,
+      });
+      setWaDraftCount(wa.data.count ?? (wa.data.drafts || []).length ?? 0);
+    } catch (e) { /* non-fatal — cockpit just shows blanks */ }
+  };
+
+  useEffect(() => {
+    if (firms && firms.length) fetchFinance(firms[0].id);
+  }, [firms]);
 
   // Fetch pending fulfillment entries ready for dispatch
   const fetchPendingFulfillmentEntries = async (firmId) => {
@@ -863,19 +905,46 @@ export default function AccountantDashboard() {
       {/* HUD header */}
       <div className="cd-head cd-in">
         <div>
-          <div className="cd-eyebrow"><span className="cd-dot" /> Live · Dispatch ops</div>
-          <h2 className="cd-title">Accountant <span className="thin">Dispatch Deck</span></h2>
-          <p className="cd-sub">Reverse pickups, spare dispatch, repaired returns &amp; label uploads</p>
+          <div className="cd-eyebrow"><span className="cd-dot" /> Live · Accounts</div>
+          <h2 className="cd-title">Accountant <span className="thin">Console</span></h2>
+          <p className="cd-sub">Books, GST, payments &amp; reverse pickups{firms?.[0]?.name ? ` · ${firms[0].name}` : ''}</p>
+        </div>
+        <Button variant="outline" size="sm" className="border-border text-muted-foreground hover:text-foreground"
+                onClick={() => { fetchData(); if (firms?.[0]?.id) fetchFinance(firms[0].id); }}>
+          <RefreshCw className="w-4 h-4 mr-1" /> Refresh
+        </Button>
+      </div>
+
+      {/* Financial KPIs */}
+      <div className="cd-statgrid cd-in" data-testid="accountant-financials">
+        <CdAction title="Receivables (owed to us)" value={fmtMoney(finance?.receivable)} icon={ArrowDownToLine} tone="emerald" onClick={() => navigate('/accountant/reports')} />
+        <CdAction title="Payables (we owe)" value={fmtMoney(finance?.payable)} icon={ArrowUpFromLine} tone="rose" onClick={() => navigate('/accountant/reports')} />
+        <CdAction title="Output GST (this month)" value={fmtMoney(finance?.gst)} icon={Receipt} tone="amber" onClick={() => navigate('/accountant/reports')} />
+        <CdAction title="WhatsApp purchase drafts" value={waDraftCount} icon={ShoppingCart} tone="sky" onClick={() => navigate('/accountant/purchases')} />
+      </div>
+
+      {/* Needs me today */}
+      <div className="cd-in" style={{ marginTop: '0.25rem' }}>
+        <p className="cd-stat-label" style={{ opacity: 0.7, marginBottom: '0.5rem' }}>NEEDS ME TODAY</p>
+        <div className="cd-statgrid" data-testid="accountant-stats">
+          <CdAction title="Reverse Pickups to arrange" value={reversePickupTickets.length} icon={ArrowDownToLine} tone="amber" onClick={() => setActiveTab('hardware')} />
+          <CdAction title="Payments to confirm" value={pendingFulfillmentEntries.length} icon={CheckCircle} tone="indigo" onClick={() => navigate('/accountant/pending-fulfillment')} />
+          <CdAction title="Spare Dispatch" value={spareDispatchTickets.length} icon={Package} tone="indigo" onClick={() => setActiveTab('hardware')} />
+          <CdAction title="Incoming to verify" value="›" icon={Package} tone="sky" onClick={() => navigate('/accountant/incoming-queue')} />
         </div>
       </div>
 
-      {/* Stats */}
-      <div className="cd-statgrid cd-in" data-testid="accountant-stats">
-        <CdStat title="Reverse Pickup" value={reversePickupTickets.length} icon={ArrowDownToLine} tone="amber" />
-        <CdStat title="Spare Dispatch" value={spareDispatchTickets.length} icon={Package} tone="indigo" />
-        <CdStat title="Repaired Items" value={repairedTickets.length} icon={Wrench} tone="emerald" />
-        <CdStat title="Pending Labels" value={stats?.pending_labels || 0} icon={FileText} tone="sky" />
-        <CdStat title="Ready to Ship" value={stats?.ready_to_dispatch || 0} icon={Truck} tone="indigo" />
+      {/* Registers */}
+      <div className="cd-in" style={{ marginTop: '0.5rem' }}>
+        <p className="cd-stat-label" style={{ opacity: 0.7, marginBottom: '0.5rem' }}>OPEN A REGISTER</p>
+        <div className="flex flex-wrap gap-2">
+          {[['Sales', '/accountant/sales'], ['Purchases', '/accountant/purchases'], ['Party Ledger', '/accountant/ledger'],
+            ['Payments', '/accountant/payments'], ['Reconciliation', '/accountant/reconciliation'], ['Reports & GST', '/accountant/reports'],
+            ['Credit Notes', '/accountant/credit-notes'], ['Expenses', '/accountant/expenses']].map(([n, p]) => (
+            <Button key={p} variant="outline" size="sm" className="border-border text-muted-foreground hover:text-foreground"
+                    onClick={() => navigate(p)}>{n}</Button>
+          ))}
+        </div>
       </div>
 
       {/* Tabs */}
