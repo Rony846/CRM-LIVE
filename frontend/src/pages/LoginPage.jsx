@@ -124,6 +124,7 @@ export default function LoginPage() {
       admin: '/admin',
       dealer: '/dealer',
       ca: '/ca',
+      importer: '/importer',
       lawyer: '/legal'
     };
     navigate(routes[user.role] || '/');

@@ -23,6 +23,8 @@ import EmailTicketInbox from './pages/support/EmailTicketInbox';
 import ServiceAgentDashboard from './pages/service/ServiceAgentDashboard';
 import AccountantDashboard from './pages/accountant/AccountantDashboard';
 import CADashboard from './pages/ca/CADashboard';
+import ImporterPortal from './pages/importer/ImporterPortal';
+import ImporterReconciliation from './pages/admin/ImporterReconciliation';
 import DispatcherDashboard from './pages/dispatcher/DispatcherDashboard';
 import DispatcherTVMode from './pages/dispatcher/DispatcherTVMode';
 import AdminDashboard from './pages/admin/AdminDashboard';
@@ -292,6 +294,7 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
       admin: '/admin',
       dealer: '/dealer',
       ca: '/ca',
+      importer: '/importer',
       lawyer: '/admin/legal-cases'
     };
     return <Navigate to={dashboardRoutes[user.role] || '/login'} replace />;
@@ -328,6 +331,7 @@ const RoleRedirect = () => {
     admin: '/admin',
     dealer: '/dealer',
     ca: '/ca',
+    importer: '/importer',
     lawyer: '/admin/legal-cases'
   };
 
@@ -512,6 +516,20 @@ function App() {
           <Route path="/ca" element={
             <ProtectedRoute allowedRoles={['ca', 'admin']}>
               <CADashboard />
+            </ProtectedRoute>
+          } />
+
+          {/* Importer Portal (importers like KNB enter landed-cost + commission, bill MGIPL) */}
+          <Route path="/importer" element={
+            <ProtectedRoute allowedRoles={['importer', 'admin']}>
+              <ImporterPortal />
+            </ProtectedRoute>
+          } />
+
+          {/* Admin: importer reconciliation — you-vs-them across all importers */}
+          <Route path="/admin/importer-reconciliation" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <ImporterReconciliation />
             </ProtectedRoute>
           } />
 

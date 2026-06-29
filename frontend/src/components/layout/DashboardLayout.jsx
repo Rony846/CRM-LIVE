@@ -217,6 +217,7 @@ const adminNavGroups = [
       { label: 'Bank Match', icon: Scale, path: '/finance/reconciliation' },
       { label: 'E-commerce Recon', icon: ShoppingCart, path: '/finance/ecommerce-reconciliation' },
       { label: 'Import Costing', icon: Ship, path: '/finance/import-costing' },
+      { label: 'Importer Reconciliation', icon: Ship, path: '/admin/importer-reconciliation' },
       { label: 'Bank Reconciliation', icon: CreditCard, path: '/finance/bank-reconciliation' },
       { label: 'Unbooked Receipts', icon: AlertTriangle, path: '/finance/unbooked-receipts' },
       { label: 'Sales Register', icon: FileText, path: '/accountant/sales' },

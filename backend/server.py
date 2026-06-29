@@ -63824,6 +63824,254 @@ async def shiprocket_reconcile_tickets(current_user: dict = Depends(get_current_
             "matched_with_pcb": sum(1 for m in matched if m["any_pcb"]), "matches": matched}
 
 
+# =============================================
+# IMPORTER PORTAL — landed-cost + commission reconciliation
+# An importer (e.g. KNB) pays MGIPL's supplier, pays the Bill-of-Entry customs duty
+# (BCD + surcharge + IGST) and shipping, adds a fixed commission %, and bills MGIPL.
+# This portal lets the importer enter each consignment transparently; on submit it
+# creates the matching payable in MGIPL's books. Commission base = FULL landed cost.
+# =============================================
+
+class ImporterCreate(BaseModel):
+    name: str
+    code: Optional[str] = None
+    default_commission_percent: float = 5.0
+    firm_id: Optional[str] = None          # the MGIPL firm they import for
+    gst_number: Optional[str] = None
+    contact_name: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+
+
+class ImporterLineItem(BaseModel):
+    description: str                        # e.g. "SKD 6.2kW"
+    quantity: float = 1
+    notes: Optional[str] = None
+
+
+class ImporterConsignmentCreate(BaseModel):
+    importer_id: Optional[str] = None       # set from the user for importer role
+    date: Optional[str] = None              # YYYY-MM-DD
+    supplier_name: Optional[str] = None
+    supplier_payment_inr: float = 0         # bank debit for the goods
+    customs_bcd: float = 0
+    customs_surcharge: float = 0
+    customs_igst: float = 0
+    shipping_charges: float = 0
+    commission_percent: Optional[float] = None   # defaults to the importer's rate
+    line_items: List[ImporterLineItem] = []
+    boe_number: Optional[str] = None
+    notes: Optional[str] = None
+    attachments: Optional[list] = None      # [{name, url}]
+
+
+def _consignment_totals(supplier: float, bcd: float, sur: float, igst: float,
+                        shipping: float, pct: float) -> dict:
+    customs_total = round((bcd or 0) + (sur or 0) + (igst or 0), 2)
+    landed = round((supplier or 0) + customs_total + (shipping or 0), 2)
+    commission = round(landed * (pct or 0) / 100, 2)
+    return {
+        "customs_total": customs_total,
+        "landed_cost": landed,
+        "commission_amount": commission,
+        "total_billed": round(landed + commission, 2),
+    }
+
+
+async def _importer_for_user(user: dict) -> Optional[str]:
+    """The importer_id an importer-role user is bound to (None for admin = all)."""
+    if user.get("role") == "importer":
+        return user.get("importer_id")
+    return None
+
+
+@api_router.post("/admin/importers")
+async def create_importer(payload: ImporterCreate, user: dict = Depends(require_roles(["admin"]))):
+    """Register an importer entity (admin)."""
+    now = datetime.now(timezone.utc).isoformat()
+    firm_id = payload.firm_id
+    if not firm_id:
+        f = await db.firms.find_one({"name": {"$regex": "MGIPL", "$options": "i"}}, {"_id": 0, "id": 1}) \
+            or await db.firms.find_one({}, {"_id": 0, "id": 1})
+        firm_id = (f or {}).get("id")
+    doc = {"id": str(uuid.uuid4()), "name": payload.name.strip(),
+           "code": (payload.code or "").strip() or payload.name.strip()[:6].upper(),
+           "default_commission_percent": payload.default_commission_percent,
+           "firm_id": firm_id, "gst_number": payload.gst_number,
+           "contact_name": payload.contact_name, "phone": payload.phone, "email": payload.email,
+           "is_active": True, "created_at": now, "updated_at": now}
+    await db.importers.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/admin/importers")
+async def list_importers(user: dict = Depends(require_roles(["admin", "accountant", "importer"]))):
+    q = {}
+    iid = await _importer_for_user(user)
+    if iid:
+        q["id"] = iid
+    return {"importers": await db.importers.find(q, {"_id": 0}).sort("name", 1).to_list(200)}
+
+
+@api_router.post("/importer/consignments")
+async def create_consignment(payload: ImporterConsignmentCreate,
+                             user: dict = Depends(require_roles(["importer", "admin"]))):
+    """Create a draft import consignment."""
+    iid = await _importer_for_user(user) or payload.importer_id
+    if not iid:
+        raise HTTPException(status_code=400, detail="importer_id required")
+    imp = await db.importers.find_one({"id": iid}, {"_id": 0})
+    if not imp:
+        raise HTTPException(status_code=404, detail="Importer not found")
+    pct = payload.commission_percent if payload.commission_percent is not None \
+        else imp.get("default_commission_percent", 5.0)
+    totals = _consignment_totals(payload.supplier_payment_inr, payload.customs_bcd,
+                                 payload.customs_surcharge, payload.customs_igst,
+                                 payload.shipping_charges, pct)
+    now = datetime.now(timezone.utc)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "consignment_number": f"IMP-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:4].upper()}",
+        "importer_id": iid, "importer_name": imp.get("name"),
+        "firm_id": imp.get("firm_id"),
+        "date": payload.date or now.strftime("%Y-%m-%d"),
+        "supplier_name": payload.supplier_name,
+        "supplier_payment_inr": payload.supplier_payment_inr,
+        "customs_bcd": payload.customs_bcd, "customs_surcharge": payload.customs_surcharge,
+        "customs_igst": payload.customs_igst, "shipping_charges": payload.shipping_charges,
+        "commission_percent": pct,
+        "line_items": [li.dict() for li in payload.line_items],
+        "boe_number": payload.boe_number, "notes": payload.notes,
+        "attachments": payload.attachments or [],
+        **totals,
+        "status": "draft", "mgipl_purchase_id": None,
+        "created_by": user["id"], "created_by_name": f"{user.get('first_name','')} {user.get('last_name','')}".strip(),
+        "created_at": now.isoformat(), "updated_at": now.isoformat(),
+    }
+    await db.importer_consignments.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/importer/consignments")
+async def list_consignments(importer_id: str = None,
+                            user: dict = Depends(require_roles(["importer", "admin", "accountant"]))):
+    q = {}
+    iid = await _importer_for_user(user)
+    if iid:
+        q["importer_id"] = iid
+    elif importer_id:
+        q["importer_id"] = importer_id
+    rows = await db.importer_consignments.find(q, {"_id": 0}).sort("created_at", -1).limit(500).to_list(500)
+    summary = {
+        "count": len(rows),
+        "total_billed": round(sum(r.get("total_billed", 0) for r in rows), 2),
+        "total_landed": round(sum(r.get("landed_cost", 0) for r in rows), 2),
+        "total_commission": round(sum(r.get("commission_amount", 0) for r in rows), 2),
+        "billed_count": sum(1 for r in rows if r.get("status") in ("billed", "paid")),
+    }
+    return {"consignments": rows, "summary": summary}
+
+
+@api_router.get("/importer/consignments/{cid}")
+async def get_consignment(cid: str, user: dict = Depends(require_roles(["importer", "admin", "accountant"]))):
+    c = await db.importer_consignments.find_one({"id": cid}, {"_id": 0})
+    if not c:
+        raise HTTPException(status_code=404, detail="Consignment not found")
+    iid = await _importer_for_user(user)
+    if iid and c.get("importer_id") != iid:
+        raise HTTPException(status_code=403, detail="Not your consignment")
+    return c
+
+
+@api_router.patch("/importer/consignments/{cid}")
+async def update_consignment(cid: str, payload: ImporterConsignmentCreate,
+                             user: dict = Depends(require_roles(["importer", "admin"]))):
+    c = await db.importer_consignments.find_one({"id": cid}, {"_id": 0})
+    if not c:
+        raise HTTPException(status_code=404, detail="Consignment not found")
+    iid = await _importer_for_user(user)
+    if iid and c.get("importer_id") != iid:
+        raise HTTPException(status_code=403, detail="Not your consignment")
+    if c.get("status") != "draft":
+        raise HTTPException(status_code=400, detail="Only draft consignments can be edited")
+    pct = payload.commission_percent if payload.commission_percent is not None else c.get("commission_percent", 5.0)
+    totals = _consignment_totals(payload.supplier_payment_inr, payload.customs_bcd,
+                                 payload.customs_surcharge, payload.customs_igst,
+                                 payload.shipping_charges, pct)
+    upd = {"date": payload.date or c.get("date"), "supplier_name": payload.supplier_name,
+           "supplier_payment_inr": payload.supplier_payment_inr, "customs_bcd": payload.customs_bcd,
+           "customs_surcharge": payload.customs_surcharge, "customs_igst": payload.customs_igst,
+           "shipping_charges": payload.shipping_charges, "commission_percent": pct,
+           "line_items": [li.dict() for li in payload.line_items], "boe_number": payload.boe_number,
+           "notes": payload.notes, "attachments": payload.attachments or c.get("attachments", []),
+           **totals, "updated_at": datetime.now(timezone.utc).isoformat()}
+    await db.importer_consignments.update_one({"id": cid}, {"$set": upd})
+    return {**c, **upd}
+
+
+@api_router.post("/importer/consignments/{cid}/submit")
+async def submit_consignment(cid: str, user: dict = Depends(require_roles(["importer", "admin"]))):
+    """Finalise a consignment → bill MGIPL: creates the matching payable in MGIPL's books."""
+    c = await db.importer_consignments.find_one({"id": cid}, {"_id": 0})
+    if not c:
+        raise HTTPException(status_code=404, detail="Consignment not found")
+    iid = await _importer_for_user(user)
+    if iid and c.get("importer_id") != iid:
+        raise HTTPException(status_code=403, detail="Not your consignment")
+    if c.get("status") != "draft":
+        raise HTTPException(status_code=400, detail=f"Already {c.get('status')}")
+    now = datetime.now(timezone.utc)
+    firm = await db.firms.find_one({"id": c.get("firm_id")}, {"_id": 0}) or {}
+    imp = await db.importers.find_one({"id": c.get("importer_id")}, {"_id": 0}) or {}
+    # MGIPL payable = the importer's bill. Recorded as a purchase so it shows in payables.
+    # GST is NOT split/claimed here (the BoE IGST ITC is captured separately) — left for the
+    # accountant to finalise, per the no-fabricated-GST rule.
+    purchase_id = str(uuid.uuid4())
+    items_text = "; ".join(f"{li.get('description')} x{li.get('quantity')}" for li in (c.get("line_items") or []))
+    payable = {
+        "id": purchase_id,
+        "purchase_number": f"IMP-PUR-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:4].upper()}",
+        "firm_id": c.get("firm_id"), "firm_name": firm.get("name"),
+        "supplier_name": c.get("importer_name"), "supplier_gstin": imp.get("gst_number"),
+        "invoice_number": c.get("consignment_number"), "invoice_date": c.get("date"),
+        "total_amount": c.get("total_billed"), "balance_due": c.get("total_billed"),
+        "totals": {"grand_total": c.get("total_billed"),
+                   "taxable_value": c.get("landed_cost"), "total_gst": 0},
+        "import_breakdown": {k: c.get(k) for k in ("supplier_payment_inr", "customs_bcd",
+                             "customs_surcharge", "customs_igst", "customs_total",
+                             "shipping_charges", "commission_percent", "commission_amount",
+                             "landed_cost", "total_billed")},
+        "customs_igst_itc_eligible": c.get("customs_igst"),
+        "items": items_text, "notes": f"Importer consignment {c.get('consignment_number')} via importer portal",
+        "source": "importer_portal", "status": "recorded", "payment_status": "credit",
+        "created_by": user["id"], "created_at": now.isoformat(),
+    }
+    await db.purchases.insert_one(payable)
+    await db.importer_consignments.update_one({"id": cid}, {"$set": {
+        "status": "billed", "mgipl_purchase_id": purchase_id,
+        "submitted_at": now.isoformat(), "updated_at": now.isoformat()}})
+    return {"message": "Consignment billed to MGIPL", "purchase_number": payable["purchase_number"],
+            "total_billed": c.get("total_billed")}
+
+
+@api_router.get("/admin/importer-reconciliation")
+async def importer_reconciliation(user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """All importers' consignments with per-importer + grand totals — the you-vs-them view."""
+    rows = await db.importer_consignments.find({}, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    by_imp = {}
+    for r in rows:
+        b = by_imp.setdefault(r.get("importer_name") or r.get("importer_id"),
+                              {"consignments": 0, "landed": 0, "commission": 0, "billed": 0})
+        b["consignments"] += 1
+        b["landed"] += r.get("landed_cost", 0)
+        b["commission"] += r.get("commission_amount", 0)
+        b["billed"] += r.get("total_billed", 0)
+    return {"by_importer": by_imp, "rows": rows,
+            "grand_total_billed": round(sum(r.get("total_billed", 0) for r in rows), 2)}
+
+
 async def _alert_founder_free(text: str, kind: str = "agent_alert"):
     """Deliver an agent alert to the founder for FREE: Cloud API free-form (valid only inside the 24h
     window the founder's own messages open). If the window is closed, queue it and flush on their next
