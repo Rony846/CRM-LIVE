@@ -39,6 +39,7 @@ RP_STUCK_DAYS = int(os.environ.get("MS_MARVEL_RP_STUCK_DAYS", "4"))
 WA_RESP_MIN = int(os.environ.get("MS_MARVEL_WA_RESP_MIN", "45"))
 RE_ESCALATE_HOURS = int(os.environ.get("MS_MARVEL_RE_ESCALATE_HOURS", "72"))
 MAX_DIGEST = int(os.environ.get("MS_MARVEL_MAX_DIGEST", "12"))
+MAX_ACTIONS = int(os.environ.get("MS_MARVEL_MAX_ACTIONS", "30"))   # cap actions/run (throttle the backlog)
 
 
 def enabled() -> bool:
@@ -85,7 +86,8 @@ def _t(t: dict, kind: str, age_h: float, priority: int) -> dict:
             "phone": re.sub(r"\D", "", str(t.get("customer_phone") or ""))[-10:],
             "email": t.get("customer_email") or "", "oid": oid, "awb": awb,
             "age_h": round(age_h), "priority": priority,
-            "owner": t.get("assigned_to_name") or ("UNASSIGNED" if not t.get("assigned_to") else "")}
+            "owner": t.get("assigned_to_name") or ("UNASSIGNED" if not t.get("assigned_to") else ""),
+            "owner_id": t.get("assigned_to")}
 
 
 def _diagnose(item: dict, enr: dict, cstat: str) -> str:
@@ -242,63 +244,168 @@ async def scan(db) -> dict:
     return {"items": items, "chronic": chronic, "scanned_at": now.isoformat()}
 
 
-async def run(db, alert_fn, brain_phrase=None) -> dict:
-    """Scan → keep only items NOT already flagged (or due for re-escalation) → flag the founder a
-    prioritised digest → record flags. `alert_fn(text)` delivers to the founder. `brain_phrase` is an
-    optional async (text)->text to polish the digest via a local/paid brain (never the subscription)."""
+def _decide_action(item: dict, enr: dict):
+    """Route a stuck item to a MONEY-GATED action + a recommended next step. Ms Marvel only ever
+    notifies/posts — she never books, refunds, replaces or cancels. Anything that costs money or
+    needs a real decision is escalated to the founder, not done."""
+    why = (enr.get("why") or "").lower()
+    has_owner = bool(item.get("owner_id")) and item.get("owner") != "UNASSIGNED"
+    if item["kind"] == "reverse_pickup_stuck" or "chase courier" in why:
+        return "chase_courier", "Shipment/pickup stalled — chase the courier (NOT-PICKED)."
+    if "refund already issued" in why:
+        return ("nudge_owner" if has_owner else "escalate"), "Refund already issued — verify & CLOSE this ticket."
+    if "a-to-z" in why:
+        return "escalate", "Open A-to-z — confirm Refund-Defense is contesting it."
+    if "delivered then faulty" in why:
+        return ("nudge_owner" if has_owner else "escalate"), "Delivered then faulty — book reverse pickup / decide repair-vs-replace."
+    if "no order on file" in why:
+        return ("nudge_owner" if has_owner else "escalate"), "Ask the customer for their order no./invoice to link & proceed."
+    if item["kind"] == "wa_unanswered":
+        return "escalate", "Customer waiting on WhatsApp — ensure a reply goes out."
+    return ("nudge_owner" if has_owner else "escalate"), "No movement — action this or update the customer."
+
+
+def _dossier(it: dict, enr: dict) -> str:
+    bits = []
+    if enr.get("source"):
+        bits.append(enr["source"])
+    if enr.get("courier"):
+        bits.append("courier: " + enr["courier"])
+    if enr.get("signals"):
+        bits.append(enr["signals"])
+    return " · ".join(bits)
+
+
+async def _nudge_owner(notify_fn, chat_fn, it: dict, enr: dict, rec: str):
+    """Internal, reliable nudge to the ticket's owner: an in-app notification + a tagged post in the
+    support channel — with the dossier + recommended next step. No customer/courier money action."""
+    age = f"{it['age_h']}h" if it["age_h"] < 72 else f"{round(it['age_h']/24)}d"
+    msg = f"{rec}\n{it['ref']} · {it.get('customer') or ''} ({it.get('product') or ''}) · stuck {age}\n{_dossier(it, enr)}".strip()
+    if notify_fn and it.get("owner_id"):
+        try:
+            await notify_fn(title=f"Ms Marvel: action {it['ref']}", message=msg, notification_type="support",
+                            link="/admin", target_user_ids=[it["owner_id"]], priority="high",
+                            created_by_name="Ms Marvel")
+        except Exception as e:
+            logger.warning(f"Ms Marvel nudge notify failed: {e}")
+    if chat_fn:
+        try:
+            await chat_fn("service", f"🦸‍♀️ *{it.get('owner') or 'owner'}* — *{it['ref']}* "
+                          f"({it.get('customer') or ''}): {enr.get('why')}. → {rec}", {"ref": it["ref"]})
+        except Exception as e:
+            logger.warning(f"Ms Marvel nudge chat failed: {e}")
+
+
+async def _chase_courier(chat_fn, it: dict, enr: dict, rec: str):
+    """Flag a stalled shipment/pickup to the support+dispatch channel to be chased. Free/reversible."""
+    if chat_fn:
+        try:
+            await chat_fn("service", f"🦸‍♀️ *Courier chase* — *{it['ref']}* ({it.get('customer') or ''}): "
+                          f"{enr.get('courier') or 'shipment stalled'}. {rec}", {"ref": it["ref"]})
+        except Exception as e:
+            logger.warning(f"Ms Marvel courier-chase post failed: {e}")
+
+
+async def run(db, alert_fn, notify_fn=None, chat_fn=None, brain_phrase=None) -> dict:
+    """Scan → process items not already flagged (re-escalate after RE_ESCALATE_HOURS). In AUTONOMOUS
+    mode (autonomous() + notify_fn + chat_fn) Ms Marvel MONEY-GATED-ACTS: nudges the owner / chases the
+    courier herself and escalates to the founder ONLY what needs him (unassigned, money/decision, A-to-z,
+    WhatsApp), with a summary of what she handled. Otherwise she just flags the founder a digest of
+    everything (Step 1). Money/refund/replace/PCB are NEVER auto-done — only notified/escalated."""
     now = datetime.now(timezone.utc)
     res = await scan(db)
     re_cut = (now - timedelta(hours=RE_ESCALATE_HOURS)).isoformat()
-    fresh = []
+    auto = autonomous() and notify_fn is not None and chat_fn is not None
+    c = res["chronic"]
+    LABEL = {"escalated_quiet": "⚠️ ESCALATED, no movement", "inflight_stalled": "🔧 stuck in pipeline",
+             "sla_breached": "⏰ just breached SLA", "reverse_pickup_stuck": "🔄 pickup not arrived",
+             "wa_unanswered": "💬 customer waiting on WhatsApp"}
+
+    cand = []
     for it in res["items"]:
         key = f"{it['kind']}:{it['ref']}"
         prev = await db.ms_marvel_flags.find_one({"key": key})
         if prev and prev.get("last_flagged", "") > re_cut:
-            continue  # already raised recently
-        fresh.append(it)
-        await db.ms_marvel_flags.update_one({"key": key}, {"$set": {
-            "key": key, "kind": it["kind"], "ref": it["ref"], "last_flagged": now.isoformat()},
-            "$setOnInsert": {"first_flagged": now.isoformat()}, "$inc": {"count": 1}}, upsert=True)
-    if not fresh:
+            continue
+        cand.append((key, it))
+    if not cand:
         logger.info("Ms Marvel: nothing newly slipping")
-        return {"flagged": 0, "chronic": res["chronic"]}
+        return {"flagged": 0, "handled": {}, "chronic": c}
+    cand.sort(key=lambda ki: (ki[1]["priority"], -ki[1]["age_h"]))
 
-    fresh.sort(key=lambda x: (x["priority"], -x["age_h"]))
-    LABEL = {"escalated_quiet": "⚠️ ESCALATED, no movement", "inflight_stalled": "🔧 stuck in pipeline",
-             "sla_breached": "⏰ just breached SLA", "reverse_pickup_stuck": "🔄 pickup not arrived",
-             "wa_unanswered": "💬 customer waiting on WhatsApp"}
-    # Per-category counts (so a big set reads as a report, not a 200-line dump).
-    by_kind = {}
-    for it in fresh:
-        by_kind[it["kind"]] = by_kind.get(it["kind"], 0) + 1
-    summary = " · ".join(f"{n} {LABEL.get(k, k).split(' ', 1)[-1]}" for k, n in
-                         sorted(by_kind.items(), key=lambda kv: -kv[1]))
-    # Itemise only the most urgent few — each ENRICHED with source + courier + likely cause.
-    lines = []
-    for it in fresh[:MAX_DIGEST]:
+    async def _flag(key, it, action="", rec=""):
+        await db.ms_marvel_flags.update_one({"key": key}, {"$set": {
+            "key": key, "kind": it["kind"], "ref": it["ref"], "owner": it.get("owner"),
+            "action": action, "rec": rec, "last_flagged": now.isoformat()},
+            "$setOnInsert": {"first_flagged": now.isoformat()}, "$inc": {"count": 1}}, upsert=True)
+
+    def _line(it, enr, rec=""):
         age = f"{it['age_h']}h" if it["age_h"] < 72 else f"{round(it['age_h']/24)}d"
         who = f" · {it['owner']}" if it.get("owner") else ""
+        head = (f"• {LABEL.get(it['kind'], it['kind'])}: {it['ref']} "
+                f"({it.get('customer') or '?'}{(' · ' + it['product']) if it.get('product') else ''}) — {age}{who}")
+        ctx = [x for x in (f"src: {enr['source']}" if enr.get("source") else None,
+                           f"courier: {enr['courier']}" if enr.get("courier") else None,
+                           enr.get("signals")) if x]
+        detail = (("\n    " + " · ".join(ctx)) if ctx else "") + \
+                 (f"\n    ↳ likely: {enr['why']}" if enr.get("why") else "") + (f"\n    → {rec}" if rec else "")
+        return head + detail
+
+    if not auto:
+        # ---- Step 1: digest EVERYTHING to the founder (no actions) ----
+        fresh = [it for _, it in cand]
+        for key, it in cand:
+            await _flag(key, it)
+        by_kind = {}
+        for it in fresh:
+            by_kind[it["kind"]] = by_kind.get(it["kind"], 0) + 1
+        summ = " · ".join(f"{n} {LABEL.get(k, k).split(' ', 1)[-1]}" for k, n in sorted(by_kind.items(), key=lambda kv: -kv[1]))
+        lines = []
+        for it in fresh[:MAX_DIGEST]:
+            try:
+                enr = await enrich(db, it)
+            except Exception:
+                enr = {}
+            lines.append(_line(it, enr))
+        body = (f"🦸‍♀️ *Ms Marvel — support watch*\n{len(fresh)} item(s) need attention: {summ}.\n\nMost urgent:\n"
+                + "\n".join(lines) + (f"\n…+{len(fresh) - MAX_DIGEST} more in these categories" if len(fresh) > MAX_DIGEST else "")
+                + f"\n\nChronic backlog (separate cleanup): {c['active']} active · {c['sla_breached']} breached · "
+                f"{c['unassigned']} unassigned · {c['open_az']} open A-to-z\n→ /admin")
+        if brain_phrase:
+            try:
+                body = (await brain_phrase(body)) or body
+            except Exception:
+                pass
+        await alert_fn(body)
+        logger.info(f"Ms Marvel: flagged {len(fresh)} items (flag-only)")
+        return {"flagged": len(fresh), "handled": {}, "chronic": c}
+
+    # ---- Step 2: AUTONOMOUS — act on up to MAX_ACTIONS, escalate only what needs the founder ----
+    handled = {"nudge_owner": 0, "chase_courier": 0}
+    escalations = []
+    for key, it in cand[:MAX_ACTIONS]:
         try:
             enr = await enrich(db, it)
         except Exception:
             enr = {}
-        head = (f"• {LABEL.get(it['kind'], it['kind'])}: {it['ref']} "
-                f"({it.get('customer') or '?'}{(' · ' + it['product']) if it.get('product') else ''}) — {age}{who}")
-        ctx = []
-        if enr.get("source"):
-            ctx.append(f"src: {enr['source']}")
-        if enr.get("courier"):
-            ctx.append(f"courier: {enr['courier']}")
-        if enr.get("signals"):
-            ctx.append(enr["signals"])
-        detail = (("\n    " + " · ".join(ctx)) if ctx else "") + \
-                 (f"\n    ↳ likely: {enr['why']}" if enr.get("why") else "")
-        lines.append(head + detail)
-    c = res["chronic"]
-    body = (f"🦸‍♀️ *Ms Marvel — support watch*\n{len(fresh)} item(s) need attention: {summary}.\n"
-            f"\nMost urgent:\n" + "\n".join(lines)
-            + (f"\n…+{len(fresh) - MAX_DIGEST} more in these categories" if len(fresh) > MAX_DIGEST else "")
-            + f"\n\nChronic backlog (separate cleanup): {c['active']} active · {c['sla_breached']} breached · "
+        action, rec = _decide_action(it, enr)
+        if action == "nudge_owner" and it.get("owner_id"):
+            await _nudge_owner(notify_fn, chat_fn, it, enr, rec)
+            handled["nudge_owner"] += 1
+        elif action == "chase_courier":
+            await _chase_courier(chat_fn, it, enr, rec)
+            handled["chase_courier"] += 1
+        else:
+            escalations.append((it, enr, rec))
+        await _flag(key, it, action, rec)
+    remaining = max(0, len(cand) - MAX_ACTIONS)
+    esc_lines = [_line(it, enr, rec) for it, enr, rec in escalations[:MAX_DIGEST]]
+    handled_str = ", ".join(f"{v} {k.replace('_', ' ')}" for k, v in handled.items() if v) or "nothing auto-actionable"
+    body = (f"🦸‍♀️ *Ms Marvel — support watch (autonomous)*\nI handled: {handled_str}.\n"
+            + (f"\n*Needs YOU* ({len(escalations)}):\n" + "\n".join(esc_lines) if escalations else "\nNothing needs your decision right now.")
+            + (f"\n…+{len(escalations) - MAX_DIGEST} more for you" if len(escalations) > MAX_DIGEST else "")
+            + (f"\n\n({remaining} more queued for next run)" if remaining else "")
+            + f"\n\nChronic backlog: {c['active']} active · {c['sla_breached']} breached · "
             f"{c['unassigned']} unassigned · {c['open_az']} open A-to-z\n→ /admin")
     if brain_phrase:
         try:
@@ -306,5 +413,5 @@ async def run(db, alert_fn, brain_phrase=None) -> dict:
         except Exception:
             pass
     await alert_fn(body)
-    logger.info(f"Ms Marvel: flagged {len(fresh)} newly-slipping items")
-    return {"flagged": len(fresh), "chronic": res["chronic"], "items": fresh[:MAX_DIGEST]}
+    logger.info(f"Ms Marvel autonomous: handled={handled} escalated={len(escalations)} remaining={remaining}")
+    return {"handled": handled, "escalated": len(escalations), "remaining": remaining, "chronic": c}

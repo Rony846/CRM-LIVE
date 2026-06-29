@@ -65420,7 +65420,8 @@ async def scheduled_ms_marvel():
     if not ms_marvel.enabled():
         return
     try:
-        await ms_marvel.run(db, _alert_founder_free)
+        await ms_marvel.run(db, _alert_founder_free,
+                            notify_fn=create_notification, chat_fn=post_system_message)
     except Exception as e:
         logger.error(f"Ms Marvel run failed: {e}")
 
@@ -65439,9 +65440,10 @@ async def ms_marvel_scan(user: dict = Depends(require_roles(["admin"]))):
 
 @api_router.post("/admin/ms-marvel/run")
 async def ms_marvel_run_now(user: dict = Depends(require_roles(["admin"]))):
-    """Run Ms Marvel now (flags the founder + records what it raised)."""
+    """Run Ms Marvel now (autonomous if MS_MARVEL_AUTONOMOUS; else flags the founder a digest)."""
     from utils import ms_marvel
-    return await ms_marvel.run(db, _alert_founder_free, brain_phrase=_ms_marvel_phrase)
+    return await ms_marvel.run(db, _alert_founder_free, notify_fn=create_notification,
+                               chat_fn=post_system_message, brain_phrase=_ms_marvel_phrase)
 
 
 # ===================== Amazon email → CRM ingest =====================
