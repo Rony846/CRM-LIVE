@@ -65394,17 +65394,19 @@ MS_MARVEL_MIN = int(os.environ.get("MS_MARVEL_MIN", "60"))
 
 
 async def _ms_marvel_phrase(text: str) -> str:
-    """Optionally let the LOCAL Jasmine brain tighten the digest (free). Never the subscription
-    terminal; on any failure the deterministic text is used as-is."""
+    """Optionally let a LOCAL brain tighten the digest (free). Uses the WARM Pratibha 14B (fast) with a
+    hard 20s timeout — the cold Jasmine 32B was too slow and hung the digest. Falls back to the clean
+    deterministic text on any slowness/error. Never the subscription terminal."""
     try:
         from utils import brain_registry
-        if not brain_registry.available("jasmine"):
+        if not brain_registry.available("pratibha"):
             return text
-        r = await brain_registry.complete("jasmine", max_tokens=400, temperature=0.2,
+        r = await asyncio.wait_for(brain_registry.complete(
+            "pratibha", max_tokens=400, temperature=0.2,
             system=("You are Ms Marvel, MuscleGrid's support-ops supervisor reporting to the founder on WhatsApp. "
                     "Rewrite the report below crisply in the SAME structure (keep every ref number, count and the "
                     "chronic line exactly). Professional, terse, one emoji max. Output only the message."),
-            prompt=text)
+            prompt=text), timeout=20.0)
         return (r.get("text") or "").strip() if r.get("model_ok") else text
     except Exception:
         return text
@@ -65412,12 +65414,13 @@ async def _ms_marvel_phrase(text: str) -> str:
 
 async def scheduled_ms_marvel():
     """Ms Marvel: watch support timeliness and flag the founder what is newly slipping. Off unless
-    MS_MARVEL_ENABLED. Detection is free/deterministic; phrasing uses local Jasmine when available."""
+    MS_MARVEL_ENABLED. Detection is free/deterministic — the digest is sent as-is (clean, instant);
+    brain phrasing is reserved for the manual endpoint to keep the automated path fast + reliable."""
     from utils import ms_marvel
     if not ms_marvel.enabled():
         return
     try:
-        await ms_marvel.run(db, _alert_founder_free, brain_phrase=_ms_marvel_phrase)
+        await ms_marvel.run(db, _alert_founder_free)
     except Exception as e:
         logger.error(f"Ms Marvel run failed: {e}")
 

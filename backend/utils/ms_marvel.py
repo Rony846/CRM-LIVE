@@ -19,6 +19,7 @@ Off unless MS_MARVEL_ENABLED. Autonomous actions (nudging owners, Opus-assisted 
 gated separately by MS_MARVEL_AUTONOMOUS and are Phase 2 — v1 detects + flags the founder.
 """
 import os
+import re
 import logging
 from datetime import datetime, timezone, timedelta
 
@@ -59,8 +60,81 @@ def _t(t: dict, kind: str, age_h: float, priority: int) -> dict:
     return {"kind": kind, "ref": t.get("ticket_number") or t.get("id"),
             "status": t.get("status"), "customer": (t.get("customer_name") or "")[:24],
             "product": (t.get("product_name") or t.get("device_type") or "")[:30],
+            "phone": re.sub(r"\D", "", str(t.get("customer_phone") or ""))[-10:],
+            "email": t.get("customer_email") or "",
             "age_h": round(age_h), "priority": priority,
             "owner": t.get("assigned_to_name") or ("UNASSIGNED" if not t.get("assigned_to") else "")}
+
+
+def _diagnose(item: dict, enr: dict, cstat: str) -> str:
+    """Deterministic 'why is this likely stuck' from the enriched context."""
+    st = (item.get("status") or "").lower()
+    sig = (enr.get("signals") or "").lower()
+    cstat = (cstat or "").lower()
+    if item.get("kind") == "reverse_pickup_stuck":
+        return "reverse pickup booked but not arrived — chase courier"
+    if "refund" in sig:
+        return "refund already issued — likely closeable"
+    if "a-to-z" in sig:
+        return "has an A-to-z claim — defend/resolve"
+    if cstat and "deliver" in cstat and st in ("escalated_to_supervisor", "customer_escalated",
+                                               "hardware_service", "in_progress", "received_at_factory"):
+        return "delivered then faulty — repair/reverse-pickup not started"
+    if cstat and "deliver" not in cstat and any(k in cstat for k in ("transit", "pick", "manifest", "not")):
+        return f"shipment stuck ({enr.get('_cstat_raw') or cstat}) — chase courier"
+    if enr.get("source") == "unknown source" and not cstat:
+        return "no order/courier match — data gap, needs a human look"
+    return "awaiting owner action"
+
+
+async def enrich(db, item: dict) -> dict:
+    """Build a per-item dossier from EXISTING data (free, stored — no live API): purchase source,
+    courier/Bigship status, customer signals (refunds/A-to-z/emails), and a likely 'why stuck'.
+    Called only on the itemised items in the digest, so it stays fast."""
+    ph = item.get("phone") or (item.get("ref") if item.get("kind") == "wa_unanswered" else "")
+    ph = re.sub(r"\D", "", str(ph or ""))[-10:]
+    email = item.get("email") or ""
+    out = {}
+    if not ph:
+        out["why"] = _diagnose(item, out, "")
+        return out
+    rx = ph + "$"
+    ao = await db.amazon_orders.find_one(
+        {"$or": [{"phone": {"$regex": rx}}, {"phone_manual": {"$regex": rx}}]},
+        {"_id": 0, "amazon_order_id": 1, "firm_name": 1, "order_status": 1})
+    if ao:
+        out["source"] = f"Amazon · {ao.get('firm_name') or '?'} · {ao.get('amazon_order_id')} ({ao.get('order_status') or '?'})"
+    else:
+        so = await db.sales_orders.find_one({"phone": {"$regex": rx}}, {"_id": 0, "order_number": 1})
+        if so:
+            out["source"] = f"Direct/Sales · {so.get('order_number')}"
+        else:
+            sh = await db.shopify_orders.find_one(
+                {"$or": [{"phone": {"$regex": rx}}, {"customer_phone": {"$regex": rx}}]},
+                {"_id": 0, "order_number": 1, "name": 1})
+            out["source"] = f"Shopify · {sh.get('name') or sh.get('order_number')}" if sh else "unknown source"
+    cs = await db.courier_shipments.find_one({"phone": {"$regex": rx}},
+                                             {"_id": 0, "awb_number": 1, "status": 1, "courier_name": 1},
+                                             sort=[("created_at", -1)])
+    cstat = ""
+    if cs:
+        cstat = str(cs.get("status") or "")
+        out["courier"] = f"{cstat or '?'} ({cs.get('courier_name') or 'courier'}) AWB {cs.get('awb_number')}"
+    sig = []
+    rf = await db.amazon_refunds.count_documents({"phone": ph})
+    az = await db.az_claims.count_documents({"phone": ph})
+    if rf:
+        sig.append(f"{rf} refund")
+    if az:
+        sig.append(f"{az} A-to-z")
+    if email:
+        em = await db.email_agent_inbox.count_documents({"sender": {"$regex": re.escape(email), "$options": "i"}})
+        if em:
+            sig.append(f"{em} email")
+    if sig:
+        out["signals"] = " · ".join(sig)
+    out["why"] = _diagnose(item, out, cstat)
+    return out
 
 
 async def scan(db) -> dict:
@@ -97,6 +171,7 @@ async def scan(db) -> dict:
         items.append({"kind": "reverse_pickup_stuck", "ref": p.get("ticket_number") or p.get("awb"),
                       "status": "booked", "customer": (p.get("customer_name") or "")[:24],
                       "product": ((p.get("address") or {}).get("product_name") or "")[:30],
+                      "phone": re.sub(r"\D", "", str(p.get("customer_phone") or ""))[-10:],
                       "age_h": round(_hours_since(p.get("created_at"), now)), "priority": 2, "owner": ""})
 
     # 5. WhatsApp: customer's latest message is inbound, unanswered past WA_RESP_MIN (business hrs ~IST 9-21).
@@ -156,14 +231,27 @@ async def run(db, alert_fn, brain_phrase=None) -> dict:
         by_kind[it["kind"]] = by_kind.get(it["kind"], 0) + 1
     summary = " · ".join(f"{n} {LABEL.get(k, k).split(' ', 1)[-1]}" for k, n in
                          sorted(by_kind.items(), key=lambda kv: -kv[1]))
-    # Itemise only the most urgent few.
+    # Itemise only the most urgent few — each ENRICHED with source + courier + likely cause.
     lines = []
     for it in fresh[:MAX_DIGEST]:
         age = f"{it['age_h']}h" if it["age_h"] < 72 else f"{round(it['age_h']/24)}d"
         who = f" · {it['owner']}" if it.get("owner") else ""
-        lines.append(f"• {LABEL.get(it['kind'], it['kind'])}: {it['ref']} "
-                     f"({it.get('customer') or '?'}{(' · ' + it['product']) if it.get('product') else ''}) "
-                     f"— {age}{who}")
+        try:
+            enr = await enrich(db, it)
+        except Exception:
+            enr = {}
+        head = (f"• {LABEL.get(it['kind'], it['kind'])}: {it['ref']} "
+                f"({it.get('customer') or '?'}{(' · ' + it['product']) if it.get('product') else ''}) — {age}{who}")
+        ctx = []
+        if enr.get("source"):
+            ctx.append(f"src: {enr['source']}")
+        if enr.get("courier"):
+            ctx.append(f"courier: {enr['courier']}")
+        if enr.get("signals"):
+            ctx.append(enr["signals"])
+        detail = (("\n    " + " · ".join(ctx)) if ctx else "") + \
+                 (f"\n    ↳ likely: {enr['why']}" if enr.get("why") else "")
+        lines.append(head + detail)
     c = res["chronic"]
     body = (f"🦸‍♀️ *Ms Marvel — support watch*\n{len(fresh)} item(s) need attention: {summary}.\n"
             f"\nMost urgent:\n" + "\n".join(lines)
