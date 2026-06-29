@@ -51,6 +51,8 @@ export default function DispatcherDashboard() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [updateCourierOpen, setUpdateCourierOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [collectedOpen, setCollectedOpen] = useState(false);
+  const [collectedReceiver, setCollectedReceiver] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
   const [courierForm, setCourierForm] = useState({
     courier: '',
@@ -237,6 +239,38 @@ export default function DispatcherDashboard() {
       setActionLoading(false);
     }
   };
+
+  const openCollectedDialog = (dispatch) => {
+    setSelectedItem(dispatch);
+    setCollectedReceiver('');
+    setCollectedOpen(true);
+  };
+
+  const handleMarkCollected = async () => {
+    if (!selectedItem) return;
+    setActionLoading(true);
+    try {
+      const ticketId = selectedItem.ticket_id || selectedItem.id;
+      const res = await axios.post(
+        `${API}/tickets/${ticketId}/mark-collected`,
+        new URLSearchParams({ collected_by_name: collectedReceiver.trim() }),
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      toast.success('Marked collected — removed from dispatch queue');
+      if (res.data?.missing_service_invoice) {
+        toast.warning('No service invoice on this walk-in repair — raise one if charges are due.');
+      }
+      setCollectedOpen(false);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to mark collected');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const isWalkin = (d) =>
+    d?.is_walkin || d?.dispatch_type === 'walkin_return' || d?.original_ticket_info?.is_walkin;
 
   const readyToDispatch = queue.filter(d => d.status === 'ready_for_dispatch' || d.status === 'ready_to_dispatch');
   const dispatched = queue.filter(d => d.status === 'dispatched');
@@ -585,6 +619,18 @@ export default function DispatcherDashboard() {
                           >
                             <XCircle className="w-3 h-3" />
                           </Button>
+                          {isWalkin(dispatch) && (
+                            <Button
+                              size="sm"
+                              className="bg-violet-600 hover:bg-violet-500 text-white"
+                              onClick={() => openCollectedDialog(dispatch)}
+                              title="Customer collected the repaired unit in person"
+                              data-testid={`collected-${dispatch.id}`}
+                            >
+                              <CheckCircle className="w-4 h-4 mr-1" />
+                              Collected
+                            </Button>
+                          )}
                           <Button
                             size="sm"
                             className="bg-emerald-600 hover:bg-emerald-500 text-white"
@@ -919,6 +965,56 @@ export default function DispatcherDashboard() {
             >
               {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <XCircle className="w-4 h-4 mr-2" />}
               Cancel Dispatch
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Collected (in-person handover) Dialog ────────────────────────── */}
+      <Dialog open={collectedOpen} onOpenChange={setCollectedOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <span className="flex h-7 w-7 items-center justify-center rounded bg-violet-500/15">
+                <CheckCircle className="w-4 h-4 text-violet-400" />
+              </span>
+              Mark Collected (in person)
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="bg-violet-500/5 border border-violet-500/20 p-3 rounded-lg">
+              <p className="text-sm text-foreground">
+                <span className="text-muted-foreground">Ticket #: </span>
+                <span className="font-mono font-semibold">{selectedItem?.dispatch_number}</span>
+              </p>
+              <p className="text-sm text-foreground mt-0.5">
+                <span className="text-muted-foreground">Customer: </span>
+                {selectedItem?.customer_name}
+              </p>
+              <p className="font-mono text-[11px] text-violet-400 mt-2 uppercase tracking-wide">
+                Confirms the customer collected the repaired unit over the counter.
+                Closes the ticket and removes it from the dispatch queue — no courier needed.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Received by (optional)</Label>
+              <Input
+                placeholder="Name of the person who collected it, if not the customer"
+                value={collectedReceiver}
+                onChange={(e) => setCollectedReceiver(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setCollectedOpen(false)}>Close</Button>
+            <Button
+              onClick={handleMarkCollected}
+              className="bg-violet-600 hover:bg-violet-500 text-white"
+              disabled={actionLoading}
+            >
+              {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <CheckCircle className="w-4 h-4 mr-2" />}
+              Confirm Collected
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -812,6 +812,20 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Bigship NOT-PICKED auto-correct — Bigship never updates cancelled/delivered shipments,
+        # so they sit at "NOT PICKED" forever and pollute the dispatch board. Cross-check Delhivery
+        # (the real carrier) and self-heal: correct cancelled/delivered, leave genuine misses,
+        # flag old unresolvable rows stale.
+        scheduler.add_job(
+            scheduled_notpicked_recheck,
+            IntervalTrigger(minutes=BIGSHIP_NOTPICKED_RECHECK_MIN),
+            id="bigship_notpicked_recheck",
+            name="Bigship NOT-PICKED Re-check (Delhivery cross-check)",
+            replace_existing=True,
+            misfire_grace_time=600,
+            max_instances=1,
+        )
+
         # Repair arrival → Gaurav: when a reverse-pickup is delivered to the Meerut service centre,
         # auto-notify the technician to start the repair (closes the manual arrival-trigger gap).
         scheduler.add_job(
@@ -8648,8 +8662,82 @@ async def mark_ticket_dispatched(
         "scanned_at": now.isoformat()
     }
     await db.gate_logs.insert_one(gate_log)
-    
+
     return {"message": "Product marked as dispatched"}
+
+
+@api_router.post("/tickets/{ticket_id}/mark-collected")
+async def mark_ticket_collected(
+    ticket_id: str,
+    collected_by_name: str = Form(""),
+    note: str = Form(""),
+    user: dict = Depends(require_roles(
+        ["technician", "service_agent", "dispatcher", "gate", "call_support", "supervisor", "admin"]))
+):
+    """Close out a WALK-IN repair return that the customer collected IN PERSON.
+
+    Walk-in repairs are handed back over the counter — no courier, no tracking — so the
+    courier-oriented 'mark-dispatched' flow never gets used and they pile up on the
+    dispatch board forever. This is the in-person counterpart: it marks the unit
+    handed over to the customer, records who collected it, drops the ticket off the
+    board (status -> delivered), and writes the same outward gate log mark-dispatched
+    does so the gate/handover trail stays consistent. Available to front-desk/technician
+    roles, not just dispatcher/gate.
+    """
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if ticket.get("status") not in ("ready_for_dispatch", "ready_to_dispatch"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Ticket is '{ticket.get('status')}', not ready for collection. Only a unit ready for dispatch can be marked collected.")
+
+    now = datetime.now(timezone.utc)
+    scanned_by_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or user.get("email", "")
+    await db.tickets.update_one(
+        {"id": ticket_id},
+        {"$set": {
+            "status": "delivered",
+            "collected_in_person": True,
+            "collected_by": user["id"],
+            "collected_by_name": scanned_by_name,
+            "collected_receiver_name": (collected_by_name or "").strip() or None,
+            "collected_at": now.isoformat(),
+            "delivered_at": now.isoformat(),
+            "updated_at": now.isoformat(),
+        }}
+    )
+
+    hist = "Collected in person by customer (walk-in handover)"
+    if collected_by_name.strip():
+        hist += f" — received by {collected_by_name.strip()}"
+    if note.strip():
+        hist += f" · {note.strip()}"
+    await add_ticket_history(ticket_id, hist, user, {"collected_receiver_name": collected_by_name.strip() or None})
+
+    # Mirror mark-dispatched's outward gate log so the handover trail is consistent.
+    await db.gate_logs.insert_one({
+        "id": str(uuid.uuid4()),
+        "scan_type": "outward",
+        "tracking_id": "IN-PERSON",
+        "courier": "Counter collection",
+        "ticket_id": ticket_id,
+        "ticket_number": ticket["ticket_number"],
+        "customer_name": ticket.get("customer_name"),
+        "scanned_by": user["id"],
+        "scanned_by_name": scanned_by_name,
+        "scanned_at": now.isoformat(),
+        "collected_in_person": True,
+    })
+
+    # Surface (don't block) the walk-in billing gap: walk-ins skip the accountant step,
+    # so a repair can be handed back with no service invoice ever raised.
+    missing_service_invoice = not (ticket.get("service_invoice") or ticket.get("invoice_file"))
+    return {
+        "message": "Marked collected in person",
+        "status": "delivered",
+        "missing_service_invoice": missing_service_invoice,
+    }
 
 
 # ==================== CUSTOMER HISTORY (FOR CALL SUPPORT) ====================
@@ -26191,6 +26279,38 @@ async def list_purchases(
         "limit": limit,
         "skip": skip
     }
+
+@api_router.get("/purchases/wa-drafts")
+async def list_wa_purchase_drafts(
+    status: str = "pending_review",
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Purchase drafts captured from a supplier invoice sent to MG Brain on WhatsApp that
+    couldn't be auto-posted (unmatched item / unknown firm / validation issue). The
+    accountant reviews each, maps the gaps, and finalises via the normal Purchases form."""
+    q = {} if status == "all" else {"status": status}
+    scope = get_user_firm_scope(user)
+    if scope is not None:
+        q["firm_id"] = scope
+    drafts = await db.purchase_drafts.find(q, {"_id": 0}).sort("created_at", -1).limit(200).to_list(200)
+    return {"drafts": drafts, "count": len(drafts)}
+
+
+@api_router.post("/purchases/wa-drafts/{draft_id}/discard")
+async def discard_wa_purchase_draft(
+    draft_id: str,
+    user: dict = Depends(require_roles(["admin", "accountant"]))
+):
+    """Dismiss a WhatsApp purchase draft (e.g. duplicate or not a purchase)."""
+    d = await db.purchase_drafts.find_one({"id": draft_id}, {"_id": 0})
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    assert_firm_access(user, d.get("firm_id")) if d.get("firm_id") else None
+    await db.purchase_drafts.update_one({"id": draft_id},
+        {"$set": {"status": "discarded", "discarded_by": user.get("email"),
+                  "discarded_at": datetime.now(timezone.utc).isoformat()}})
+    return {"message": "Draft discarded"}
+
 
 @api_router.get("/purchases/{purchase_id}")
 async def get_purchase(
@@ -66356,6 +66476,85 @@ async def scheduled_delhivery_board_refresh():
         logger.error(f"Delhivery board refresh failed: {e}")
 
 
+# Bigship has NO list-orders API, so when a Bigship shipment is cancelled/delivered the panel
+# never updates and it sits at "NOT PICKED" forever, polluting the dispatch board (a one-time
+# cleanup found 210 such rows — all actually cancelled). Delhivery is the real carrier for these
+# AWBs, so we cross-check it on a schedule and self-heal.
+BIGSHIP_NOTPICKED_RECHECK_MIN = int(os.environ.get("BIGSHIP_NOTPICKED_RECHECK_MIN", "360") or 360)
+BIGSHIP_NOTPICKED_RECHECK_CAP = int(os.environ.get("BIGSHIP_NOTPICKED_RECHECK_CAP", "120") or 120)
+BIGSHIP_NOTPICKED_RECHECK_DELAY = float(os.environ.get("BIGSHIP_NOTPICKED_RECHECK_DELAY", "0.4") or 0.4)
+
+
+def _cs_age_days(c: dict):
+    iso = c.get("booked_at") or c.get("created_at") or c.get("manifest_date")
+    try:
+        d = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - d).days
+    except Exception:
+        return None
+
+
+async def recheck_stale_notpicked_shipments() -> dict:
+    """Cross-check Bigship 'NOT PICKED' shipments against Delhivery and correct the stale ones.
+
+    Per row: order literally cancelled → CANCELLED; Delhivery reports a real status
+    (cancelled/delivered/in-transit) → set it; Delhivery itself still says NOT PICKED →
+    leave it (a genuine pickup miss to chase); old + unresolvable → flag `stale` so it drops
+    off the active board without fabricating a status. Paced + capped to respect Delhivery's
+    rate limit; recent unresolved rows are left for the next run.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    rows = await db.courier_shipments.find(
+        {"status": {"$regex": "^NOT PICKED$", "$options": "i"}, "stale": {"$ne": True}},
+        {"_id": 0}).limit(BIGSHIP_NOTPICKED_RECHECK_CAP).to_list(BIGSHIP_NOTPICKED_RECHECK_CAP)
+    cancelled = corrected = stale_flagged = still_not_picked = 0
+    for c in rows:
+        awb = (c.get("awb_number") or "").strip()
+        sel = {"awb_number": awb} if awb else {"id": c.get("id")}
+        if str(c.get("bigship_order_id") or c.get("order_id") or "").lower() == "cancelled":
+            await db.courier_shipments.update_one(sel, {"$set": {
+                "status": "CANCELLED", "prev_status": "NOT PICKED", "cleaned_at": now,
+                "cleaned_by": "notpicked_recheck", "clean_reason": "order cancelled"}})
+            cancelled += 1
+            continue
+        if not awb:
+            continue
+        real = None
+        try:
+            t = await fetch_delhivery_tracking(awb)
+            real = (t.get("status_label") or t.get("status") or "").strip()
+        except Exception:
+            real = None
+        if real and real.upper() != "NOT PICKED":
+            await db.courier_shipments.update_one(sel, {"$set": {
+                "status": real, "prev_status": "NOT PICKED", "cleaned_at": now,
+                "cleaned_by": "notpicked_recheck", "clean_reason": "delhivery re-check"}})
+            corrected += 1
+        elif real and real.upper() == "NOT PICKED":
+            still_not_picked += 1  # Delhivery confirms genuinely not picked → real, leave it
+        else:
+            age = _cs_age_days(c)
+            if age is not None and age >= 14:
+                await db.courier_shipments.update_one(sel, {"$set": {
+                    "stale": True, "stale_reason": f"NOT PICKED {age}d, unresolved on Delhivery",
+                    "stale_at": now}})
+                stale_flagged += 1
+        await asyncio.sleep(BIGSHIP_NOTPICKED_RECHECK_DELAY)
+    return {"scanned": len(rows), "cancelled": cancelled, "corrected": corrected,
+            "stale_flagged": stale_flagged, "still_not_picked": still_not_picked}
+
+
+async def scheduled_notpicked_recheck():
+    """APScheduler entrypoint — auto-correct stale Bigship NOT-PICKED rows via Delhivery."""
+    try:
+        summary = await recheck_stale_notpicked_shipments()
+        logger.info(f"Bigship NOT-PICKED re-check: {summary}")
+    except Exception as e:
+        logger.error(f"Bigship NOT-PICKED re-check failed: {e}")
+
+
 async def _email_agent_make_lead(msg: dict, brain: dict) -> Optional[str]:
     """Auto-create a Sales Lead from an inbound email classified as a sales lead.
     Cheap + safe (mirrors the storefront intake); other categories are left for a
@@ -78541,21 +78740,72 @@ async def _wa_customer_info(digits: str) -> dict:
 
 
 async def _wa_tool_search_knowledge(query: str, series: str = "") -> dict:
-    """Read tool: search the KB (4k+ FAQs) + the Titan/Focus user manuals for the issue."""
+    """Read tool: search the KB (4k+ FAQs + structured fault/alarm-code articles) + the
+    Titan/Focus/Heavy-Duty user manuals for the issue. A numeric fault/alarm code in the
+    query (e.g. 'Err 52') is matched EXACTLY first and surfaced before fuzzy keyword hits,
+    so error-code answers are always grounded in the manual rather than guessed."""
     q = (query or "").strip()
     if not q:
         return {"kb": [], "manual": {}}
-    words = re.findall(r"[a-zA-Z]{3,}", q)[:4] or [q]
+    words = [w.lower() for w in re.findall(r"[a-zA-Z]{3,}", q)[:6]] or [q.lower()]
+    codes = re.findall(r"\b\d{1,3}\b", q)  # fault/alarm codes like 52 are stripped by the word regex above
+    s = (series or "").strip().lower()
+    proj = {"_id": 0, "question": 1, "answer": 1, "model_name": 1, "title": 1, "content": 1, "keywords": 1,
+            "fault_code": 1, "code": 1, "series": 1}
+    cand = {}
+
+    async def _gather(flt, limit):
+        for a in await db.kb_articles.find(flt, proj).limit(limit).to_list(limit):
+            key = a.get("title") or a.get("question")
+            if key and key not in cand:
+                cand[key] = a
+
+    # exact code hits (most specific) — prefer the matching series, then unscoped.
+    if codes:
+        code_or = []
+        for c in codes:
+            rxc = {"$regex": rf"\b{re.escape(c)}\b", "$options": "i"}
+            code_or += [{"code": c}, {"fault_code": rxc}, {"keywords": rxc}]
+        if s:
+            await _gather({"series": s, "$or": code_or}, 8)
+        await _gather({"$or": code_or}, 8)
+    # keyword hits across all text fields; series-scoped first so manual articles beat the generic FAQ corpus.
     kb_or = []
     for w in words:
         rx = {"$regex": re.escape(w), "$options": "i"}
-        kb_or += [{"question": rx}, {"answer": rx}, {"keywords": rx}]
-    kb = await db.kb_articles.find({"$or": kb_or}, {"_id": 0, "question": 1, "answer": 1, "model_name": 1}).limit(5).to_list(5)
-    out = {"kb": [{"q": a.get("question"), "a": (a.get("answer") or "")[:600], "model": a.get("model_name")} for a in kb]}
-    s = (series or "").strip().lower()
+        kb_or += [{"question": rx}, {"answer": rx}, {"keywords": rx}, {"content": rx}, {"title": rx}]
+    if kb_or:
+        if s:
+            await _gather({"series": s, "$or": kb_or}, 60)  # a whole series is small; gather all so ranking, not order, decides
+        await _gather({"$or": kb_or}, 20)
+
+    # Rank by where the query actually hit: title/keywords/question (the "designed" fields) weigh more
+    # than incidental body matches; an exact code match dominates; a series match breaks ties.
+    def _score(a):
+        strong = " ".join(str(a.get(k) or "") for k in ("title", "keywords", "question")).lower()
+        body = str(a.get("content") or a.get("answer") or "").lower()
+        sc = 0
+        for w in words:
+            if w in strong:
+                sc += 10
+            elif w in body:
+                sc += 1
+        codefields = (str(a.get("fault_code") or "") + " " + str(a.get("keywords") or "")).lower()
+        for c in codes:
+            if a.get("code") == c or re.search(rf"\b{re.escape(c)}\b", codefields):
+                sc += 100
+        if s and a.get("series") == s:
+            sc += 5
+        return sc
+
+    ranked = sorted(cand.values(), key=_score, reverse=True)[:6]
+    out = {"kb": [{"q": a.get("question") or a.get("title"),
+                   "a": (a.get("answer") or a.get("content") or "")[:600],
+                   "model": a.get("model_name")} for a in ranked]}
     if s in ("titan", "focus", "heavy_duty", "lithium"):
         man_or = [{"text": {"$regex": re.escape(w), "$options": "i"}} for w in words]
-        pages = await db.product_manuals.find({"series": s, "$or": man_or}, {"_id": 0, "page": 1, "text": 1}).limit(4).to_list(4)
+        man_q = {"series": s, "$or": man_or} if man_or else {"series": s}
+        pages = await db.product_manuals.find(man_q, {"_id": 0, "page": 1, "text": 1}).limit(4).to_list(4)
         out["manual"] = {"series": s, "manual_loaded": await db.product_manuals.count_documents({"series": s}) > 0,
                          "pages": [{"page": p["page"], "excerpt": (p.get("text") or "")[:1400]} for p in pages]}
     return out
@@ -79330,9 +79580,20 @@ async def _wa_handle_media(digits: str, contact_name: str, media_id: str, mime: 
                 "mime": media.get("mime") or ("application/pdf" if mtype == "document" else "image/jpeg"),
                 "kind": "document" if mtype == "document" else "image",
                 "at": datetime.now(timezone.utc).isoformat()}}}, upsert=True)
-            await whatsapp_cloud.send_text(digits,
-                "📄 File mil gayi. Ab batao kya karna hai — e.g. *reverse pickup* (customer se wapas mangwana) "
-                "ya *label bnao* (aage bhejna). PIN poochne par *Rony846* bhej dena.")
+            if WA_PURCHASE_CAPTURE_ENABLED:
+                # Don't assume shipping — ask what the document is for.
+                await db.claude_wa_sessions.update_one({"phone": digits}, {"$set": {"awaiting_doc_intent": True}})
+                await whatsapp_cloud.send_text(digits,
+                    "📄 File mil gayi. Kya karna hai?\n"
+                    "1️⃣ *Purchase record* (supplier invoice books me daalna)\n"
+                    "2️⃣ *Label banao* (aage bhejna)\n"
+                    "3️⃣ *Reverse pickup* (customer se wapas mangwana)\n\n"
+                    "_Reply: 1 / 2 / 3, ya likhein 'purchase' / 'label' / 'pickup'._ "
+                    "PIN poochne par *Rony846* bhej dena.")
+            else:
+                await whatsapp_cloud.send_text(digits,
+                    "📄 File mil gayi. Ab batao kya karna hai — e.g. *reverse pickup* (customer se wapas mangwana) "
+                    "ya *label bnao* (aage bhejna). PIN poochne par *Rony846* bhej dena.")
             return
     # A customer we offered the ₹100 review reward just sent an image → it's their review screenshot.
     if mtype in ("image", "document") and await _capture_review_reward_screenshot(digits, contact_name, media_id):
@@ -79533,6 +79794,12 @@ CLAUDE_WA_SESSION_MIN = int(os.environ.get("CLAUDE_WA_SESSION_MIN", "30"))
 # How long the conversation CONTEXT (Claude session) is kept warm for follow-ups, so the relay
 # remembers earlier messages instead of starting fresh each turn. Resets after this idle gap.
 CLAUDE_WA_CONTEXT_MIN = int(os.environ.get("CLAUDE_WA_CONTEXT_MIN", "240"))
+# Purchase capture: send a supplier invoice (PDF/photo) → read it (free local first) →
+# resolve firm/items → record a purchase. OFF by default; founder/full-profile only.
+WA_PURCHASE_CAPTURE_ENABLED = os.environ.get("WA_PURCHASE_CAPTURE_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+# Test-safe mode: even a fully-resolved invoice goes to the accountant DRAFT queue instead of
+# posting to the books — so you can trial the flow without creating real purchase entries.
+WA_PURCHASE_FORCE_DRAFT = os.environ.get("WA_PURCHASE_FORCE_DRAFT", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _wa_relay_profiles():
@@ -79666,6 +79933,34 @@ async def _claude_wa_relay(digits: str, question: str):
             {"$unset": {"claude_session_id": "", "claude_session_at": ""}})
         await whatsapp_cloud.send_text(digits, "🧠 Fresh chat started — earlier context cleared. Ask away.")
         return
+
+    # ── Purchase capture ─────────────────────────────────────────────────────
+    if WA_PURCHASE_CAPTURE_ENABLED and profile == "full":
+        # confirm a pending purchase the founder was shown
+        if sess2.get("pending_purchase") and re.search(
+                r"\b(haan|haa|yes|ok|theek|record\s*kar|book\s*kar|confirm)\b", low) \
+                and "ship" not in low and "label" not in low:
+            await _wa_purchase_confirm(digits)
+            return
+        # they just sent a doc and we asked what it's for
+        if sess2.get("awaiting_doc_intent"):
+            await db.claude_wa_sessions.update_one({"phone": digits}, {"$unset": {"awaiting_doc_intent": ""}})
+            if re.search(r"\b(1|purchase|kharid|invoice\s*record)\b", low):
+                await _wa_purchase_capture(digits)
+                return
+            if re.search(r"\b(3|reverse|pickup|wapas)\b", low):
+                await _wa_relay_shipping(digits, ql, reverse_hint=True)
+                return
+            if re.search(r"\b(2|label|ship|bhej)\b", low):
+                sess_doc = (await db.claude_wa_sessions.find_one({"phone": digits}, {"ship_doc": 1}) or {}).get("ship_doc")
+                if sess_doc:
+                    await _wa_relay_shipping(digits, ql)
+                    return
+            # unrecognised → fall through to normal handling
+        # explicit "purchase" keyword any time (a doc must already be staged)
+        if re.match(r"\s*(purchase|kharid)\b", low):
+            await _wa_purchase_capture(digits)
+            return
 
     # confirm a pending booking
     if low in ("confirm", "confirm ship", "yes confirm", "book it", "confirm karo", "haan book"):
@@ -79807,6 +80102,199 @@ _WA_REVERSE_INTENT = re.compile(
 _WA_REPLACEMENT_INTENT = re.compile(
     r"replace\w*|\brepl\b|naya[\w\s]{0,14}?(bhej|bnao|banao|bana|send)|naya\s*(maal|unit|piece)|"
     r"dobara\s*bhej|new\s*(unit|piece|one)|badli\s*me|replacement", re.I)
+
+
+# ==================== WHATSAPP PURCHASE CAPTURE ====================
+# Send a supplier invoice → read it (free local first) → resolve → record a purchase.
+# Money is human-gated: nothing posts until the founder replies "haan record karo", and a
+# fully-resolved invoice posts to db.purchases while anything unresolved is parked as a
+# WhatsApp draft for the accountant. Coexists with the shipping flow (same staged doc).
+
+async def _wa_actor() -> dict:
+    """The admin user a WhatsApp-initiated purchase is attributed to (founder)."""
+    u = await db.users.find_one({"email": "founder@musclegrid.in"}, {"_id": 0}) \
+        or await db.users.find_one({"role": "admin"}, {"_id": 0})
+    return u or {"id": "mg_brain", "first_name": "MG", "last_name": "Brain", "role": "admin"}
+
+
+async def _wa_resolve_firm(bill_to_gstin: str | None):
+    """Match the invoice's bill-to GSTIN to one of our firms."""
+    if bill_to_gstin:
+        g = re.sub(r"\s", "", bill_to_gstin).upper()
+        f = await db.firms.find_one({"$or": [{"gstin": g}, {"gst_number": g}]}, {"_id": 0})
+        if f:
+            return f
+    return None
+
+
+async def _wa_match_item(desc: str, hsn: str | None):
+    """Fuzzy-match an invoice line to an existing raw_material / master_sku. Returns
+    (item_type, item_id, name) or (None, None, None). Word-overlap scoring — conservative:
+    only matches on a real token hit so we never silently book the wrong item."""
+    words = [w for w in re.findall(r"[a-zA-Z0-9]{3,}", (desc or "").lower())]
+    if not words:
+        return (None, None, None)
+    best = None  # (word_score, hsn_bonus, itype, id, name)
+    for coll, itype in (("master_skus", "master_sku"), ("raw_materials", "raw_material")):
+        async for it in db[coll].find({}, {"_id": 0, "id": 1, "name": 1, "sku_code": 1, "hsn_code": 1}):
+            name = (it.get("name") or "").lower()
+            sku = (it.get("sku_code") or "").lower()
+            word_score = sum(1 for w in words if w in name or w in sku)
+            sku_exact = bool(sku and sku in [w for w in words])
+            hsn_bonus = 1 if (hsn and it.get("hsn_code")
+                              and re.sub(r"\s", "", str(hsn)) == re.sub(r"\s", "", str(it["hsn_code"]))) else 0
+            cand = (10 if sku_exact else word_score, hsn_bonus, itype, it["id"], it.get("name"))
+            if best is None or cand[:2] > best[:2]:
+                best = cand
+    # Conservative gate: an exact SKU code, OR ≥2 distinct name/SKU tokens. HSN is only a
+    # tiebreaker among qualified candidates — never enough on its own (many items share an
+    # HSN). When unsure we return no match → the line is flagged ⚠️ and routed to the
+    # accountant rather than risk auto-booking the wrong item.
+    if best and best[0] >= 2:
+        return (best[2], best[3], best[4])
+    return (None, None, None)
+
+
+async def _wa_purchase_capture(digits: str):
+    """Read the staged invoice, resolve it, and send the founder a summary to confirm."""
+    from utils import wa_purchase_capture as wpc
+    sess = await db.claude_wa_sessions.find_one({"phone": digits}) or {}
+    doc = sess.get("ship_doc")
+    if not doc:
+        await whatsapp_cloud.send_text(digits, "Pehle invoice (PDF ya photo) bhejein, phir 'purchase' likhein.")
+        return
+    await whatsapp_cloud.send_text(digits, "🧾 Invoice padh raha hoon… (thoda ruko)")
+    data = await wpc.read_invoice(doc, allow_paid=True)
+    if not data.get("ok"):
+        await whatsapp_cloud.send_text(digits,
+            "Invoice theek se padh nahi paaya 😕 Saaf PDF/photo bhej kar dobara 'purchase' likhein, "
+            "ya office se manually record karwa lein.")
+        return
+
+    firm = await _wa_resolve_firm(data.get("bill_to_gstin"))
+    # match each line item
+    lines, all_matched = [], True
+    for it in (data.get("items") or []):
+        itype, iid, mname = await _wa_match_item(it.get("description"), it.get("hsn"))
+        if not iid:
+            all_matched = False
+        lines.append({**it, "item_type": itype, "item_id": iid, "matched_name": mname})
+
+    clean = bool(firm and data.get("invoice_number") and data.get("items") and all_matched
+                 and data.get("grand_total"))
+    pending = {
+        "doc_ref": True, "data": data, "lines": lines,
+        "firm_id": firm.get("id") if firm else None, "firm_name": firm.get("name") if firm else None,
+        "clean": clean, "read_by": data.get("read_by"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.claude_wa_sessions.update_one({"phone": digits}, {"$set": {"pending_purchase": pending}})
+
+    # build the summary
+    L = ["🧾 *Purchase invoice*", ""]
+    L.append(f"*Supplier:* {data.get('supplier_name') or '—'}")
+    if data.get("supplier_gstin"): L.append(f"*GSTIN:* {data['supplier_gstin']}")
+    L.append(f"*Invoice:* {data.get('invoice_number') or '—'}  ·  {data.get('invoice_date') or '—'}")
+    L.append(f"*Firm:* {'✅ ' + firm['name'] if firm else '⚠️ pehchaan nahi (bill-to GSTIN match nahi hua)'}")
+    L.append("")
+    L.append("*Items:*")
+    for ln in lines:
+        mark = "✅" if ln.get("item_id") else "⚠️"
+        nm = ln.get("matched_name") or ln.get("description") or "—"
+        L.append(f"  {mark} {nm} — {ln.get('quantity','?')} × ₹{ln.get('rate','?')} (GST {ln.get('gst_rate','?')}%)")
+    L.append("")
+    L.append(f"*Taxable:* ₹{data.get('subtotal','?')}  ·  *GST:* ₹{data.get('total_gst','?')}  ·  *Total:* ₹{data.get('grand_total','?')}")
+    L.append(f"_(padha by {data.get('read_by')}, confidence {data.get('confidence')})_")
+    L.append("")
+    if clean:
+        L.append("Sab match ho gaya. *haan record karo* likhein toh books me post kar dunga.")
+    else:
+        L.append("⚠️ Kuch cheezein match nahi huin (upar ⚠️). *haan record karo* likhein toh "
+                 "accountant ke review queue me daal dunga (wo finalize karenge).")
+    await whatsapp_cloud.send_text(digits, "\n".join(L))
+
+
+async def _wa_purchase_confirm(digits: str):
+    """Founder said 'haan record karo' → post to books if clean, else park for the accountant."""
+    sess = await db.claude_wa_sessions.find_one({"phone": digits}) or {}
+    p = sess.get("pending_purchase")
+    if not p:
+        await whatsapp_cloud.send_text(digits, "Koi pending purchase nahi hai. Invoice bhej kar 'purchase' likhein.")
+        return
+    data = p.get("data") or {}
+    actor = await _wa_actor()
+
+    # stash the invoice file so it's attached to the purchase/draft
+    invoice_url = None
+    doc = sess.get("ship_doc")
+    if doc and doc.get("b64"):
+        try:
+            ext = ".pdf" if (doc.get("kind") == "document" or "pdf" in (doc.get("mime") or "")) else ".jpg"
+            rel, _ = await storage_upload(file_data=base64.b64decode(doc["b64"]), folder="purchases",
+                                          original_filename=f"inv{ext}", filename_prefix=f"wa{digits}")
+            invoice_url = f"/api/files/{rel}"
+        except Exception as e:
+            logger.warning(f"wa purchase invoice store failed: {e}")
+
+    if p.get("clean") and not WA_PURCHASE_FORCE_DRAFT:
+        # build a real PurchaseCreate and post to the books via the existing endpoint logic
+        supplier_state = ""
+        g = re.sub(r"\s", "", data.get("supplier_gstin") or "")
+        if len(g) >= 2 and g[:2] in INDIAN_STATES:
+            supplier_state = INDIAN_STATES[g[:2]]
+        items = [PurchaseItem(item_type=ln["item_type"], item_id=ln["item_id"],
+                              quantity=float(ln.get("quantity") or 0), rate=float(ln.get("rate") or 0),
+                              gst_rate=float(ln.get("gst_rate")) if ln.get("gst_rate") is not None else None)
+                 for ln in p.get("lines", []) if ln.get("item_id")]
+        pc = PurchaseCreate(
+            firm_id=p["firm_id"], supplier_name=data.get("supplier_name") or "Unknown supplier",
+            supplier_gstin=(data.get("supplier_gstin") or None), supplier_state=supplier_state or "Unknown",
+            invoice_number=str(data.get("invoice_number") or ""),
+            invoice_date=str(data.get("invoice_date") or datetime.now().strftime("%Y-%m-%d")),
+            items=items, notes="Recorded via MG Brain WhatsApp from supplier invoice.",
+            save_as_draft=False, supplier_invoice_file_url=invoice_url)
+        try:
+            res = await create_purchase(pc, actor)
+            pn = (res or {}).get("purchase_number") or (res or {}).get("purchase", {}).get("purchase_number") or ""
+            await db.claude_wa_sessions.update_one({"phone": digits},
+                {"$unset": {"pending_purchase": "", "ship_doc": ""}})
+            await whatsapp_cloud.send_text(digits,
+                f"✅ Purchase record ho gaya{(' — ' + pn) if pn else ''}.\nSupplier: {data.get('supplier_name')} · ₹{data.get('grand_total')}")
+        except HTTPException as e:
+            # validation tripped (e.g. duplicate invoice) → fall back to accountant draft
+            await _wa_purchase_to_draft(digits, p, invoice_url, actor,
+                                        reason=str(getattr(e, "detail", e)))
+        except Exception as e:
+            logger.error(f"wa purchase post failed: {e}")
+            await _wa_purchase_to_draft(digits, p, invoice_url, actor, reason=str(e))
+    else:
+        await _wa_purchase_to_draft(digits, p, invoice_url, actor, reason="unresolved items/firm")
+
+
+async def _wa_purchase_to_draft(digits: str, p: dict, invoice_url: str | None, actor: dict, reason: str = ""):
+    """Park an unresolved (or failed) capture as a WhatsApp purchase draft for the accountant."""
+    data = p.get("data") or {}
+    draft = {
+        "id": str(uuid.uuid4()),
+        "source": "whatsapp_mg_brain",
+        "status": "pending_review",
+        "firm_id": p.get("firm_id"), "firm_name": p.get("firm_name"),
+        "supplier_name": data.get("supplier_name"), "supplier_gstin": data.get("supplier_gstin"),
+        "invoice_number": data.get("invoice_number"), "invoice_date": data.get("invoice_date"),
+        "items": p.get("lines"), "subtotal": data.get("subtotal"),
+        "total_gst": data.get("total_gst"), "grand_total": data.get("grand_total"),
+        "invoice_file": invoice_url, "read_by": p.get("read_by"),
+        "confidence": data.get("confidence"), "reason": reason,
+        "captured_by": f"wa:{digits}", "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.purchase_drafts.insert_one(draft)
+    await db.claude_wa_sessions.update_one({"phone": digits},
+        {"$unset": {"pending_purchase": "", "ship_doc": ""}})
+    test_note = ("\n_(test mode: sab match tha, live mode me ye seedha books me post hota.)_"
+                 if p.get("clean") and WA_PURCHASE_FORCE_DRAFT else "")
+    await whatsapp_cloud.send_text(digits,
+        f"📝 Draft save ho gaya accountant ke review queue me (₹{data.get('grand_total','?')}, "
+        f"{data.get('supplier_name','supplier')}). Wo CRM me finalize kar denge.{test_note}")
 
 
 async def _wa_relay_shipping(digits: str, text: str, reverse_hint: bool = False,

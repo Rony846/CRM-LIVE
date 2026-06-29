@@ -63,6 +63,7 @@ export default function PurchaseRegister() {
   const [supplierSearch, setSupplierSearch] = useState('');
   const [uploadingInvoice, setUploadingInvoice] = useState(false);
   const [uploadingDraftInvoice, setUploadingDraftInvoice] = useState(false);
+  const [waDrafts, setWaDrafts] = useState([]);
 
   // Purchase form state
   const [purchaseForm, setPurchaseForm] = useState({
@@ -93,6 +94,7 @@ export default function PurchaseRegister() {
       fetchFirms();
       fetchItems();
       fetchSuppliers();
+      fetchWaDrafts();
     }
   }, [token]);
 
@@ -118,6 +120,56 @@ export default function PurchaseRegister() {
       toast.error('Failed to load purchases');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchWaDrafts = async () => {
+    try {
+      const res = await axios.get(`${API}/purchases/wa-drafts`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setWaDrafts(res.data.drafts || []);
+    } catch (error) {
+      // non-fatal — the page still works without the WhatsApp drafts panel
+    }
+  };
+
+  // Prefill the New Purchase form from a WhatsApp-captured draft so the accountant only
+  // has to map any unmatched items + verify, then post.
+  const finalizeWaDraft = (draft) => {
+    const items = (draft.items || []).map(it => ({
+      item_type: it.item_type || 'raw_material',
+      item_id: it.item_id || '',
+      quantity: it.quantity != null ? String(it.quantity) : '',
+      rate: it.rate != null ? String(it.rate) : '',
+      gst_rate: it.gst_rate != null ? String(it.gst_rate) : ''
+    }));
+    setPurchaseForm({
+      firm_id: draft.firm_id || '',
+      supplier_id: '',
+      supplier_name: draft.supplier_name || '',
+      supplier_gstin: draft.supplier_gstin || '',
+      supplier_state: '',
+      invoice_number: draft.invoice_number || '',
+      invoice_date: draft.invoice_date || new Date().toISOString().split('T')[0],
+      items: items.length ? items : [{ item_type: 'raw_material', item_id: '', quantity: '', rate: '', gst_rate: '' }],
+      notes: `From WhatsApp (read by ${draft.read_by || 'agent'}). Review unmatched items before posting.`,
+      save_as_draft: false,
+      supplier_invoice_file_url: draft.invoice_file || null,
+      _wa_draft_id: draft.id   // so we can discard the draft after a successful post
+    });
+    setCreateDialogOpen(true);
+  };
+
+  const discardWaDraft = async (id) => {
+    try {
+      await axios.post(`${API}/purchases/wa-drafts/${id}/discard`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Draft discarded');
+      fetchWaDrafts();
+    } catch (error) {
+      toast.error('Failed to discard draft');
     }
   };
 
@@ -398,8 +450,9 @@ export default function PurchaseRegister() {
 
     setSubmitting(true);
     try {
+      const { _wa_draft_id, ...formFields } = purchaseForm;  // _wa_draft_id is UI-only
       const payload = {
-        ...purchaseForm,
+        ...formFields,
         items: purchaseForm.items.map(item => ({
           item_type: item.item_type,
           item_id: item.item_id,
@@ -420,6 +473,15 @@ export default function PurchaseRegister() {
         });
       } else {
         toast.success(`Purchase ${response.data.status === 'draft' ? 'saved as draft' : 'finalized'}: ${response.data.purchase_number}`);
+      }
+
+      // If this purchase was finalised from a WhatsApp draft, clear that draft from the queue.
+      if (purchaseForm._wa_draft_id) {
+        try {
+          await axios.post(`${API}/purchases/wa-drafts/${purchaseForm._wa_draft_id}/discard`, {},
+            { headers: { Authorization: `Bearer ${token}` } });
+          fetchWaDrafts();
+        } catch (_) { /* non-fatal */ }
       }
 
       setCreateDialogOpen(false);
@@ -658,6 +720,82 @@ export default function PurchaseRegister() {
             </div>
           );
         })()}
+
+        {/* ── WhatsApp purchase drafts (needs review) ──────────── */}
+        {waDrafts.length > 0 && (
+          <Card className="mg-card border-emerald-500/30 bg-emerald-500/[0.04]">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2 text-emerald-400">
+                <FileText className="w-4 h-4" />
+                From WhatsApp — needs review
+                <Badge className="bg-emerald-500/15 text-emerald-300 border-0">{waDrafts.length}</Badge>
+              </CardTitle>
+              <CardDescription>
+                Supplier invoices the founder sent to MG Brain that couldn't auto-post (unmatched item / unknown firm).
+                Click <strong className="text-foreground">Finalize</strong> to open it pre-filled, map any ⚠️ items, and post.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Supplier</TableHead>
+                    <TableHead>Invoice</TableHead>
+                    <TableHead>Firm</TableHead>
+                    <TableHead>Items</TableHead>
+                    <TableHead className="text-right">Total</TableHead>
+                    <TableHead>Read</TableHead>
+                    <TableHead className="text-right">Action</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {waDrafts.map(d => {
+                    const items = d.items || [];
+                    const matched = items.filter(i => i.item_id).length;
+                    return (
+                      <TableRow key={d.id}>
+                        <TableCell className="font-medium">{d.supplier_name || '—'}</TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {d.invoice_number || '—'}<br /><span className="text-muted-foreground">{d.invoice_date || ''}</span>
+                        </TableCell>
+                        <TableCell>
+                          {d.firm_name
+                            ? <Badge variant="outline" className="text-emerald-400 border-emerald-500/30">{d.firm_name}</Badge>
+                            : <Badge variant="outline" className="text-amber-400 border-amber-500/30">unmatched</Badge>}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          <span className={matched === items.length ? 'text-emerald-400' : 'text-amber-400'}>
+                            {matched}/{items.length} matched
+                          </span>
+                          {d.invoice_file && (
+                            <a href={`${API.replace('/api', '')}${d.invoice_file}`} target="_blank" rel="noopener noreferrer"
+                               className="ml-2 inline-flex items-center gap-1 text-primary hover:underline">
+                              <FileText className="w-3 h-3" />invoice
+                            </a>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right font-mono">₹{Number(d.grand_total || 0).toLocaleString('en-IN')}</TableCell>
+                        <TableCell className="text-[11px] text-muted-foreground">{d.read_by}<br />({d.confidence})</TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex gap-1 justify-end">
+                            <Button size="sm" className="bg-emerald-600 hover:bg-emerald-500 text-white"
+                                    onClick={() => finalizeWaDraft(d)} data-testid={`finalize-wa-${d.id}`}>
+                              <CheckCircle className="w-3 h-3 mr-1" />Finalize
+                            </Button>
+                            <Button size="sm" variant="outline" className="text-rose-400 border-border hover:bg-rose-500/10"
+                                    onClick={() => discardWaDraft(d.id)} title="Discard">
+                              <Trash2 className="w-3 h-3" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        )}
 
         {/* ── Summary Stat Cards ───────────────────────────────── */}
         {summary && (

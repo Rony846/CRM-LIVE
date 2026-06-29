@@ -39,12 +39,15 @@ export default function DispatcherTVMode() {
       axios.get(`${API}/courier/shipments?page_size=30`, { headers })
         .then(r => setBigship(r.data?.shipments || [])).catch(() => {});
       
-      // Filter for ready_for_dispatch items
-      const readyItems = dispatchData.filter(d => d.status === 'ready_for_dispatch');
-      setQueue(readyItems);
-      
-      // Compute stats locally
-      const pendingLabels = dispatchData.filter(d => d.status === 'pending_label').length;
+      // Real product dispatches only — drop walk-in / hardware repair returns (those belong
+      // on the dispatcher console, not the shipping TV).
+      const isReturn = (d) => d.is_walkin === true
+        || d.dispatch_type === 'walkin_return' || d.dispatch_type === 'return_dispatch';
+      const realDispatches = dispatchData.filter(d => !isReturn(d));
+      setQueue(realDispatches);
+
+      // Compute stats locally (real dispatches only)
+      const pendingLabels = realDispatches.filter(d => d.status === 'pending_label').length;
       const dispatchedToday = dispatchData.filter(d => {
         if (d.status !== 'dispatched' || !d.scanned_out_at) return false;
         const today = new Date().toISOString().split('T')[0];
@@ -59,6 +62,42 @@ export default function DispatcherTVMode() {
       console.error('Failed to fetch data:', error);
     }
   };
+
+  const pending = queue.filter(d => d.status === 'pending_label');
+  const ready = queue.filter(d => d.status === 'ready_for_dispatch' || d.status === 'ready_to_dispatch');
+
+  const renderRows = (items) => (
+    <div className="divide-y divide-slate-700">
+      {items.map((dispatch, index) => (
+        <div
+          key={dispatch.id}
+          className={`grid grid-cols-6 gap-4 p-5 ${
+            index % 2 === 0 ? 'bg-slate-900' : 'bg-slate-900/50'
+          } hover:bg-slate-800 transition-colors`}
+        >
+          <div className="font-mono text-xl font-bold text-blue-400">{dispatch.dispatch_number}</div>
+          <div className="text-xl font-medium truncate">{dispatch.customer_name}</div>
+          <div className="font-mono text-xl">{dispatch.phone}</div>
+          <div className="text-xl text-orange-400 truncate">
+            {dispatch.sku || dispatch.product_name || dispatch.item_name || '—'}
+          </div>
+          <div className="text-xl font-medium">{dispatch.courier || '—'}</div>
+          <div className="font-mono text-lg text-slate-300">{dispatch.tracking_id || '—'}</div>
+        </div>
+      ))}
+    </div>
+  );
+
+  const sectionHeader = (
+    <div className="grid grid-cols-6 gap-4 p-4 bg-slate-800 text-slate-400 uppercase text-sm font-medium tracking-wider">
+      <div>Dispatch #</div>
+      <div>Customer</div>
+      <div>Phone</div>
+      <div>SKU / Product</div>
+      <div>Courier</div>
+      <div>Tracking</div>
+    </div>
+  );
 
   return (
     <div className="tv-mode min-h-screen bg-black text-white p-8">
@@ -103,11 +142,11 @@ export default function DispatcherTVMode() {
 
       {/* Stats */}
       <div className="grid grid-cols-3 gap-6 mb-8">
-        <StatCard 
-          title="READY TO DISPATCH" 
-          value={queue.length} 
-          icon={Package} 
-          tvMode 
+        <StatCard
+          title="READY TO DISPATCH"
+          value={ready.length}
+          icon={Package}
+          tvMode
         />
         <StatCard 
           title="DISPATCHED TODAY" 
@@ -123,56 +162,44 @@ export default function DispatcherTVMode() {
         />
       </div>
 
-      {/* Queue Table */}
+      {/* Queue Sections */}
       {queue.length === 0 ? (
         <div className="text-center py-24">
           <Package className="w-24 h-24 mx-auto mb-6 text-green-500" />
           <h2 className="text-5xl font-bold font-['Barlow_Condensed'] text-green-400">
             ALL CLEAR!
           </h2>
-          <p className="text-2xl text-slate-400 mt-4">No pending dispatches</p>
+          <p className="text-2xl text-slate-400 mt-4">No product dispatches in queue</p>
         </div>
       ) : (
-        <div className="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden">
-          {/* Table Header */}
-          <div className="grid grid-cols-6 gap-4 p-4 bg-slate-800 text-slate-400 uppercase text-sm font-medium tracking-wider">
-            <div>Dispatch #</div>
-            <div>Customer</div>
-            <div>Phone</div>
-            <div>SKU / Product</div>
-            <div>Courier</div>
-            <div>Tracking</div>
-          </div>
-
-          {/* Table Body */}
-          <div className="divide-y divide-slate-700">
-            {queue.map((dispatch, index) => (
-              <div 
-                key={dispatch.id}
-                className={`grid grid-cols-6 gap-4 p-5 ${
-                  index % 2 === 0 ? 'bg-slate-900' : 'bg-slate-900/50'
-                } hover:bg-slate-800 transition-colors`}
-              >
-                <div className="font-mono text-xl font-bold text-blue-400">
-                  {dispatch.dispatch_number}
-                </div>
-                <div className="text-xl font-medium truncate">
-                  {dispatch.customer_name}
-                </div>
-                <div className="font-mono text-xl">
-                  {dispatch.phone}
-                </div>
-                <div className="text-xl text-orange-400">
-                  {dispatch.sku || dispatch.dispatch_type?.replace('_', ' ')}
-                </div>
-                <div className="text-xl font-medium">
-                  {dispatch.courier}
-                </div>
-                <div className="font-mono text-lg text-slate-300">
-                  {dispatch.tracking_id}
-                </div>
+        <div className="space-y-8">
+          {/* Pending queue — awaiting label — shown at the top */}
+          {pending.length > 0 && (
+            <div className="bg-slate-900 rounded-xl border border-amber-500/40 overflow-hidden">
+              <div className="flex items-center gap-3 p-3 bg-amber-500/10">
+                <Clock className="w-6 h-6 text-amber-400" />
+                <h2 className="text-2xl font-bold font-['Barlow_Condensed'] tracking-wider text-amber-300">
+                  PENDING — AWAITING LABEL
+                </h2>
+                <span className="text-amber-400/80 text-xl ml-2">{pending.length}</span>
               </div>
-            ))}
+              {sectionHeader}
+              {renderRows(pending)}
+            </div>
+          )}
+
+          {/* Ready to dispatch — real product dispatches */}
+          <div className="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden">
+            <div className="flex items-center gap-3 p-3 bg-emerald-500/10">
+              <Package className="w-6 h-6 text-emerald-400" />
+              <h2 className="text-2xl font-bold font-['Barlow_Condensed'] tracking-wider text-emerald-300">
+                READY TO DISPATCH
+              </h2>
+              <span className="text-emerald-400/80 text-xl ml-2">{ready.length}</span>
+            </div>
+            {sectionHeader}
+            {ready.length > 0 ? renderRows(ready)
+              : <div className="p-6 text-center text-slate-500 text-xl">Nothing ready right now</div>}
           </div>
         </div>
       )}
