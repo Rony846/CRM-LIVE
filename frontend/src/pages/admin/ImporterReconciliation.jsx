@@ -115,7 +115,7 @@ export default function ImporterReconciliation() {
               rows.length === 0 ? <p className="text-muted-foreground text-sm">No consignments.</p> : (
               <Table>
                 <TableHeader><TableRow>
-                  <TableHead>Consignment</TableHead><TableHead>Importer</TableHead><TableHead>Date</TableHead>
+                  <TableHead>Consignment</TableHead><TableHead>Invoice</TableHead><TableHead>Importer</TableHead><TableHead>Date</TableHead>
                   <TableHead>Supplier</TableHead>
                   <TableHead className="text-right">Supplier ₹</TableHead><TableHead className="text-right">Customs ₹</TableHead>
                   <TableHead className="text-right">Shipping ₹</TableHead><TableHead className="text-right">Landed ₹</TableHead>
@@ -126,6 +126,7 @@ export default function ImporterReconciliation() {
                   {rows.map(c => (
                     <TableRow key={c.id}>
                       <TableCell className="font-mono text-xs">{c.consignment_number}</TableCell>
+                      <TableCell className="text-xs font-medium">{c.invoice_number || '—'}</TableCell>
                       <TableCell className="text-xs">{c.importer_name || '—'}</TableCell>
                       <TableCell className="text-xs">{c.date}</TableCell>
                       <TableCell className="text-xs">{c.supplier_name || '—'}</TableCell>
@@ -144,7 +145,7 @@ export default function ImporterReconciliation() {
                 </TableBody>
                 <tfoot>
                   <TableRow className="border-t-2 font-semibold">
-                    <TableCell colSpan={7} className="text-right">Totals ({rows.length})</TableCell>
+                    <TableCell colSpan={8} className="text-right">Totals ({rows.length})</TableCell>
                     <TableCell className="text-right">{fmt(totals.landed)}</TableCell>
                     <TableCell className="text-right text-amber-500">{fmt(totals.commission)}</TableCell>
                     <TableCell className="text-right text-emerald-500">{fmt(totals.billed)}</TableCell>

@@ -20,15 +20,24 @@ const today = () => new Date().toISOString().split('T')[0];
 const EMPTY = {
   date: today(),
   supplier_name: '',
+  invoice_number: '',
   supplier_payments: [{ amount: '', type: 'advance', percent: '', date: today(), reference: '' }],
   customs_bcd: '', customs_surcharge: '', customs_igst: '',
   shipping_charges: '',
+  expenses: [],
   commission_percent: 5,
   boe_number: '',
   notes: '',
   line_items: [{ description: '', quantity: 1 }],
   attachments: [],
 };
+
+const EXPENSE_CATS = [
+  { value: 'courier', label: 'Courier' },
+  { value: 'clearing', label: 'Clearing agent' },
+  { value: 'transport', label: 'Transport' },
+  { value: 'other', label: 'Other' },
+];
 
 const PAY_TYPES = [
   { value: 'advance', label: 'Advance' },
@@ -86,12 +95,14 @@ export default function ImporterPortal() {
   // live landed-cost + commission + total (mirrors the backend, commission on FULL landed cost)
   const supplierTotal = useMemo(
     () => (form.supplier_payments || []).reduce((s, p) => s + num(p.amount), 0), [form.supplier_payments]);
+  const expensesTotal = useMemo(
+    () => (form.expenses || []).reduce((s, e) => s + num(e.amount), 0), [form.expenses]);
   const calc = useMemo(() => {
     const customs = num(form.customs_bcd) + num(form.customs_surcharge) + num(form.customs_igst);
-    const landed = supplierTotal + customs + num(form.shipping_charges);
+    const landed = supplierTotal + customs + num(form.shipping_charges) + expensesTotal;
     const commission = landed * num(form.commission_percent) / 100;
     return { customs, landed, commission, total: landed + commission };
-  }, [form, supplierTotal]);
+  }, [form, supplierTotal, expensesTotal]);
 
   const setField = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const setItem = (i, k, v) => setForm(f => {
@@ -106,11 +117,21 @@ export default function ImporterPortal() {
   const addPay = () => setForm(f => ({ ...f, supplier_payments: [...f.supplier_payments, { amount: '', type: 'balance', percent: '', date: today(), reference: '' }] }));
   const delPay = (i) => setForm(f => ({ ...f, supplier_payments: f.supplier_payments.filter((_, x) => x !== i) }));
 
+  const setExp = (i, k, v) => setForm(f => {
+    const ex = [...f.expenses]; ex[i] = { ...ex[i], [k]: v }; return { ...f, expenses: ex };
+  });
+  const addExp = () => setForm(f => ({ ...f, expenses: [...f.expenses, { description: '', amount: '', category: 'courier' }] }));
+  const delExp = (i) => setForm(f => ({ ...f, expenses: f.expenses.filter((_, x) => x !== i) }));
+
   const payload = () => ({
-    date: form.date, supplier_name: form.supplier_name,
+    date: form.date, supplier_name: form.supplier_name, invoice_number: form.invoice_number,
     supplier_payments: (form.supplier_payments || []).filter(p => num(p.amount) > 0).map(p => ({
       amount: num(p.amount), type: p.type || 'other', percent: num(p.percent) || null,
       date: p.date || null, reference: p.reference || null,
+    })),
+    expenses: (form.expenses || []).filter(e => num(e.amount) > 0 || (e.description || '').trim()).map(e => ({
+      description: e.description || (EXPENSE_CATS.find(c => c.value === e.category)?.label || 'Expense'),
+      amount: num(e.amount), category: e.category || 'other',
     })),
     customs_bcd: num(form.customs_bcd), customs_surcharge: num(form.customs_surcharge),
     customs_igst: num(form.customs_igst), shipping_charges: num(form.shipping_charges),
@@ -130,6 +151,7 @@ export default function ImporterPortal() {
   };
 
   const saveAndBill = async () => {
+    if (!(form.invoice_number || '').trim()) { toast.error('Enter the supplier invoice number before billing MGIPL'); return; }
     if (!hasBoe) { toast.error('Upload the Bill of Entry before billing MGIPL'); return; }
     setSaving(true);
     try {
@@ -170,9 +192,10 @@ export default function ImporterPortal() {
             <CardDescription>Enter exactly what your bank paid + Bill-of-Entry customs duty + shipping. Commission ({form.commission_percent || 0}%) applies on the full landed cost. Everything is transparent to MGIPL.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div><Label>Date</Label><Input type="date" value={form.date} onChange={e => setField('date', e.target.value)} /></div>
               <div><Label>Supplier</Label><Input value={form.supplier_name} onChange={e => setField('supplier_name', e.target.value)} placeholder="Supplier paid from your bank" /></div>
+              <div><Label>Supplier Invoice No. <span className="text-rose-400">*</span></Label><Input value={form.invoice_number} onChange={e => setField('invoice_number', e.target.value)} placeholder="Bill is raised against this" /></div>
               <div><Label>Bill of Entry No. (optional)</Label><Input value={form.boe_number} onChange={e => setField('boe_number', e.target.value)} /></div>
             </div>
 
@@ -214,6 +237,33 @@ export default function ImporterPortal() {
               <div><Label>Customs — IGST (₹)</Label><Input type="number" value={form.customs_igst} onChange={e => setField('customs_igst', e.target.value)} /></div>
               <div><Label>Shipping (₹)</Label><Input type="number" value={form.shipping_charges} onChange={e => setField('shipping_charges', e.target.value)} /></div>
               <div><Label>Commission %</Label><Input type="number" value={form.commission_percent} onChange={e => setField('commission_percent', e.target.value)} /></div>
+            </div>
+
+            {/* Other expenses — courier, clearing agent, transport, etc. (roll into landed cost) */}
+            <div>
+              <div className="flex items-center justify-between">
+                <Label>Other Expenses — courier & misc</Label>
+                <span className="text-xs text-muted-foreground">Total: <span className="font-semibold text-foreground">{fmt(expensesTotal)}</span></span>
+              </div>
+              <div className="space-y-2 mt-1">
+                {(form.expenses || []).map((e, i) => (
+                  <div key={i} className="grid grid-cols-2 md:grid-cols-12 gap-2 items-end">
+                    <div className="md:col-span-3"><Label className="text-[11px] text-muted-foreground">Category</Label>
+                      <Select value={e.category} onValueChange={v => setExp(i, 'category', v)}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>{EXPENSE_CATS.map(c => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}</SelectContent>
+                      </Select></div>
+                    <div className="md:col-span-6"><Label className="text-[11px] text-muted-foreground">Description</Label>
+                      <Input placeholder="e.g. Courier — DHL AWB 12345" value={e.description} onChange={ev => setExp(i, 'description', ev.target.value)} /></div>
+                    <div className="md:col-span-2"><Label className="text-[11px] text-muted-foreground">Amount (₹)</Label>
+                      <Input type="number" value={e.amount} onChange={ev => setExp(i, 'amount', ev.target.value)} /></div>
+                    <div className="md:col-span-1">
+                      <Button variant="outline" size="icon" onClick={() => delExp(i)} className="text-rose-400"><Trash2 className="w-4 h-4" /></Button>
+                    </div>
+                  </div>
+                ))}
+                <Button variant="outline" size="sm" onClick={addExp}><Plus className="w-4 h-4 mr-1" /> Add expense (courier, clearing, transport…)</Button>
+              </div>
             </div>
 
             {/* Line items */}
@@ -269,6 +319,9 @@ export default function ImporterPortal() {
               <div className="flex justify-between"><span className="text-muted-foreground">Supplier payment{(form.supplier_payments || []).filter(p => num(p.amount) > 0).length > 1 ? ` (${(form.supplier_payments || []).filter(p => num(p.amount) > 0).length} payments)` : ''}</span><span>{fmt(supplierTotal)}</span></div>
               <div className="flex justify-between"><span className="text-muted-foreground">Customs duty (BCD + surcharge + IGST)</span><span>{fmt(calc.customs)}</span></div>
               <div className="flex justify-between"><span className="text-muted-foreground">Shipping</span><span>{fmt(num(form.shipping_charges))}</span></div>
+              {expensesTotal > 0 && (
+                <div className="flex justify-between"><span className="text-muted-foreground">Other expenses (courier &amp; misc)</span><span>{fmt(expensesTotal)}</span></div>
+              )}
               <div className="flex justify-between font-medium border-t border-border pt-1.5"><span>Landed cost</span><span>{fmt(calc.landed)}</span></div>
               <div className="flex justify-between"><span className="text-muted-foreground">Commission ({form.commission_percent || 0}% of landed)</span><span className="text-amber-500">{fmt(calc.commission)}</span></div>
               <div className="flex justify-between text-lg font-bold border-t border-border pt-1.5"><span>Total billed to MGIPL</span><span className="text-emerald-500">{fmt(calc.total)}</span></div>
@@ -276,7 +329,7 @@ export default function ImporterPortal() {
 
             <div className="flex gap-2 justify-end">
               <Button variant="outline" onClick={saveDraft} disabled={saving || !calc.total}>Save draft</Button>
-              <Button onClick={saveAndBill} disabled={saving || !calc.total || !hasBoe} title={!hasBoe ? 'Upload the Bill of Entry first' : ''} className="bg-emerald-600 hover:bg-emerald-500 text-white">
+              <Button onClick={saveAndBill} disabled={saving || !calc.total || !hasBoe || !(form.invoice_number || '').trim()} title={!(form.invoice_number || '').trim() ? 'Enter the supplier invoice number first' : !hasBoe ? 'Upload the Bill of Entry first' : ''} className="bg-emerald-600 hover:bg-emerald-500 text-white">
                 {saving ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Send className="w-4 h-4 mr-2" />} Save &amp; Bill MGIPL
               </Button>
             </div>
@@ -292,7 +345,7 @@ export default function ImporterPortal() {
               consignments.length === 0 ? <p className="text-muted-foreground text-sm">No consignments yet.</p> : (
               <Table>
                 <TableHeader><TableRow>
-                  <TableHead>Consignment</TableHead><TableHead>Date</TableHead><TableHead>Supplier</TableHead>
+                  <TableHead>Consignment</TableHead><TableHead>Invoice</TableHead><TableHead>Date</TableHead><TableHead>Supplier</TableHead>
                   <TableHead className="text-right">Supplier ₹</TableHead><TableHead className="text-right">Customs ₹</TableHead>
                   <TableHead className="text-right">Shipping ₹</TableHead><TableHead className="text-right">Landed ₹</TableHead>
                   <TableHead className="text-right">Comm.</TableHead><TableHead className="text-right">Billed ₹</TableHead>
@@ -302,6 +355,7 @@ export default function ImporterPortal() {
                   {consignments.map(c => (
                     <TableRow key={c.id}>
                       <TableCell className="font-mono text-xs">{c.consignment_number}</TableCell>
+                      <TableCell className="text-xs font-medium">{c.invoice_number || '—'}</TableCell>
                       <TableCell className="text-xs">{c.date}</TableCell>
                       <TableCell className="text-xs">{c.supplier_name || '—'}</TableCell>
                       <TableCell className="text-right">{fmt(c.supplier_payment_inr)}</TableCell>

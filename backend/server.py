@@ -63858,10 +63858,17 @@ class ImporterSupplierPayment(BaseModel):
     notes: Optional[str] = None
 
 
+class ImporterExpense(BaseModel):
+    description: str                        # e.g. "Courier", "Clearing agent", "Transport"
+    amount: float = 0
+    category: Optional[str] = None          # courier | clearing | transport | other
+
+
 class ImporterConsignmentCreate(BaseModel):
     importer_id: Optional[str] = None       # set from the user for importer role
     date: Optional[str] = None              # YYYY-MM-DD
     supplier_name: Optional[str] = None
+    invoice_number: Optional[str] = None    # supplier invoice the payable is billed against (required to bill)
     # Total paid to the supplier. Either a single number (supplier_payment_inr) OR an
     # itemised list of payments (e.g. 30% advance vs 70% post-BoE) — when the list is
     # present it is authoritative and supplier_payment_inr is set to its sum.
@@ -63871,6 +63878,7 @@ class ImporterConsignmentCreate(BaseModel):
     customs_surcharge: float = 0
     customs_igst: float = 0
     shipping_charges: float = 0
+    expenses: Optional[List[ImporterExpense]] = None   # courier + other misc costs (roll into landed)
     commission_percent: Optional[float] = None   # defaults to the importer's rate
     line_items: List[ImporterLineItem] = []
     boe_number: Optional[str] = None
@@ -63879,12 +63887,13 @@ class ImporterConsignmentCreate(BaseModel):
 
 
 def _consignment_totals(supplier: float, bcd: float, sur: float, igst: float,
-                        shipping: float, pct: float) -> dict:
+                        shipping: float, pct: float, other: float = 0) -> dict:
     customs_total = round((bcd or 0) + (sur or 0) + (igst or 0), 2)
-    landed = round((supplier or 0) + customs_total + (shipping or 0), 2)
+    landed = round((supplier or 0) + customs_total + (shipping or 0) + (other or 0), 2)
     commission = round(landed * (pct or 0) / 100, 2)
     return {
         "customs_total": customs_total,
+        "expenses_total": round(other or 0, 2),
         "landed_cost": landed,
         "commission_amount": commission,
         "total_billed": round(landed + commission, 2),
@@ -63969,9 +63978,11 @@ async def create_consignment(payload: ImporterConsignmentCreate,
     sp_list = [p.dict() for p in (payload.supplier_payments or [])]
     supplier_total = round(sum(p.get("amount", 0) or 0 for p in sp_list), 2) if sp_list \
         else payload.supplier_payment_inr
+    exp_list = [e.dict() for e in (payload.expenses or [])]
+    exp_total = round(sum(e.get("amount", 0) or 0 for e in exp_list), 2)
     totals = _consignment_totals(supplier_total, payload.customs_bcd,
                                  payload.customs_surcharge, payload.customs_igst,
-                                 payload.shipping_charges, pct)
+                                 payload.shipping_charges, pct, exp_total)
     now = datetime.now(timezone.utc)
     doc = {
         "id": str(uuid.uuid4()),
@@ -63980,8 +63991,10 @@ async def create_consignment(payload: ImporterConsignmentCreate,
         "firm_id": imp.get("firm_id"),
         "date": payload.date or now.strftime("%Y-%m-%d"),
         "supplier_name": payload.supplier_name,
+        "invoice_number": payload.invoice_number,
         "supplier_payment_inr": supplier_total,
         "supplier_payments": sp_list,
+        "expenses": exp_list,
         "customs_bcd": payload.customs_bcd, "customs_surcharge": payload.customs_surcharge,
         "customs_igst": payload.customs_igst, "shipping_charges": payload.shipping_charges,
         "commission_percent": pct,
@@ -64046,10 +64059,13 @@ async def update_consignment(cid: str, payload: ImporterConsignmentCreate,
     sp_list = [p.dict() for p in (payload.supplier_payments or [])]
     supplier_total = round(sum(p.get("amount", 0) or 0 for p in sp_list), 2) if sp_list \
         else payload.supplier_payment_inr
+    exp_list = [e.dict() for e in (payload.expenses or [])]
+    exp_total = round(sum(e.get("amount", 0) or 0 for e in exp_list), 2)
     totals = _consignment_totals(supplier_total, payload.customs_bcd,
                                  payload.customs_surcharge, payload.customs_igst,
-                                 payload.shipping_charges, pct)
+                                 payload.shipping_charges, pct, exp_total)
     upd = {"date": payload.date or c.get("date"), "supplier_name": payload.supplier_name,
+           "invoice_number": payload.invoice_number, "expenses": exp_list,
            "supplier_payment_inr": supplier_total, "supplier_payments": sp_list,
            "customs_bcd": payload.customs_bcd,
            "customs_surcharge": payload.customs_surcharge, "customs_igst": payload.customs_igst,
@@ -64075,6 +64091,9 @@ async def submit_consignment(cid: str, user: dict = Depends(require_roles(["impo
     if not _has_boe(c):
         raise HTTPException(status_code=400,
                             detail="Bill of Entry document is required before billing MGIPL")
+    if not (c.get("invoice_number") or "").strip():
+        raise HTTPException(status_code=400,
+                            detail="Supplier invoice number is required before billing MGIPL")
     now = datetime.now(timezone.utc)
     firm = await db.firms.find_one({"id": c.get("firm_id")}, {"_id": 0}) or {}
     imp = await db.importers.find_one({"id": c.get("importer_id")}, {"_id": 0}) or {}
@@ -64088,17 +64107,19 @@ async def submit_consignment(cid: str, user: dict = Depends(require_roles(["impo
         "purchase_number": f"IMP-PUR-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:4].upper()}",
         "firm_id": c.get("firm_id"), "firm_name": firm.get("name"),
         "supplier_name": c.get("importer_name"), "supplier_gstin": imp.get("gst_number"),
-        "invoice_number": c.get("consignment_number"), "invoice_date": c.get("date"),
+        "invoice_number": c.get("invoice_number"), "invoice_date": c.get("date"),
+        "consignment_number": c.get("consignment_number"),
         "total_amount": c.get("total_billed"), "balance_due": c.get("total_billed"),
         "totals": {"grand_total": c.get("total_billed"),
                    "taxable_value": c.get("landed_cost"), "total_gst": 0},
         "import_breakdown": {k: c.get(k) for k in ("supplier_payment_inr", "customs_bcd",
                              "customs_surcharge", "customs_igst", "customs_total",
-                             "shipping_charges", "commission_percent", "commission_amount",
-                             "landed_cost", "total_billed")},
+                             "shipping_charges", "expenses_total", "commission_percent",
+                             "commission_amount", "landed_cost", "total_billed")},
         "customs_igst_itc_eligible": c.get("customs_igst"),
         "attachments": c.get("attachments") or [],
         "supplier_payments": c.get("supplier_payments") or [],
+        "expenses": c.get("expenses") or [],
         "boe_number": c.get("boe_number"),
         "items": items_text, "notes": f"Importer consignment {c.get('consignment_number')} via importer portal",
         "source": "importer_portal", "status": "recorded", "payment_status": "credit",
