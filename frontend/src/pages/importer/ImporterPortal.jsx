@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { Plus, Trash2, Send, Loader2, Package, IndianRupee, Percent } from 'lucide-react';
+import { Plus, Trash2, Send, Loader2, Package, IndianRupee, Percent, Upload, FileText, CheckCircle2, AlertCircle } from 'lucide-react';
 
 const fmt = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 const num = (v) => parseFloat(v) || 0;
@@ -24,7 +24,14 @@ const EMPTY = {
   boe_number: '',
   notes: '',
   line_items: [{ description: '', quantity: 1 }],
+  attachments: [],
 };
+
+const DOC_KINDS = [
+  { kind: 'boe', label: 'Bill of Entry', required: true },
+  { kind: 'bank_proof', label: 'Bank Payment Proof', required: false },
+  { kind: 'supplier_invoice', label: 'Supplier Invoice', required: false },
+];
 
 export default function ImporterPortal() {
   const { token } = useAuth();
@@ -33,8 +40,28 @@ export default function ImporterPortal() {
   const [form, setForm] = useState(EMPTY);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(null);   // kind currently uploading
 
   const h = { headers: { Authorization: `Bearer ${token}` } };
+
+  const hasBoe = (form.attachments || []).some(a => a.kind === 'boe');
+
+  const uploadDoc = async (kind, fileObj) => {
+    if (!fileObj) return;
+    setUploading(kind);
+    try {
+      const fd = new FormData();
+      fd.append('kind', kind);
+      fd.append('file', fileObj);
+      const r = await axios.post(`${API}/importer/upload`, fd,
+        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' } });
+      setForm(f => ({ ...f, attachments: [...(f.attachments || []), r.data] }));
+      toast.success(`${r.data.name} uploaded`);
+    } catch (e) { toast.error(e.response?.data?.detail || 'Upload failed'); }
+    finally { setUploading(null); }
+  };
+
+  const removeDoc = (i) => setForm(f => ({ ...f, attachments: f.attachments.filter((_, x) => x !== i) }));
 
   const fetchData = async () => {
     try {
@@ -66,6 +93,7 @@ export default function ImporterPortal() {
     customs_bcd: num(form.customs_bcd), customs_surcharge: num(form.customs_surcharge),
     customs_igst: num(form.customs_igst), shipping_charges: num(form.shipping_charges),
     commission_percent: num(form.commission_percent), boe_number: form.boe_number, notes: form.notes,
+    attachments: form.attachments || [],
     line_items: form.line_items.filter(li => (li.description || '').trim())
       .map(li => ({ description: li.description, quantity: num(li.quantity) || 1 })),
   });
@@ -80,6 +108,7 @@ export default function ImporterPortal() {
   };
 
   const saveAndBill = async () => {
+    if (!hasBoe) { toast.error('Upload the Bill of Entry before billing MGIPL'); return; }
     setSaving(true);
     try {
       const r = await axios.post(`${API}/importer/consignments`, payload(), h);
@@ -149,6 +178,39 @@ export default function ImporterPortal() {
               </div>
             </div>
 
+            {/* Documents */}
+            <div>
+              <Label>Documents <span className="text-rose-400">— Bill of Entry required to bill</span></Label>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-1">
+                {DOC_KINDS.map(d => {
+                  const done = (form.attachments || []).some(a => a.kind === d.kind);
+                  return (
+                    <label key={d.kind} className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 cursor-pointer text-sm transition-colors ${done ? 'border-emerald-500/40 bg-emerald-500/5' : d.required ? 'border-rose-500/40 bg-rose-500/5' : 'border-border bg-muted/30'}`}>
+                      {uploading === d.kind ? <Loader2 className="w-4 h-4 animate-spin shrink-0" /> :
+                        done ? <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" /> :
+                        d.required ? <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" /> : <Upload className="w-4 h-4 text-muted-foreground shrink-0" />}
+                      <span className="flex-1 truncate">{d.label}{d.required && !done ? ' *' : ''}</span>
+                      <input type="file" className="hidden" accept=".pdf,.jpg,.jpeg,.png"
+                        disabled={!!uploading}
+                        onChange={e => { uploadDoc(d.kind, e.target.files?.[0]); e.target.value = ''; }} />
+                    </label>
+                  );
+                })}
+              </div>
+              {(form.attachments || []).length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {form.attachments.map((a, i) => (
+                    <div key={i} className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <FileText className="w-3.5 h-3.5 shrink-0" />
+                      <span className="font-medium text-foreground">{DOC_KINDS.find(d => d.kind === a.kind)?.label || a.kind}:</span>
+                      <span className="truncate flex-1">{a.name}</span>
+                      <button type="button" onClick={() => removeDoc(i)} className="text-rose-400 hover:text-rose-300"><Trash2 className="w-3.5 h-3.5" /></button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {/* Live reconciliation */}
             <div className="rounded-lg border border-border bg-muted/40 p-4 space-y-1.5 text-sm">
               <div className="flex justify-between"><span className="text-muted-foreground">Supplier payment</span><span>{fmt(num(form.supplier_payment_inr))}</span></div>
@@ -161,7 +223,7 @@ export default function ImporterPortal() {
 
             <div className="flex gap-2 justify-end">
               <Button variant="outline" onClick={saveDraft} disabled={saving || !calc.total}>Save draft</Button>
-              <Button onClick={saveAndBill} disabled={saving || !calc.total} className="bg-emerald-600 hover:bg-emerald-500 text-white">
+              <Button onClick={saveAndBill} disabled={saving || !calc.total || !hasBoe} title={!hasBoe ? 'Upload the Bill of Entry first' : ''} className="bg-emerald-600 hover:bg-emerald-500 text-white">
                 {saving ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Send className="w-4 h-4 mr-2" />} Save &amp; Bill MGIPL
               </Button>
             </div>

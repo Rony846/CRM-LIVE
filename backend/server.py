@@ -63914,6 +63914,33 @@ async def list_importers(user: dict = Depends(require_roles(["admin", "accountan
     return {"importers": await db.importers.find(q, {"_id": 0}).sort("name", 1).to_list(200)}
 
 
+@api_router.post("/importer/upload")
+async def importer_upload(
+    kind: str = Form("other"),                 # boe | bank_proof | supplier_invoice | other
+    file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["importer", "admin"])),
+):
+    """Upload a supporting document for an import consignment (Bill of Entry, bank proof,
+    supplier invoice). Returns {name, url, kind} to attach to the consignment payload."""
+    try:
+        content = await file.read()
+        relative_path, _ = await storage_upload(
+            file_data=content,
+            folder="importer_docs",
+            original_filename=file.filename,
+            filename_prefix=f"imp_{kind}",
+        )
+    except StorageError as e:
+        logger.error(f"Importer doc upload failed: {e}")
+        raise HTTPException(status_code=500, detail=f"File upload failed: {e}")
+    return {"name": file.filename, "url": f"/api/files/{relative_path}", "kind": kind}
+
+
+def _has_boe(c: dict) -> bool:
+    """True if the consignment carries a Bill-of-Entry document (attachment tagged boe)."""
+    return any((a or {}).get("kind") == "boe" for a in (c.get("attachments") or []))
+
+
 @api_router.post("/importer/consignments")
 async def create_consignment(payload: ImporterConsignmentCreate,
                              user: dict = Depends(require_roles(["importer", "admin"]))):
@@ -64022,6 +64049,9 @@ async def submit_consignment(cid: str, user: dict = Depends(require_roles(["impo
         raise HTTPException(status_code=403, detail="Not your consignment")
     if c.get("status") != "draft":
         raise HTTPException(status_code=400, detail=f"Already {c.get('status')}")
+    if not _has_boe(c):
+        raise HTTPException(status_code=400,
+                            detail="Bill of Entry document is required before billing MGIPL")
     now = datetime.now(timezone.utc)
     firm = await db.firms.find_one({"id": c.get("firm_id")}, {"_id": 0}) or {}
     imp = await db.importers.find_one({"id": c.get("importer_id")}, {"_id": 0}) or {}
@@ -64044,6 +64074,8 @@ async def submit_consignment(cid: str, user: dict = Depends(require_roles(["impo
                              "shipping_charges", "commission_percent", "commission_amount",
                              "landed_cost", "total_billed")},
         "customs_igst_itc_eligible": c.get("customs_igst"),
+        "attachments": c.get("attachments") or [],
+        "boe_number": c.get("boe_number"),
         "items": items_text, "notes": f"Importer consignment {c.get('consignment_number')} via importer portal",
         "source": "importer_portal", "status": "recorded", "payment_status": "credit",
         "created_by": user["id"], "created_at": now.isoformat(),
