@@ -1257,6 +1257,18 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Ms Marvel — support-operations supervisor: flag the founder what is newly slipping
+        # (off unless MS_MARVEL_ENABLED; the job self-skips when the flag is off).
+        scheduler.add_job(
+            scheduled_ms_marvel,
+            IntervalTrigger(minutes=MS_MARVEL_MIN),
+            id="ms_marvel",
+            name="Ms Marvel (support-ops watchdog)",
+            replace_existing=True,
+            misfire_grace_time=600,
+            max_instances=1,
+        )
+
         # Amazon email ingest: keep A-to-z claims + refunds live from the seller mailbox (IMAP, free).
         scheduler.add_job(
             scheduled_amazon_email_ingest,
@@ -65375,6 +65387,58 @@ async def kalpana_history_search(q: str, product: str = "", limit: int = 5,
     """Inspect what the ticket-history RAG returns for a query (for tuning / QA)."""
     from utils import ticket_history
     return {"query": q, "results": await ticket_history.search(db, q, limit=min(limit, 15), product=product)}
+
+
+# ===================== Ms Marvel — support-operations supervisor =====================
+MS_MARVEL_MIN = int(os.environ.get("MS_MARVEL_MIN", "60"))
+
+
+async def _ms_marvel_phrase(text: str) -> str:
+    """Optionally let the LOCAL Jasmine brain tighten the digest (free). Never the subscription
+    terminal; on any failure the deterministic text is used as-is."""
+    try:
+        from utils import brain_registry
+        if not brain_registry.available("jasmine"):
+            return text
+        r = await brain_registry.complete("jasmine", max_tokens=400, temperature=0.2,
+            system=("You are Ms Marvel, MuscleGrid's support-ops supervisor reporting to the founder on WhatsApp. "
+                    "Rewrite the report below crisply in the SAME structure (keep every ref number, count and the "
+                    "chronic line exactly). Professional, terse, one emoji max. Output only the message."),
+            prompt=text)
+        return (r.get("text") or "").strip() if r.get("model_ok") else text
+    except Exception:
+        return text
+
+
+async def scheduled_ms_marvel():
+    """Ms Marvel: watch support timeliness and flag the founder what is newly slipping. Off unless
+    MS_MARVEL_ENABLED. Detection is free/deterministic; phrasing uses local Jasmine when available."""
+    from utils import ms_marvel
+    if not ms_marvel.enabled():
+        return
+    try:
+        await ms_marvel.run(db, _alert_founder_free, brain_phrase=_ms_marvel_phrase)
+    except Exception as e:
+        logger.error(f"Ms Marvel run failed: {e}")
+
+
+@api_router.get("/admin/ms-marvel/scan")
+async def ms_marvel_scan(user: dict = Depends(require_roles(["admin"]))):
+    """Preview what Ms Marvel currently sees (no alert, no flagging) — for tuning."""
+    from utils import ms_marvel
+    res = await ms_marvel.scan(db)
+    by = {}
+    for it in res["items"]:
+        by[it["kind"]] = by.get(it["kind"], 0) + 1
+    return {"by_kind": by, "total_items": len(res["items"]), "chronic": res["chronic"],
+            "top": sorted(res["items"], key=lambda x: (x["priority"], -x["age_h"]))[:15]}
+
+
+@api_router.post("/admin/ms-marvel/run")
+async def ms_marvel_run_now(user: dict = Depends(require_roles(["admin"]))):
+    """Run Ms Marvel now (flags the founder + records what it raised)."""
+    from utils import ms_marvel
+    return await ms_marvel.run(db, _alert_founder_free, brain_phrase=_ms_marvel_phrase)
 
 
 # ===================== Amazon email → CRM ingest =====================
