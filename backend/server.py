@@ -80194,6 +80194,96 @@ async def _wa_capture_lead_intent(digits: str, text: str, name: str = ""):
         logger.warning(f"wa lead-intent capture failed: {e}")
 
 
+# --- WhatsApp SUPPORT-ticket safety-net (deterministic, no LLM → cap-proof) ---
+_WA_SUPPORT_STRONG_RX = re.compile(
+    r"\berr(or)?\b|\bala(rm)?\b|\bfault\b|code\s*0*\d|not\s+work|kaam\s+nahi|kaam\s+ni|kharab|खराब|"
+    r"band\s+ho|\bdead\b|beep|spark|burning|smoke|dhuan|धुआं|जल\s*रह|trip\b|overload|"
+    r"nahi\s+charg|charg\w*\s+nahi|not\s+charg|complain|warrant|warrent|\brepair\b|service\s*center|"
+    r"servic\w*\s+(chahiye|karao|karwa)|defect|kharabi|खराबी|display.*(nahi|band|blank)|shut\s*down|shutdown",
+    re.I)
+_WA_SUPPORT_WEAK_RX = re.compile(r"problem|dikkat|दिक्कत|issue|theek\s+nahi|sahi\s+nahi|\bfix\b|\bsahi\b", re.I)
+_WA_TICKET_TERMINAL = {"closed", "resolved", "repair_completed", "delivered", "resolved_on_call",
+                       "collected", "cancelled", "reship_completed", "closed_by_agent"}
+
+
+def _wa_device_type(text: str) -> str:
+    tl = (text or "").lower()
+    if "inverter" in tl or "invertor" in tl:
+        return "Inverter"
+    if "stabiliz" in tl:
+        return "Stabilizer"
+    if "lithium" in tl or "batter" in tl:
+        return "Battery"
+    if "solar" in tl:
+        return "Solar"
+    return "Others"
+
+
+async def _wa_capture_support_ticket(digits: str, text: str, name: str = ""):
+    """SAFETY-NET + AUDIT: deterministically turn a customer's WhatsApp SUPPORT/complaint message into a
+    trackable db.tickets ticket (so it gets an SLA clock + Ms Marvel supervision), even when the LLM/API
+    is down. Dedups to ONE open ticket per customer (appends to it instead of spawning duplicates).
+    No LLM → cap-proof. Every detection is logged in db.whatsapp_ticket_audit."""
+    try:
+        t = (text or "").strip()
+        if len(t) < 4 or t.startswith("["):
+            return
+        if await _is_internal_number(digits):
+            return
+        if await db.whatsapp_optouts.find_one({"phone": digits}, {"_id": 1}):
+            return
+        strong = bool(_WA_SUPPORT_STRONG_RX.search(t))
+        weak = bool(_WA_SUPPORT_WEAK_RX.search(t) and _WA_PRODUCT_RX.search(t))
+        # A pure buying message with no real problem signal is a LEAD, not a ticket — leave it to the lead net.
+        if not strong and not weak:
+            return
+        if _WA_SALES_RX.search(t) and not strong:
+            return
+        ph = re.sub(r"\D", "", str(digits))[-10:]
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        recent = (now_dt - timedelta(days=14)).isoformat()
+        # Dedup: one OPEN ticket per customer → append the new message rather than create a duplicate.
+        existing = await db.tickets.find_one(
+            {"customer_phone": {"$regex": ph + "$"}, "status": {"$nin": list(_WA_TICKET_TERMINAL)},
+             "created_at": {"$gt": recent}}, sort=[("created_at", -1)])
+        if existing:
+            await db.tickets.update_one({"id": existing["id"]}, {
+                "$set": {"updated_at": now},
+                "$push": {"history": {"action": "Customer WhatsApp message", "detail": t[:400],
+                                      "by": "WhatsApp", "at": now}}})
+            await db.whatsapp_ticket_audit.insert_one({
+                "id": str(uuid.uuid4()), "phone": ph, "name": name or "", "text": t[:500], "intent": "support",
+                "via": "safety_net", "action": "appended", "ticket_number": existing.get("ticket_number"),
+                "created_at": now})
+            return
+        tn = await generate_ticket_number()
+        dev = _wa_device_type(t)
+        ticket = {
+            "id": str(uuid.uuid4()), "ticket_number": tn,
+            "customer_name": name or "", "customer_phone": ph,
+            "device_type": dev, "support_type": "hardware" if dev != "Others" else "general",
+            "issue_description": t[:1000], "status": "new_request",
+            "source": "whatsapp", "channel": "whatsapp",
+            "created_by": None, "created_at": now, "updated_at": now,
+            "sla_due": (now_dt + timedelta(hours=24)).isoformat(),
+            "history": [{"action": "Ticket opened from WhatsApp (auto safety-net)", "detail": t[:400],
+                         "by": "WhatsApp", "at": now}],
+        }
+        await db.tickets.insert_one(ticket)
+        await db.whatsapp_ticket_audit.insert_one({
+            "id": str(uuid.uuid4()), "phone": ph, "name": name or "", "text": t[:500], "intent": "support",
+            "via": "safety_net", "action": "created", "ticket_number": tn, "created_at": now})
+        # Tell the support team (bot→staff notification: auto-deferred outside working hours).
+        await create_notification(
+            title="New WhatsApp support ticket", message=f"{name or ph}: {t[:120]}",
+            notification_type="support", link="/support", target_roles=["call_support", "admin"],
+            priority="normal", created_by_name="WhatsApp safety-net",
+            data={"ticket_number": tn, "phone": ph})
+    except Exception as e:
+        logger.warning(f"wa support-ticket capture failed: {e}")
+
+
 SALES_FOLLOWUP_HOURS = int(os.environ.get("SALES_FOLLOWUP_HOURS", "24"))
 SALES_FOLLOWUP_MAX = int(os.environ.get("SALES_FOLLOWUP_MAX", "3"))
 
@@ -82365,6 +82455,8 @@ async def whatsapp_cloud_webhook(request: Request):
                         asyncio.create_task(_pratibha_wa_autoreply(digits, text, names.get(wa_from)))
                         # Deterministic sales/dealer lead safety-net + audit (runs regardless of autoreply gate).
                         asyncio.create_task(_wa_capture_lead_intent(digits, text, names.get(wa_from)))
+                        # Deterministic SUPPORT-ticket safety-net + audit (so support chats become trackable tickets).
+                        asyncio.create_task(_wa_capture_support_ticket(digits, text, names.get(wa_from)))
                     elif mtype in ("image", "document", "video", "audio", "voice", "sticker") and media_id:
                         asyncio.create_task(_wa_handle_media(digits, names.get(wa_from), media_id, media_mime or "", mtype))
             for s in (val.get("statuses") or []):
