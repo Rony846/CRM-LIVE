@@ -826,6 +826,19 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Shiprocket mirror — pull recent Shiprocket orders into the CRM so PCB/part dispatches
+        # (the primary stabilizer-repair fulfilment channel) stay visible and tickets reconcile.
+        # No-ops until SHIPROCKET_EMAIL/PASSWORD are set.
+        scheduler.add_job(
+            scheduled_shiprocket_sync,
+            IntervalTrigger(minutes=SHIPROCKET_SYNC_MIN),
+            id="shiprocket_sync",
+            name="Shiprocket Order Sync (rolling window)",
+            replace_existing=True,
+            misfire_grace_time=600,
+            max_instances=1,
+        )
+
         # Repair arrival → Gaurav: when a reverse-pickup is delivered to the Meerut service centre,
         # auto-notify the technician to start the repair (closes the manual arrival-trigger gap).
         scheduler.add_job(
@@ -63644,6 +63657,171 @@ async def get_courier_label(
             "content": data["data"].get("res_FileContent", ""),
             "media_type": data["data"].get("res_MediaType", "application/pdf")
         }
+
+
+# =============================================
+# SHIPROCKET INTEGRATION (read/sync + reconcile)
+# Closes the blind spot where PCBs/replacements shipped via Shiprocket never landed in the
+# CRM. Pulls Shiprocket orders into db.shiprocket_orders so we can match them to tickets.
+# OFF until SHIPROCKET_EMAIL/PASSWORD set (utils.shiprocket.enabled()).
+# =============================================
+
+def _sr_phone(x) -> str:
+    d = re.sub(r"\D", "", str(x or ""))
+    return d[-10:] if len(d) >= 10 else d
+
+
+def _sr_extract(o: dict) -> dict:
+    """Normalise a raw Shiprocket order into the fields we store + match on."""
+    products = o.get("products") or []
+    prod_names = ", ".join(
+        (p.get("name") or p.get("product_name") or "") for p in products if isinstance(p, dict))[:300]
+    # AWB / courier can live on the order or a nested shipments entry
+    shp = (o.get("shipments") or [{}])
+    shp = shp[0] if isinstance(shp, list) and shp else {}
+    awb = o.get("awb") or o.get("awb_code") or shp.get("awb") or shp.get("awb_code") or ""
+    courier = o.get("courier_name") or shp.get("courier") or shp.get("courier_name") or ""
+    return {
+        "shiprocket_order_id": str(o.get("id") or o.get("order_id") or ""),
+        "channel_order_id": str(o.get("channel_order_id") or o.get("order_number") or ""),
+        "customer_name": (o.get("customer_name") or "").strip(),
+        "phone": _sr_phone(o.get("customer_phone") or o.get("phone")),
+        "email": (o.get("customer_email") or "").strip(),
+        "products": prod_names,
+        # A spare-part dispatch (what a hardware ticket would receive): literal PCB/board/relay,
+        # or a board model code like "35 L 6066", "17C 6045", "E76E", "L 35 5045".
+        "is_pcb": bool(re.search(
+            r"\bpcb\b|board|relay|\bmcb\b|\b\d{1,3}\s?[a-z]\s?\d{3,4}\b|\b[a-z]\d{2}[a-z]\b|\b\d{2}\s?l\s?\d{3,4}\b",
+            prod_names.lower())),
+        "awb": str(awb or ""),
+        "courier_name": courier,
+        "status": o.get("status") or o.get("status_code") or "",
+        "sr_created_at": str(o.get("created_at") or ""),
+        "raw": o,
+    }
+
+
+async def sync_shiprocket_orders(max_pages: int = 60, per_page: int = 50,
+                                 date_from: str = None, date_to: str = None) -> dict:
+    """Pull Shiprocket orders into db.shiprocket_orders (upsert by shiprocket_order_id).
+    Without a date range Shiprocket only returns a recent window (~180); pass date_from/
+    date_to (YYYY-MM-DD) to pull history. No-ops when Shiprocket isn't configured."""
+    from utils import shiprocket as SR
+    if not SR.enabled():
+        return {"enabled": False, "synced": 0, "message": "Shiprocket not configured (set SHIPROCKET_EMAIL/PASSWORD)"}
+    now = datetime.now(timezone.utc).isoformat()
+    filters = {}
+    if date_from:
+        filters["from"] = date_from
+    if date_to:
+        filters["to"] = date_to
+    synced = pcb = pages = 0
+    # Paginate until an empty page (robust to Shiprocket's meta shape, which uses total_pages).
+    for page in range(1, max_pages + 1):
+        orders = await SR.fetch_orders(page=page, per_page=per_page, **filters)
+        if not orders:
+            break
+        pages = page
+        for o in orders:
+            doc = _sr_extract(o)
+            if not doc["shiprocket_order_id"]:
+                continue
+            doc["synced_at"] = now
+            if doc["is_pcb"]:
+                pcb += 1
+            await db.shiprocket_orders.update_one(
+                {"shiprocket_order_id": doc["shiprocket_order_id"]},
+                {"$set": doc}, upsert=True)
+            synced += 1
+    return {"enabled": True, "synced": synced, "pcb_shipments": pcb, "pages": pages}
+
+
+SHIPROCKET_SYNC_MIN = int(os.environ.get("SHIPROCKET_SYNC_MIN", "360") or 360)   # 6h
+SHIPROCKET_SYNC_DAYS = int(os.environ.get("SHIPROCKET_SYNC_DAYS", "120") or 120)  # rolling window
+
+
+async def scheduled_shiprocket_sync():
+    """APScheduler entrypoint — mirror recent Shiprocket orders into the CRM on a rolling
+    window so PCB/part dispatches stay visible (the default no-filter call returns only a
+    small recent slice, so we always pass a date range). No-ops when not configured."""
+    try:
+        from utils import shiprocket as SR
+        if not SR.enabled():
+            return
+        now = datetime.now(timezone.utc)
+        summary = await sync_shiprocket_orders(
+            date_from=(now - timedelta(days=SHIPROCKET_SYNC_DAYS)).strftime("%Y-%m-%d"),
+            date_to=now.strftime("%Y-%m-%d"))
+        logger.info(f"Shiprocket sync: {summary}")
+    except Exception as e:
+        logger.error(f"Shiprocket sync failed: {e}")
+
+
+@api_router.post("/courier/shiprocket/sync")
+async def shiprocket_sync(date_from: str = None, date_to: str = None,
+                          current_user: dict = Depends(get_current_user)):
+    """Pull Shiprocket orders into the CRM (admin/accountant/dispatcher). Pass
+    date_from/date_to (YYYY-MM-DD) for a historical pull; without them only a recent window."""
+    if current_user["role"] not in ["admin", "accountant", "dispatcher"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    return await sync_shiprocket_orders(date_from=date_from, date_to=date_to)
+
+
+@api_router.get("/courier/shiprocket/shipments")
+async def shiprocket_list(
+    pcb_only: bool = False, phone: str = "", limit: int = 100,
+    current_user: dict = Depends(get_current_user)
+):
+    """List synced Shiprocket shipments (optionally PCB-only or by phone)."""
+    if current_user["role"] not in ["admin", "accountant", "dispatcher"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    q = {}
+    if pcb_only:
+        q["is_pcb"] = True
+    if phone:
+        q["phone"] = _sr_phone(phone)
+    rows = await db.shiprocket_orders.find(q, {"_id": 0, "raw": 0}).sort("synced_at", -1).limit(limit).to_list(limit)
+    total = await db.shiprocket_orders.count_documents({})
+    return {"shipments": rows, "count": len(rows), "total_synced": total}
+
+
+@api_router.get("/courier/shiprocket/reconcile-tickets")
+async def shiprocket_reconcile_tickets(current_user: dict = Depends(get_current_user)):
+    """Match synced Shiprocket shipments against OPEN hardware tickets by phone, so a ticket
+    that actually had a PCB/replacement shipped via Shiprocket can be identified (and closed)
+    instead of looking abandoned. Read-only — returns the matches for review."""
+    if current_user["role"] not in ["admin", "accountant", "dispatcher"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    # Shiprocket masks phone + email in the orders API, so the only reliable join key to a
+    # CRM ticket is the customer NAME (normalised). Common names can false-match, so the
+    # result lists names + products for human eyeballing rather than auto-closing.
+    def _norm(n):
+        return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", "", str(n or "").lower())).strip()
+    sr = await db.shiprocket_orders.find({}, {"_id": 0, "customer_name": 1, "products": 1, "is_pcb": 1,
+                                              "awb": 1, "sr_created_at": 1, "channel_order_id": 1}).to_list(20000)
+    by_name = {}
+    for s in sr:
+        nm = _norm(s.get("customer_name"))
+        if nm and len(nm) >= 4:  # skip ultra-short/empty names
+            by_name.setdefault(nm, []).append(s)
+    tks = await db.tickets.find(
+        {"status": {"$in": ["hardware_service", "awaiting_label", "label_uploaded",
+                            "repair_completed", "customer_escalated", "assigned_to_technician"]}},
+        {"_id": 0, "ticket_number": 1, "customer_name": 1, "customer_phone": 1, "status": 1,
+         "issue_description": 1, "created_at": 1}).to_list(5000)
+    matched = []
+    for t in tks:
+        hits = by_name.get(_norm(t.get("customer_name")), [])
+        if hits:
+            matched.append({
+                "ticket_number": t.get("ticket_number"), "customer_name": t.get("customer_name"),
+                "status": t.get("status"), "issue": (t.get("issue_description") or "")[:60],
+                "shiprocket": [{"products": h.get("products"), "awb": h.get("awb"),
+                                "is_pcb": h.get("is_pcb"), "date": h.get("sr_created_at")} for h in hits[:3]],
+                "any_pcb": any(h.get("is_pcb") for h in hits),
+            })
+    return {"open_hardware_tickets": len(tks), "matched_to_shiprocket": len(matched),
+            "matched_with_pcb": sum(1 for m in matched if m["any_pcb"]), "matches": matched}
 
 
 async def _alert_founder_free(text: str, kind: str = "agent_alert"):
