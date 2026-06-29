@@ -1269,6 +1269,17 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Quiet-hours flush: release bot notifications held overnight/Sunday when the staff window opens.
+        scheduler.add_job(
+            scheduled_flush_deferred_notifications,
+            IntervalTrigger(minutes=15),
+            id="flush_deferred_notifications",
+            name="Staff quiet-hours: flush deferred bot notifications",
+            replace_existing=True,
+            misfire_grace_time=600,
+            max_instances=1,
+        )
+
         # Amazon email ingest: keep A-to-z claims + refunds live from the seller mailbox (IMAP, free).
         scheduler.add_job(
             scheduled_amazon_email_ingest,
@@ -3300,6 +3311,45 @@ async def send_expo_push(
         logger.warning(f"send_expo_push failed: {e}")
 
 
+# ===================== Staff quiet-hours guard (org-wide bot rule) =====================
+# Bots must only push notifications to STAFF during working hours: 09:00–19:00 IST, Mon–Sat,
+# never on Sunday or outside those hours. Anything a bot tries to send outside the window is
+# DEFERRED and auto-flushed when the window next opens (so nothing is lost, just held).
+STAFF_ROLES = {"admin", "supervisor", "call_support", "service_agent", "technician",
+               "accountant", "dispatcher", "gate"}
+STAFF_HOURS_START = int(os.environ.get("STAFF_HOURS_START", "9"))
+STAFF_HOURS_END = int(os.environ.get("STAFF_HOURS_END", "19"))   # exclusive (7 PM)
+_IST = timedelta(hours=5, minutes=30)
+
+
+def within_staff_hours(now: Optional[datetime] = None) -> bool:
+    """True iff it's a staff working moment: Mon–Sat (not Sunday) and START ≤ IST hour < END."""
+    ist = (now or datetime.now(timezone.utc)) + _IST
+    return ist.weekday() <= 5 and STAFF_HOURS_START <= ist.hour < STAFF_HOURS_END
+
+
+def _next_staff_window(now: Optional[datetime] = None) -> str:
+    """UTC ISO of the next moment the staff window opens (used to defer out-of-hours pushes)."""
+    now = now or datetime.now(timezone.utc)
+    ist = now + _IST
+    if ist.weekday() <= 5 and ist.hour < STAFF_HOURS_START:
+        target = ist.replace(hour=STAFF_HOURS_START, minute=0, second=0, microsecond=0)
+    else:
+        target = (ist + timedelta(days=1)).replace(hour=STAFF_HOURS_START, minute=0, second=0, microsecond=0)
+        while target.weekday() == 6:   # skip Sunday
+            target += timedelta(days=1)
+    return (target - _IST).isoformat()
+
+
+def _is_staff_only_target(target_roles, target_user_ids) -> bool:
+    """A notification aimed at staff (so the quiet-hours rule applies). Customer/dealer targets
+    and the all-staff broadcast (target_roles=None) are treated per their nature."""
+    if target_roles:
+        return all(r in STAFF_ROLES for r in target_roles)
+    # No roles + specific user_ids: ambiguous (could be a customer) — caller must opt in explicitly.
+    return False
+
+
 async def create_notification(
     title: str,
     message: str,
@@ -3311,12 +3361,33 @@ async def create_notification(
     created_by: Optional[str] = None,
     created_by_name: Optional[str] = None,
     data: Optional[dict] = None,
+    respect_quiet_hours: Optional[bool] = None,
+    bypass_quiet_hours: bool = False,
 ):
     """Create a notification. Canonical Schema A — read state tracked via read_by[].
 
     `data` is an optional structured payload (quotation_id, tracking_id, etc.)
     that the frontend can use to render context-rich actions.
+
+    Staff quiet-hours: BOT/scheduled notifications (no human `created_by`) aimed at staff are
+    auto-deferred outside 09:00–19:00 IST Mon–Sat and flushed when the window opens. Callers can
+    force this with respect_quiet_hours=True (e.g. a bot user-targeting a staffer) or opt out of a
+    truly urgent one with bypass_quiet_hours=True. Human-triggered notifications are never deferred.
     """
+    # Decide whether the quiet-hours rule applies to THIS notification.
+    if respect_quiet_hours is None:
+        respect_quiet_hours = (created_by is None) and _is_staff_only_target(target_roles, target_user_ids)
+    if respect_quiet_hours and not bypass_quiet_hours and not within_staff_hours():
+        await db.deferred_notifications.insert_one({
+            "id": str(uuid.uuid4()), "deliver_after": _next_staff_window(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "kwargs": {"title": title, "message": message, "notification_type": notification_type,
+                       "link": link, "target_roles": target_roles, "target_user_ids": target_user_ids,
+                       "priority": priority, "created_by": created_by, "created_by_name": created_by_name,
+                       "data": data}})
+        logger.info(f"Quiet-hours: deferred staff notification '{title[:40]}' to {_next_staff_window()}")
+        return {"deferred": True}
+
     now = datetime.now(timezone.utc).isoformat()
     notification_id = str(uuid.uuid4())
 
@@ -65421,9 +65492,36 @@ async def scheduled_ms_marvel():
         return
     try:
         await ms_marvel.run(db, _alert_founder_free,
-                            notify_fn=create_notification, chat_fn=post_system_message)
+                            notify_fn=create_notification, chat_fn=post_system_message,
+                            staff_hours_ok=within_staff_hours)
     except Exception as e:
         logger.error(f"Ms Marvel run failed: {e}")
+
+
+async def scheduled_flush_deferred_notifications():
+    """Release bot notifications that were held by the staff quiet-hours guard, once the window opens.
+    Runs often + cheaply; no-ops outside the window so held items wait for 09:00 IST."""
+    if not within_staff_hours():
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    due = await db.deferred_notifications.find({"deliver_after": {"$lte": now}}).sort("created_at", 1).to_list(500)
+    for d in due:
+        kw = d.get("kwargs") or {}
+        try:
+            await create_notification(**kw, bypass_quiet_hours=True)
+        except Exception as e:
+            logger.warning(f"deferred notification flush failed: {e}")
+        await db.deferred_notifications.delete_one({"id": d["id"]})
+    # Held staff WhatsApp messages (e.g. technician nudges).
+    wa = await db.deferred_staff_wa.find({"deliver_after": {"$lte": now}}).sort("created_at", 1).to_list(200)
+    for m in wa:
+        try:
+            await send_whatsapp_message(m["to"], m["message"], force=True)
+        except Exception as e:
+            logger.warning(f"deferred staff WA flush failed: {e}")
+        await db.deferred_staff_wa.delete_one({"id": m["id"]})
+    if due or wa:
+        logger.info(f"Quiet-hours: flushed {len(due)} notifications + {len(wa)} WhatsApp")
 
 
 @api_router.get("/admin/ms-marvel/scan")
@@ -65443,7 +65541,8 @@ async def ms_marvel_run_now(user: dict = Depends(require_roles(["admin"]))):
     """Run Ms Marvel now (autonomous if MS_MARVEL_AUTONOMOUS; else flags the founder a digest)."""
     from utils import ms_marvel
     return await ms_marvel.run(db, _alert_founder_free, notify_fn=create_notification,
-                               chat_fn=post_system_message, brain_phrase=_ms_marvel_phrase)
+                               chat_fn=post_system_message, brain_phrase=_ms_marvel_phrase,
+                               staff_hours_ok=within_staff_hours)
 
 
 # ===================== Amazon email → CRM ingest =====================
@@ -79740,8 +79839,16 @@ async def _wa_tool_notify_technician(digits: str, name: str, message: str) -> di
         await db.repair_jobs.update_one({"id": job["id"]}, {"$set": {"last_msg": message, "last_nudge_at": now, "technician_phone": num}})
     if len(num) != 10:
         await create_notification(title="Repair — message for Gaurav", message=message,
-                                  notification_type="service", target_user_ids=[g["id"]], priority="high")
+                                  notification_type="service", target_user_ids=[g["id"]], priority="high",
+                                  respect_quiet_hours=True)
         return {"sent": "in_app", "note": "Technician has no WhatsApp number; sent in-app instead."}
+    # Staff quiet-hours: never WhatsApp the technician outside 09:00–19:00 IST Mon–Sat — hold + flush.
+    if not within_staff_hours():
+        await db.deferred_staff_wa.insert_one({
+            "id": str(uuid.uuid4()), "to": "91" + num, "message": message, "kind": "technician",
+            "deliver_after": _next_staff_window(), "created_at": now})
+        return {"sent": "deferred", "to_technician": g.get("first_name"),
+                "note": "Outside staff hours (9–7, Mon–Sat) — message held; will send when the window opens."}
     res = await send_whatsapp_message("91" + num, message, force=True)
     return {"sent": "whatsapp", "to_technician": g.get("first_name"),
             "delivered": isinstance(res, dict) and not res.get("error"),

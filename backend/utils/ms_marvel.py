@@ -285,7 +285,7 @@ async def _nudge_owner(notify_fn, chat_fn, it: dict, enr: dict, rec: str):
         try:
             await notify_fn(title=f"Ms Marvel: action {it['ref']}", message=msg, notification_type="support",
                             link="/admin", target_user_ids=[it["owner_id"]], priority="high",
-                            created_by_name="Ms Marvel")
+                            created_by_name="Ms Marvel", respect_quiet_hours=True)
         except Exception as e:
             logger.warning(f"Ms Marvel nudge notify failed: {e}")
     if chat_fn:
@@ -306,7 +306,7 @@ async def _chase_courier(chat_fn, it: dict, enr: dict, rec: str):
             logger.warning(f"Ms Marvel courier-chase post failed: {e}")
 
 
-async def run(db, alert_fn, notify_fn=None, chat_fn=None, brain_phrase=None) -> dict:
+async def run(db, alert_fn, notify_fn=None, chat_fn=None, brain_phrase=None, staff_hours_ok=None) -> dict:
     """Scan → process items not already flagged (re-escalate after RE_ESCALATE_HOURS). In AUTONOMOUS
     mode (autonomous() + notify_fn + chat_fn) Ms Marvel MONEY-GATED-ACTS: nudges the owner / chases the
     courier herself and escalates to the founder ONLY what needs him (unassigned, money/decision, A-to-z,
@@ -381,14 +381,22 @@ async def run(db, alert_fn, notify_fn=None, chat_fn=None, brain_phrase=None) -> 
         return {"flagged": len(fresh), "handled": {}, "chronic": c}
 
     # ---- Step 2: AUTONOMOUS — act on up to MAX_ACTIONS, escalate only what needs the founder ----
+    # Staff quiet-hours: never nudge staff outside 09:00–19:00 IST Mon–Sat. Outside the window we
+    # SKIP staff-facing actions (leave them unflagged so the next in-hours run handles them) and only
+    # escalate the founder-items. Founder escalations are not staff and are not gated.
+    staff_ok = staff_hours_ok() if callable(staff_hours_ok) else True
     handled = {"nudge_owner": 0, "chase_courier": 0}
     escalations = []
+    deferred_staff = 0
     for key, it in cand[:MAX_ACTIONS]:
         try:
             enr = await enrich(db, it)
         except Exception:
             enr = {}
         action, rec = _decide_action(it, enr)
+        if action in ("nudge_owner", "chase_courier") and not staff_ok:
+            deferred_staff += 1
+            continue  # don't act, don't flag — retried in the next in-hours run
         if action == "nudge_owner" and it.get("owner_id"):
             await _nudge_owner(notify_fn, chat_fn, it, enr, rec)
             handled["nudge_owner"] += 1
@@ -404,6 +412,7 @@ async def run(db, alert_fn, notify_fn=None, chat_fn=None, brain_phrase=None) -> 
     body = (f"🦸‍♀️ *Ms Marvel — support watch (autonomous)*\nI handled: {handled_str}.\n"
             + (f"\n*Needs YOU* ({len(escalations)}):\n" + "\n".join(esc_lines) if escalations else "\nNothing needs your decision right now.")
             + (f"\n…+{len(escalations) - MAX_DIGEST} more for you" if len(escalations) > MAX_DIGEST else "")
+            + (f"\n\n🌙 {deferred_staff} staff nudge(s) held for working hours (9–7, Mon–Sat)" if deferred_staff else "")
             + (f"\n\n({remaining} more queued for next run)" if remaining else "")
             + f"\n\nChronic backlog: {c['active']} active · {c['sla_breached']} breached · "
             f"{c['unassigned']} unassigned · {c['open_az']} open A-to-z\n→ /admin")
