@@ -56,12 +56,34 @@ def _hours_since(iso: str, now: datetime) -> float:
         return 0.0
 
 
+_OID_RE = re.compile(r"\b\d{3}-\d{7}-\d{7}\b")   # Amazon order id
+_AWB_RE = re.compile(r"\b\d{11,14}\b")            # Delhivery/Bigship AWB
+_INTERNAL_NAMES = {"test", "app reviewer", "demo", "apple review", "appreviewer"}
+
+
+def _is_internal(t: dict) -> bool:
+    """Test / app-review / internal accounts — noise; keep them out of the support watch."""
+    em = (t.get("customer_email") or "").lower()
+    nm = (t.get("customer_name") or "").strip().lower()
+    return ("musclegrid.in" in em) or ("appreview" in em) or (nm in _INTERNAL_NAMES)
+
+
+def _embedded_ids(t: dict):
+    """Pull an Amazon order-id / AWB the customer pasted into the complaint text — lets us link a
+    ticket whose contact phone matches no order (the dominant data-gap)."""
+    blob = " ".join(str(t.get(k) or "") for k in ("issue_description", "agent_notes", "diagnosis"))
+    oid = _OID_RE.search(blob)
+    awb = _AWB_RE.search(blob)
+    return (oid.group(0) if oid else None, awb.group(0) if awb else None)
+
+
 def _t(t: dict, kind: str, age_h: float, priority: int) -> dict:
+    oid, awb = _embedded_ids(t)
     return {"kind": kind, "ref": t.get("ticket_number") or t.get("id"),
             "status": t.get("status"), "customer": (t.get("customer_name") or "")[:24],
             "product": (t.get("product_name") or t.get("device_type") or "")[:30],
             "phone": re.sub(r"\D", "", str(t.get("customer_phone") or ""))[-10:],
-            "email": t.get("customer_email") or "",
+            "email": t.get("customer_email") or "", "oid": oid, "awb": awb,
             "age_h": round(age_h), "priority": priority,
             "owner": t.get("assigned_to_name") or ("UNASSIGNED" if not t.get("assigned_to") else "")}
 
@@ -83,7 +105,7 @@ def _diagnose(item: dict, enr: dict, cstat: str) -> str:
     if cstat and "deliver" not in cstat and any(k in cstat for k in ("transit", "pick", "manifest", "not")):
         return f"shipment stuck ({enr.get('_cstat_raw') or cstat}) — chase courier"
     if enr.get("source") == "unknown source" and not cstat:
-        return "no order/courier match — data gap, needs a human look"
+        return "no order on file — ask customer for order no./invoice (likely offline/direct sale)"
     return "awaiting owner action"
 
 
@@ -94,32 +116,46 @@ async def enrich(db, item: dict) -> dict:
     ph = item.get("phone") or (item.get("ref") if item.get("kind") == "wa_unanswered" else "")
     ph = re.sub(r"\D", "", str(ph or ""))[-10:]
     email = item.get("email") or ""
+    oid, awb = item.get("oid"), item.get("awb")
     out = {}
-    if not ph:
-        out["why"] = _diagnose(item, out, "")
-        return out
-    rx = ph + "$"
-    ao = await db.amazon_orders.find_one(
-        {"$or": [{"phone": {"$regex": rx}}, {"phone_manual": {"$regex": rx}}]},
-        {"_id": 0, "amazon_order_id": 1, "firm_name": 1, "order_status": 1})
+    rx = ph + "$" if len(ph) == 10 else None
+
+    # --- purchase source: phone → embedded order-id → sales/shopify by phone ---
+    ao = None
+    if rx:
+        ao = await db.amazon_orders.find_one(
+            {"$or": [{"phone": {"$regex": rx}}, {"phone_manual": {"$regex": rx}}]},
+            {"_id": 0, "amazon_order_id": 1, "firm_name": 1, "order_status": 1})
+    if not ao and oid:   # customer pasted their Amazon order id in the complaint
+        ao = await db.amazon_orders.find_one({"amazon_order_id": oid},
+                                             {"_id": 0, "amazon_order_id": 1, "firm_name": 1, "order_status": 1})
     if ao:
         out["source"] = f"Amazon · {ao.get('firm_name') or '?'} · {ao.get('amazon_order_id')} ({ao.get('order_status') or '?'})"
+    elif rx and (so := await db.sales_orders.find_one({"phone": {"$regex": rx}}, {"_id": 0, "order_number": 1})):
+        out["source"] = f"Direct/Sales · {so.get('order_number')}"
+    elif rx and (sh := await db.shopify_orders.find_one(
+            {"$or": [{"phone": {"$regex": rx}}, {"customer_phone": {"$regex": rx}}]},
+            {"_id": 0, "order_number": 1, "name": 1})):
+        out["source"] = f"Shopify · {sh.get('name') or sh.get('order_number')}"
     else:
-        so = await db.sales_orders.find_one({"phone": {"$regex": rx}}, {"_id": 0, "order_number": 1})
-        if so:
-            out["source"] = f"Direct/Sales · {so.get('order_number')}"
-        else:
-            sh = await db.shopify_orders.find_one(
-                {"$or": [{"phone": {"$regex": rx}}, {"customer_phone": {"$regex": rx}}]},
-                {"_id": 0, "order_number": 1, "name": 1})
-            out["source"] = f"Shopify · {sh.get('name') or sh.get('order_number')}" if sh else "unknown source"
-    cs = await db.courier_shipments.find_one({"phone": {"$regex": rx}},
-                                             {"_id": 0, "awb_number": 1, "status": 1, "courier_name": 1},
-                                             sort=[("created_at", -1)])
+        out["source"] = "unknown source"
+
+    # --- courier: phone → embedded AWB ---
+    cs = None
+    if rx:
+        cs = await db.courier_shipments.find_one({"phone": {"$regex": rx}},
+                                                 {"_id": 0, "awb_number": 1, "status": 1, "courier_name": 1},
+                                                 sort=[("created_at", -1)])
+    if not cs and awb:
+        cs = await db.courier_shipments.find_one({"awb_number": awb},
+                                                 {"_id": 0, "awb_number": 1, "status": 1, "courier_name": 1})
     cstat = ""
     if cs:
         cstat = str(cs.get("status") or "")
         out["courier"] = f"{cstat or '?'} ({cs.get('courier_name') or 'courier'}) AWB {cs.get('awb_number')}"
+    if not ph and not oid and not awb:
+        out["why"] = _diagnose(item, out, "")
+        return out
     sig = []
     rf = await db.amazon_refunds.count_documents({"phone": ph})
     az = await db.az_claims.count_documents({"phone": ph})
@@ -150,18 +186,24 @@ async def scan(db) -> dict:
             {"status": {"$in": ["customer_escalated", "escalated_to_supervisor"]},
              "created_at": {"$gt": recent}, "updated_at": {"$lt": quiet_cut}},
             {"_id": 0}).limit(200):
+        if _is_internal(t):
+            continue
         items.append(_t(t, "escalated_quiet", _hours_since(t.get("updated_at"), now), 1))
 
     # 2. In-flight (pickup/repair/dispatch) STALLED on a recent ticket — the founder's core ask.
     async for t in db.tickets.find(
             {"status": {"$in": list(IN_FLIGHT)}, "created_at": {"$gt": recent},
              "updated_at": {"$lt": stall_cut}}, {"_id": 0}).limit(200):
+        if _is_internal(t):
+            continue
         items.append(_t(t, "inflight_stalled", _hours_since(t.get("updated_at"), now), 2))
 
     # 3. Freshly SLA-breached in the last STALL_HOURS (the new slips, not the chronic pile).
     async for t in db.tickets.find(
             {"status": {"$nin": list(TERMINAL)}, "created_at": {"$gt": recent},
              "sla_due": {"$gt": stall_cut, "$lt": now.isoformat()}}, {"_id": 0}).limit(200):
+        if _is_internal(t):
+            continue
         items.append(_t(t, "sla_breached", _hours_since(t.get("sla_due"), now), 3))
 
     # 4. Reverse pickups booked but not arrived at Meerut.
