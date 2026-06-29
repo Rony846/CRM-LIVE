@@ -20,6 +20,7 @@ gated separately by MS_MARVEL_AUTONOMOUS and are Phase 2 — v1 detects + flags 
 """
 import os
 import re
+import uuid
 import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
@@ -104,6 +105,9 @@ def _t(t: dict, kind: str, age_h: float, priority: int) -> dict:
             "phone": re.sub(r"\D", "", str(t.get("customer_phone") or ""))[-10:],
             "email": t.get("customer_email") or "", "oid": oid, "awb": awb,
             "issue": (t.get("issue_description") or "")[:300],
+            "address": t.get("customer_address") or "", "city": t.get("customer_city") or "",
+            "state": t.get("customer_state") or "",
+            "pincode": str(t.get("customer_pincode") or t.get("pincode") or ""),
             "age_h": round(age_h), "priority": priority,
             "owner": t.get("assigned_to_name") or ("UNASSIGNED" if not t.get("assigned_to") else ""),
             "owner_id": t.get("assigned_to")}
@@ -397,6 +401,56 @@ async def _nudge_owner_batch(notify_fn, chat_fn, owner_id: str, owner_name: str,
             logger.warning(f"Ms Marvel batch chat failed: {e}")
 
 
+async def _pickup_address_for(db, item: dict):
+    """Resolve a usable reverse-pickup address (rp dict for the Bigship booker) from the ticket fields,
+    falling back to the original forward shipment's delivery address. None if we can't (then we just
+    nudge the owner to collect it)."""
+    ph = re.sub(r"\D", "", str(item.get("phone") or ""))[-10:]
+    name = (item.get("customer") or "Customer").strip()
+    parts = name.split()
+    first, last = (parts[0] if parts else "Customer"), " ".join(parts[1:])
+    prod = item.get("product") or "Unit for repair"
+    a1 = (item.get("address") or "").strip()
+    pin = re.sub(r"\D", "", str(item.get("pincode") or ""))[-6:]
+    if a1 and len(pin) == 6 and len(ph) == 10:
+        return {"first_name": first, "last_name": last, "address_line1": a1[:50],
+                "address_line2": (item.get("city") or "")[:50], "landmark": "", "city": item.get("city") or "",
+                "state": item.get("state") or "", "pincode": pin, "phone": ph,
+                "product_name": prod, "quantity": 1, "invoice_amount": 0, "weight_kg": 10}
+    if len(ph) == 10:
+        cs = await db.courier_shipments.find_one(
+            {"phone": {"$regex": ph + "$"}},
+            {"_id": 0, "address": 1, "consignee_city": 1, "consignee_state": 1,
+             "consignee_pincode": 1, "customer_name": 1, "invoice_amount": 1}, sort=[("created_at", -1)])
+        cpin = re.sub(r"\D", "", str((cs or {}).get("consignee_pincode") or ""))[-6:]
+        if cs and cs.get("address") and len(cpin) == 6:
+            cn = (cs.get("customer_name") or name).split()
+            return {"first_name": cn[0] if cn else first, "last_name": " ".join(cn[1:]),
+                    "address_line1": str(cs["address"])[:50], "address_line2": (cs.get("consignee_city") or "")[:50],
+                    "landmark": "", "city": cs.get("consignee_city") or "", "state": cs.get("consignee_state") or "",
+                    "pincode": cpin, "phone": ph, "product_name": prod, "quantity": 1,
+                    "invoice_amount": float(cs.get("invoice_amount") or 0), "weight_kg": 10}
+    return None
+
+
+async def _propose_pickup(db, alert_fn, item: dict, enr: dict, rp: dict, rec: str):
+    """Create a FOUNDER-APPROVAL proposal for a reverse pickup (she never books it herself). The founder
+    approves with 'book MM-XXXX' on WhatsApp (or the admin endpoint) → the server then books + labels."""
+    ref = item.get("ref")
+    if await db.ms_marvel_pickup_proposals.find_one({"ticket_ref": ref, "status": {"$in": ["pending", "booked"]}}):
+        return False
+    code = "MM-" + uuid.uuid4().hex[:4].upper()
+    await db.ms_marvel_pickup_proposals.insert_one({
+        "code": code, "ticket_ref": ref, "customer": item.get("customer"), "product": item.get("product"),
+        "reason": enr.get("kb_insight") or rec, "address": rp, "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat()})
+    await alert_fn(
+        f"🔧 *Reverse-pickup approval needed* [{code}]\n{item.get('customer') or '?'} · {item.get('product') or ''} · {ref}\n"
+        f"Why: {(enr.get('kb_insight') or rec)[:140]}\nPickup: {rp.get('city') or ''} {rp.get('pincode') or ''}\n"
+        f"→ Reply *book {code}* to approve (I'll book it + send the label), or ignore to skip.")
+    return True
+
+
 async def _chase_courier(chat_fn, it: dict, enr: dict, rec: str):
     """Flag a stalled shipment/pickup to the support+dispatch channel to be chased. Free/reversible."""
     if chat_fn:
@@ -498,6 +552,16 @@ async def run(db, alert_fn, notify_fn=None, chat_fn=None, brain_phrase=None, sta
         except Exception:
             enr = {}
         action, rec = _decide_action(it, enr)
+        # Founder-approved auto-book: an INTERNAL fault we can pickup-address → propose to the founder
+        # (founder-facing, so not staff-hours gated). She proposes; the founder approves; server books.
+        if ("repair centre" in rec.lower() or "repair center" in rec.lower()):
+            rp_addr = await _pickup_address_for(db, it)
+            if rp_addr:
+                if await _propose_pickup(db, alert_fn, it, enr, rp_addr, rec):
+                    handled["proposed_pickup"] = handled.get("proposed_pickup", 0) + 1
+                await _flag(key, it, "propose_pickup", rec)
+                continue
+            # no resolvable address → fall through to nudge the owner (to collect it)
         if action in ("nudge_owner", "chase_courier") and not staff_ok:
             deferred_staff += 1
             continue  # don't act, don't flag — retried in the next in-hours run

@@ -65557,6 +65557,66 @@ async def ms_marvel_run_now(user: dict = Depends(require_roles(["admin"]))):
                                staff_hours_ok=within_staff_hours, kb_search=_wa_tool_search_knowledge)
 
 
+async def _ms_marvel_book_proposal(code: str, by: str = "founder") -> str:
+    """Founder-approved reverse-pickup booking: take a pending Ms Marvel proposal and ACTUALLY book it
+    via the Bigship reverse-pickup flow, then track it to Meerut + send the label. Money action — only
+    runs on explicit founder approval ('book MM-XXXX' or the approve endpoint)."""
+    p = await db.ms_marvel_pickup_proposals.find_one({"code": code})
+    if not p:
+        return f"No pickup proposal {code}."
+    if p.get("status") != "pending":
+        return f"{code} is already {p.get('status')}."
+    rp = dict(p.get("address") or {})
+    rp["order_id"] = f"RVP-{re.sub(r'[^0-9A-Za-z]', '', str(p.get('ticket_ref') or code))[:14]}-{uuid.uuid4().hex[:4].upper()}"
+    try:
+        resp = await _pratibha_book_reverse_pickup(rp, {"from_addr": by})
+    except Exception as e:
+        return f"Booking failed for {code}: {str(e)[:160]}"
+    awb = getattr(resp, "awb_number", None)
+    if not (getattr(resp, "success", False) and awb):
+        return f"Booking failed for {code}: {getattr(resp, 'message', 'unknown error')}"
+    now = datetime.now(timezone.utc).isoformat()
+    await db.ms_marvel_pickup_proposals.update_one({"code": code}, {"$set": {
+        "status": "booked", "awb": awb, "booked_at": now, "booked_by": by}})
+    # Track to Meerut (arrival → Gaurav) + link the ticket.
+    await db.repair_pickups.insert_one({
+        "id": str(uuid.uuid4()), "customer_phone": rp.get("phone"), "customer_name": p.get("customer"),
+        "ticket_number": p.get("ticket_ref"), "address": rp, "status": "booked", "awb": awb,
+        "order_id": rp["order_id"], "created_at": now})
+    if p.get("ticket_ref"):
+        await db.tickets.update_one({"ticket_number": p["ticket_ref"]}, {"$set": {
+            "pickup_tracking": awb, "pickup_courier": getattr(resp, "courier_name", "Bigship"),
+            "status": "pickup_scheduled", "updated_at": now}})
+    lbl = await _pratibha_fetch_label(getattr(resp, "system_order_id", None), "b2c")
+    if lbl and lbl.get("content"):
+        try:
+            await whatsapp_cloud.send_document(
+                CLAUDE_WA_RELAY_NUMBER, base64.b64decode(lbl["content"]), f"RVP-{awb}.pdf",
+                caption=f"Reverse pickup booked [{code}] — {p.get('customer')} · AWB {awb}")
+        except Exception as e:
+            logger.warning(f"proposal label send failed: {e}")
+    return f"✅ Booked reverse pickup [{code}] — {p.get('customer')}: AWB {awb} ({getattr(resp, 'courier_name', 'courier')}). Label sent + tracking to Meerut."
+
+
+@api_router.get("/admin/ms-marvel/pickups")
+async def ms_marvel_pickups(user: dict = Depends(require_roles(["admin"]))):
+    """Pending reverse-pickup proposals awaiting founder approval."""
+    return {"pending": await db.ms_marvel_pickup_proposals.find(
+        {"status": "pending"}, {"_id": 0}).sort("created_at", -1).to_list(100)}
+
+
+@api_router.post("/admin/ms-marvel/pickup/{code}/approve")
+async def ms_marvel_pickup_approve(code: str, user: dict = Depends(require_roles(["admin"]))):
+    return {"result": await _ms_marvel_book_proposal(code.upper(), by=user.get("email", "admin"))}
+
+
+@api_router.post("/admin/ms-marvel/pickup/{code}/decline")
+async def ms_marvel_pickup_decline(code: str, user: dict = Depends(require_roles(["admin"]))):
+    r = await db.ms_marvel_pickup_proposals.update_one(
+        {"code": code.upper(), "status": "pending"}, {"$set": {"status": "declined"}})
+    return {"declined": r.modified_count > 0}
+
+
 # ===================== Amazon email → CRM ingest =====================
 AMAZON_EMAIL_INGEST_MIN = int(os.environ.get("AMAZON_EMAIL_INGEST_MIN", "30"))
 
@@ -80669,6 +80729,12 @@ async def _claude_wa_relay(digits: str, question: str):
     low = ql.lower()
     profile = _wa_relay_profiles().get(digits, "full")
     sess2 = await db.claude_wa_sessions.find_one({"phone": digits}) or {}
+
+    # "book MM-XXXX" / "approve MM-XXXX" → approve a Ms Marvel reverse-pickup proposal (founder-approved auto-book).
+    _mm = re.match(r"\s*(?:book|approve)\s+(MM-[A-Za-z0-9]{4})\b", ql, re.I)
+    if profile == "full" and _mm:
+        await whatsapp_cloud.send_text(digits, await _ms_marvel_book_proposal(_mm.group(1).upper(), by=f"wa:{digits}"))
+        return
 
     # "return aa gaya <phone/order>" → mark a buyer return received at gate (unblocks the replacement).
     # Requires an order id / phone in the message so it never hijacks a plain question ("kitne return aaye").
