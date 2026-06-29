@@ -65231,14 +65231,31 @@ async def _az_defense_run(digest: bool = False, sample_to_wa: str = "") -> dict:
 
 # ===================== Refund-Defense agent =====================
 REFUND_DEFENSE_MIN = int(os.environ.get("REFUND_DEFENSE_MIN", "120"))
+AZ_REMINDER_HOURS = int(os.environ.get("AZ_REMINDER_HOURS", "20"))   # daily nudge cadence
+AZ_MAX_REMINDERS = int(os.environ.get("AZ_MAX_REMINDERS", "6"))      # stop nagging after N
+_AZ_DECIDED = {"granted", "denied", "closed", "refunded", "reimbursed"}
+
+
+def _az_is_open(c: dict) -> bool:
+    """A claim still in play (not yet decided by Amazon) — i.e. still defensible / at risk."""
+    return str(c.get("status") or "").lower() not in _AZ_DECIDED
 
 
 async def scheduled_refund_defense():
-    """Refund-Defense agent: watch for NEW Amazon A-to-z guarantee claims (live, via the email agent),
-    record them in az_claims (enriched with customer/amount), and alert the founder so each claim gets
-    contested before its deadline. A-Z claims auto-lose if unanswered in time — this is the safety net."""
-    now = datetime.now(timezone.utc).isoformat()
-    new_claims = []
+    """Refund-Defense agent — the A-to-z safety net. A-Z claims auto-lose if unanswered, so this:
+      1. discovers NEW claims from Amazon's A-to-z emails (records them in az_claims);
+      2. alerts the founder about EVERY open, un-alerted claim — *regardless of how it entered*
+         (live email, manual seed, or admin entry) — fixing the gap where seeded claims were
+         silently skipped by the old dedup;
+      3. re-nudges daily while a claim is still open and un-contested (until contested or decided);
+      4. alerts the moment a claim is DECIDED (granted/denied), so a loss never passes silently.
+    Alert state is tracked per-claim (founder_alerted_at / last_reminded_at / reminder_count /
+    contested_at / decision_alerted_at) so nothing is alerted twice and nothing is missed."""
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+
+    # --- Stage 1: discover new claims from email (insert only; alerting is source-agnostic below) ---
+    discovered = 0
     async for e in db.email_agent_inbox.find(
             {"subject": {"$regex": "a-to-z|a to z guarantee", "$options": "i"}}, {"subject": 1, "created_at": 1}):
         m = _AMZ_OID_RE.search(e.get("subject") or "")
@@ -65262,14 +65279,61 @@ async def scheduled_refund_defense():
             "product": (cs.get("product_name") or "")[:60], "firm_name": ao.get("firm_name") or "",
             "amount_at_risk": round(float(amt or 0), 2), "status": "under_review", "outcome": None,
             "notes": "", "source_tag": "refund_defense_auto", "created_at": now, "updated_at": now})
-        new_claims.append((oid, round(float(amt or 0))))
-    if new_claims:
-        total = sum(a for _, a in new_claims)
-        body = (f"🛡️ Refund-Defense: *{len(new_claims)}* new A-to-z claim(s) — ₹{total:,.0f} at risk. "
-                f"Respond before the deadline:\n" + "\n".join(f"• {o} — ₹{a:,.0f}" for o, a in new_claims[:12])
-                + "\n→ /admin/az-claims")
+        discovered += 1
+
+    def _amt(c): return float(c.get("amount_at_risk") or 0)
+
+    # --- Stage 2: alert on EVERY open, never-alerted claim (any source) ---
+    fresh = [c for c in await db.az_claims.find({"founder_alerted_at": {"$exists": False}}).to_list(1000)
+             if _az_is_open(c)]
+    fresh.sort(key=_amt, reverse=True)
+    if fresh:
+        total = sum(_amt(c) for c in fresh)
+        body = (f"🛡️ Refund-Defense: *{len(fresh)}* A-to-z claim(s) need a response — ₹{total:,.0f} at risk:\n"
+                + "\n".join(f"• {c['order_id']} — ₹{_amt(c):,.0f} ({(c.get('customer') or '')[:18]})" for c in fresh[:12])
+                + ("\n…+more" if len(fresh) > 12 else "")
+                + "\n→ contest before the deadline: /admin/az-claims")
         await _alert_founder_free(body, "refund_defense")
-    logger.info(f"Refund-Defense: {len(new_claims)} new A-Z claims recorded")
+        await db.az_claims.update_many({"id": {"$in": [c["id"] for c in fresh]}},
+            {"$set": {"founder_alerted_at": now, "last_reminded_at": now, "reminder_count": 0}})
+
+    # --- Stage 3: daily re-nudge for still-open, un-contested claims ---
+    cutoff = (now_dt - timedelta(hours=AZ_REMINDER_HOURS)).isoformat()
+    due = [c for c in await db.az_claims.find({
+                "founder_alerted_at": {"$exists": True},
+                "contested_at": {"$exists": False},
+                "last_reminded_at": {"$lt": cutoff}}).to_list(1000)
+           if _az_is_open(c) and int(c.get("reminder_count") or 0) < AZ_MAX_REMINDERS]
+    due.sort(key=_amt, reverse=True)
+    if due:
+        total = sum(_amt(c) for c in due)
+        body = (f"⏰ Refund-Defense reminder: *{len(due)}* A-to-z claim(s) still un-contested — ₹{total:,.0f} at risk:\n"
+                + "\n".join(f"• {c['order_id']} — ₹{_amt(c):,.0f}" for c in due[:12])
+                + "\n→ /admin/az-claims")
+        await _alert_founder_free(body, "refund_defense_reminder")
+        for c in due:
+            await db.az_claims.update_one({"id": c["id"]},
+                {"$set": {"last_reminded_at": now}, "$inc": {"reminder_count": 1}})
+
+    # --- Stage 4: alert the moment a claim is DECIDED ---
+    decided = [c for c in await db.az_claims.find({"decision_alerted_at": {"$exists": False}}).to_list(1000)
+               if not _az_is_open(c)]
+    for c in decided:
+        oc = str(c.get("status") or c.get("outcome") or "").lower()
+        amt = c.get("decision_amount") or c.get("amount_at_risk") or 0
+        if oc == "granted":
+            head = f"🔴 A-to-z GRANTED to buyer — you LOST ₹{amt:,.0f}"
+        elif oc == "denied":
+            head = f"🟢 A-to-z DENIED (you won) — ₹{amt:,.0f} saved"
+        else:
+            head = f"⚪ A-to-z {oc or 'closed'} — ₹{amt:,.0f}"
+        body = (f"{head}\n• {c['order_id']} ({(c.get('customer') or '')[:20]})\n"
+                f"{(c.get('product') or '')[:50]}\n→ /admin/az-claims")
+        await _alert_founder_free(body, "refund_defense_decision")
+        await db.az_claims.update_one({"id": c["id"]}, {"$set": {"decision_alerted_at": now}})
+
+    logger.info(f"Refund-Defense: discovered={discovered} new_alerts={len(fresh)} "
+                f"reminders={len(due)} decided_alerts={len(decided)}")
 
 
 # ===================== Amazon email → CRM ingest =====================
