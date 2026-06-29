@@ -1387,6 +1387,18 @@ async def create_indexes():
             replace_existing=True, misfire_grace_time=600, max_instances=1)
 
         scheduler.start()
+        # Keep the local Pratibha brain warm so agent message composition (Ms Marvel nudges,
+        # Kalpana front-line) stays fast (~5s) instead of paying an ~11s cold load each time.
+        try:
+            from utils import brain_registry as _br
+            if _br.available("pratibha"):
+                asyncio.create_task(_br.warm("pratibha"))
+                scheduler.add_job(lambda: asyncio.create_task(_br.warm("pratibha")),
+                                  IntervalTrigger(minutes=20), id="warm_pratibha",
+                                  name="Keep Pratibha 14B warm", replace_existing=True,
+                                  misfire_grace_time=300, max_instances=1)
+        except Exception as _e:
+            logger.warning(f"Pratibha warm scheduling failed: {_e}")
         logger.info(
             f"Scheduled jobs started: SLA breach (30min), Payment verification (1hr), "
             f"Warranty claim SLA (1hr), Amazon tracking push (1hr), "

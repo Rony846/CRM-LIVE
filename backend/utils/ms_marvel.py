@@ -20,6 +20,7 @@ gated separately by MS_MARVEL_AUTONOMOUS and are Phase 2 — v1 detects + flags 
 """
 import os
 import re
+import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 
@@ -296,6 +297,50 @@ async def _nudge_owner(notify_fn, chat_fn, it: dict, enr: dict, rec: str):
             logger.warning(f"Ms Marvel nudge chat failed: {e}")
 
 
+async def _humanize(deterministic: str, facts: str, brain: str = "pratibha", timeout: float = 35.0) -> str:
+    """Rewrite a templated nudge as ONE natural Hinglish message via the LOCAL brain (free). Hard
+    timeout + deterministic fallback so a nudge never fails or hangs. Never the subscription terminal."""
+    try:
+        from utils import brain_registry
+        if not brain_registry.available(brain):
+            return deterministic
+        r = await asyncio.wait_for(brain_registry.complete(
+            brain, max_tokens=160, temperature=0.4,
+            system=("You are Ms Marvel, MuscleGrid's support-operations supervisor, messaging a teammate on the "
+                    "internal support channel. Turn the note into ONE short, natural, professional Hinglish message "
+                    "to that teammate — warm but direct, like a real senior colleague nudging them to act. Keep EVERY "
+                    "ticket ref, customer name and instruction exactly; never invent. 2–5 lines. Output only the message."),
+            prompt=f"NOTE:\n{deterministic}\n\nFACTS (preserve exactly):\n{facts}"), timeout=timeout)
+        return (r.get("text") or "").strip() if r.get("model_ok") else deterministic
+    except Exception:
+        return deterministic
+
+
+async def _nudge_owner_batch(notify_fn, chat_fn, owner_id: str, owner_name: str, items: list):
+    """ONE human, natural message per owner summarising all their stuck tickets (better than N pings).
+    Composed by the local brain with a deterministic fallback. Internal channels only; money-gated."""
+    det_lines, facts = [], []
+    for it, enr, rec in items:
+        age = f"{it['age_h']}h" if it["age_h"] < 72 else f"{round(it['age_h']/24)}d"
+        det_lines.append(f"- {it['ref']} ({it.get('customer') or ''}"
+                         f"{(' · ' + it['product']) if it.get('product') else ''}, stuck {age}): {rec}")
+        facts.append(f"{it['ref']} | {it.get('customer') or '?'} | {enr.get('why') or ''} | do: {rec} | {_dossier(it, enr)}")
+    det = f"{owner_name}, {len(items)} ticket(s) need your action today:\n" + "\n".join(det_lines)
+    human = await _humanize(det, "\n".join(facts))
+    if notify_fn and owner_id:
+        try:
+            await notify_fn(title=f"Ms Marvel: {len(items)} ticket(s) need you", message=human,
+                            notification_type="support", link="/admin", target_user_ids=[owner_id],
+                            priority="high", created_by_name="Ms Marvel", respect_quiet_hours=True)
+        except Exception as e:
+            logger.warning(f"Ms Marvel batch notify failed: {e}")
+    if chat_fn:
+        try:
+            await chat_fn("service", f"🦸‍♀️ *{owner_name}* — {human}", {"owner_id": owner_id})
+        except Exception as e:
+            logger.warning(f"Ms Marvel batch chat failed: {e}")
+
+
 async def _chase_courier(chat_fn, it: dict, enr: dict, rec: str):
     """Flag a stalled shipment/pickup to the support+dispatch channel to be chased. Free/reversible."""
     if chat_fn:
@@ -388,6 +433,8 @@ async def run(db, alert_fn, notify_fn=None, chat_fn=None, brain_phrase=None, sta
     handled = {"nudge_owner": 0, "chase_courier": 0}
     escalations = []
     deferred_staff = 0
+    nudges_by_owner = {}   # owner_id -> {"name", "items":[(it,enr,rec)]}
+    chases = []
     for key, it in cand[:MAX_ACTIONS]:
         try:
             enr = await enrich(db, it)
@@ -398,14 +445,20 @@ async def run(db, alert_fn, notify_fn=None, chat_fn=None, brain_phrase=None, sta
             deferred_staff += 1
             continue  # don't act, don't flag — retried in the next in-hours run
         if action == "nudge_owner" and it.get("owner_id"):
-            await _nudge_owner(notify_fn, chat_fn, it, enr, rec)
-            handled["nudge_owner"] += 1
+            g = nudges_by_owner.setdefault(it["owner_id"], {"name": it.get("owner") or "", "items": []})
+            g["items"].append((it, enr, rec))
         elif action == "chase_courier":
-            await _chase_courier(chat_fn, it, enr, rec)
-            handled["chase_courier"] += 1
+            chases.append((it, enr, rec))
         else:
             escalations.append((it, enr, rec))
         await _flag(key, it, action, rec)
+    # ONE natural, human message per owner (local brain, deterministic fallback).
+    for oid, g in nudges_by_owner.items():
+        await _nudge_owner_batch(notify_fn, chat_fn, oid, g["name"], g["items"])
+        handled["nudge_owner"] += len(g["items"])
+    for it, enr, rec in chases:
+        await _chase_courier(chat_fn, it, enr, rec)
+        handled["chase_courier"] += 1
     remaining = max(0, len(cand) - MAX_ACTIONS)
     esc_lines = [_line(it, enr, rec) for it, enr, rec in escalations[:MAX_DIGEST]]
     handled_str = ", ".join(f"{v} {k.replace('_', ' ')}" for k, v in handled.items() if v) or "nothing auto-actionable"
