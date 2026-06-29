@@ -1246,6 +1246,17 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Kalpana ticket-history RAG: refresh the past-resolution index (free, local Mongo text).
+        scheduler.add_job(
+            scheduled_ticket_history_reindex,
+            IntervalTrigger(minutes=TICKET_HISTORY_REINDEX_MIN),
+            id="ticket_history_reindex",
+            name="Kalpana ticket-history reindex (past resolutions)",
+            replace_existing=True,
+            misfire_grace_time=600,
+            max_instances=1,
+        )
+
         # Amazon email ingest: keep A-to-z claims + refunds live from the seller mailbox (IMAP, free).
         scheduler.add_job(
             scheduled_amazon_email_ingest,
@@ -65336,6 +65347,36 @@ async def scheduled_refund_defense():
                 f"reminders={len(due)} decided_alerts={len(decided)}")
 
 
+# ===================== Kalpana ticket-history RAG =====================
+TICKET_HISTORY_REINDEX_MIN = int(os.environ.get("TICKET_HISTORY_REINDEX_MIN", "360"))  # 6h
+
+
+async def scheduled_ticket_history_reindex():
+    """Keep Kalpana's ticket-history memory (db.kb_ticket_history) fresh from db.tickets + db.zoho_tickets.
+    Free + local (Mongo text index); no API cost. Safe to run repeatedly — it wipes + rebuilds."""
+    try:
+        from utils import ticket_history
+        st = await ticket_history.reindex(db)
+        logger.info(f"ticket-history reindex: {st}")
+    except Exception as e:
+        logger.error(f"ticket-history reindex failed: {e}")
+
+
+@api_router.post("/admin/kalpana/reindex-history")
+async def kalpana_reindex_history(user: dict = Depends(require_roles(["admin"]))):
+    """Rebuild Kalpana's ticket-history RAG index on demand."""
+    from utils import ticket_history
+    return await ticket_history.reindex(db)
+
+
+@api_router.get("/admin/kalpana/history-search")
+async def kalpana_history_search(q: str, product: str = "", limit: int = 5,
+                                 user: dict = Depends(require_roles(["admin", "call_support"]))):
+    """Inspect what the ticket-history RAG returns for a query (for tuning / QA)."""
+    from utils import ticket_history
+    return {"query": q, "results": await ticket_history.search(db, q, limit=min(limit, 15), product=product)}
+
+
 # ===================== Amazon email → CRM ingest =====================
 AMAZON_EMAIL_INGEST_MIN = int(os.environ.get("AMAZON_EMAIL_INGEST_MIN", "30"))
 
@@ -79981,6 +80022,11 @@ def _wa_support_executor(digits: str, name: str):
             return await _wa_customer_info(digits)
         if tool == "search_knowledge":
             return await _wa_tool_search_knowledge(inp.get("query", ""), inp.get("series", ""))
+        if tool == "search_ticket_history":
+            from utils import ticket_history
+            cases = await ticket_history.search(db, inp.get("query", ""), limit=5, product=inp.get("product", ""))
+            return {"past_cases": cases, "note": "Our own prior tickets — learn from how these were resolved; "
+                    "verify against the manuals (search_knowledge) and never promise money without ask_manager."}
         if tool == "ask_manager":
             return await _wa_tool_ask_manager(digits, name, inp.get("summary", ""), inp.get("question", ""))
         if tool == "arrange_pickup":

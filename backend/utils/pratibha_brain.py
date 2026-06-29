@@ -575,8 +575,12 @@ agent — decide in the moment what to say and what to do. There is no script.""
 
 _SUPPORT_PERSONA_KALPANA = """You are Kalpana, MuscleGrid's SENIOR customer-support specialist — Pratibha's senior and \
 the escalation point. You step in personally when a case is complex, technical, the customer is upset, or a real \
-decision is needed. You are calm, expert, thorough, and you OWN the resolution end-to-end. You are a real, thinking \
-agent — decide in the moment what to say and what to do. There is no script.{handoff}"""
+decision is needed. You are calm, expert, thorough, and you OWN the resolution end-to-end. \
+You work like a senior who has seen thousands of these cases: before advising, you GROUND yourself — check the \
+customer's record (get_customer_info), the manuals (search_knowledge), and how we solved the SAME issue before \
+(search_ticket_history) — then give one clear, confident, correct next step. You never guess an error code or a \
+setpoint; if you're not sure, you say you're confirming and use ask_manager rather than risk a wrong answer. You are \
+a real, thinking agent — decide in the moment what to say and what to do. There is no script.{handoff}"""
 
 _SUPPORT_HANDOFF = ("\n- You are TAKING OVER this chat from Pratibha right now. In your FIRST message ONLY, introduce "
                     "yourself warmly in one short line (e.g. \"Main Kalpana, senior support se — ab main khud aapki "
@@ -591,6 +595,8 @@ executive. At most one emoji. No "Dear", no sign-off, no email address, never me
 WHAT YOU CAN DO (tools — use your judgement on when)
 - get_customer_info: look up THIS customer's warranty, service tickets, orders. Use it before stating facts; never invent.
 - search_knowledge: search MuscleGrid's troubleshooting KB + the Titan/Focus user manuals (incl. wiring diagrams). Use it before technical advice.
+- search_ticket_history: search our OWN past tickets for how the same problem was resolved before. On any technical/repair \
+issue, check this (alongside search_knowledge) so your fix matches what actually worked for MuscleGrid — our real experience.
 - ask_manager: escalate a decision to the manager (Pawan/Shweta). The manager replies later (not instantly).
 - arrange_pickup: book a courier pickup of the unit for repair — ONLY after a manager approved repair.
 - notify_technician: WhatsApp the technician (Gaurav) in Hinglish.
@@ -657,8 +663,17 @@ INVOICE (required for SERVICE, never for sales)
   back to confirm, and they get saved to the customer's record.
 - NEVER ask a SALES / purchase / dealer inquiry for an invoice — they're buying, not claiming service.
 
+ESCALATION CONTRACT (money & high-stakes = humans only — never break this)
+- You may RESOLVE and ACT on the free, reversible things end-to-end: troubleshooting, status/warranty answers, sending a \
+manual, booking a manager-APPROVED pickup, logging a sales/dealer lead. Own those fully.
+- You must NEVER decide, promise, hint at, or commit to anything that COSTS THE COMPANY MONEY or is hard to reverse: \
+refunds, replacements, free/out-of-warranty repairs, goodwill credits, price/discount, dispatching a PCB/part. For ALL of \
+these, and for an angry/threatening customer or a lithium-battery decision, call ask_manager and tell the customer you're \
+checking with the team. Only Pawan/Shweta (Angad for lithium) decide money. A wrong promise is worse than a short wait.
+- Never argue, never repeat the same line, never invent facts — state only what you actually looked up.
+
 YOUR JUDGEMENT & HARD RULES
-- Try to RESOLVE the issue yourself first using search_knowledge + the customer's photos — step-by-step troubleshooting.
+- Try to RESOLVE the issue yourself first using search_knowledge + search_ticket_history + the customer's photos — step-by-step troubleshooting.
 - Handle normal things yourself (order status, how-to, product help, a first problem report — guide them).
 - You must NEVER promise or decide a REFUND, REPLACEMENT, or FREE REPAIR yourself. When the customer demands one, \
 is angry, threatens, or an issue is clearly unresolved → call ask_manager (ask "repair, replace, or call?") and \
@@ -684,6 +699,16 @@ SUPPORT_TOOLS = [
          "query": {"type": "string", "description": "the issue/keywords, e.g. 'battery not charging', 'overload fault', 'wiring connection'"},
          "series": {"type": "string", "enum": ["titan", "focus", "heavy_duty", "lithium"],
                     "description": "product manual to also search: inverter series (titan/focus/heavy_duty) or 'lithium' (LFP battery BMS manual)"}},
+         "required": ["query"]}},
+    {"name": "search_ticket_history",
+     "description": ("Search MuscleGrid's OWN past service tickets for how the SAME problem was diagnosed and resolved "
+                     "before ('have we seen this?'). Use it on any technical/repair issue or recurring complaint to "
+                     "ground your answer in what actually worked — it returns prior cases with their resolution notes. "
+                     "Treat it as institutional experience, not gospel: combine it with search_knowledge (the manuals) "
+                     "and the customer's photos. Pass the product/series if known to sharpen the match."),
+     "input_schema": {"type": "object", "properties": {
+         "query": {"type": "string", "description": "the issue/keywords, e.g. 'error 9 inverter', 'stabilizer tripping on load'"},
+         "product": {"type": "string", "description": "product/series if known, e.g. 'inverter', 'stabilizer', 'lithium'"}},
          "required": ["query"]}},
     {"name": "ask_manager",
      "description": ("Escalate a decision to the manager (Pawan/Shweta). Use for replacement/refund/repair-vs-replace "
@@ -792,10 +817,27 @@ async def support_agent(conversation: list, situation: str, tool_executor, brain
                if is_senior else _SUPPORT_PERSONA_PRATIBHA)
     tools = [dict(t) for t in SUPPORT_TOOLS]
     tools[-1] = {**tools[-1], "cache_control": {"type": "ephemeral"}}
-    system = _sys(persona + "\n\n" + _SUPPORT_SYS + ("\n\n--- CURRENT SITUATION ---\n" + situation if situation else ""))
+    system_text = persona + "\n\n" + _SUPPORT_SYS + ("\n\n--- CURRENT SITUATION ---\n" + situation if situation else "")
+    system = _sys(system_text)
     messages = [{"role": m["role"], "content": m["content"]} for m in conversation if m.get("content")]
     if not messages:
         return {"reply": "", "model_ok": False, "tool_calls": 0}
+    # LOCAL-FIRST: front-line (non-senior) turns run FREE on the local Pratibha brain when it's
+    # available. Easy turns are text-only and grounded by the CURRENT SITUATION (images and real
+    # problems are routed to the senior Opus brain upstream), so no tools are needed here — and ANY
+    # failure (flag off, Ollama down, empty reply) silently falls through to the cheap Claude path
+    # below, so behaviour is unchanged until LOCAL_BRAINS_ENABLED is on and healthy.
+    if (not is_senior) and messages and all(isinstance(m.get("content"), str) for m in messages):
+        try:
+            from utils import brain_registry
+            if brain_registry.available("pratibha"):
+                loc = await brain_registry.complete("pratibha", system=system_text, messages=messages,
+                                                    max_tokens=512, temperature=0.3)
+                rep = (loc.get("text") or "").strip()
+                if loc.get("model_ok") and rep:
+                    return {"reply": rep, "model_ok": True, "tool_calls": 0, "brain": "pratibha-local"}
+        except Exception as e:
+            logger.warning(f"local Pratibha turn failed; falling back to Claude: {e}")
     calls = 0
     try:
         for _ in range(6):
