@@ -60,7 +60,24 @@ def _hours_since(iso: str, now: datetime) -> float:
 
 _OID_RE = re.compile(r"\b\d{3}-\d{7}-\d{7}\b")   # Amazon order id
 _AWB_RE = re.compile(r"\b\d{11,14}\b")            # Delhivery/Bigship AWB
+_CODE_RE = re.compile(r"(?:err(?:or)?|ala(?:rm)?|fault\s*code|fault|code)\s*[-:.]?\s*0*(\d{1,3})", re.I)
+_TECH_RE = re.compile(r"\b(err|error|ala|alarm|fault|beep|spark|burning|smoke|charg|overload|"
+                      r"trip|display|no\s*power|dead|hi|lo|voltage)\b", re.I)
 _INTERNAL_NAMES = {"test", "app reviewer", "demo", "apple review", "appreviewer"}
+
+
+def _series_of(product: str, issue: str) -> str:
+    """Best-effort product series for the manual KB (codes mean different things per series)."""
+    t = f"{product} {issue}".lower()
+    if "titan" in t:
+        return "titan"
+    if "heavy" in t:
+        return "heavy_duty"
+    if any(k in t for k in ("lithium", "lfp", "bms")):
+        return "lithium"
+    if any(k in t for k in ("focus", "mg6500", "6500")):
+        return "focus"
+    return ""
 
 
 def _is_internal(t: dict) -> bool:
@@ -86,6 +103,7 @@ def _t(t: dict, kind: str, age_h: float, priority: int) -> dict:
             "product": (t.get("product_name") or t.get("device_type") or "")[:30],
             "phone": re.sub(r"\D", "", str(t.get("customer_phone") or ""))[-10:],
             "email": t.get("customer_email") or "", "oid": oid, "awb": awb,
+            "issue": (t.get("issue_description") or "")[:300],
             "age_h": round(age_h), "priority": priority,
             "owner": t.get("assigned_to_name") or ("UNASSIGNED" if not t.get("assigned_to") else ""),
             "owner_id": t.get("assigned_to")}
@@ -112,10 +130,11 @@ def _diagnose(item: dict, enr: dict, cstat: str) -> str:
     return "awaiting owner action"
 
 
-async def enrich(db, item: dict) -> dict:
+async def enrich(db, item: dict, kb_search=None) -> dict:
     """Build a per-item dossier from EXISTING data (free, stored — no live API): purchase source,
-    courier/Bigship status, customer signals (refunds/A-to-z/emails), and a likely 'why stuck'.
-    Called only on the itemised items in the digest, so it stays fast."""
+    courier/Bigship status, customer signals (refunds/A-to-z/emails), a likely 'why stuck', and —
+    when the complaint is technical — the MANUAL KB meaning of the error code (series-aware via
+    kb_search) + how we resolved the same issue before (ticket-history RAG). All local/free."""
     ph = item.get("phone") or (item.get("ref") if item.get("kind") == "wa_unanswered" else "")
     ph = re.sub(r"\D", "", str(ph or ""))[-10:]
     email = item.get("email") or ""
@@ -156,12 +175,9 @@ async def enrich(db, item: dict) -> dict:
     if cs:
         cstat = str(cs.get("status") or "")
         out["courier"] = f"{cstat or '?'} ({cs.get('courier_name') or 'courier'}) AWB {cs.get('awb_number')}"
-    if not ph and not oid and not awb:
-        out["why"] = _diagnose(item, out, "")
-        return out
     sig = []
-    rf = await db.amazon_refunds.count_documents({"phone": ph})
-    az = await db.az_claims.count_documents({"phone": ph})
+    rf = await db.amazon_refunds.count_documents({"phone": ph}) if ph else 0
+    az = await db.az_claims.count_documents({"phone": ph}) if ph else 0
     if rf:
         sig.append(f"{rf} refund")
     if az:
@@ -172,6 +188,31 @@ async def enrich(db, item: dict) -> dict:
             sig.append(f"{em} email")
     if sig:
         out["signals"] = " · ".join(sig)
+
+    # --- technical brain: manual KB meaning of the error code + how we fixed it before ---
+    issue = item.get("issue") or ""
+    codes = _CODE_RE.findall(issue)
+    if issue and (codes or _TECH_RE.search(issue)):
+        series = _series_of(item.get("product") or "", issue)
+        q = ((" ".join(f"error {c}" for c in codes[:2]) + " ") if codes else "") + issue[:90]
+        if kb_search:
+            try:
+                kb = await kb_search(q, series)
+                arts = (kb or {}).get("kb") or []
+                if arts:
+                    a0 = arts[0]
+                    out["kb_insight"] = (a0.get("a") or "")[:240] + (f" [{a0.get('model')}]" if a0.get("model") else "")
+            except Exception as e:
+                logger.warning(f"Ms Marvel KB lookup failed: {e}")
+        try:
+            from utils import ticket_history
+            hits = await ticket_history.search(db, q, limit=3, product=(item.get("product") or series or ""))
+            pf = next((h for h in hits if h.get("resolution") and h.get("ref") != item.get("ref")), None)
+            if pf:
+                out["past_fix"] = f"{pf['ref']}: {pf['resolution'][:130]}"
+        except Exception as e:
+            logger.warning(f"Ms Marvel ticket-history lookup failed: {e}")
+
     out["why"] = _diagnose(item, out, cstat)
     return out
 
@@ -251,6 +292,16 @@ def _decide_action(item: dict, enr: dict):
     needs a real decision is escalated to the founder, not done."""
     why = (enr.get("why") or "").lower()
     has_owner = bool(item.get("owner_id")) and item.get("owner") != "UNASSIGNED"
+    # Manual KB overrides logistics: a customer-fixable ALARM (e.g. ALA52 = battery low voltage)
+    # must NOT be sent for a repair pickup — guide the customer instead.
+    kb = (enr.get("kb_insight") or "").lower()
+    if kb and any(k in kb for k in ("alarm", "battery low", "low voltage", "check battery",
+                                    "not a fault", "restores", "charging")):
+        return ("nudge_owner" if has_owner else "escalate"), \
+            "Per manual this is a customer-fixable battery/charging ALARM, not a hardware fault — guide the customer to check battery voltage/charging; do NOT book a pickup."
+    if kb and ("return" in kb and "repair" in kb) or ("internal fault" in kb):
+        return ("nudge_owner" if has_owner else "escalate"), \
+            "Per manual this is an INTERNAL fault — arrange reverse pickup to the repair centre."
     if item["kind"] == "reverse_pickup_stuck" or "chase courier" in why:
         return "chase_courier", "Shipment/pickup stalled — chase the courier (NOT-PICKED)."
     if "refund already issued" in why:
@@ -309,7 +360,9 @@ async def _humanize(deterministic: str, facts: str, brain: str = "pratibha", tim
             system=("You are Ms Marvel, MuscleGrid's support-operations supervisor, messaging a teammate on the "
                     "internal support channel. Turn the note into ONE short, natural, professional Hinglish message "
                     "to that teammate — warm but direct, like a real senior colleague nudging them to act. Keep EVERY "
-                    "ticket ref, customer name and instruction exactly; never invent. 2–5 lines. Output only the message."),
+                    "ticket ref, customer name, instruction AND any 'MANUAL:' fact or 'PAST FIX' exactly (those are "
+                    "the real diagnosis/solution — pass them on so they know what to do); never invent. 2–6 lines. "
+                    "Output only the message."),
             prompt=f"NOTE:\n{deterministic}\n\nFACTS (preserve exactly):\n{facts}"), timeout=timeout)
         return (r.get("text") or "").strip() if r.get("model_ok") else deterministic
     except Exception:
@@ -322,9 +375,12 @@ async def _nudge_owner_batch(notify_fn, chat_fn, owner_id: str, owner_name: str,
     det_lines, facts = [], []
     for it, enr, rec in items:
         age = f"{it['age_h']}h" if it["age_h"] < 72 else f"{round(it['age_h']/24)}d"
+        manual = f" [manual: {enr['kb_insight']}]" if enr.get("kb_insight") else ""
         det_lines.append(f"- {it['ref']} ({it.get('customer') or ''}"
-                         f"{(' · ' + it['product']) if it.get('product') else ''}, stuck {age}): {rec}")
-        facts.append(f"{it['ref']} | {it.get('customer') or '?'} | {enr.get('why') or ''} | do: {rec} | {_dossier(it, enr)}")
+                         f"{(' · ' + it['product']) if it.get('product') else ''}, stuck {age}): {rec}{manual}")
+        facts.append(f"{it['ref']} | {it.get('customer') or '?'} | {enr.get('why') or ''} | do: {rec} | {_dossier(it, enr)}"
+                     + (f" | MANUAL: {enr['kb_insight']}" if enr.get("kb_insight") else "")
+                     + (f" | PAST FIX: {enr['past_fix']}" if enr.get("past_fix") else ""))
     det = f"{owner_name}, {len(items)} ticket(s) need your action today:\n" + "\n".join(det_lines)
     human = await _humanize(det, "\n".join(facts))
     if notify_fn and owner_id:
@@ -351,7 +407,7 @@ async def _chase_courier(chat_fn, it: dict, enr: dict, rec: str):
             logger.warning(f"Ms Marvel courier-chase post failed: {e}")
 
 
-async def run(db, alert_fn, notify_fn=None, chat_fn=None, brain_phrase=None, staff_hours_ok=None) -> dict:
+async def run(db, alert_fn, notify_fn=None, chat_fn=None, brain_phrase=None, staff_hours_ok=None, kb_search=None) -> dict:
     """Scan → process items not already flagged (re-escalate after RE_ESCALATE_HOURS). In AUTONOMOUS
     mode (autonomous() + notify_fn + chat_fn) Ms Marvel MONEY-GATED-ACTS: nudges the owner / chases the
     courier herself and escalates to the founder ONLY what needs him (unassigned, money/decision, A-to-z,
@@ -393,6 +449,7 @@ async def run(db, alert_fn, notify_fn=None, chat_fn=None, brain_phrase=None, sta
                            f"courier: {enr['courier']}" if enr.get("courier") else None,
                            enr.get("signals")) if x]
         detail = (("\n    " + " · ".join(ctx)) if ctx else "") + \
+                 (f"\n    📖 manual: {enr['kb_insight']}" if enr.get("kb_insight") else "") + \
                  (f"\n    ↳ likely: {enr['why']}" if enr.get("why") else "") + (f"\n    → {rec}" if rec else "")
         return head + detail
 
@@ -408,7 +465,7 @@ async def run(db, alert_fn, notify_fn=None, chat_fn=None, brain_phrase=None, sta
         lines = []
         for it in fresh[:MAX_DIGEST]:
             try:
-                enr = await enrich(db, it)
+                enr = await enrich(db, it, kb_search=kb_search)
             except Exception:
                 enr = {}
             lines.append(_line(it, enr))
@@ -437,7 +494,7 @@ async def run(db, alert_fn, notify_fn=None, chat_fn=None, brain_phrase=None, sta
     chases = []
     for key, it in cand[:MAX_ACTIONS]:
         try:
-            enr = await enrich(db, it)
+            enr = await enrich(db, it, kb_search=kb_search)
         except Exception:
             enr = {}
         action, rec = _decide_action(it, enr)
