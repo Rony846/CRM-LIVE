@@ -125,6 +125,159 @@
   --hud-grid: rgba(2,132,199,0.06); --hud-white: #0d1b2e;
 }
 
+/* ============================== PLATINUM (cool slate · indigo) ============================== */
+[data-theme="hud-platinum"] {
+  --radius: 0.3rem;
+  color-scheme: light;
+
+  --background: 220 23% 95%;
+  --foreground: 222 47% 11%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 47% 11%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 222 47% 11%;
+  --primary: 243 72% 58%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 220 20% 92%;
+  --secondary-foreground: 222 40% 18%;
+  --muted: 220 20% 90%;
+  --muted-foreground: 220 12% 40%;
+  --accent: 243 60% 93%;
+  --accent-foreground: 243 72% 40%;
+  --destructive: 0 75% 50%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 220 18% 84%;
+  --input: 220 18% 82%;
+  --ring: 243 72% 58%;
+
+  --theme-sidebar: 220 28% 98%;
+  --theme-sidebar-foreground: 222 47% 11%;
+  --theme-sidebar-muted: 220 12% 38%;
+  --theme-header: 0 0% 100%;
+  --theme-header-foreground: 222 47% 11%;
+  --theme-accent: 243 72% 58%;
+
+  --input-bg: 0 0% 100%;
+  --input-text: 222 47% 11%;
+  --input-border: 220 18% 80%;
+  --input-placeholder: 220 10% 52%;
+
+  --chart-1: 243 72% 58%;
+  --chart-2: 217 91% 60%;
+  --chart-3: 262 70% 60%;
+  --chart-4: 199 89% 48%;
+  --chart-5: 158 64% 42%;
+
+  --hud-void: #eef0f5; --hud-void-2: #f7f8fb;
+  --hud-panel: rgba(255,255,255,0.72); --hud-panel-solid: #ffffff;
+  --hud-ink: #1e2335; --hud-ink-dim: #4a5269; --hud-ink-faint: #8089a0;
+  --hud-accent: #4f46e5; --hud-accent-2: #6366f1; --hud-accent-rgb: 79,70,229;
+  --hud-line: rgba(79,70,229,0.18); --hud-line-strong: rgba(79,70,229,0.42);
+  --hud-grid: rgba(79,70,229,0.05); --hud-white: #1e2335;
+}
+
+/* ============================== IVORY (warm cream · emerald) ============================== */
+[data-theme="hud-ivory"] {
+  --radius: 0.3rem;
+  color-scheme: light;
+
+  --background: 40 30% 95%;
+  --foreground: 30 15% 14%;
+  --card: 40 38% 99%;
+  --card-foreground: 30 15% 14%;
+  --popover: 40 38% 99%;
+  --popover-foreground: 30 15% 14%;
+  --primary: 158 64% 33%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 40 25% 91%;
+  --secondary-foreground: 30 15% 20%;
+  --muted: 40 22% 89%;
+  --muted-foreground: 35 10% 40%;
+  --accent: 152 45% 88%;
+  --accent-foreground: 158 64% 26%;
+  --destructive: 4 72% 48%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 38 22% 82%;
+  --input: 38 22% 80%;
+  --ring: 158 64% 33%;
+
+  --theme-sidebar: 42 35% 97%;
+  --theme-sidebar-foreground: 30 15% 14%;
+  --theme-sidebar-muted: 35 10% 38%;
+  --theme-header: 40 38% 99%;
+  --theme-header-foreground: 30 15% 14%;
+  --theme-accent: 158 64% 33%;
+
+  --input-bg: 40 38% 99%;
+  --input-text: 30 15% 14%;
+  --input-border: 38 22% 78%;
+  --input-placeholder: 35 8% 50%;
+
+  --chart-1: 158 64% 35%;
+  --chart-2: 173 70% 38%;
+  --chart-3: 43 89% 48%;
+  --chart-4: 25 80% 52%;
+  --chart-5: 200 70% 45%;
+
+  --hud-void: #f1ece1; --hud-void-2: #faf7f0;
+  --hud-panel: rgba(255,253,248,0.75); --hud-panel-solid: #fffdf8;
+  --hud-ink: #26211a; --hud-ink-dim: #5c5347; --hud-ink-faint: #93897a;
+  --hud-accent: #0f9d63; --hud-accent-2: #14b87a; --hud-accent-rgb: 15,157,99;
+  --hud-line: rgba(15,157,99,0.18); --hud-line-strong: rgba(15,157,99,0.40);
+  --hud-grid: rgba(120,110,90,0.05); --hud-white: #26211a;
+}
+
+/* ============================== FROST (crisp white · teal) ============================== */
+[data-theme="hud-frost"] {
+  --radius: 0.3rem;
+  color-scheme: light;
+
+  --background: 200 24% 95%;
+  --foreground: 205 35% 13%;
+  --card: 0 0% 100%;
+  --card-foreground: 205 35% 13%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 205 35% 13%;
+  --primary: 178 78% 30%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 200 22% 91%;
+  --secondary-foreground: 205 30% 20%;
+  --muted: 200 20% 89%;
+  --muted-foreground: 200 12% 40%;
+  --accent: 178 45% 87%;
+  --accent-foreground: 178 78% 24%;
+  --destructive: 0 72% 48%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 200 18% 83%;
+  --input: 200 18% 81%;
+  --ring: 178 78% 30%;
+
+  --theme-sidebar: 200 30% 98%;
+  --theme-sidebar-foreground: 205 35% 13%;
+  --theme-sidebar-muted: 200 12% 38%;
+  --theme-header: 0 0% 100%;
+  --theme-header-foreground: 205 35% 13%;
+  --theme-accent: 178 78% 30%;
+
+  --input-bg: 0 0% 100%;
+  --input-text: 205 35% 13%;
+  --input-border: 200 18% 79%;
+  --input-placeholder: 200 10% 50%;
+
+  --chart-1: 178 78% 32%;
+  --chart-2: 192 82% 40%;
+  --chart-3: 160 64% 40%;
+  --chart-4: 210 80% 52%;
+  --chart-5: 43 80% 48%;
+
+  --hud-void: #e8eef0; --hud-void-2: #f4f8f9;
+  --hud-panel: rgba(255,255,255,0.74); --hud-panel-solid: #ffffff;
+  --hud-ink: #102a2a; --hud-ink-dim: #3f5757; --hud-ink-faint: #7d9292;
+  --hud-accent: #0f766e; --hud-accent-2: #14b8a6; --hud-accent-rgb: 15,118,110;
+  --hud-line: rgba(15,118,110,0.18); --hud-line-strong: rgba(15,118,110,0.42);
+  --hud-grid: rgba(15,118,110,0.05); --hud-white: #102a2a;
+}
+
 /* ============================== NEON PINK ============================== */
 [data-theme="hud-pink"] {
   --radius: 0.3rem;
@@ -294,11 +447,12 @@
 [data-theme^="hud-"] textarea,
 [data-theme^="hud-"] select { border-radius: var(--radius) !important; }
 
-/* Status colors tuned for the bright theme (dark themes use the index.css defaults) */
-[data-theme="hud-light"] .text-green-400, [data-theme="hud-light"] .text-green-500 { color: #16a34a !important; }
-[data-theme="hud-light"] .text-yellow-400, [data-theme="hud-light"] .text-yellow-500 { color: #ca8a04 !important; }
-[data-theme="hud-light"] .text-red-400, [data-theme="hud-light"] .text-red-500 { color: #dc2626 !important; }
-[data-theme="hud-light"] .text-blue-400, [data-theme="hud-light"] .text-blue-500 { color: #0284c7 !important; }
+/* Status colors tuned for ALL bright themes (dark themes use the index.css defaults) */
+[data-theme^="hud-"]:not(.dark) .text-green-400, [data-theme^="hud-"]:not(.dark) .text-green-500 { color: #16a34a !important; }
+[data-theme^="hud-"]:not(.dark) .text-yellow-400, [data-theme^="hud-"]:not(.dark) .text-yellow-500 { color: #ca8a04 !important; }
+[data-theme^="hud-"]:not(.dark) .text-red-400, [data-theme^="hud-"]:not(.dark) .text-red-500 { color: #dc2626 !important; }
+[data-theme^="hud-"]:not(.dark) .text-blue-400, [data-theme^="hud-"]:not(.dark) .text-blue-500 { color: #2563eb !important; }
+[data-theme^="hud-"]:not(.dark) .text-cyan-400, [data-theme^="hud-"]:not(.dark) .text-cyan-500 { color: hsl(var(--primary)) !important; }
 
 /* ============================================================
    Shared StatCard (.sc-card) — Command Deck corner brackets + glow.
@@ -385,37 +539,77 @@
    are preserved via the :not([class*="bg-"]) guard.
    ============================================================ */
 /* hardcoded dark container backgrounds → light panel */
-[data-theme="hud-light"] .bg-slate-950,[data-theme="hud-light"] .bg-slate-900,
-[data-theme="hud-light"] .bg-slate-800,[data-theme="hud-light"] .bg-slate-700,
-[data-theme="hud-light"] .bg-gray-950,[data-theme="hud-light"] .bg-gray-900,
-[data-theme="hud-light"] .bg-gray-800,[data-theme="hud-light"] .bg-gray-700,
-[data-theme="hud-light"] .bg-zinc-900,[data-theme="hud-light"] .bg-zinc-800,
-[data-theme="hud-light"] .bg-neutral-900,[data-theme="hud-light"] .bg-neutral-800 {
+[data-theme^="hud-"]:not(.dark) .bg-slate-950,[data-theme^="hud-"]:not(.dark) .bg-slate-900,
+[data-theme^="hud-"]:not(.dark) .bg-slate-800,[data-theme^="hud-"]:not(.dark) .bg-slate-700,
+[data-theme^="hud-"]:not(.dark) .bg-gray-950,[data-theme^="hud-"]:not(.dark) .bg-gray-900,
+[data-theme^="hud-"]:not(.dark) .bg-gray-800,[data-theme^="hud-"]:not(.dark) .bg-gray-700,
+[data-theme^="hud-"]:not(.dark) .bg-zinc-900,[data-theme^="hud-"]:not(.dark) .bg-zinc-800,
+[data-theme^="hud-"]:not(.dark) .bg-neutral-900,[data-theme^="hud-"]:not(.dark) .bg-neutral-800 {
   background-color: var(--hud-panel-solid) !important;
 }
 /* inset surfaces (inputs, select/dropdown panels) → soft light */
-[data-theme="hud-light"] .bg-slate-600,[data-theme="hud-light"] .bg-gray-600 {
-  background-color: #eef3f9 !important;
+[data-theme^="hud-"]:not(.dark) .bg-slate-600,[data-theme^="hud-"]:not(.dark) .bg-gray-600 {
+  background-color: hsl(var(--muted)) !important;
 }
 /* light text on the now-light panels → dark ink (NOT on colored buttons/badges) */
-[data-theme="hud-light"] .text-white:not([class*="bg-"]),
-[data-theme="hud-light"] [class*="bg-slate-"].text-white,
-[data-theme="hud-light"] [class*="bg-gray-"].text-white,
-[data-theme="hud-light"] [class*="bg-zinc-"].text-white,
-[data-theme="hud-light"] [class*="bg-neutral-"].text-white,
-[data-theme="hud-light"] .text-slate-100,[data-theme="hud-light"] .text-slate-200,
-[data-theme="hud-light"] .text-slate-300,[data-theme="hud-light"] .text-gray-100,
-[data-theme="hud-light"] .text-gray-200,[data-theme="hud-light"] .text-gray-300 {
+[data-theme^="hud-"]:not(.dark) .text-white:not([class*="bg-"]),
+[data-theme^="hud-"]:not(.dark) [class*="bg-slate-"].text-white,
+[data-theme^="hud-"]:not(.dark) [class*="bg-gray-"].text-white,
+[data-theme^="hud-"]:not(.dark) [class*="bg-zinc-"].text-white,
+[data-theme^="hud-"]:not(.dark) [class*="bg-neutral-"].text-white,
+[data-theme^="hud-"]:not(.dark) .text-slate-100,[data-theme^="hud-"]:not(.dark) .text-slate-200,
+[data-theme^="hud-"]:not(.dark) .text-slate-300,[data-theme^="hud-"]:not(.dark) .text-gray-100,
+[data-theme^="hud-"]:not(.dark) .text-gray-200,[data-theme^="hud-"]:not(.dark) .text-gray-300 {
   color: var(--hud-ink) !important;
 }
 /* muted greys → dimmer ink (keeps text hierarchy) */
-[data-theme="hud-light"] .text-slate-400,[data-theme="hud-light"] .text-slate-500,
-[data-theme="hud-light"] .text-gray-400,[data-theme="hud-light"] .text-gray-500 {
+[data-theme^="hud-"]:not(.dark) .text-slate-400,[data-theme^="hud-"]:not(.dark) .text-slate-500,
+[data-theme^="hud-"]:not(.dark) .text-gray-400,[data-theme^="hud-"]:not(.dark) .text-gray-500 {
   color: var(--hud-ink-dim) !important;
 }
 /* hardcoded dark borders → light hairline */
-[data-theme="hud-light"] .border-slate-800,[data-theme="hud-light"] .border-slate-700,
-[data-theme="hud-light"] .border-slate-600,[data-theme="hud-light"] .border-gray-800,
-[data-theme="hud-light"] .border-gray-700,[data-theme="hud-light"] .border-gray-600 {
+[data-theme^="hud-"]:not(.dark) .border-slate-800,[data-theme^="hud-"]:not(.dark) .border-slate-700,
+[data-theme^="hud-"]:not(.dark) .border-slate-600,[data-theme^="hud-"]:not(.dark) .border-gray-800,
+[data-theme^="hud-"]:not(.dark) .border-gray-700,[data-theme^="hud-"]:not(.dark) .border-gray-600 {
   border-color: var(--hud-line-strong) !important;
 }
+
+/* ============================================================
+   BRIGHT-THEME POLISH — the dark themes lean on heavy black drop
+   shadows + saturated neon glow. On a light surface that reads as
+   muddy/garish, so soften it for a clean, executive feel: airy
+   neutral card shadows, a whisper of accent glow, lighter dividers.
+   ============================================================ */
+[data-theme^="hud-"]:not(.dark) .mg-card,
+[data-theme^="hud-"]:not(.dark) [data-slot="card"],
+[data-theme^="hud-"]:not(.dark) .card {
+  box-shadow: 0 1px 2px hsl(var(--foreground) / 0.04), 0 8px 24px -16px hsl(var(--foreground) / 0.18) !important;
+}
+[data-theme^="hud-"]:not(.dark) .mg-card:hover,
+[data-theme^="hud-"]:not(.dark) [data-slot="card"]:hover,
+[data-theme^="hud-"]:not(.dark) .card:hover {
+  border-color: hsl(var(--primary) / 0.45) !important;
+  box-shadow: 0 0 0 1px hsl(var(--primary) / 0.10), 0 10px 28px -16px hsl(var(--foreground) / 0.22) !important;
+}
+/* KPI numbers: just a hair of accent, not a neon halo */
+[data-theme^="hud-"]:not(.dark) .sc-card .sc-value {
+  text-shadow: 0 0 1px hsl(var(--primary) / 0.10);
+}
+/* corner brackets a touch stronger so they stay visible on white */
+[data-theme^="hud-"]:not(.dark) .sc-card .sc-br { border-color: hsl(var(--primary) / 0.6); }
+/* active nav: soft tinted pill, no glow bloom */
+[data-theme^="hud-"]:not(.dark) nav a.active,
+[data-theme^="hud-"]:not(.dark) .sidebar-item.active,
+[data-theme^="hud-"]:not(.dark) .sidebar-item-active {
+  background: hsl(var(--primary) / 0.10) !important;
+  box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.18) !important;
+}
+/* primary buttons: crisp, restrained shadow on hover */
+[data-theme^="hud-"]:not(.dark) button[data-variant="default"]:hover,
+[data-theme^="hud-"]:not(.dark) [data-slot="button"][data-variant="default"]:hover {
+  box-shadow: 0 4px 14px hsl(var(--primary) / 0.30) !important;
+}
+/* dividers/hairlines: neutral-soft, not accent-saturated */
+[data-theme^="hud-"]:not(.dark) table td { border-bottom-color: hsl(var(--foreground) / 0.06) !important; }
+[data-theme^="hud-"]:not(.dark) table th { border-bottom-color: hsl(var(--primary) / 0.25) !important; }
+[data-theme^="hud-"]:not(.dark) table tbody tr:hover { background-color: hsl(var(--primary) / 0.04) !important; }

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Moon, Sun, Sparkles, Leaf, Check, Palette } from 'lucide-react';
+import { Moon, Sun, Sparkles, Leaf, Check, Palette, Gem, Sprout, Snowflake } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -20,6 +20,33 @@ const themes = [
     preview: '#04070e',
     accent: '#38bdf8',
     type: 'dark',
+  },
+  {
+    id: 'hud-platinum',
+    name: 'Platinum',
+    description: 'Cool slate · indigo · pro',
+    icon: Gem,
+    preview: '#eef0f5',
+    accent: '#4f46e5',
+    type: 'light',
+  },
+  {
+    id: 'hud-ivory',
+    name: 'Ivory',
+    description: 'Warm paper · emerald · pro',
+    icon: Sprout,
+    preview: '#f1ece1',
+    accent: '#0f9d63',
+    type: 'light',
+  },
+  {
+    id: 'hud-frost',
+    name: 'Frost',
+    description: 'Crisp white · teal · pro',
+    icon: Snowflake,
+    preview: '#e8eef0',
+    accent: '#0f766e',
+    type: 'light',
   },
   {
     id: 'hud-light',
@@ -170,7 +197,7 @@ export default function ThemeSwitcher() {
           className="text-xs px-3 py-2 rounded-lg"
           style={{ color: 'hsl(var(--muted-foreground))', backgroundColor: 'hsl(var(--muted))' }}
         >
-          Four sci-fi themes · the whole CRM retints instantly
+          3 dark HUD + 4 bright pro themes · the whole CRM retints instantly
         </div>
       </DropdownMenuContent>
     </DropdownMenu>
