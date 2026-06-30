@@ -35,23 +35,23 @@ function ProductTypeahead({ skus, selectedLabel, onSelect }) {
         onFocus={() => setOpen(true)}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
         placeholder='Type to search… e.g. "12kw", "lithium", "GOOTU"'
-        className="bg-slate-800 border-slate-700 text-white"
+        className="bg-muted border-border text-foreground"
       />
       {open && matches.length > 0 && (
-        <div className="absolute z-30 mt-1 w-full max-h-72 overflow-auto bg-slate-900 border border-slate-700 rounded-md shadow-xl">
-          <div className="px-3 py-1.5 text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-800 sticky top-0 bg-slate-900">
+        <div className="absolute z-30 mt-1 w-full max-h-72 overflow-auto bg-card border border-border rounded-md shadow-xl">
+          <div className="px-3 py-1.5 text-[11px] uppercase tracking-wide text-muted-foreground border-b border-border sticky top-0 bg-card">
             {matches.length} match{matches.length > 1 ? 'es' : ''}
           </div>
           {matches.map(s => (
             <button
               type="button" key={s.id}
               onMouseDown={(e) => { e.preventDefault(); onSelect(s.id); setQ(`${s.name} (${s.sku_code})`); setOpen(false); }}
-              className="w-full text-left px-3 py-2 hover:bg-slate-800 border-b border-slate-800 last:border-0"
+              className="w-full text-left px-3 py-2 hover:bg-muted border-b border-border last:border-0"
             >
-              <div className="text-sm text-white leading-snug">{s.name}</div>
-              <div className="text-xs text-slate-400 flex items-center gap-2 mt-0.5">
+              <div className="text-sm text-foreground leading-snug">{s.name}</div>
+              <div className="text-xs text-muted-foreground flex items-center gap-2 mt-0.5">
                 <span className="font-mono">{s.sku_code}</span>
-                {s.category && <span className="px-1.5 rounded bg-slate-800 text-slate-300">{s.category}</span>}
+                {s.category && <span className="px-1.5 rounded bg-muted text-muted-foreground">{s.category}</span>}
                 <span className="ml-auto text-emerald-400">₹{Number(s.selling_price || s.mrp || 0).toLocaleString('en-IN')}</span>
               </div>
             </button>
@@ -59,7 +59,7 @@ function ProductTypeahead({ skus, selectedLabel, onSelect }) {
         </div>
       )}
       {open && ql.length > 0 && matches.length === 0 && (
-        <div className="absolute z-30 mt-1 w-full bg-slate-900 border border-slate-700 rounded-md px-3 py-2 text-sm text-slate-400">
+        <div className="absolute z-30 mt-1 w-full bg-card border border-border rounded-md px-3 py-2 text-sm text-muted-foreground">
           No product matches “{q}”.
         </div>
       )}
@@ -421,16 +421,16 @@ export default function QuotationForm() {
           <Button 
             variant="ghost" 
             onClick={() => navigate('/quotations')}
-            className="text-slate-400 hover:text-white"
+            className="text-muted-foreground hover:text-foreground"
           >
             <ArrowLeft className="w-4 h-4 mr-1" />
             Back
           </Button>
           <div>
-            <h1 className="text-2xl font-bold text-white">
+            <h1 className="text-2xl font-bold text-foreground">
               {isEdit ? 'Edit Quotation' : 'Create New Quotation'}
             </h1>
-            <p className="text-slate-400">Fill in the details to create a proforma invoice</p>
+            <p className="text-muted-foreground">Fill in the details to create a proforma invoice</p>
           </div>
         </div>
 
@@ -438,23 +438,23 @@ export default function QuotationForm() {
           {/* Main Form */}
           <div className="lg:col-span-2 space-y-6">
             {/* Firm Selection */}
-            <Card className="bg-slate-800 border-slate-700">
+            <Card className="bg-muted border-border">
               <CardHeader>
-                <CardTitle className="text-white flex items-center gap-2">
+                <CardTitle className="text-foreground flex items-center gap-2">
                   <Building2 className="w-5 h-5 text-cyan-400" />
                   Firm Details
                 </CardTitle>
               </CardHeader>
               <CardContent>
                 <div>
-                  <Label className="text-slate-300">Select Firm *</Label>
+                  <Label className="text-muted-foreground">Select Firm *</Label>
                   <Select value={form.firm_id} onValueChange={(v) => setForm({ ...form, firm_id: v })}>
-                    <SelectTrigger className="bg-slate-900 border-slate-700 text-white">
+                    <SelectTrigger className="bg-card border-border text-foreground">
                       <SelectValue placeholder="Select firm" />
                     </SelectTrigger>
-                    <SelectContent className="bg-slate-900 border-slate-700 text-white">
+                    <SelectContent className="bg-card border-border text-foreground">
                       {firms.map(firm => (
-                        <SelectItem key={firm.id} value={firm.id} className="text-white hover:bg-slate-800 focus:bg-slate-800 focus:text-white">
+                        <SelectItem key={firm.id} value={firm.id} className="text-foreground hover:bg-muted focus:bg-muted focus:text-foreground">
                           {firm.name} {firm.gstin && `(${firm.gstin})`}
                         </SelectItem>
                       ))}
@@ -465,9 +465,9 @@ export default function QuotationForm() {
             </Card>
 
             {/* Customer Details */}
-            <Card className="bg-slate-800 border-slate-700">
+            <Card className="bg-muted border-border">
               <CardHeader>
-                <CardTitle className="text-white flex items-center gap-2">
+                <CardTitle className="text-foreground flex items-center gap-2">
                   <User className="w-5 h-5 text-cyan-400" />
                   Customer Details
                 </CardTitle>
@@ -475,9 +475,9 @@ export default function QuotationForm() {
               <CardContent className="space-y-4">
                 {/* Customer Search */}
                 <div className="relative">
-                  <Label className="text-slate-300">Search Existing Customer</Label>
+                  <Label className="text-muted-foreground">Search Existing Customer</Label>
                   <div className="relative">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                     <Input
                       placeholder="Search by name or phone..."
                       value={customerSearch}
@@ -486,20 +486,20 @@ export default function QuotationForm() {
                         setShowCustomerSearch(true);
                       }}
                       onFocus={() => setShowCustomerSearch(true)}
-                      className="pl-10 bg-slate-900 border-slate-700 text-white"
+                      className="pl-10 bg-card border-border text-foreground"
                     />
                   </div>
                   
                   {showCustomerSearch && customerSearch && filteredParties.length > 0 && (
-                    <div className="absolute z-10 w-full mt-1 bg-slate-900 border border-slate-700 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                    <div className="absolute z-10 w-full mt-1 bg-card border border-border rounded-lg shadow-lg max-h-60 overflow-y-auto">
                       {filteredParties.map(party => (
                         <div
                           key={party.id}
-                          className="p-3 hover:bg-slate-800 cursor-pointer"
+                          className="p-3 hover:bg-muted cursor-pointer"
                           onClick={() => handleCustomerSelect(party)}
                         >
-                          <p className="text-white">{party.name}</p>
-                          <p className="text-slate-400 text-sm">{party.phone}</p>
+                          <p className="text-foreground">{party.name}</p>
+                          <p className="text-muted-foreground text-sm">{party.phone}</p>
                         </div>
                       ))}
                     </div>
@@ -508,80 +508,80 @@ export default function QuotationForm() {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <Label className="text-slate-300">Customer Name *</Label>
+                    <Label className="text-muted-foreground">Customer Name *</Label>
                     <Input
                       value={form.customer_name}
                       onChange={(e) => setForm({ ...form, customer_name: e.target.value })}
                       placeholder="Enter customer name"
-                      className="bg-slate-900 border-slate-700 text-white"
+                      className="bg-card border-border text-foreground"
                     />
                   </div>
                   <div>
-                    <Label className="text-slate-300">Phone *</Label>
+                    <Label className="text-muted-foreground">Phone *</Label>
                     <Input
                       value={form.customer_phone}
                       onChange={(e) => setForm({ ...form, customer_phone: e.target.value })}
                       placeholder="Enter phone number"
-                      className="bg-slate-900 border-slate-700 text-white"
+                      className="bg-card border-border text-foreground"
                     />
                   </div>
                   <div>
-                    <Label className="text-slate-300">Email</Label>
+                    <Label className="text-muted-foreground">Email</Label>
                     <Input
                       type="email"
                       value={form.customer_email}
                       onChange={(e) => setForm({ ...form, customer_email: e.target.value })}
                       placeholder="Enter email"
-                      className="bg-slate-900 border-slate-700 text-white"
+                      className="bg-card border-border text-foreground"
                     />
                   </div>
                   <div>
-                    <Label className="text-slate-300">GSTIN</Label>
+                    <Label className="text-muted-foreground">GSTIN</Label>
                     <Input
                       value={form.customer_gstin}
                       onChange={(e) => setForm({ ...form, customer_gstin: e.target.value.toUpperCase() })}
                       placeholder="Enter GSTIN"
-                      className="bg-slate-900 border-slate-700 text-white font-mono"
+                      className="bg-card border-border text-foreground font-mono"
                     />
                   </div>
                   <div className="md:col-span-2">
-                    <Label className="text-slate-300">Address</Label>
+                    <Label className="text-muted-foreground">Address</Label>
                     <Input
                       value={form.customer_address}
                       onChange={(e) => setForm({ ...form, customer_address: e.target.value })}
                       placeholder="Enter address"
-                      className="bg-slate-900 border-slate-700 text-white"
+                      className="bg-card border-border text-foreground"
                     />
                   </div>
                   <div>
-                    <Label className="text-slate-300">City</Label>
+                    <Label className="text-muted-foreground">City</Label>
                     <Input
                       value={form.customer_city}
                       onChange={(e) => setForm({ ...form, customer_city: e.target.value })}
                       placeholder="Enter city"
-                      className="bg-slate-900 border-slate-700 text-white"
+                      className="bg-card border-border text-foreground"
                     />
                   </div>
                   <div>
-                    <Label className="text-slate-300">State</Label>
+                    <Label className="text-muted-foreground">State</Label>
                     <Select value={form.customer_state} onValueChange={(v) => setForm({ ...form, customer_state: v })}>
-                      <SelectTrigger className="bg-slate-900 border-slate-700 text-white">
+                      <SelectTrigger className="bg-card border-border text-foreground">
                         <SelectValue placeholder="Select state" />
                       </SelectTrigger>
-                      <SelectContent className="bg-slate-900 border-slate-700 text-white max-h-60">
+                      <SelectContent className="bg-card border-border text-foreground max-h-60">
                         {INDIAN_STATES.map(state => (
-                          <SelectItem key={state} value={state} className="text-white hover:bg-slate-800 focus:bg-slate-800 focus:text-white">{state}</SelectItem>
+                          <SelectItem key={state} value={state} className="text-foreground hover:bg-muted focus:bg-muted focus:text-foreground">{state}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
                   </div>
                   <div>
-                    <Label className="text-slate-300">Pincode</Label>
+                    <Label className="text-muted-foreground">Pincode</Label>
                     <Input
                       value={form.customer_pincode}
                       onChange={(e) => setForm({ ...form, customer_pincode: e.target.value })}
                       placeholder="Enter pincode"
-                      className="bg-slate-900 border-slate-700 text-white"
+                      className="bg-card border-border text-foreground"
                     />
                   </div>
                 </div>
@@ -589,9 +589,9 @@ export default function QuotationForm() {
             </Card>
 
             {/* Items */}
-            <Card className="bg-slate-800 border-slate-700">
+            <Card className="bg-muted border-border">
               <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle className="text-white flex items-center gap-2">
+                <CardTitle className="text-foreground flex items-center gap-2">
                   <Package className="w-5 h-5 text-cyan-400" />
                   Items
                 </CardTitle>
@@ -609,9 +609,9 @@ export default function QuotationForm() {
                   </div>
                 )}
                 {form.items.map((item, index) => (
-                  <div key={index} className="p-4 bg-slate-900 rounded-lg space-y-3">
+                  <div key={index} className="p-4 bg-card rounded-lg space-y-3">
                     <div className="flex justify-between items-start">
-                      <span className="text-slate-400 text-sm">Item #{index + 1}</span>
+                      <span className="text-muted-foreground text-sm">Item #{index + 1}</span>
                       <Button 
                         variant="ghost" 
                         size="sm"
@@ -624,7 +624,7 @@ export default function QuotationForm() {
                     
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <div className="md:col-span-2">
-                        <Label className="text-slate-400 text-xs">Select Product *</Label>
+                        <Label className="text-muted-foreground text-xs">Select Product *</Label>
                         <div className="flex gap-2">
                           <ProductTypeahead
                             skus={masterSkus}
@@ -648,13 +648,13 @@ export default function QuotationForm() {
                       </div>
                       
                       <div>
-                        <Label className="text-slate-400 text-xs">Quantity *</Label>
+                        <Label className="text-muted-foreground text-xs">Quantity *</Label>
                         <Input
                           type="number"
                           min="1"
                           value={item.quantity}
                           onChange={(e) => updateItem(index, 'quantity', parseInt(e.target.value) || 1)}
-                          className="bg-slate-800 border-slate-700 text-white"
+                          className="bg-muted border-border text-foreground"
                         />
                         {item.current_stock > 0 && (
                           <p className={`text-xs mt-1 ${item.quantity > item.current_stock ? 'text-red-400' : 'text-green-400'}`}>
@@ -665,52 +665,52 @@ export default function QuotationForm() {
                       </div>
                       
                       <div>
-                        <Label className="text-slate-400 text-xs">Rate (per unit) *</Label>
+                        <Label className="text-muted-foreground text-xs">Rate (per unit) *</Label>
                         <Input
                           type="number"
                           min="0"
                           step="0.01"
                           value={item.rate}
                           onChange={(e) => updateItem(index, 'rate', parseFloat(e.target.value) || 0)}
-                          className="bg-slate-800 border-slate-700 text-white"
+                          className="bg-muted border-border text-foreground"
                         />
                       </div>
                       
                       <div>
-                        <Label className="text-slate-400 text-xs">GST Rate %</Label>
+                        <Label className="text-muted-foreground text-xs">GST Rate %</Label>
                         <Select 
                           value={item.gst_rate.toString()} 
                           onValueChange={(v) => updateItem(index, 'gst_rate', parseFloat(v))}
                         >
-                          <SelectTrigger className="bg-slate-800 border-slate-700 text-white">
+                          <SelectTrigger className="bg-muted border-border text-foreground">
                             <SelectValue />
                           </SelectTrigger>
-                          <SelectContent className="bg-slate-900 border-slate-700 text-white">
+                          <SelectContent className="bg-card border-border text-foreground">
                             {GST_RATES.map(rate => (
-                              <SelectItem key={rate} value={rate.toString()} className="text-white hover:bg-slate-800 focus:bg-slate-800 focus:text-white">{rate}%</SelectItem>
+                              <SelectItem key={rate} value={rate.toString()} className="text-foreground hover:bg-muted focus:bg-muted focus:text-foreground">{rate}%</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
                       </div>
                       
                       <div>
-                        <Label className="text-slate-400 text-xs">Discount %</Label>
+                        <Label className="text-muted-foreground text-xs">Discount %</Label>
                         <Input
                           type="number"
                           min="0"
                           max="100"
                           value={item.discount_percent}
                           onChange={(e) => updateItem(index, 'discount_percent', parseFloat(e.target.value) || 0)}
-                          className="bg-slate-800 border-slate-700 text-white"
+                          className="bg-muted border-border text-foreground"
                         />
                       </div>
                     </div>
                     
                     {/* Line Total */}
-                    <div className="flex justify-end pt-2 border-t border-slate-700">
+                    <div className="flex justify-end pt-2 border-t border-border">
                       <div className="text-right">
-                        <p className="text-slate-400 text-xs">Line Total</p>
-                        <p className="text-white font-semibold">
+                        <p className="text-muted-foreground text-xs">Line Total</p>
+                        <p className="text-foreground font-semibold">
                           {formatCurrency(item.quantity * item.rate * (1 - item.discount_percent/100) * (1 + item.gst_rate/100))}
                         </p>
                       </div>
@@ -721,38 +721,38 @@ export default function QuotationForm() {
             </Card>
 
             {/* Terms & Remarks */}
-            <Card className="bg-slate-800 border-slate-700">
+            <Card className="bg-muted border-border">
               <CardHeader>
-                <CardTitle className="text-white">Additional Details</CardTitle>
+                <CardTitle className="text-foreground">Additional Details</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div>
-                  <Label className="text-slate-300">Validity (Days)</Label>
+                  <Label className="text-muted-foreground">Validity (Days)</Label>
                   <Input
                     type="number"
                     min="1"
                     max="365"
                     value={form.validity_days}
                     onChange={(e) => setForm({ ...form, validity_days: parseInt(e.target.value) || 15 })}
-                    className="bg-slate-900 border-slate-700 text-white w-32"
+                    className="bg-card border-border text-foreground w-32"
                   />
                 </div>
                 <div>
-                  <Label className="text-slate-300">Remarks</Label>
+                  <Label className="text-muted-foreground">Remarks</Label>
                   <Textarea
                     value={form.remarks}
                     onChange={(e) => setForm({ ...form, remarks: e.target.value })}
                     placeholder="Any special remarks..."
-                    className="bg-slate-900 border-slate-700 text-white"
+                    className="bg-card border-border text-foreground"
                     rows={2}
                   />
                 </div>
                 <div>
-                  <Label className="text-slate-300">Terms & Conditions</Label>
+                  <Label className="text-muted-foreground">Terms & Conditions</Label>
                   <Textarea
                     value={form.terms_and_conditions}
                     onChange={(e) => setForm({ ...form, terms_and_conditions: e.target.value })}
-                    className="bg-slate-900 border-slate-700 text-white"
+                    className="bg-card border-border text-foreground"
                     rows={5}
                   />
                 </div>
@@ -762,16 +762,16 @@ export default function QuotationForm() {
 
           {/* Summary Sidebar */}
           <div className="lg:col-span-1">
-            <Card className="bg-slate-800 border-slate-700 sticky top-4">
+            <Card className="bg-muted border-border sticky top-4">
               <CardHeader>
-                <CardTitle className="text-white flex items-center gap-2">
+                <CardTitle className="text-foreground flex items-center gap-2">
                   <IndianRupee className="w-5 h-5 text-cyan-400" />
                   Summary
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <div className="flex justify-between text-slate-300">
+                  <div className="flex justify-between text-muted-foreground">
                     <span>Subtotal</span>
                     <span>{formatCurrency(totals.subtotal)}</span>
                   </div>
@@ -781,15 +781,15 @@ export default function QuotationForm() {
                       <span>-{formatCurrency(totals.totalDiscount)}</span>
                     </div>
                   )}
-                  <div className="flex justify-between text-slate-300">
+                  <div className="flex justify-between text-muted-foreground">
                     <span>Taxable Value</span>
                     <span>{formatCurrency(totals.taxableValue)}</span>
                   </div>
-                  <div className="flex justify-between text-slate-300">
+                  <div className="flex justify-between text-muted-foreground">
                     <span>GST</span>
                     <span>{formatCurrency(totals.totalGst)}</span>
                   </div>
-                  <div className="flex justify-between text-xl font-bold text-white pt-4 border-t border-slate-700">
+                  <div className="flex justify-between text-xl font-bold text-foreground pt-4 border-t border-border">
                     <span>Grand Total</span>
                     <span>{formatCurrency(totals.grandTotal)}</span>
                   </div>
@@ -809,7 +809,7 @@ export default function QuotationForm() {
                   <Button 
                     onClick={() => handleSubmit(false)}
                     disabled={submitting}
-                    className="w-full bg-slate-700 hover:bg-slate-600"
+                    className="w-full bg-muted hover:bg-accent"
                     data-testid="save-draft-btn"
                   >
                     {submitting ? (

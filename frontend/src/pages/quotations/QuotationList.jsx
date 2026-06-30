@@ -23,7 +23,7 @@ import {
 import ClickToCallButton from '@/components/calls/ClickToCallButton';
 
 const STATUS_CONFIG = {
-  draft: { label: 'Draft', color: 'bg-slate-600', icon: FileText },
+  draft: { label: 'Draft', color: 'bg-muted', icon: FileText },
   sent: { label: 'Sent', color: 'bg-blue-600', icon: Send },
   viewed: { label: 'Viewed', color: 'bg-purple-600', icon: Eye },
   approved: { label: 'Approved', color: 'bg-green-600', icon: CheckCircle },
@@ -298,14 +298,14 @@ export default function QuotationList() {
         {/* Header */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-white">Proforma Invoices / Quotations</h1>
-            <p className="text-slate-400">Create, send, and manage quotations</p>
+            <h1 className="text-2xl font-bold text-foreground">Proforma Invoices / Quotations</h1>
+            <p className="text-muted-foreground">Create, send, and manage quotations</p>
           </div>
           <div className="flex gap-2">
             <Button 
               variant="outline" 
               onClick={fetchData}
-              className="border-slate-600 text-slate-300 hover:bg-slate-700"
+              className="border-border text-muted-foreground hover:bg-muted"
             >
               <RefreshCw className="w-4 h-4 mr-2" />
               Refresh
@@ -323,49 +323,49 @@ export default function QuotationList() {
 
         {/* Stats */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          <Card className="bg-slate-800 border-slate-700">
+          <Card className="bg-muted border-border">
             <CardContent className="p-4">
-              <p className="text-slate-400 text-sm">Total Quotations</p>
-              <p className="text-2xl font-bold text-white">{stats.total_quotations || 0}</p>
+              <p className="text-muted-foreground text-sm">Total Quotations</p>
+              <p className="text-2xl font-bold text-foreground">{stats.total_quotations || 0}</p>
             </CardContent>
           </Card>
-          <Card className="bg-slate-800 border-slate-700">
+          <Card className="bg-muted border-border">
             <CardContent className="p-4">
-              <p className="text-slate-400 text-sm">Pending Approval</p>
+              <p className="text-muted-foreground text-sm">Pending Approval</p>
               <p className="text-2xl font-bold text-yellow-400">{stats.pending_approval || 0}</p>
             </CardContent>
           </Card>
-          <Card className="bg-slate-800 border-slate-700">
+          <Card className="bg-muted border-border">
             <CardContent className="p-4">
-              <p className="text-slate-400 text-sm">Approved</p>
+              <p className="text-muted-foreground text-sm">Approved</p>
               <p className="text-2xl font-bold text-green-400">{stats.by_status?.approved || 0}</p>
             </CardContent>
           </Card>
-          <Card className="bg-slate-800 border-slate-700">
+          <Card className="bg-muted border-border">
             <CardContent className="p-4">
-              <p className="text-slate-400 text-sm">Conversion Rate</p>
+              <p className="text-muted-foreground text-sm">Conversion Rate</p>
               <p className="text-2xl font-bold text-cyan-400">{stats.conversion_rate || 0}%</p>
             </CardContent>
           </Card>
-          <Card className="bg-slate-800 border-slate-700">
+          <Card className="bg-muted border-border">
             <CardContent className="p-4">
-              <p className="text-slate-400 text-sm">Total Value</p>
-              <p className="text-xl font-bold text-white">{formatCurrency(stats.total_value)}</p>
+              <p className="text-muted-foreground text-sm">Total Value</p>
+              <p className="text-xl font-bold text-foreground">{formatCurrency(stats.total_value)}</p>
             </CardContent>
           </Card>
         </div>
 
         {/* Filters */}
-        <Card className="bg-slate-800 border-slate-700">
+        <Card className="bg-muted border-border">
           <CardContent className="p-4">
             <div className="flex flex-wrap gap-4 items-end">
               <div className="w-full md:w-48">
-                <Label className="text-slate-400 text-xs">Status</Label>
+                <Label className="text-muted-foreground text-xs">Status</Label>
                 <Select value={filterStatus} onValueChange={setFilterStatus}>
-                  <SelectTrigger className="bg-slate-900 border-slate-700 text-white">
+                  <SelectTrigger className="bg-card border-border text-foreground">
                     <SelectValue placeholder="All Status" />
                   </SelectTrigger>
-                  <SelectContent className="bg-slate-900 border-slate-700">
+                  <SelectContent className="bg-card border-border">
                     <SelectItem value="all">All Status</SelectItem>
                     <SelectItem value="draft">Draft</SelectItem>
                     <SelectItem value="sent">Sent</SelectItem>
@@ -379,12 +379,12 @@ export default function QuotationList() {
               </div>
               
               <div className="w-full md:w-48">
-                <Label className="text-slate-400 text-xs">Firm</Label>
+                <Label className="text-muted-foreground text-xs">Firm</Label>
                 <Select value={filterFirm} onValueChange={setFilterFirm}>
-                  <SelectTrigger className="bg-slate-900 border-slate-700 text-white">
+                  <SelectTrigger className="bg-card border-border text-foreground">
                     <SelectValue placeholder="All Firms" />
                   </SelectTrigger>
-                  <SelectContent className="bg-slate-900 border-slate-700">
+                  <SelectContent className="bg-card border-border">
                     <SelectItem value="all">All Firms</SelectItem>
                     {firms.map(firm => (
                       <SelectItem key={firm.id} value={firm.id}>{firm.name}</SelectItem>
@@ -394,14 +394,14 @@ export default function QuotationList() {
               </div>
               
               <div className="flex-1 min-w-48">
-                <Label className="text-slate-400 text-xs">Search</Label>
+                <Label className="text-muted-foreground text-xs">Search</Label>
                 <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                   <Input
                     placeholder="Search by PI#, customer, phone..."
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
-                    className="pl-10 bg-slate-900 border-slate-700 text-white"
+                    className="pl-10 bg-card border-border text-foreground"
                   />
                 </div>
               </div>
@@ -410,26 +410,26 @@ export default function QuotationList() {
         </Card>
 
         {/* Quotations Table */}
-        <Card className="bg-slate-800 border-slate-700">
+        <Card className="bg-muted border-border">
           <CardContent className="p-0">
             <Table>
               <TableHeader>
-                <TableRow className="border-slate-700">
-                  <TableHead className="text-slate-400">PI Number</TableHead>
-                  <TableHead className="text-slate-400">Customer</TableHead>
-                  <TableHead className="text-slate-400">Firm</TableHead>
-                  <TableHead className="text-slate-400">Items</TableHead>
-                  <TableHead className="text-slate-400 text-right">Value</TableHead>
-                  <TableHead className="text-slate-400">Valid Till</TableHead>
-                  <TableHead className="text-slate-400">Status</TableHead>
-                  <TableHead className="text-slate-400">Actions</TableHead>
+                <TableRow className="border-border">
+                  <TableHead className="text-muted-foreground">PI Number</TableHead>
+                  <TableHead className="text-muted-foreground">Customer</TableHead>
+                  <TableHead className="text-muted-foreground">Firm</TableHead>
+                  <TableHead className="text-muted-foreground">Items</TableHead>
+                  <TableHead className="text-muted-foreground text-right">Value</TableHead>
+                  <TableHead className="text-muted-foreground">Valid Till</TableHead>
+                  <TableHead className="text-muted-foreground">Status</TableHead>
+                  <TableHead className="text-muted-foreground">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredQuotations.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="text-center py-8 text-slate-400">
-                      <FileText className="w-12 h-12 mx-auto mb-4 text-slate-600" />
+                    <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
+                      <FileText className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
                       <p>No quotations found</p>
                       <Button 
                         variant="link" 
@@ -447,20 +447,20 @@ export default function QuotationList() {
                     const isExpired = q.is_expired || q.status === 'expired';
                     
                     return (
-                      <TableRow key={q.id} className="border-slate-700" data-testid={`quotation-row-${q.id}`}>
+                      <TableRow key={q.id} className="border-border" data-testid={`quotation-row-${q.id}`}>
                         <TableCell>
                           <div>
-                            <p className="text-white font-mono text-sm">{q.quotation_number}</p>
+                            <p className="text-foreground font-mono text-sm">{q.quotation_number}</p>
                             {q.version > 1 && (
-                              <p className="text-slate-500 text-xs">v{q.version}</p>
+                              <p className="text-muted-foreground text-xs">v{q.version}</p>
                             )}
                           </div>
                         </TableCell>
                         <TableCell>
                           <div>
-                            <p className="text-white">{q.customer_name}</p>
+                            <p className="text-foreground">{q.customer_name}</p>
                             <div className="flex items-center gap-2">
-                              <p className="text-slate-400 text-sm">{q.customer_phone}</p>
+                              <p className="text-muted-foreground text-sm">{q.customer_phone}</p>
                               {q.customer_phone && (
                                 <ClickToCallButton 
                                   phone={q.customer_phone}
@@ -472,23 +472,23 @@ export default function QuotationList() {
                             </div>
                           </div>
                         </TableCell>
-                        <TableCell className="text-slate-300">{q.firm_name}</TableCell>
+                        <TableCell className="text-muted-foreground">{q.firm_name}</TableCell>
                         <TableCell>
-                          <Badge variant="outline" className="border-slate-600 text-slate-300">
+                          <Badge variant="outline" className="border-border text-muted-foreground">
                             {q.items?.length || 0} items
                           </Badge>
                         </TableCell>
                         <TableCell className="text-right">
-                          <p className="text-white font-semibold">{formatCurrency(q.grand_total)}</p>
+                          <p className="text-foreground font-semibold">{formatCurrency(q.grand_total)}</p>
                         </TableCell>
                         <TableCell>
-                          <div className={isExpired ? 'text-red-400' : 'text-slate-300'}>
+                          <div className={isExpired ? 'text-red-400' : 'text-muted-foreground'}>
                             {formatDate(q.validity_date)}
                             {isExpired && <span className="text-xs block">Expired</span>}
                           </div>
                         </TableCell>
                         <TableCell>
-                          <Badge className={`${statusConfig.color} text-white`}>
+                          <Badge className={`${statusConfig.color} text-foreground`}>
                             <StatusIcon className="w-3 h-3 mr-1" />
                             {statusConfig.label}
                           </Badge>
@@ -502,7 +502,7 @@ export default function QuotationList() {
                                 setSelectedQuotation(q);
                                 setViewDialogOpen(true);
                               }}
-                              className="text-slate-400 hover:text-white"
+                              className="text-muted-foreground hover:text-foreground"
                               title="View Details"
                             >
                               <Eye className="w-4 h-4" />
@@ -512,7 +512,7 @@ export default function QuotationList() {
                               size="sm" 
                               variant="ghost"
                               onClick={() => handleDownloadPDF(q)}
-                              className="text-slate-400 hover:text-white"
+                              className="text-muted-foreground hover:text-foreground"
                               title="Download PDF"
                             >
                               <Download className="w-4 h-4" />
@@ -590,9 +590,9 @@ export default function QuotationList() {
 
       {/* View Dialog */}
       <Dialog open={viewDialogOpen} onOpenChange={setViewDialogOpen}>
-        <DialogContent className="bg-slate-900 border-slate-700 max-w-3xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="bg-card border-border max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle className="text-white flex items-center gap-2">
+            <DialogTitle className="text-foreground flex items-center gap-2">
               <FileText className="w-5 h-5 text-cyan-400" />
               Quotation Details
             </DialogTitle>
@@ -602,30 +602,30 @@ export default function QuotationList() {
             <div className="space-y-6">
               {/* Header Info */}
               <div className="grid grid-cols-2 gap-4">
-                <div className="p-4 bg-slate-800 rounded-lg">
-                  <p className="text-slate-400 text-sm">Quotation Number</p>
-                  <p className="text-white font-mono text-lg">{selectedQuotation.quotation_number}</p>
+                <div className="p-4 bg-muted rounded-lg">
+                  <p className="text-muted-foreground text-sm">Quotation Number</p>
+                  <p className="text-foreground font-mono text-lg">{selectedQuotation.quotation_number}</p>
                 </div>
-                <div className="p-4 bg-slate-800 rounded-lg">
-                  <p className="text-slate-400 text-sm">Status</p>
-                  <Badge className={`${STATUS_CONFIG[selectedQuotation.status]?.color} text-white mt-1`}>
+                <div className="p-4 bg-muted rounded-lg">
+                  <p className="text-muted-foreground text-sm">Status</p>
+                  <Badge className={`${STATUS_CONFIG[selectedQuotation.status]?.color} text-foreground mt-1`}>
                     {STATUS_CONFIG[selectedQuotation.status]?.label}
                   </Badge>
                 </div>
               </div>
 
               {/* Customer Details */}
-              <div className="p-4 bg-slate-800 rounded-lg">
-                <h3 className="text-white font-medium mb-3">Customer Details</h3>
+              <div className="p-4 bg-muted rounded-lg">
+                <h3 className="text-foreground font-medium mb-3">Customer Details</h3>
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   <div>
-                    <p className="text-slate-400">Name</p>
-                    <p className="text-white">{selectedQuotation.customer_name}</p>
+                    <p className="text-muted-foreground">Name</p>
+                    <p className="text-foreground">{selectedQuotation.customer_name}</p>
                   </div>
                   <div>
-                    <p className="text-slate-400">Phone</p>
+                    <p className="text-muted-foreground">Phone</p>
                     <div className="flex items-center gap-2">
-                      <p className="text-white">{selectedQuotation.customer_phone}</p>
+                      <p className="text-foreground">{selectedQuotation.customer_phone}</p>
                       {selectedQuotation.customer_phone && (
                         <ClickToCallButton 
                           phone={selectedQuotation.customer_phone}
@@ -637,16 +637,16 @@ export default function QuotationList() {
                     </div>
                   </div>
                   <div>
-                    <p className="text-slate-400">Email</p>
-                    <p className="text-white">{selectedQuotation.customer_email || '-'}</p>
+                    <p className="text-muted-foreground">Email</p>
+                    <p className="text-foreground">{selectedQuotation.customer_email || '-'}</p>
                   </div>
                   <div>
-                    <p className="text-slate-400">GSTIN</p>
-                    <p className="text-white font-mono">{selectedQuotation.customer_gstin || '-'}</p>
+                    <p className="text-muted-foreground">GSTIN</p>
+                    <p className="text-foreground font-mono">{selectedQuotation.customer_gstin || '-'}</p>
                   </div>
                   <div className="col-span-2">
-                    <p className="text-slate-400">Address</p>
-                    <p className="text-white">
+                    <p className="text-muted-foreground">Address</p>
+                    <p className="text-foreground">
                       {[selectedQuotation.customer_address, selectedQuotation.customer_city, 
                         selectedQuotation.customer_state, selectedQuotation.customer_pincode]
                         .filter(Boolean).join(', ') || '-'}
@@ -656,37 +656,37 @@ export default function QuotationList() {
               </div>
 
               {/* Items */}
-              <div className="p-4 bg-slate-800 rounded-lg">
-                <h3 className="text-white font-medium mb-3">Items</h3>
+              <div className="p-4 bg-muted rounded-lg">
+                <h3 className="text-foreground font-medium mb-3">Items</h3>
                 <Table>
                   <TableHeader>
-                    <TableRow className="border-slate-700">
-                      <TableHead className="text-slate-400">Item</TableHead>
-                      <TableHead className="text-slate-400 text-right">Qty</TableHead>
-                      <TableHead className="text-slate-400 text-right">Rate</TableHead>
-                      <TableHead className="text-slate-400 text-right">GST</TableHead>
-                      <TableHead className="text-slate-400 text-right">Total</TableHead>
+                    <TableRow className="border-border">
+                      <TableHead className="text-muted-foreground">Item</TableHead>
+                      <TableHead className="text-muted-foreground text-right">Qty</TableHead>
+                      <TableHead className="text-muted-foreground text-right">Rate</TableHead>
+                      <TableHead className="text-muted-foreground text-right">GST</TableHead>
+                      <TableHead className="text-muted-foreground text-right">Total</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {selectedQuotation.items?.map((item, idx) => (
-                      <TableRow key={idx} className="border-slate-700">
+                      <TableRow key={idx} className="border-border">
                         <TableCell>
-                          <p className="text-white">{item.name}</p>
-                          <p className="text-slate-500 text-xs">{item.sku_code}</p>
+                          <p className="text-foreground">{item.name}</p>
+                          <p className="text-muted-foreground text-xs">{item.sku_code}</p>
                         </TableCell>
-                        <TableCell className="text-right text-white">{item.quantity}</TableCell>
-                        <TableCell className="text-right text-white">{formatCurrency(item.rate)}</TableCell>
-                        <TableCell className="text-right text-white">{item.gst_rate}%</TableCell>
-                        <TableCell className="text-right text-white font-semibold">{formatCurrency(item.total)}</TableCell>
+                        <TableCell className="text-right text-foreground">{item.quantity}</TableCell>
+                        <TableCell className="text-right text-foreground">{formatCurrency(item.rate)}</TableCell>
+                        <TableCell className="text-right text-foreground">{item.gst_rate}%</TableCell>
+                        <TableCell className="text-right text-foreground font-semibold">{formatCurrency(item.total)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
                 </Table>
                 
                 {/* Totals */}
-                <div className="mt-4 pt-4 border-t border-slate-700 space-y-2">
-                  <div className="flex justify-between text-slate-300">
+                <div className="mt-4 pt-4 border-t border-border space-y-2">
+                  <div className="flex justify-between text-muted-foreground">
                     <span>Subtotal</span>
                     <span>{formatCurrency(selectedQuotation.subtotal)}</span>
                   </div>
@@ -696,28 +696,28 @@ export default function QuotationList() {
                       <span>-{formatCurrency(selectedQuotation.total_discount)}</span>
                     </div>
                   )}
-                  <div className="flex justify-between text-slate-300">
+                  <div className="flex justify-between text-muted-foreground">
                     <span>Taxable Value</span>
                     <span>{formatCurrency(selectedQuotation.taxable_value)}</span>
                   </div>
                   {selectedQuotation.is_inter_state ? (
-                    <div className="flex justify-between text-slate-300">
+                    <div className="flex justify-between text-muted-foreground">
                       <span>IGST</span>
                       <span>{formatCurrency(selectedQuotation.igst)}</span>
                     </div>
                   ) : (
                     <>
-                      <div className="flex justify-between text-slate-300">
+                      <div className="flex justify-between text-muted-foreground">
                         <span>CGST</span>
                         <span>{formatCurrency(selectedQuotation.cgst)}</span>
                       </div>
-                      <div className="flex justify-between text-slate-300">
+                      <div className="flex justify-between text-muted-foreground">
                         <span>SGST</span>
                         <span>{formatCurrency(selectedQuotation.sgst)}</span>
                       </div>
                     </>
                   )}
-                  <div className="flex justify-between text-xl font-bold text-white pt-2 border-t border-slate-700">
+                  <div className="flex justify-between text-xl font-bold text-foreground pt-2 border-t border-border">
                     <span>Grand Total</span>
                     <span>{formatCurrency(selectedQuotation.grand_total)}</span>
                   </div>
@@ -725,10 +725,10 @@ export default function QuotationList() {
               </div>
 
               {/* Audit Info */}
-              <div className="p-4 bg-slate-800 rounded-lg">
-                <h3 className="text-white font-medium mb-3">Timeline</h3>
+              <div className="p-4 bg-muted rounded-lg">
+                <h3 className="text-foreground font-medium mb-3">Timeline</h3>
                 <div className="space-y-2 text-sm">
-                  <div className="flex justify-between text-slate-300">
+                  <div className="flex justify-between text-muted-foreground">
                     <span>Created</span>
                     <span>{formatDate(selectedQuotation.created_at)} by {selectedQuotation.created_by_name}</span>
                   </div>
@@ -768,7 +768,7 @@ export default function QuotationList() {
           )}
           
           <DialogFooter>
-            <Button variant="outline" onClick={() => setViewDialogOpen(false)} className="border-slate-600 text-slate-300">
+            <Button variant="outline" onClick={() => setViewDialogOpen(false)} className="border-border text-muted-foreground">
               Close
             </Button>
           </DialogFooter>
@@ -777,9 +777,9 @@ export default function QuotationList() {
 
       {/* Convert Dialog */}
       <Dialog open={convertDialogOpen} onOpenChange={setConvertDialogOpen}>
-        <DialogContent className="bg-slate-900 border-slate-700 max-w-md">
+        <DialogContent className="bg-card border-border max-w-md">
           <DialogHeader>
-            <DialogTitle className="text-white flex items-center gap-2">
+            <DialogTitle className="text-foreground flex items-center gap-2">
               <ArrowRight className="w-5 h-5 text-cyan-400" />
               Convert Quotation
             </DialogTitle>
@@ -787,17 +787,17 @@ export default function QuotationList() {
           
           {selectedQuotation && (
             <div className="space-y-4">
-              <div className="p-4 bg-slate-800 rounded-lg">
-                <p className="text-slate-400 text-sm">Quotation</p>
-                <p className="text-white font-mono">{selectedQuotation.quotation_number}</p>
-                <p className="text-slate-300 text-sm mt-1">{selectedQuotation.customer_name}</p>
+              <div className="p-4 bg-muted rounded-lg">
+                <p className="text-muted-foreground text-sm">Quotation</p>
+                <p className="text-foreground font-mono">{selectedQuotation.quotation_number}</p>
+                <p className="text-muted-foreground text-sm mt-1">{selectedQuotation.customer_name}</p>
                 <p className="text-cyan-400 font-semibold mt-1">
                   {new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(selectedQuotation.grand_total || 0)}
                 </p>
               </div>
               
               <div>
-                <Label className="text-slate-300 mb-3 block">Select Conversion Type</Label>
+                <Label className="text-muted-foreground mb-3 block">Select Conversion Type</Label>
                 <div className="space-y-2">
                   {CONVERSION_TYPES.map((type) => {
                     const TypeIcon = type.icon;
@@ -808,16 +808,16 @@ export default function QuotationList() {
                         className={`p-4 rounded-lg border cursor-pointer transition-all ${
                           convertType === type.value 
                             ? 'border-cyan-500 bg-cyan-900/30' 
-                            : 'border-slate-700 bg-slate-800 hover:border-slate-600'
+                            : 'border-border bg-muted hover:border-border'
                         }`}
                       >
                         <div className="flex items-center gap-3">
                           <div className={`w-10 h-10 rounded-lg ${type.color} flex items-center justify-center`}>
-                            <TypeIcon className="w-5 h-5 text-white" />
+                            <TypeIcon className="w-5 h-5 text-foreground" />
                           </div>
                           <div className="flex-1">
-                            <p className="text-white font-medium">{type.label}</p>
-                            <p className="text-slate-400 text-xs">{type.description}</p>
+                            <p className="text-foreground font-medium">{type.label}</p>
+                            <p className="text-muted-foreground text-xs">{type.description}</p>
                           </div>
                           {convertType === type.value && (
                             <CheckCircle className="w-5 h-5 text-cyan-400" />
@@ -851,7 +851,7 @@ export default function QuotationList() {
             <Button 
               variant="outline" 
               onClick={() => setConvertDialogOpen(false)} 
-              className="border-slate-600 text-slate-300"
+              className="border-border text-muted-foreground"
               disabled={actionLoading}
             >
               Cancel
