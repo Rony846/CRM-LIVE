@@ -83,6 +83,14 @@ const INDIAN_STATES = [
   'Andaman and Nicobar', 'Dadra and Nagar Haveli', 'Daman and Diu', 'Lakshadweep'
 ];
 
+// Command-Deck corner brackets + glow — visible under the hud-* themes (matches the dashboard StatCards).
+const HudBrackets = () => (
+  <>
+    <span className="sc-br sc-tl" /><span className="sc-br sc-tr" />
+    <span className="sc-br sc-bl" /><span className="sc-br sc-br2" />
+  </>
+);
+
 export default function QuotationForm() {
   const navigate = useNavigate();
   const { id } = useParams();
@@ -438,9 +446,9 @@ export default function QuotationForm() {
           {/* Main Form */}
           <div className="lg:col-span-2 space-y-6">
             {/* Firm Selection */}
-            <Card className="bg-muted border-border">
-              <CardHeader>
-                <CardTitle className="text-foreground flex items-center gap-2">
+            <Card className="mg-card sc-card group relative overflow-hidden bg-card border-border">
+              <HudBrackets /><CardHeader>
+                <CardTitle className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-[0.15em] text-muted-foreground">
                   <Building2 className="w-5 h-5 text-cyan-400" />
                   Firm Details
                 </CardTitle>
@@ -465,9 +473,9 @@ export default function QuotationForm() {
             </Card>
 
             {/* Customer Details */}
-            <Card className="bg-muted border-border">
-              <CardHeader>
-                <CardTitle className="text-foreground flex items-center gap-2">
+            <Card className="mg-card sc-card group relative overflow-hidden bg-card border-border">
+              <HudBrackets /><CardHeader>
+                <CardTitle className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-[0.15em] text-muted-foreground">
                   <User className="w-5 h-5 text-cyan-400" />
                   Customer Details
                 </CardTitle>
@@ -589,9 +597,9 @@ export default function QuotationForm() {
             </Card>
 
             {/* Items */}
-            <Card className="bg-muted border-border">
-              <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle className="text-foreground flex items-center gap-2">
+            <Card className="mg-card sc-card group relative overflow-hidden bg-card border-border">
+              <HudBrackets /><CardHeader className="flex flex-row items-center justify-between">
+                <CardTitle className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-[0.15em] text-muted-foreground">
                   <Package className="w-5 h-5 text-cyan-400" />
                   Items
                 </CardTitle>
@@ -721,9 +729,9 @@ export default function QuotationForm() {
             </Card>
 
             {/* Terms & Remarks */}
-            <Card className="bg-muted border-border">
-              <CardHeader>
-                <CardTitle className="text-foreground">Additional Details</CardTitle>
+            <Card className="mg-card sc-card group relative overflow-hidden bg-card border-border">
+              <HudBrackets /><CardHeader>
+                <CardTitle className="font-mono text-xs font-semibold uppercase tracking-[0.15em] text-muted-foreground">Additional Details</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div>
@@ -762,9 +770,9 @@ export default function QuotationForm() {
 
           {/* Summary Sidebar */}
           <div className="lg:col-span-1">
-            <Card className="bg-muted border-border sticky top-4">
-              <CardHeader>
-                <CardTitle className="text-foreground flex items-center gap-2">
+            <Card className="mg-card sc-card group relative overflow-hidden bg-card border-border sticky top-4">
+              <HudBrackets /><CardHeader>
+                <CardTitle className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-[0.15em] text-muted-foreground">
                   <IndianRupee className="w-5 h-5 text-cyan-400" />
                   Summary
                 </CardTitle>
