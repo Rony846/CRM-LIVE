@@ -19,11 +19,14 @@ function ProductTypeahead({ skus, selectedLabel, onSelect }) {
   const [open, setOpen] = useState(false);
   useEffect(() => { setQ(selectedLabel || ''); }, [selectedLabel]);
   const ql = q.trim().toLowerCase();
-  const matches = ql.length === 0 ? [] : (skus || []).filter(s =>
-    (s.name || '').toLowerCase().includes(ql) ||
-    (s.sku_code || '').toLowerCase().includes(ql) ||
-    (s.category || '').toLowerCase().includes(ql)
-  ).slice(0, 15);
+  // Space/punctuation-insensitive: "12kw" matches "12 KW", "12-kw"; multi-word matches all tokens.
+  const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const nq = norm(ql);
+  const toks = ql.split(/\s+/).filter(Boolean);
+  const matches = ql.length === 0 ? [] : (skus || []).filter(s => {
+    const raw = `${s.name || ''} ${s.sku_code || ''} ${s.category || ''}`.toLowerCase();
+    return norm(raw).includes(nq) || toks.every(t => raw.includes(t));
+  }).slice(0, 30);
   return (
     <div className="relative flex-1">
       <Input
@@ -35,15 +38,22 @@ function ProductTypeahead({ skus, selectedLabel, onSelect }) {
         className="bg-slate-800 border-slate-700 text-white"
       />
       {open && matches.length > 0 && (
-        <div className="absolute z-30 mt-1 w-full max-h-64 overflow-auto bg-slate-900 border border-slate-700 rounded-md shadow-xl">
+        <div className="absolute z-30 mt-1 w-full max-h-72 overflow-auto bg-slate-900 border border-slate-700 rounded-md shadow-xl">
+          <div className="px-3 py-1.5 text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-800 sticky top-0 bg-slate-900">
+            {matches.length} match{matches.length > 1 ? 'es' : ''}
+          </div>
           {matches.map(s => (
             <button
               type="button" key={s.id}
               onMouseDown={(e) => { e.preventDefault(); onSelect(s.id); setQ(`${s.name} (${s.sku_code})`); setOpen(false); }}
-              className="w-full text-left px-3 py-2 text-sm text-white hover:bg-slate-800 flex justify-between gap-3 border-b border-slate-800 last:border-0"
+              className="w-full text-left px-3 py-2 hover:bg-slate-800 border-b border-slate-800 last:border-0"
             >
-              <span>{s.name} <span className="text-slate-500">({s.sku_code})</span></span>
-              <span className="text-slate-400 whitespace-nowrap">₹{Number(s.selling_price || s.mrp || 0).toLocaleString('en-IN')}</span>
+              <div className="text-sm text-white leading-snug">{s.name}</div>
+              <div className="text-xs text-slate-400 flex items-center gap-2 mt-0.5">
+                <span className="font-mono">{s.sku_code}</span>
+                {s.category && <span className="px-1.5 rounded bg-slate-800 text-slate-300">{s.category}</span>}
+                <span className="ml-auto text-emerald-400">₹{Number(s.selling_price || s.mrp || 0).toLocaleString('en-IN')}</span>
+              </div>
             </button>
           ))}
         </div>
