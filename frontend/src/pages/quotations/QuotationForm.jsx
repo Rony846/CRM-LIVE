@@ -11,6 +11,51 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
+
+// Type-to-search product picker: type any part of a product name/SKU (e.g. "12kw")
+// and pick from the live matches — no scrolling a 125-item dropdown.
+function ProductTypeahead({ skus, selectedLabel, onSelect }) {
+  const [q, setQ] = useState(selectedLabel || '');
+  const [open, setOpen] = useState(false);
+  useEffect(() => { setQ(selectedLabel || ''); }, [selectedLabel]);
+  const ql = q.trim().toLowerCase();
+  const matches = ql.length === 0 ? [] : (skus || []).filter(s =>
+    (s.name || '').toLowerCase().includes(ql) ||
+    (s.sku_code || '').toLowerCase().includes(ql) ||
+    (s.category || '').toLowerCase().includes(ql)
+  ).slice(0, 15);
+  return (
+    <div className="relative flex-1">
+      <Input
+        value={q}
+        onChange={(e) => { setQ(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder='Type to search… e.g. "12kw", "lithium", "GOOTU"'
+        className="bg-slate-800 border-slate-700 text-white"
+      />
+      {open && matches.length > 0 && (
+        <div className="absolute z-30 mt-1 w-full max-h-64 overflow-auto bg-slate-900 border border-slate-700 rounded-md shadow-xl">
+          {matches.map(s => (
+            <button
+              type="button" key={s.id}
+              onMouseDown={(e) => { e.preventDefault(); onSelect(s.id); setQ(`${s.name} (${s.sku_code})`); setOpen(false); }}
+              className="w-full text-left px-3 py-2 text-sm text-white hover:bg-slate-800 flex justify-between gap-3 border-b border-slate-800 last:border-0"
+            >
+              <span>{s.name} <span className="text-slate-500">({s.sku_code})</span></span>
+              <span className="text-slate-400 whitespace-nowrap">₹{Number(s.selling_price || s.mrp || 0).toLocaleString('en-IN')}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {open && ql.length > 0 && matches.length === 0 && (
+        <div className="absolute z-30 mt-1 w-full bg-slate-900 border border-slate-700 rounded-md px-3 py-2 text-sm text-slate-400">
+          No product matches “{q}”.
+        </div>
+      )}
+    </div>
+  );
+}
 import {
   FileText, ArrowLeft, Plus, Trash2, Loader2, Building2, Package,
   Search, User, Phone, Mail, MapPin, IndianRupee, Save, Send,
@@ -571,18 +616,11 @@ export default function QuotationForm() {
                       <div className="md:col-span-2">
                         <Label className="text-slate-400 text-xs">Select Product *</Label>
                         <div className="flex gap-2">
-                          <Select value={item.master_sku_id} onValueChange={(v) => handleSkuSelect(index, v)}>
-                            <SelectTrigger className="bg-slate-800 border-slate-700 text-white flex-1">
-                              <SelectValue placeholder="Select product" />
-                            </SelectTrigger>
-                            <SelectContent className="bg-slate-900 border-slate-700 text-white max-h-60">
-                              {masterSkus.map(sku => (
-                                <SelectItem key={sku.id} value={sku.id} className="text-white hover:bg-slate-800 focus:bg-slate-800 focus:text-white">
-                                  {sku.name} ({sku.sku_code})
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                          <ProductTypeahead
+                            skus={masterSkus}
+                            selectedLabel={item.name ? `${item.name} (${item.sku_code})` : ''}
+                            onSelect={(skuId) => handleSkuSelect(index, skuId)}
+                          />
                           {/* View Catalogue Link */}
                           {item.master_sku_id && linkedDatasheets[item.master_sku_id] && (
                             <Button
