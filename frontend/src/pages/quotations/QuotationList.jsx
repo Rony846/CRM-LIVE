@@ -39,6 +39,13 @@ const CONVERSION_TYPES = [
   { value: 'procurement', label: 'Needs Procurement', icon: ShoppingCart, color: 'bg-blue-600', description: 'Item needs to be purchased first - adds to Pending Fulfillment queue' }
 ];
 
+const HudBrackets = () => (
+  <>
+    <span className="sc-br sc-tl" /><span className="sc-br sc-tr" />
+    <span className="sc-br sc-bl" /><span className="sc-br sc-br2" />
+  </>
+);
+
 export default function QuotationList() {
   const navigate = useNavigate();
   const { token, user } = useAuth();
@@ -323,40 +330,46 @@ export default function QuotationList() {
 
         {/* Stats */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          <Card className="bg-muted border-border">
+          <Card className="mg-card sc-card group relative overflow-hidden bg-card border-border">
+            <HudBrackets />
             <CardContent className="p-4">
-              <p className="text-muted-foreground text-sm">Total Quotations</p>
-              <p className="text-2xl font-bold text-foreground">{stats.total_quotations || 0}</p>
+              <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Total Quotations</p>
+              <p className="sc-value tabular-nums text-2xl font-bold text-foreground">{stats.total_quotations || 0}</p>
             </CardContent>
           </Card>
-          <Card className="bg-muted border-border">
+          <Card className="mg-card sc-card group relative overflow-hidden bg-card border-border">
+            <HudBrackets />
             <CardContent className="p-4">
-              <p className="text-muted-foreground text-sm">Pending Approval</p>
-              <p className="text-2xl font-bold text-yellow-400">{stats.pending_approval || 0}</p>
+              <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Pending Approval</p>
+              <p className="sc-value tabular-nums text-2xl font-bold text-yellow-400">{stats.pending_approval || 0}</p>
             </CardContent>
           </Card>
-          <Card className="bg-muted border-border">
+          <Card className="mg-card sc-card group relative overflow-hidden bg-card border-border">
+            <HudBrackets />
             <CardContent className="p-4">
-              <p className="text-muted-foreground text-sm">Approved</p>
-              <p className="text-2xl font-bold text-green-400">{stats.by_status?.approved || 0}</p>
+              <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Approved</p>
+              <p className="sc-value tabular-nums text-2xl font-bold text-green-400">{stats.by_status?.approved || 0}</p>
             </CardContent>
           </Card>
-          <Card className="bg-muted border-border">
+          <Card className="mg-card sc-card group relative overflow-hidden bg-card border-border">
+            <HudBrackets />
             <CardContent className="p-4">
-              <p className="text-muted-foreground text-sm">Conversion Rate</p>
-              <p className="text-2xl font-bold text-cyan-400">{stats.conversion_rate || 0}%</p>
+              <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Conversion Rate</p>
+              <p className="sc-value tabular-nums text-2xl font-bold text-cyan-400">{stats.conversion_rate || 0}%</p>
             </CardContent>
           </Card>
-          <Card className="bg-muted border-border">
+          <Card className="mg-card sc-card group relative overflow-hidden bg-card border-border">
+            <HudBrackets />
             <CardContent className="p-4">
-              <p className="text-muted-foreground text-sm">Total Value</p>
-              <p className="text-xl font-bold text-foreground">{formatCurrency(stats.total_value)}</p>
+              <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Total Value</p>
+              <p className="sc-value tabular-nums text-xl font-bold text-foreground">{formatCurrency(stats.total_value)}</p>
             </CardContent>
           </Card>
         </div>
 
         {/* Filters */}
-        <Card className="bg-muted border-border">
+        <Card className="mg-card sc-card group relative overflow-hidden bg-card border-border">
+          <HudBrackets />
           <CardContent className="p-4">
             <div className="flex flex-wrap gap-4 items-end">
               <div className="w-full md:w-48">
@@ -410,7 +423,8 @@ export default function QuotationList() {
         </Card>
 
         {/* Quotations Table */}
-        <Card className="bg-muted border-border">
+        <Card className="mg-card sc-card group relative overflow-hidden bg-card border-border">
+          <HudBrackets />
           <CardContent className="p-0">
             <Table>
               <TableHeader>

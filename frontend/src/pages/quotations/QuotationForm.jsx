@@ -797,9 +797,9 @@ export default function QuotationForm() {
                     <span>GST</span>
                     <span>{formatCurrency(totals.totalGst)}</span>
                   </div>
-                  <div className="flex justify-between text-xl font-bold text-foreground pt-4 border-t border-border">
-                    <span>Grand Total</span>
-                    <span>{formatCurrency(totals.grandTotal)}</span>
+                  <div className="flex justify-between items-end pt-4 border-t border-border">
+                    <span className="font-mono text-xs font-semibold uppercase tracking-[0.15em] text-muted-foreground">Grand Total</span>
+                    <span className="sc-value tabular-nums text-2xl font-bold text-foreground">{formatCurrency(totals.grandTotal)}</span>
                   </div>
                 </div>
 
