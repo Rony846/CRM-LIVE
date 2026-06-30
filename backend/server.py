@@ -80788,6 +80788,115 @@ def _wa_relay_noprefix_numbers():
     return out
 
 
+_PI_INTENT_RX = re.compile(r"\b(p\.?\s?i\.?\b|proforma|quotation|quote)\b.*\b(banao|bana|create|make|raise|nikal|de do|bhej)\b"
+                           r"|\b(create|make|raise|new)\b.*\b(p\.?\s?i\.?\b|proforma|quotation|quote)\b", re.I)
+
+
+async def _relay_parse_pi(text: str) -> dict:
+    """Parse a spoken/typed PI request into {dealer, product, rate, qty, gst}. LOCAL-FIRST (free, cap-proof)."""
+    sysp = ("Extract a Proforma-Invoice (PI) request from the message. Output ONLY compact JSON: "
+            '{"dealer":"<dealer/customer name or null>","product":"<product search words, e.g. 12kw inverter>",'
+            '"rate":<unit price number or null>,"qty":<number, default 1>,"gst":<gst % number or null>}. '
+            "Use null when a field is absent; qty defaults to 1.")
+    def _j(t):
+        m = re.search(r"\{.*\}", t or "", re.S)
+        try:
+            return json.loads(m.group(0)) if m else None
+        except Exception:
+            return None
+    try:
+        from utils import brain_registry
+        if brain_registry.available("pratibha"):
+            r = await brain_registry.complete("pratibha", system=sysp, prompt=text[:600], max_tokens=160, temperature=0.1, timeout=30.0)
+            if r.get("model_ok"):
+                j = _j(r.get("text"))
+                if j:
+                    return j
+    except Exception as e:
+        logger.warning(f"PI parse local failed: {e}")
+    c = pratibha_brain._client_or_none()
+    if c:
+        try:
+            resp = await c.messages.create(model=pratibha_brain.model(), max_tokens=160,
+                                           system=pratibha_brain._sys(sysp), messages=[{"role": "user", "content": text[:600]}])
+            return _j(pratibha_brain._text(resp)) or {}
+        except Exception as e:
+            logger.error(f"PI parse claude failed: {e}")
+    return {}
+
+
+def _match_sku_by_words(skus: list, query: str):
+    """Best master-SKU match for a free-text product query (most name-token hits wins)."""
+    toks = [w for w in re.split(r"[^a-z0-9]+", (query or "").lower()) if len(w) >= 2]
+    best, score = None, 0
+    for s in skus:
+        name = f"{s.get('name','')} {s.get('sku_code','')} {s.get('category','')}".lower()
+        sc = sum(1 for w in toks if w in name)
+        if sc > score:
+            best, score = s, sc
+    return best if score else None
+
+
+async def _relay_create_pi(text: str, digits: str) -> str:
+    """Founder voice/text → draft PI: parse, resolve dealer + product, create a DRAFT quotation, and
+    WhatsApp the PI PDF back to the founder for review. Issues only on his explicit 'send it'."""
+    p = await _relay_parse_pi(text)
+    if not p or not p.get("product"):
+        return ("Couldn't read the PI. Try: *create PI for <dealer>, <product>, price <amount>* "
+                "(e.g. 'create PI for Arafat, 12kw inverter, price 62000').")
+    firm = await db.firms.find_one({"name": {"$regex": "^MGIPL$", "$options": "i"}}, {"_id": 0}) \
+        or await db.firms.find_one({"name": {"$regex": "MGIPL|MuscleGrid Industries Gurgaon", "$options": "i"}}, {"_id": 0})
+    if not firm:
+        return "MGIPL firm not found — can't create the PI."
+    skus = await db.master_skus.find({"is_active": True}, {"_id": 0}).to_list(500)
+    sku = _match_sku_by_words(skus, p.get("product"))
+    if not sku:
+        return f"No product matched “{p.get('product')}”. Be a bit more specific (e.g. '12kw inverter')."
+    dealer_name = (p.get("dealer") or "").strip()
+    party = None
+    if dealer_name:
+        party = await db.parties.find_one({"name": {"$regex": re.escape(dealer_name.split()[0]), "$options": "i"}}, {"_id": 0})
+    cust_state = (party or {}).get("state") or firm.get("state")
+    is_inter = bool(cust_state and firm.get("state") and cust_state.strip().lower() != firm.get("state").strip().lower())
+    qty = float(p.get("qty") or 1)
+    rate = float(p.get("rate") or sku.get("selling_price") or sku.get("mrp") or 0)
+    gst = float(p.get("gst") if p.get("gst") is not None else (sku.get("gst_rate") or 18))
+    items = [{"master_sku_id": sku["id"], "sku_code": sku.get("sku_code"), "name": sku.get("name"),
+              "hsn_code": sku.get("hsn_code"), "quantity": qty, "rate": rate, "gst_rate": gst,
+              "discount_percent": 0, "discount_amount": 0,
+              "cost_price_snapshot": sku.get("cost_price", 0), "mrp_snapshot": sku.get("mrp", rate)}]
+    totals = calculate_quotation_totals(items, is_inter)
+    now = datetime.now(timezone.utc)
+    qid = str(uuid.uuid4())
+    qnum = generate_quotation_number(firm.get("code") or "MGI")
+    token = generate_quotation_token()
+    doc = {"id": qid, "quotation_number": qnum, "version": 1, "firm_id": firm["id"], "firm_name": firm.get("name"),
+           "firm_gstin": firm.get("gstin"), "firm_address": firm.get("address"), "firm_state": firm.get("state"),
+           "party_id": (party or {}).get("id"), "customer_name": (party or {}).get("name") or dealer_name or "Customer",
+           "customer_phone": (party or {}).get("phone"), "customer_email": (party or {}).get("email"),
+           "customer_address": (party or {}).get("address"), "customer_city": (party or {}).get("city"),
+           "customer_state": cust_state, "customer_pincode": (party or {}).get("pincode"),
+           "customer_gstin": (party or {}).get("gstin"), "items": totals["items"], "subtotal": totals["subtotal"],
+           "total_discount": totals["total_discount"], "taxable_value": totals["taxable_value"], "igst": totals["igst"],
+           "cgst": totals["cgst"], "sgst": totals["sgst"], "total_gst": totals["total_gst"], "grand_total": totals["grand_total"],
+           "is_inter_state": is_inter, "validity_days": 15, "validity_date": (now + timedelta(days=15)).isoformat(),
+           "remarks": "Created via MG Brain (voice/text).", "terms_and_conditions": "1. Prices subject to change.\n2. Delivery 7-10 working days.\n3. Payment: 100% advance.\n4. GST extra as applicable.",
+           "access_token": token, "status": "draft", "is_locked": False, "source": "mg_brain_voice",
+           "created_by": "mg_brain", "created_by_name": "MG Brain", "created_at": now.isoformat(), "updated_at": now.isoformat()}
+    await db.quotations.insert_one(doc)
+    # PDF → founder
+    try:
+        from weasyprint import HTML as _HTML
+        buf = BytesIO(); _HTML(string=generate_quotation_pdf_html(doc)).write_pdf(buf)
+        await whatsapp_cloud.send_document(digits, buf.getvalue(), f"{qnum}.pdf",
+            caption=(f"🧾 Draft PI — {doc['customer_name']} ({qnum})\n{sku.get('name')} ×{int(qty)} @ ₹{rate:,.0f} +{gst:.0f}% GST\n"
+                     f"Grand total ₹{totals['grand_total']:,.2f}\nReview & reply *issue {qnum}* to send it to the dealer."))
+    except Exception as e:
+        logger.error(f"PI pdf/send failed: {e}")
+        return f"Draft PI {qnum} created (₹{totals['grand_total']:,.0f}) but couldn't send the PDF: {str(e)[:100]}"
+    return f"✅ Draft PI {qnum} created for {doc['customer_name']} — PDF sent. Reply *issue {qnum}* to send it to the dealer."
+
+
 async def _claude_wa_relay(digits: str, question: str):
     """PIN gate in front of the relay: verify the boss, then (within the session window) answer."""
     now = datetime.now(timezone.utc)
@@ -80831,6 +80940,27 @@ async def _claude_wa_relay(digits: str, question: str):
     _mm = re.match(r"\s*(?:book|approve)\s+(MM-[A-Za-z0-9]{4})\b", ql, re.I)
     if profile == "full" and _mm:
         await whatsapp_cloud.send_text(digits, await _ms_marvel_book_proposal(_mm.group(1).upper(), by=f"wa:{digits}"))
+        return
+
+    # "issue <PI#>" / "send it <PI#>" → issue a draft PI to the dealer (mark sent + lock).
+    _piss = re.match(r"\s*(?:issue|send\s*it|send\s*pi)\s+(PI-[A-Za-z0-9\-]+)", ql, re.I)
+    if profile == "full" and _piss:
+        num = _piss.group(1).upper()
+        q = await db.quotations.find_one({"quotation_number": num})
+        if not q:
+            await whatsapp_cloud.send_text(digits, f"No PI {num} found.")
+        elif q.get("status") != "draft":
+            await whatsapp_cloud.send_text(digits, f"{num} is already {q.get('status')}.")
+        else:
+            await db.quotations.update_one({"id": q["id"]}, {"$set": {"status": "sent", "is_locked": True,
+                "sent_at": datetime.now(timezone.utc).isoformat()}})
+            await whatsapp_cloud.send_text(digits, f"✅ {num} issued — {q.get('customer_name')}, ₹{q.get('grand_total',0):,.0f}.")
+        return
+
+    # PI creation from a typed or voice-transcribed instruction ("create a PI for Arafat, 12kw inverter, 62000").
+    if profile == "full" and _PI_INTENT_RX.search(ql):
+        await whatsapp_cloud.send_text(digits, "🧾 PI bana raha hoon, ek minute…")
+        await whatsapp_cloud.send_text(digits, await _relay_create_pi(ql, digits))
         return
 
     # "return aa gaya <phone/order>" → mark a buyer return received at gate (unblocks the replacement).
