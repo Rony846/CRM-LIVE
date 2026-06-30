@@ -77,18 +77,18 @@ const themes = [
   },
 ];
 
-const DEFAULT_THEME = 'hud-dark';
+const DEFAULT_THEME = 'hud-platinum';
 const VALID = themes.map((t) => t.id);
 
 export default function ThemeSwitcher() {
   const [currentTheme, setCurrentTheme] = useState(DEFAULT_THEME);
 
   useEffect(() => {
-    // One-time migration onto the new Command Deck theme system.
-    // Anyone on an old/removed theme is rolled onto Arc Dark.
-    if (!localStorage.getItem('mg-theme-v3')) {
+    // One-time migration: Platinum is now the CRM default. Roll everyone
+    // onto it once (bump the key to re-run when the default changes).
+    if (!localStorage.getItem('mg-theme-v4')) {
       localStorage.setItem('mg-theme', DEFAULT_THEME);
-      localStorage.setItem('mg-theme-v3', '1');
+      localStorage.setItem('mg-theme-v4', '1');
     }
     let saved = localStorage.getItem('mg-theme') || DEFAULT_THEME;
     if (!VALID.includes(saved)) {
