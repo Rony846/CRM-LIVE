@@ -159,6 +159,19 @@ def amount_only(text: str):
     m = _AMT_RX.search(text or "")
     return float(m.group(1).replace(",", "")) if m else None
 
+_SR_RX = re.compile(r"\b(ship\s*rocket|shiprocket|rocket)\b", re.I)
+_BS_RX = re.compile(r"\b(big\s*ship|bigship|delhivery)\b", re.I)
+
+def parse_courier(text: str):
+    """Return 'shiprocket' | 'bigship' | None."""
+    t = text or ""
+    if _SR_RX.search(t):
+        return "shiprocket"
+    if _BS_RX.search(t):
+        return "bigship"
+    return None
+
+
 def parse_payment(text: str):
     """Return (payment, amount): ('COD', 1200) | ('COD', None) | ('Prepaid', None) | (None, None)."""
     t = text or ""

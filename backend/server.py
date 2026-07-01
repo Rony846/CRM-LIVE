@@ -84424,15 +84424,16 @@ async def _jasmine_parse(text, context) -> dict:
     return {}
 
 
-def _jasmine_card(f: dict, code: str, dim_src: str) -> str:
+def _jasmine_card(f: dict, code: str, dim_src: str, courier: str = "bigship") -> str:
     pay = f.get("payment_type", "Prepaid")
     pay_line = f"{pay}" + (f" ₹{f.get('cod_amount')}" if str(pay).upper() == "COD" else "")
+    cname = "Shiprocket" if courier == "shiprocket" else "Delhivery (Bigship)"
     return (f"📦 *Jasmine — confirm to book* [{code}]\n"
             f"To: {f['first_name']} {f.get('last_name','')}  {f['phone']}\n"
             f"{f['address_line1']} {f.get('address_line2','')}, {f.get('city','')} {f.get('state','')} - {f['pincode']}\n"
             f"Item: {f['product_name']} x{f.get('quantity',1)}\n"
             f"Box: {f['weight_kg']}kg  {f['length_cm']}x{f['width_cm']}x{f['height_cm']}cm ({dim_src})\n"
-            f"Pay: {pay_line} · Delhivery\n"
+            f"Pay: {pay_line} · {cname}\n"
             f"Reply *confirm {code}* to book, or *cancel {code}*.")
 
 
@@ -84453,11 +84454,26 @@ def _jasmine_invoice_text(message) -> str:
         return ""
 
 
-async def _jasmine_present_card(chat_id, fields, dims, ref, overflow, requested_by, seed):
-    """Validate → dedup → create the awaiting_confirm pending → return the confirmation card.
-    Shared by the direct path and the two-step 'which PCB model?' path."""
+async def _jasmine_finalize(chat_id, fields, dims, ref, overflow, requested_by, seed, text):
+    """Decide the courier (Bigship or Shiprocket). If neither is known yet, ASK; otherwise present
+    the confirmation card. Courier hint flows on fields['_courier'] or the current message."""
+    courier = fields.get("_courier") or _JD.parse_courier(text)
+    if not courier:
+        await db.jasmine_pending.update_one(
+            {"chat_id": chat_id, "status": "awaiting_courier"},
+            {"$set": {"chat_id": chat_id, "status": "awaiting_courier", "fields": fields, "dims": dims,
+                      "ref": ref, "overflow": overflow, "seed": str(seed), "requested_by": requested_by,
+                      "created_at": datetime.now(timezone.utc).isoformat()},
+             "$setOnInsert": {"id": str(uuid.uuid4())}}, upsert=True)
+        return f"Jasmine: send {fields['product_name']} to {fields['first_name']} — via *Bigship* or *Shiprocket*?"
+    return await _jasmine_present_card(chat_id, fields, dims, ref, overflow, requested_by, seed, courier)
+
+
+async def _jasmine_present_card(chat_id, fields, dims, ref, overflow, requested_by, seed, courier="bigship"):
+    """Validate → dedup → create the awaiting_confirm pending → return the confirmation card."""
     fields.update({"weight_kg": dims["weight_kg"], "length_cm": dims["length_cm"],
                    "width_cm": dims["width_cm"], "height_cm": dims["height_cm"]})
+    fields.pop("_courier", None)  # keep booking fields clean for ShipmentCreateRequest
     ok, problems = _JD.validate_dispatch(fields)
     if not ok:
         return "Jasmine: " + "; ".join(problems) + ".  (Reply with the missing detail, then tag me again.)"
@@ -84469,10 +84485,10 @@ async def _jasmine_present_card(chat_id, fields, dims, ref, overflow, requested_
     await db.jasmine_pending.update_one(
         {"idem": _JD.idempotency_key(fields["phone"], fields["product_name"], ref, datetime.now(timezone.utc).strftime("%Y-%m-%d"))},
         {"$set": {"code": code, "chat_id": chat_id, "fields": fields, "ref": ref, "dim_src": dims.get("source"),
-                  "status": "awaiting_confirm", "overflow": overflow, "requested_by": requested_by,
+                  "courier": courier, "status": "awaiting_confirm", "overflow": overflow, "requested_by": requested_by,
                   "created_at": datetime.now(timezone.utc).isoformat()},
          "$setOnInsert": {"id": str(uuid.uuid4())}}, upsert=True)
-    card = _jasmine_card(fields, code, dims.get("source", ""))
+    card = _jasmine_card(fields, code, dims.get("source", ""), courier)
     if overflow:
         card += "\n⚠️ address is long — check it wasn't cut."
     return card
@@ -84540,12 +84556,12 @@ async def _jasmine_pcb_payment_step(chat_id, fields, ref, overflow, requested_by
     if pay == "Prepaid":
         fields["payment_type"] = "Prepaid"; fields["cod_amount"] = 0
         fields["invoice_amount"] = fields.get("invoice_amount") or 100.0
-        return await _jasmine_present_card(chat_id, fields, _PCB_DIMS, ref, overflow, requested_by, seed)
+        return await _jasmine_finalize(chat_id, fields, _PCB_DIMS, ref, overflow, requested_by, seed, text)
     if pay == "COD":
         cod = amt or inv_cod
         if cod > 0:
             fields["payment_type"] = "COD"; fields["cod_amount"] = cod; fields["invoice_amount"] = cod
-            return await _jasmine_present_card(chat_id, fields, _PCB_DIMS, ref, overflow, requested_by, seed)
+            return await _jasmine_finalize(chat_id, fields, _PCB_DIMS, ref, overflow, requested_by, seed, text)
         await _jasmine_store_payment_pending(chat_id, fields, ref, overflow, seed, inv_cod, True, requested_by)
         return f"Jasmine: COD for {fields['product_name']} — what amount to collect?"
     # payment not stated → ASK (invoice COD amount shown as the hint)
@@ -84590,6 +84606,7 @@ async def _jasmine_dispatch(message):
             if yes and idx < len(cands):
                 fields, overflow = await _jasmine_fields_from_customer(cands[idx])
                 fields["invoice_number"] = (pend_c.get("ref") or ("MDG-" + _JD.gen_code(message.message_id)))[:25]
+                fields["_courier"] = _JD.parse_courier(pend_c.get("orig_text", "")) or _JD.parse_courier(text)
                 await db.jasmine_pending.update_one({"_id": pend_c["_id"]}, {"$set": {"status": "customer_ok"}})
                 if pend_c.get("is_pcb"):
                     model = pend_c.get("model") or ""
@@ -84615,7 +84632,17 @@ async def _jasmine_dispatch(message):
                 await db.jasmine_pending.update_one({"_id": pend_c["_id"]}, {"$set": {"status": "no_match"}})
                 return "Jasmine: then I don't have other data for that name — share the invoice, or send name, address & phone."
             return None  # unclear yes/no → stay silent
-        # (a) answering "Prepaid or COD?" (or the follow-up COD amount)
+        # (a) answering "Bigship or Shiprocket?"
+        pend_ct = await db.jasmine_pending.find_one(
+            {"chat_id": chat_id, "status": "awaiting_courier", "created_at": {"$gte": recent}}, sort=[("_id", -1)])
+        if pend_ct:
+            courier = _JD.parse_courier(text)
+            if courier:
+                await db.jasmine_pending.update_one({"_id": pend_ct["_id"]}, {"$set": {"status": "resolved"}})
+                return await _jasmine_present_card(chat_id, pend_ct["fields"], pend_ct["dims"], pend_ct.get("ref", ""),
+                                                   pend_ct.get("overflow", False), author, pend_ct.get("seed", ""), courier)
+            return None  # unclear → stay silent
+        # (b) answering "Prepaid or COD?" (or the follow-up COD amount)
         pend_p = await db.jasmine_pending.find_one(
             {"chat_id": chat_id, "status": "awaiting_payment", "created_at": {"$gte": recent}}, sort=[("_id", -1)])
         if pend_p:
@@ -84626,13 +84653,13 @@ async def _jasmine_dispatch(message):
                 if a and a > 0:
                     f["payment_type"] = "COD"; f["cod_amount"] = a; f["invoice_amount"] = a
                     await db.jasmine_pending.update_one({"_id": pend_p["_id"]}, {"$set": {"status": "resolved"}})
-                    return await _jasmine_present_card(chat_id, f, _PCB_DIMS, ref, ov, author, seed)
+                    return await _jasmine_finalize(chat_id, f, _PCB_DIMS, ref, ov, author, seed, text)
                 return None
             pay, amt = _JD.parse_payment(text)
             if pay == "Prepaid":
                 f["payment_type"] = "Prepaid"; f["cod_amount"] = 0; f["invoice_amount"] = f.get("invoice_amount") or 100.0
                 await db.jasmine_pending.update_one({"_id": pend_p["_id"]}, {"$set": {"status": "resolved"}})
-                return await _jasmine_present_card(chat_id, f, _PCB_DIMS, ref, ov, author, seed)
+                return await _jasmine_finalize(chat_id, f, _PCB_DIMS, ref, ov, author, seed, text)
             if pay == "COD":
                 cod = amt or inv_cod
                 if cod <= 0:
@@ -84640,7 +84667,7 @@ async def _jasmine_dispatch(message):
                     return "Jasmine: COD — what amount to collect?"
                 f["payment_type"] = "COD"; f["cod_amount"] = cod; f["invoice_amount"] = cod
                 await db.jasmine_pending.update_one({"_id": pend_p["_id"]}, {"$set": {"status": "resolved"}})
-                return await _jasmine_present_card(chat_id, f, _PCB_DIMS, ref, ov, author, seed)
+                return await _jasmine_finalize(chat_id, f, _PCB_DIMS, ref, ov, author, seed, text)
             return None  # unrecognised → stay silent
         # (b) answering "which PCB model?"
         pend_m = await db.jasmine_pending.find_one(
@@ -84693,6 +84720,7 @@ async def _jasmine_dispatch(message):
         "cod_amount": float(p.get("cod_amount") or 0),
         "invoice_amount": float(p.get("cod_amount") or 0) or 100.0,
         "invoice_number": (ref or f"MDG-{_JD.gen_code(message.message_id)}")[:25],
+        "_courier": _JD.parse_courier(text),
     }
     # No invoice + not enough to ship, but we have a NAME → look the customer up in the CRM and ask
     # to confirm ("send a PCB to Singh Automobiles" → "is this Singh Automobiles, 98…, <address>?").
@@ -84743,7 +84771,7 @@ async def _jasmine_dispatch(message):
     if not dims:
         return (f"Jasmine: '{fields['product_name'] or 'this item'}' has no saved box size — "
                 f"reply: *dims <L>x<W>x<H> <kg>* and I'll continue.")
-    return await _jasmine_present_card(chat_id, fields, dims, ref, overflow, author, message.message_id)
+    return await _jasmine_finalize(chat_id, fields, dims, ref, overflow, author, message.message_id, text)
 
 
 async def _jasmine_confirm_and_book(message, code):
@@ -84760,18 +84788,35 @@ async def _jasmine_confirm_and_book(message, code):
         return "Jasmine: only dispatch leads can confirm a booking."
     if pend.get("awb"):
         return f"Jasmine: already booked — AWB {pend['awb']}."
+    f = dict(pend["fields"]); f.pop("_courier", None)
+    courier = pend.get("courier", "bigship")
     try:
-        resp = await _pratibha_book_shipment(pend["fields"], {"from_addr": "jasmine"})
+        if courier == "shiprocket":
+            from utils import shiprocket
+            sr = await shiprocket.create_shipment(
+                order_id=f.get("invoice_number"), first_name=f["first_name"], last_name=f.get("last_name", ""),
+                phone=f["phone"], address=f["address_line1"] + " " + f.get("address_line2", ""),
+                city=f.get("city", ""), state=f.get("state", ""), pincode=f["pincode"],
+                product_name=f["product_name"], sku=f.get("product_name"), qty=f.get("quantity", 1),
+                unit_price=(f.get("cod_amount") or f.get("invoice_amount") or 100.0),
+                weight_kg=f["weight_kg"], length_cm=f["length_cm"], width_cm=f["width_cm"], height_cm=f["height_cm"],
+                payment_method=f.get("payment_type", "Prepaid"),
+                order_date=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"))
+            if not sr.get("ok"):
+                await db.jasmine_pending.update_one({"_id": pend["_id"]}, {"$set": {"status": "error", "error": str(sr.get("error"))[:300]}})
+                return f"Jasmine: Shiprocket booking FAILED — {str(sr.get('error'))[:120]}. Nothing shipped."
+            awb, courier_name, label = sr.get("awb"), sr.get("courier") or "Shiprocket", sr.get("label_url")
+        else:
+            resp = await _pratibha_book_shipment(f, {"from_addr": "jasmine"})
+            awb, courier_name, label = getattr(resp, "awb_number", None), getattr(resp, "courier_name", "Delhivery"), getattr(resp, "label_url", None)
     except Exception as e:
         await db.jasmine_pending.update_one({"_id": pend["_id"]}, {"$set": {"status": "error", "error": str(e)[:300]}})
         return f"Jasmine: booking FAILED — {str(e)[:120]}. Nothing shipped. Fix & tag me again."
-    awb = getattr(resp, "awb_number", None)
     if not awb:
-        return "Jasmine: Bigship gave no AWB (check the panel). Nothing confirmed — do not re-tag until checked."
+        return f"Jasmine: {courier} gave no AWB (check the panel). Nothing confirmed — do not re-tag until checked."
     await db.jasmine_pending.update_one({"_id": pend["_id"]},
-        {"$set": {"status": "booked", "awb": awb, "booked_at": datetime.now(timezone.utc).isoformat()}})
-    label = getattr(resp, "label_url", None)
-    msg = f"Jasmine: booked ✅ *{awb}* ({getattr(resp,'courier_name','Delhivery')}) for {pend['fields']['first_name']}."
+        {"$set": {"status": "booked", "awb": awb, "courier_used": courier, "booked_at": datetime.now(timezone.utc).isoformat()}})
+    msg = f"Jasmine: booked ✅ *{awb}* ({courier_name}) for {pend['fields']['first_name']}."
     return msg + (f"\nLabel: {label}" if label else "")
 
 
