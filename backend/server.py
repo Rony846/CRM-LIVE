@@ -1303,6 +1303,20 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Shopify "fulfilled but NOT-PICKED on Bigship" daily check — catches PAID orders that look
+        # shipped in Shopify but whose Bigship consignment was never picked up. Default 06:30 UTC
+        # (~12:00 IST). Disable with SHOPIFY_NOTPICKED_CHECK_ENABLED=0.
+        scheduler.add_job(
+            scheduled_shopify_notpicked_check,
+            CronTrigger(hour=int(os.environ.get("SHOPIFY_NOTPICKED_UTC_HOUR", "6")),
+                        minute=int(os.environ.get("SHOPIFY_NOTPICKED_UTC_MIN", "30")), timezone="UTC"),
+            id="shopify_notpicked_check",
+            name="Shopify fulfilled-but-NOT-PICKED daily check",
+            replace_existing=True,
+            misfire_grace_time=3600,
+            max_instances=1,
+        )
+
         # Collections: daily prioritized external-receivables chase-list to the founder.
         scheduler.add_job(
             scheduled_collections,
@@ -65932,6 +65946,146 @@ async def scheduled_unshipped_bot():
         await _unshipped_bot_run()
     except Exception as e:
         logger.error(f"unshipped bot failed: {e}")
+
+
+# ===================== Shopify "fulfilled but NOT-PICKED" daily check =====================
+# A Shopify order can be marked *fulfilled* (customer gets a tracking link) while the Bigship
+# consignment was never actually handed to the courier — Bigship shows NOT PICKED / CANCELLED
+# ("shipment not received from client" / "seller cancelled"). The parcel never leaves the
+# warehouse, so a PAID customer waits on a shipment that isn't moving. This job cross-checks each
+# recently-fulfilled paid Shopify order against live Bigship tracking and flags the stuck ones to
+# the founder — flag-once (re-alert after N days), capped per run to respect Bigship rate limits.
+SHOPIFY_NOTPICKED_ENABLED = os.environ.get("SHOPIFY_NOTPICKED_CHECK_ENABLED", "1") in ("1", "true", "True")
+# Bigship statuses that mean "never actually shipped" (as opposed to in-transit / delivered / RTO).
+_SHOPIFY_NOTPICKED_STATES = {"NOT PICKED", "CANCELLED", "PICKUP CANCELLED", "NOT-PICKED"}
+
+
+def _shopify_order_awbs(o: dict) -> list:
+    """Pull courier AWB/tracking numbers off a Shopify order's raw fulfillments."""
+    out = []
+    for f in ((o.get("raw") or {}).get("fulfillments") or []):
+        tn = f.get("tracking_number") or (f.get("tracking_numbers") or [None])[0]
+        if tn:
+            out.append(str(tn).strip())
+    return out
+
+
+async def _shopify_notpicked_run() -> dict:
+    """Scan recently-fulfilled PAID Shopify orders; flag any whose Bigship AWB is NOT PICKED /
+    CANCELLED. Returns {checked, flagged:[...], alerted:int}. Idempotent + dedup via
+    db.shopify_notpicked_flags (flag-once; re-alert after SHOPIFY_NOTPICKED_REALERT_DAYS)."""
+    now = datetime.now(timezone.utc)
+    window = int(os.environ.get("SHOPIFY_NOTPICKED_WINDOW_DAYS", "30"))
+    realert_days = int(os.environ.get("SHOPIFY_NOTPICKED_REALERT_DAYS", "3"))
+    cap = int(os.environ.get("SHOPIFY_NOTPICKED_MAX", "80"))
+    cutoff = (now - timedelta(days=window)).strftime("%Y-%m-%d")
+
+    checked = 0
+    flagged = []            # currently-stuck this run
+    stuck_orders = set()
+    cur = db.shopify_orders.find({"store": "in", "fulfillment_status": "fulfilled"})
+    async for o in cur:
+        if checked >= cap:
+            break
+        if (o.get("shopify_created_at") or "")[:10] < cutoff:
+            continue
+        if o.get("cancelled_at") or o.get("financial_status") != "paid":
+            continue
+        awbs = _shopify_order_awbs(o)
+        if not awbs:
+            continue
+        awb = awbs[0]
+        checked += 1
+        try:
+            data = await _bigship_track_one(awb)
+        except Exception:
+            data = None  # rate-limited / transient — skip this run, retry tomorrow
+        if not data:
+            continue
+        status = str(((data.get("order_detail") or {}).get("current_tracking_status") or "")).strip().upper()
+        if status not in _SHOPIFY_NOTPICKED_STATES:
+            continue
+        sh = data.get("scan_histories") or []
+        remark = (sh[0].get("scan_remarks") if sh else "") or ""
+        onum = o.get("order_number")
+        stuck_orders.add(onum)
+        flagged.append({
+            "order_number": onum, "awb": awb, "status": status, "remark": remark[:120],
+            "customer_name": o.get("customer_name") or "", "amount": o.get("total_price"),
+            "created": (o.get("shopify_created_at") or "")[:10],
+        })
+        await asyncio.sleep(0.4)  # be gentle with Bigship
+
+    # Resolve any previously-flagged order that is no longer stuck (picked up / delivered).
+    async for fl in db.shopify_notpicked_flags.find({"resolved": {"$ne": True}}):
+        if fl.get("order_number") not in stuck_orders:
+            await db.shopify_notpicked_flags.update_one(
+                {"_id": fl["_id"]}, {"$set": {"resolved": True, "resolved_at": now.isoformat()}})
+
+    # Decide which flagged orders to alert on (new, or due for re-alert).
+    to_alert = []
+    for f in flagged:
+        rec = await db.shopify_notpicked_flags.find_one({"order_number": f["order_number"]})
+        due = True
+        if rec:
+            last = rec.get("last_alerted_at")
+            if last:
+                try:
+                    due = (now - datetime.fromisoformat(last)) > timedelta(days=realert_days)
+                except Exception:
+                    due = True
+        await db.shopify_notpicked_flags.update_one(
+            {"order_number": f["order_number"]},
+            {"$set": {**f, "updated_at": now.isoformat(), "resolved": False},
+             "$setOnInsert": {"id": str(uuid.uuid4()), "first_flagged_at": now.isoformat()}},
+            upsert=True)
+        if due:
+            to_alert.append(f)
+
+    if to_alert:
+        total = sum(float(x.get("amount") or 0) for x in to_alert)
+        lines = [f"⚠️ Shopify: {len(to_alert)} PAID order(s) fulfilled but NOT PICKED on Bigship "
+                 f"(never shipped) — ₹{total:,.0f}:"]
+        for f in sorted(to_alert, key=lambda x: x.get("created") or ""):
+            lines.append(f"• {f['order_number']}  {f['customer_name'][:22]}  ₹{f.get('amount')}  "
+                         f"AWB {f['awb']} → {f['status']} ({f['remark'][:40]})")
+        lines.append("These paid customers are waiting on a parcel that never left the warehouse — re-ship.")
+        msg = "\n".join(lines)
+        try:
+            await _alert_founder_free(msg, kind="shopify_notpicked")
+        except Exception as e:
+            logger.error(f"shopify notpicked founder alert failed: {e}")
+        try:
+            await create_notification(
+                title="⚠️ Shopify paid orders not picked up",
+                message=f"{len(to_alert)} paid order(s) fulfilled but NOT PICKED on Bigship (₹{total:,.0f}) — need re-ship",
+                notification_type="warning", link="/admin/online-orders", priority="high",
+                target_roles=["admin"], created_by_name="Shopify NOT-PICKED check")
+        except Exception as e:
+            logger.error(f"shopify notpicked notification failed: {e}")
+        now_iso = now.isoformat()
+        for f in to_alert:
+            await db.shopify_notpicked_flags.update_one(
+                {"order_number": f["order_number"]}, {"$set": {"last_alerted_at": now_iso}})
+
+    logger.info(f"shopify_notpicked: checked={checked} stuck={len(flagged)} alerted={len(to_alert)}")
+    return {"checked": checked, "flagged": flagged, "alerted": len(to_alert)}
+
+
+async def scheduled_shopify_notpicked_check():
+    if not SHOPIFY_NOTPICKED_ENABLED:
+        return
+    try:
+        await _shopify_notpicked_run()
+    except Exception as e:
+        logger.error(f"shopify notpicked check failed: {e}")
+
+
+@api_router.get("/admin/shopify-notpicked/scan")
+async def shopify_notpicked_scan(user: dict = Depends(require_roles(["admin"]))):
+    """Preview: run the Shopify fulfilled-but-NOT-PICKED check now and return the flagged orders.
+    (This live-tracks on Bigship, so it may take a bit and will also alert if items are due.)"""
+    return await _shopify_notpicked_run()
 
 
 @api_router.post("/admin/unshipped-bot/sample")
