@@ -73028,6 +73028,47 @@ async def scheduled_duplicate_shipment_watch():
         logger.error(f"Duplicate-shipment watch failed: {e}")
 
 
+def _sr_status_to_state(s):
+    """Map a Shiprocket status string to the board's state vocabulary."""
+    t = (s or "").lower()
+    if "cancel" in t:
+        return "cancelled"
+    if "rto" in t or "return" in t:
+        return "returned"
+    if "delivered" in t:
+        return "delivered"
+    if any(k in t for k in ("transit", "out for delivery", "picked", "dispatch", "shipped")):
+        return "in_transit"
+    if any(k in t for k in ("pickup", "manifest", "new", "queued", "awb", "generated", "booked")):
+        return "awaiting_pickup"
+    return "pending"
+
+
+async def _shiprocket_board_rows(current_user):
+    """Shiprocket shipments (from db.shiprocket_orders) normalised to the board row shape, so the
+    unified courier board shows Bigship + Shiprocket together. Not firm-attributed → admin/dispatcher
+    only (firm-scoped accountants don't see them)."""
+    from utils import shiprocket as SR
+    if not SR.enabled() or current_user.get("role") not in ("admin", "dispatcher"):
+        return []
+    out = []
+    async for o in db.shiprocket_orders.find({"awb": {"$nin": [None, ""]}}, {"_id": 0}).limit(4000):
+        raw = o.get("raw") or {}
+        state = _sr_status_to_state(o.get("status"))
+        if state in ("delivered", "cancelled"):
+            continue  # keep the board to in-flight parcels (mirrors Delhivery-side retirement)
+        out.append({
+            "awb": o.get("awb"), "buyer_name": o.get("customer_name") or raw.get("customer_name") or "",
+            "destination": raw.get("customer_city") or raw.get("city") or "",
+            "state": state, "status_label": o.get("status") or "booked",
+            "courier": o.get("courier_name") or "Shiprocket", "platform": "Shiprocket", "firm_name": "",
+            "purchase_date": o.get("sr_created_at") or o.get("synced_at") or "",
+            "product": o.get("products"), "is_pcb": o.get("is_pcb"), "phone": o.get("phone"),
+            "source": o.get("source") or "shiprocket",
+        })
+    return out
+
+
 @api_router.get("/courier/delhivery-board")
 async def get_delhivery_board(
     firm_id: Optional[str] = None,
@@ -73053,14 +73094,18 @@ async def get_delhivery_board(
 
     rows = await db.delhivery_tracking.find(query, {"_id": 0}).to_list(length=5000)
 
+    # Tag the Delhivery/Bigship rows + merge in Shiprocket so the board is unified across couriers.
+    rows_out = [{**r, "courier": r.get("courier") or "Delhivery", "platform": "Bigship"} for r in rows]
+    rows_out.extend(await _shiprocket_board_rows(current_user))
+
     # Newest purchase first; undelivered ahead of delivered so live parcels lead.
-    rows.sort(key=lambda r: r.get("purchase_date") or "", reverse=True)
-    rows.sort(key=lambda r: r.get("state") == "delivered")
+    rows_out.sort(key=lambda r: r.get("purchase_date") or "", reverse=True)
+    rows_out.sort(key=lambda r: r.get("state") == "delivered")
 
     return {
         "success": True,
-        "count": len(rows),
-        "shipments": rows,
+        "count": len(rows_out),
+        "shipments": rows_out,
         "delivered_ttl_hours": DELHIVERY_BOARD_DELIVERED_TTL_HOURS,
     }
 

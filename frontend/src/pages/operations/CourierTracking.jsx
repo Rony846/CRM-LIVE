@@ -62,6 +62,7 @@ export default function CourierTracking() {
   const [refreshing, setRefreshing] = useState(false);
   const [lastLoaded, setLastLoaded] = useState(null);
   const [firmFilter, setFirmFilter] = useState('all');
+  const [courierFilter, setCourierFilter] = useState('all');
   const [stateFilter, setStateFilter] = useState('all');
 
   const [detail, setDetail] = useState(null); // selected shipment for dialog
@@ -127,10 +128,18 @@ export default function CourierTracking() {
     return names;
   }, [shipments]);
 
-  // Firm-filtered set drives the chip counts; the state chip then narrows the table.
-  const base = useMemo(() => (
-    firmFilter === 'all' ? shipments : shipments.filter((s) => s.firm_name === firmFilter)
-  ), [shipments, firmFilter]);
+  const courierOptions = useMemo(() => {
+    const c = [...new Set(shipments.map((s) => s.platform || 'Bigship').filter(Boolean))];
+    c.sort();
+    return c;
+  }, [shipments]);
+
+  // Firm + courier filtered set drives the chip counts; the state chip then narrows the table.
+  const base = useMemo(() => {
+    let r = firmFilter === 'all' ? shipments : shipments.filter((s) => s.firm_name === firmFilter);
+    if (courierFilter !== 'all') r = r.filter((s) => (s.platform || 'Bigship') === courierFilter);
+    return r;
+  }, [shipments, firmFilter, courierFilter]);
 
   const counts = useMemo(() => ({
     all: base.length,
@@ -153,13 +162,25 @@ export default function CourierTracking() {
           <div>
             <h1 className="text-2xl font-bold flex items-center gap-2">
               <Truck className="h-6 w-6 text-primary" />
-              Delhivery Tracking Board
+              Courier Tracking Board
             </h1>
             <p className="text-muted-foreground">
-              Live status of every active Delhivery parcel across firms · auto-refreshes every 30 min
+              Live status of every active parcel — Bigship + Shiprocket — across firms · auto-refreshes every 30 min
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <Select value={courierFilter} onValueChange={setCourierFilter}>
+              <SelectTrigger className="w-40">
+                <Truck className="h-4 w-4 mr-1 text-muted-foreground" />
+                <SelectValue placeholder="All couriers" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All couriers</SelectItem>
+                {courierOptions.map((name) => (
+                  <SelectItem key={name} value={name}>{name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Select value={firmFilter} onValueChange={setFirmFilter}>
               <SelectTrigger className="w-52">
                 <Building2 className="h-4 w-4 mr-1 text-muted-foreground" />
@@ -234,7 +255,7 @@ export default function CourierTracking() {
             ) : visible.length === 0 ? (
               <div className="text-center py-10 text-muted-foreground">
                 <Package className="h-12 w-12 mx-auto mb-2 opacity-50" />
-                <p>No active Delhivery parcels.</p>
+                <p>No active parcels.</p>
                 <p className="text-xs mt-1">
                   Delivered parcels drop off automatically 1 day after delivery.
                 </p>
@@ -243,8 +264,9 @@ export default function CourierTracking() {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead>Courier</TableHead>
                     <TableHead>Firm</TableHead>
-                    <TableHead>Amazon Order</TableHead>
+                    <TableHead>Order / Customer</TableHead>
                     <TableHead>AWB</TableHead>
                     <TableHead>Destination</TableHead>
                     <TableHead>Status</TableHead>
@@ -255,11 +277,19 @@ export default function CourierTracking() {
                 <TableBody>
                   {visible.map((s) => (
                     <TableRow
-                      key={s.awb}
+                      key={`${s.platform || 'bs'}-${s.awb}`}
                       className={s.state === 'delivered' ? 'bg-emerald-50/60 dark:bg-emerald-950/20' : ''}
                     >
+                      <TableCell>
+                        <span className={`px-2 py-0.5 rounded text-xs font-medium ${(s.platform || 'Bigship') === 'Shiprocket' ? 'bg-orange-100 text-orange-700 dark:bg-orange-950/40 dark:text-orange-300' : 'bg-sky-100 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300'}`}>
+                          {s.platform || 'Bigship'}
+                        </span>
+                        {s.courier && s.courier !== (s.platform || 'Bigship') && s.courier !== 'Delhivery' && (
+                          <span className="block text-[10px] text-muted-foreground mt-0.5">{s.courier}</span>
+                        )}
+                      </TableCell>
                       <TableCell className="text-sm">{s.firm_name || '—'}</TableCell>
-                      <TableCell className="font-mono text-xs">{s.amazon_order_id || '—'}</TableCell>
+                      <TableCell className="font-mono text-xs">{s.amazon_order_id || s.buyer_name || '—'}</TableCell>
                       <TableCell className="font-mono text-sm">{s.awb}</TableCell>
                       <TableCell className="text-sm">{s.destination || '—'}</TableCell>
                       <TableCell>
