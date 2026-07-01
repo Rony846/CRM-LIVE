@@ -84606,30 +84606,81 @@ _PCB_DIMS = {**_JD.PCB_PROFILE, "source": "pcb 5x5x5/0.1kg"}
 
 
 async def _jasmine_find_customer(name):
-    """Look a customer up in the CRM party master by name. Returns ranked candidates that have at
-    least a 10-digit phone — most-complete first (phone+pincode+address). Empty if no usable match."""
-    toks = [re.escape(t) for t in re.findall(r"[A-Za-z0-9]{3,}", name or "")]
+    """STRONG customer lookup across the whole CRM — parties, tickets, sales invoices, and
+    marketplace orders. Order-independent + plural-tolerant token match (all significant tokens
+    present, any order; trailing 's' stemmed so 'automobiles' matches 'Automobile'). Phone is NOT
+    required — name-only matches are returned too (ranked last) so we never miss a real customer;
+    the caller then asks for any missing phone/address. Ranked most-complete first."""
+    toks = re.findall(r"[A-Za-z0-9]{3,}", name or "")
     if not toks:
         return []
-    rx = ".*".join(toks)
+    stems = [re.escape(t[:-1] if (t.lower().endswith("s") and len(t) > 4) else t) for t in toks]
+
+    def andq(field):
+        return {"$and": [{field: {"$regex": s, "$options": "i"}} for s in stems]}
+
     out, seen = [], set()
-    async for p in db.parties.find({"name": {"$regex": rx, "$options": "i"}}).limit(20):
-        phone = re.sub(r"\D", "", str(p.get("phone") or ""))[-10:]
-        if len(phone) != 10 or phone[0] not in "6789":
-            continue
-        addr = re.sub(r"\s+", " ", (p.get("address") or "").replace("\r", " ").replace("\n", " ")).strip()
-        pin = _JD.norm_pincode(p.get("pincode"))
-        if not pin:
+
+    def add(nm, ph, addr, city, state, pin, source):
+        nm = (nm or "").strip()
+        if not nm:
+            return
+        phone = re.sub(r"\D", "", str(ph or ""))[-10:]
+        phone = phone if (len(phone) == 10 and phone[0] in "6789") else ""
+        addr = re.sub(r"\s+", " ", str(addr or "").replace("\r", " ").replace("\n", " ")).strip()
+        p = _JD.norm_pincode(pin)
+        if not p and addr:
             m = re.search(r"\b(\d{6})\b", addr)
-            pin = _JD.norm_pincode(m.group(1)) if m else ""
-        key = (phone, (p.get("name") or "").lower())
+            p = _JD.norm_pincode(m.group(1)) if m else ""
+        key = (nm.lower(), phone)
         if key in seen:
-            continue
+            return
         seen.add(key)
-        out.append({"name": p.get("name"), "phone": phone, "address": addr[:120],
-                    "city": p.get("city") or "", "state": p.get("state") or "", "pincode": pin or ""})
-    out.sort(key=lambda c: (0 if c["pincode"] else 1, 0 if c["address"] else 1))
-    return out[:5]
+        out.append({"name": nm, "phone": phone, "address": addr[:120], "city": city or "",
+                    "state": state or "", "pincode": p or "", "source": source})
+
+    try:
+        async for d in db.parties.find(andq("name")).limit(25):
+            add(d.get("name"), d.get("phone"), d.get("address"), d.get("city"), d.get("state"), d.get("pincode"), "party")
+    except Exception:
+        pass
+    try:
+        async for d in db.tickets.find(andq("customer_name")).sort("created_at", -1).limit(25):
+            add(d.get("customer_name"), d.get("customer_phone"), d.get("customer_address"),
+                d.get("customer_city"), None, None, "ticket")
+    except Exception:
+        pass
+    try:
+        async for d in db.sales_invoices.find({"$or": [andq("party_name"), andq("customer_name")]}).limit(25):
+            add(d.get("party_name") or d.get("customer_name"), d.get("party_phone") or d.get("phone"),
+                d.get("party_address") or d.get("address"), d.get("party_city"), d.get("party_state"),
+                d.get("party_pincode") or d.get("pincode"), "sales")
+    except Exception:
+        pass
+    for col, nf, af in [("shiprocket_orders", "customer_name", None),
+                        ("amazon_orders", "buyer_name", "address_line1"),
+                        ("shopify_orders", "customer_name", None)]:
+        try:
+            async for d in db[col].find(andq(nf)).limit(10):
+                add(d.get(nf), d.get("phone") or d.get("customer_phone"), d.get(af) or d.get("address"),
+                    d.get("city"), d.get("state"), d.get("pincode") or d.get("postal_code"), col.split("_")[0])
+        except Exception:
+            pass
+
+    # Most-complete first: (phone+pincode) → phone-only → name-only; address-having ahead within each.
+    out.sort(key=lambda c: (0 if (c["phone"] and c["pincode"]) else (1 if c["phone"] else 2),
+                            0 if c["address"] else 1))
+    return out[:6]
+
+
+def _jasmine_customer_line(c):
+    """One-line customer summary for the confirm prompt — flags missing phone/address explicitly."""
+    ph = c.get("phone") or "no phone on file"
+    if c.get("address"):
+        ad = c["address"] + (f" - {c['pincode']}" if c.get("pincode") else "")
+    else:
+        ad = "no address on file"
+    return f"📞 {ph}  🏠 {ad}  (from {c.get('source','crm')})"
 
 
 async def _jasmine_fields_from_customer(c):
@@ -84719,6 +84770,12 @@ async def _jasmine_dispatch(message):
                 fields["invoice_number"] = (pend_c.get("ref") or ("MDG-" + _JD.gen_code(message.message_id)))[:25]
                 fields["_courier"] = _JD.parse_courier(pend_c.get("orig_text", "")) or _JD.parse_courier(text)
                 await db.jasmine_pending.update_one({"_id": pend_c["_id"]}, {"$set": {"status": "customer_ok"}})
+                # Found the customer but no phone/address on file (e.g. name known only from a ticket)
+                # → ask for those now instead of marching to model and failing later.
+                ok_c, probs_c = _JD.validate_consignee(fields)
+                if not ok_c:
+                    return (f"Jasmine: got *{cands[idx]['name']}* ✅ — but I still need {', '.join(probs_c)}. "
+                            f"Send it (phone + full address), or share the invoice PDF.")
                 if pend_c.get("is_pcb"):
                     model = pend_c.get("model") or ""
                     if model:
@@ -84738,8 +84795,7 @@ async def _jasmine_dispatch(message):
                 if idx < len(cands):
                     await db.jasmine_pending.update_one({"_id": pend_c["_id"]}, {"$set": {"idx": idx}})
                     c = cands[idx]
-                    return (f"Jasmine: how about *{c['name']}*?  📞 {c['phone']}  🏠 {c['address']}"
-                            f"{(' - ' + c['pincode']) if c['pincode'] else ''}\nReply *yes* or *no*.")
+                    return (f"Jasmine: how about *{c['name']}*?  {_jasmine_customer_line(c)}\nReply *yes* or *no*.")
                 await db.jasmine_pending.update_one({"_id": pend_c["_id"]}, {"$set": {"status": "no_match"}})
                 return "Jasmine: then I don't have other data for that name — share the invoice, or send name, address & phone."
             return None  # unclear yes/no → stay silent
@@ -84797,12 +84853,20 @@ async def _jasmine_dispatch(message):
     if not waked:
         return None  # silent context capture
 
-    # Assemble the request. A dropped invoice PDF/image is the authoritative ship-to source
-    # (e.g. "ship E76 pcb to him" + the customer's invoice attached).
+    # Assemble the request. Only call the (heavy, sometimes-cold) 32B when we NEED it — i.e. an
+    # invoice is attached (read consignee off the PDF), or the command isn't a clean "…to <name>".
+    # A pure name command is handled deterministically → instant + immune to a cold/evicted 32B.
     inv_text = _jasmine_invoice_text(message)
-    ctx = await _jasmine_recent_context(chat_id)
-    source = (("INVOICE (authoritative for name/address/phone):\n" + inv_text + "\n\n") if inv_text else "") + "GROUP CHAT:\n" + ctx
-    p = await _jasmine_parse(text, source)
+    det_name = _JD.recipient_after_to(text)
+    if inv_text:
+        ctx = await _jasmine_recent_context(chat_id)
+        source = "INVOICE (authoritative for name/address/phone):\n" + inv_text + "\n\nGROUP CHAT:\n" + ctx
+        p = await _jasmine_parse(text, source)
+    elif det_name:
+        p = {"customer_name": det_name}
+    else:
+        ctx = await _jasmine_recent_context(chat_id)
+        p = await _jasmine_parse(text, "GROUP CHAT:\n" + ctx)
     ref = _JD.clean_reference(p.get("reference"), text)  # ignore the 32B dumping the whole msg into 'reference'
     cust = {}
     if ref:
@@ -84850,8 +84914,7 @@ async def _jasmine_dispatch(message):
                           "orig_text": text, "requested_by": author,
                           "created_at": datetime.now(timezone.utc).isoformat()},
                  "$setOnInsert": {"id": str(uuid.uuid4())}}, upsert=True)
-            return (f"Jasmine: is this *{c['name']}*?  📞 {c['phone']}  🏠 {c['address']}"
-                    f"{(' - ' + c['pincode']) if c['pincode'] else ''}\nReply *yes* or *no*.")
+            return (f"Jasmine: is this *{c['name']}*?  {_jasmine_customer_line(c)}\nReply *yes* or *no*.")
         return f"Jasmine: I couldn't find '{name}' in the CRM — share the invoice, or send name, address & phone."
 
     # PCB gets the FIXED profile (5x5x5 / 0.1kg — founder rule). If a PCB is requested with NO model
@@ -84861,7 +84924,7 @@ async def _jasmine_dispatch(message):
         if not model:
             ok_c, probs_c = _JD.validate_consignee(fields)
             if not ok_c:
-                return "Jasmine: " + "; ".join(probs_c) + " — share the invoice or send the details."
+                return "Jasmine: I need " + ", ".join(probs_c) + " — share the invoice or send the details."
             await db.jasmine_pending.update_one(
                 {"chat_id": chat_id, "status": "awaiting_model"},
                 {"$set": {"chat_id": chat_id, "status": "awaiting_model", "fields": fields, "ref": ref,

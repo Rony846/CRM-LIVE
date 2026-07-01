@@ -215,13 +215,13 @@ def validate_consignee(fields: dict):
     so we don't ask for the model on an invoice we couldn't even read."""
     problems = []
     if not (fields.get("first_name") or "").strip():
-        problems.append("couldn't read the customer name")
+        problems.append("the customer name")
     if not norm_phone(fields.get("phone")):
-        problems.append("need a valid 10-digit phone")
+        problems.append("a valid 10-digit phone")
     if not norm_pincode(fields.get("pincode")):
-        problems.append("need a valid 6-digit pincode")
+        problems.append("a valid 6-digit pincode")
     if not (fields.get("address_line1") or "").strip():
-        problems.append("need the delivery address")
+        problems.append("the delivery address")
     return (len(problems) == 0, problems)
 
 
