@@ -1317,6 +1317,17 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # WhatsApp bridge watchdog: auto-restart the bridge when it hangs (every 1 min).
+        scheduler.add_job(
+            scheduled_bridge_watchdog,
+            IntervalTrigger(minutes=int(os.environ.get("BRIDGE_WATCHDOG_MIN", "1"))),
+            id="bridge_watchdog",
+            name="WhatsApp bridge watchdog (auto-restart on hang)",
+            replace_existing=True,
+            misfire_grace_time=60,
+            max_instances=1,
+        )
+
         # Collections: daily prioritized external-receivables chase-list to the founder.
         scheduler.add_job(
             scheduled_collections,
@@ -84395,6 +84406,55 @@ async def whatsapp_qr(user: dict = Depends(require_roles(["admin"]))):
         return {"error": str(e), "message": "WhatsApp bridge not running"}
 
 
+# ===================== WhatsApp bridge watchdog =====================
+# The whatsapp-web.js bridge periodically drops its session and hangs in "authenticated" (or
+# "disconnected"), silently going dark — no sends, no inbound. This watchdog polls /status and
+# auto-restarts the bridge when it's been unhealthy for a full interval, rate-limited so it can't
+# thrash. "connected" is the only healthy state; "authenticated" is the hang.
+BRIDGE_WATCHDOG_ENABLED = os.environ.get("BRIDGE_WATCHDOG_ENABLED", "1") in ("1", "true", "True")
+_BRIDGE_WD = {"bad_since": None, "last_restart": None}
+
+
+async def scheduled_bridge_watchdog():
+    if not BRIDGE_WATCHDOG_ENABLED:
+        return
+    now = datetime.now(timezone.utc)
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as c:
+            state = ((await c.get(f"{WHATSAPP_BRIDGE_URL}/status")).json() or {}).get("state")
+    except Exception:
+        state = "unreachable"
+    if state in ("connected", "ready"):
+        _BRIDGE_WD["bad_since"] = None
+        return
+    # Unhealthy (authenticated-hang / disconnected / unreachable). Require it to persist one full
+    # interval (so a normal startup transient isn't restarted), and rate-limit to once / 5 min.
+    if _BRIDGE_WD["bad_since"] is None:
+        _BRIDGE_WD["bad_since"] = now
+        return
+    last = _BRIDGE_WD["last_restart"]
+    if last and (now - last).total_seconds() < 300:
+        return
+    logger.warning(f"bridge watchdog: state={state!r} for >1 interval — restarting crm-wa-bridge")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "pm2", "restart", "crm-wa-bridge",
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        await asyncio.wait_for(proc.wait(), timeout=30)
+        _BRIDGE_WD["last_restart"] = now
+        _BRIDGE_WD["bad_since"] = None
+        try:
+            await create_notification(
+                title="🔌 WhatsApp bridge auto-restarted",
+                message=f"Bridge was '{state}' (hung) — watchdog restarted it. WhatsApp is coming back online.",
+                notification_type="warning", link="/operations/courier-tracking", priority="high",
+                target_roles=["admin"], created_by_name="Bridge watchdog")
+        except Exception:
+            pass
+    except Exception as e:
+        logger.error(f"bridge watchdog restart failed: {e}")
+
+
 # ===================== Jasmine — Meerut dispatch label agent =====================
 # Silent in the Meerut dispatch group until tagged (9800008226 / "Jasmine"); then it books a
 # Bigship label for a repaired/replacement/PCB dispatch — but ONLY after a human "confirm" against
@@ -84622,6 +84682,9 @@ async def _jasmine_dispatch(message):
     text = message.text or ""
     author = message.author or message.from_number
     await _jasmine_buffer(chat_id, author, text)  # silent read — always
+    # Wake on the word "Jasmine"/the number in the text, OR a real @mention of the bot (the number
+    # tag puts the bot's @lid in the body, not "9800008226", so the bridge flags mentions_me).
+    waked = _JD.is_wake(text) or bool(getattr(message, "mentions_me", False))
 
     # --- confirm / cancel an existing pending booking ---
     is_conf, code = _JD.parse_confirm(text)
@@ -84638,7 +84701,7 @@ async def _jasmine_dispatch(message):
         return await _jasmine_confirm_and_book(message, code)
 
     # --- non-wake replies that answer a pending Jasmine question (customer / model / payment) ---
-    if not _JD.is_wake(text):
+    if not waked:
         recent = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
         # (0) answering "is this <customer>?" (CRM name-lookup confirm)
         pend_c = await db.jasmine_pending.find_one(
@@ -84728,7 +84791,7 @@ async def _jasmine_dispatch(message):
             return None  # no model recognised → stay silent; they can restate it
 
     # --- otherwise only act when tagged ---
-    if not _JD.is_wake(text):
+    if not waked:
         return None  # silent context capture
 
     # Assemble the request. A dropped invoice PDF/image is the authoritative ship-to source
@@ -84947,6 +85010,10 @@ async def whatsapp_message_webhook(data: dict, request: Request):
             author=data.get("author"),
             is_group=bool(data.get("is_group")),
         )
+        try:
+            message.mentions_me = bool(data.get("mentions_me"))  # this bot was @tagged
+        except Exception:
+            pass
         
         logger.info(f"WhatsApp message from {message.from_number}: {message.text[:50]}...")
 

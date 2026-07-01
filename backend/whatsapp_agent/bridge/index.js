@@ -243,6 +243,18 @@ function initializeClient() {
         if (!isGroup) rememberChatId(resolvedFrom, message.from);
         console.log(`Message from ${message.from}${isGroup ? ` (group, author ${principal})` : ''} (resolved=${resolvedFrom}): ${message.body}`);
 
+        // Was THIS bot @mentioned? WhatsApp puts the mentioned contact's @lid in mentionedIds
+        // (not the phone number in the body), so a tag of 9800008226 must be detected here.
+        let mentionsMe = false;
+        try {
+            const myWid = (client.info && client.info.wid && client.info.wid._serialized) || '';
+            const mentioned = message.mentionedIds || [];
+            mentionsMe = mentioned.some(id => {
+                const s = (id && id._serialized) ? id._serialized : String(id);
+                return (myWid && s === myWid) || s.includes('9800008226');
+            });
+        } catch (e) {}
+
         try {
             // Prepare message data
             const messageData = {
@@ -252,6 +264,7 @@ function initializeClient() {
                 chat_id: message.from,           // group JID or DM id — where a reply goes
                 author: message.author || null,  // group participant who spoke (null for DMs)
                 is_group: isGroup,
+                mentions_me: mentionsMe,         // this bot was @tagged (by number/@lid)
                 text: message.body,
                 timestamp: new Date(message.timestamp * 1000).toISOString(),
                 has_media: message.hasMedia,
