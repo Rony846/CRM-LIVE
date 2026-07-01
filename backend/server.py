@@ -84433,6 +84433,23 @@ def _jasmine_card(f: dict, code: str, dim_src: str) -> str:
             f"Reply *confirm {code}* to book, or *cancel {code}*.")
 
 
+def _jasmine_invoice_text(message) -> str:
+    """Extract text from a dropped invoice PDF/image — the authoritative ship-to source.
+    Reuses wa_purchase_capture.extract_text (pdfplumber for PDFs, OCR for images). '' if none."""
+    raw = getattr(message, "media_data", None)
+    if not raw:
+        return ""
+    try:
+        from utils import wa_purchase_capture as _wpc
+        mime = (getattr(message, "media_type", "") or "").lower()
+        doc = {"b64": base64.b64encode(raw).decode(), "mime": mime,
+               "kind": "document" if "pdf" in mime else "image"}
+        return (_wpc.extract_text(doc) or "")[:3000]
+    except Exception as e:
+        logger.error(f"jasmine invoice extract failed: {e}")
+        return ""
+
+
 async def _jasmine_dispatch(message):
     """Meerut-group handler. Returns a reply string, or None to stay silent (still consumes the msg
     so the customer-support chain never runs for this group)."""
@@ -84459,9 +84476,12 @@ async def _jasmine_dispatch(message):
     if not _JD.is_wake(text):
         return None  # silent context capture
 
-    # Assemble the request (LLM parse + recent context; reference lookup fills known customers).
+    # Assemble the request. A dropped invoice PDF/image is the authoritative ship-to source
+    # (e.g. "ship E76 pcb to him" + the customer's invoice attached).
+    inv_text = _jasmine_invoice_text(message)
     ctx = await _jasmine_recent_context(chat_id)
-    p = await _jasmine_parse(text, ctx)
+    source = (("INVOICE (authoritative for name/address/phone):\n" + inv_text + "\n\n") if inv_text else "") + "GROUP CHAT:\n" + ctx
+    p = await _jasmine_parse(text, source)
     ref = p.get("reference") or _JD.extract_reference(text) or ""
     cust = {}
     if ref:
@@ -84491,19 +84511,21 @@ async def _jasmine_dispatch(message):
         "invoice_amount": float(p.get("cod_amount") or 0) or 100.0,
         "invoice_number": (ref or f"MDG-{_JD.gen_code(message.message_id)}")[:25],
     }
-    # Resolve the SKU + dims (never blind).
+    # PCB gets the FIXED profile (5x5x5 / 0.1kg — founder rule); everything else resolves via SKU
+    # dims (never blind). The PCB model comes from the tag ("ship E76 pcb" → "E76 PCB").
     sku = None
-    if fields["product_name"]:
-        sku = await db.master_skus.find_one(
-            {"$or": [{"name": {"$regex": re.escape(fields["product_name"][:14]), "$options": "i"}},
-                     {"sku_code": {"$regex": re.escape(fields["product_name"][:10]), "$options": "i"}}]})
-    if _JD.classify(text) == "pcb" and not sku:
-        dims = {**_JD.PCB_PROFILE, "source": "pcb"}
-        fields["product_name"] = fields["product_name"] or "PCB"
+    if _JD.classify(text) == "pcb":
+        model = _JD.pcb_model(text)
+        fields["product_name"] = f"{model} PCB" if model else (fields["product_name"] or "PCB")
+        dims = {**_JD.PCB_PROFILE, "source": "pcb 5x5x5/0.1kg"}
     else:
+        if fields["product_name"]:
+            sku = await db.master_skus.find_one(
+                {"$or": [{"name": {"$regex": re.escape(fields["product_name"][:14]), "$options": "i"}},
+                         {"sku_code": {"$regex": re.escape(fields["product_name"][:10]), "$options": "i"}}]})
+        if sku and not fields["product_name"]:
+            fields["product_name"] = sku.get("name")
         dims = await _jasmine_resolve_dims(sku)
-    if sku and not fields["product_name"]:
-        fields["product_name"] = sku.get("name")
     if not dims:
         return (f"Jasmine: '{fields['product_name'] or 'this item'}' has no saved box size — "
                 f"reply: *dims <L>x<W>x<H> <kg>* and I'll continue.")

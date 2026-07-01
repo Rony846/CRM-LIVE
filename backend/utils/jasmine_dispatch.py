@@ -125,6 +125,17 @@ def extract_reference(text: str):
 
 PCB_PROFILE = {"weight_kg": 0.1, "length_cm": 5, "width_cm": 5, "height_cm": 5}
 
+# Pull the PCB model out of a tag like "ship E76 pcb to him" → "E76" (also "8KVA card", "MG3KW board").
+# Capture the token before pcb/card/board, then require it to contain a digit (so "the pcb" isn't a model).
+_PCB_MODEL_RX = re.compile(r"\b([A-Za-z0-9]+(?:-[A-Za-z0-9]+)?)\s*(?:pcb|card|board)\b", re.I)
+
+def pcb_model(text: str) -> str:
+    m = _PCB_MODEL_RX.search(text or "")
+    if not m:
+        return ""
+    tok = re.sub(r"[\s\-]+", "", m.group(1)).upper()
+    return tok if any(c.isdigit() for c in tok) else ""
+
 
 def validate_dispatch(fields: dict):
     """Deterministic pre-flight. Returns (ok, problems) where problems is a list of human-readable,
