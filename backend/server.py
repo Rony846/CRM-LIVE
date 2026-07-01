@@ -84657,6 +84657,11 @@ async def _jasmine_find_customer(name):
                 d.get("party_pincode") or d.get("pincode"), "sales")
     except Exception:
         pass
+    try:
+        async for d in db.vyapar_vouchers.find(andq("party_name")).sort("date", -1).limit(10):
+            add(d.get("party_name"), None, None, None, d.get("place_of_supply"), None, "vyapar")
+    except Exception:
+        pass
     for col, nf, af in [("shiprocket_orders", "customer_name", None),
                         ("amazon_orders", "buyer_name", "address_line1"),
                         ("shopify_orders", "customer_name", None)]:
