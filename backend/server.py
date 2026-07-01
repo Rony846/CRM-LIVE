@@ -84350,6 +84350,239 @@ async def whatsapp_qr(user: dict = Depends(require_roles(["admin"]))):
         return {"error": str(e), "message": "WhatsApp bridge not running"}
 
 
+# ===================== Jasmine — Meerut dispatch label agent =====================
+# Silent in the Meerut dispatch group until tagged (9800008226 / "Jasmine"); then it books a
+# Bigship label for a repaired/replacement/PCB dispatch — but ONLY after a human "confirm" against
+# an echoed card. Deterministic safeguards live in utils/jasmine_dispatch.py (unit-tested).
+# DARK behind JASMINE_DISPATCH_ENABLED; group JID + confirm-allowlist are config, not code.
+from utils import jasmine_dispatch as _JD
+
+JASMINE_DISPATCH_ENABLED = os.environ.get("JASMINE_DISPATCH_ENABLED", "") in ("1", "true", "True")
+_JASMINE_GROUP_KEY = "wa_jasmine_dispatch_group"
+
+
+async def _jasmine_group_jid():
+    d = await db.pratibha_settings.find_one({"key": _JASMINE_GROUP_KEY}, {"value": 1})
+    return (d or {}).get("value")
+
+
+def _jasmine_confirm_allowed(from_number, author) -> bool:
+    """Only allowlisted dispatch leads may trigger a booking (money action)."""
+    extra = [re.sub(r"\D", "", x)[-10:] for x in os.environ.get("JASMINE_CONFIRM_NUMBERS", "").split(",") if x.strip()]
+    cand = re.sub(r"\D", "", str(author or from_number or ""))[-10:]
+    if cand and cand in extra:
+        return True
+    return _wa_reply_allowed(author or from_number or "")
+
+
+async def _jasmine_buffer(chat_id, author, text):
+    await db.jasmine_context.insert_one({"chat_id": chat_id, "author": author,
+        "text": (text or "")[:600], "at": datetime.now(timezone.utc).isoformat()})
+
+
+async def _jasmine_recent_context(chat_id, n=15) -> str:
+    rows = [r async for r in db.jasmine_context.find({"chat_id": chat_id}).sort("_id", -1).limit(n)]
+    rows.reverse()
+    return "\n".join(f"{(r.get('author') or '')[-4:]}: {r.get('text','')}" for r in rows)
+
+
+async def _jasmine_resolve_dims(sku_doc) -> Optional[dict]:
+    """3-layer dims resolver: master_skus → shipment history (same SKU) → None (=HOLD & ask).
+    Never blind-defaults."""
+    if sku_doc and all(sku_doc.get(k) for k in ("weight_kg", "length_cm", "breadth_cm", "height_cm")):
+        return {"weight_kg": float(sku_doc["weight_kg"]), "length_cm": int(sku_doc["length_cm"]),
+                "width_cm": int(sku_doc["breadth_cm"]), "height_cm": int(sku_doc["height_cm"]), "source": "master"}
+    if sku_doc and (sku_doc.get("name") or "").strip():
+        hist = await db.courier_shipments.find_one(
+            {"product_name": {"$regex": re.escape(sku_doc["name"][:18]), "$options": "i"},
+             "weight": {"$gt": 0}, "dimensions": {"$nin": ["", None]}}, sort=[("_id", -1)])
+        m = re.match(r"(\d+)x(\d+)x(\d+)", str((hist or {}).get("dimensions") or ""))
+        if hist and m:
+            return {"weight_kg": float(hist["weight"]), "length_cm": int(m.group(1)),
+                    "width_cm": int(m.group(2)), "height_cm": int(m.group(3)), "source": "history"}
+    return None
+
+
+async def _jasmine_parse(text, context) -> dict:
+    """Jasmine 32B strict-JSON extraction. Returns {} on any failure so the caller asks the human."""
+    sysp = ("You extract ONE shipping request from a WhatsApp dispatch group. Output ONLY compact JSON "
+            "with keys: customer_name, phone, address, city, state, pincode, product, quantity, "
+            "payment (Prepaid or COD), cod_amount, reference. Use \"\" if unknown. NEVER invent a "
+            "phone or pincode — leave blank if not clearly stated.")
+    out = await brain_registry.complete("jasmine", system=sysp,
+                                        prompt=f"Recent messages:\n{context}\n\nRequest:\n{text}\n\nJSON:",
+                                        max_tokens=400, temperature=0, timeout=90)
+    if out.get("model_ok"):
+        try:
+            raw = out.get("text", "")
+            return json.loads(raw[raw.find("{"): raw.rfind("}") + 1])
+        except Exception:
+            pass
+    return {}
+
+
+def _jasmine_card(f: dict, code: str, dim_src: str) -> str:
+    pay = f.get("payment_type", "Prepaid")
+    pay_line = f"{pay}" + (f" ₹{f.get('cod_amount')}" if str(pay).upper() == "COD" else "")
+    return (f"📦 *Jasmine — confirm to book* [{code}]\n"
+            f"To: {f['first_name']} {f.get('last_name','')}  {f['phone']}\n"
+            f"{f['address_line1']} {f.get('address_line2','')}, {f.get('city','')} {f.get('state','')} - {f['pincode']}\n"
+            f"Item: {f['product_name']} x{f.get('quantity',1)}\n"
+            f"Box: {f['weight_kg']}kg  {f['length_cm']}x{f['width_cm']}x{f['height_cm']}cm ({dim_src})\n"
+            f"Pay: {pay_line} · Delhivery\n"
+            f"Reply *confirm {code}* to book, or *cancel {code}*.")
+
+
+async def _jasmine_dispatch(message):
+    """Meerut-group handler. Returns a reply string, or None to stay silent (still consumes the msg
+    so the customer-support chain never runs for this group)."""
+    chat_id = message.chat_id
+    text = message.text or ""
+    author = message.author or message.from_number
+    await _jasmine_buffer(chat_id, author, text)  # silent read — always
+
+    # --- confirm / cancel an existing pending booking ---
+    is_conf, code = _JD.parse_confirm(text)
+    if _JD.is_cancel(text) and not is_conf:
+        q = {"chat_id": chat_id, "status": "awaiting_confirm"}
+        if code:
+            q["code"] = code
+        p = await db.jasmine_pending.find_one(q, sort=[("_id", -1)])
+        if not p:
+            return None
+        await db.jasmine_pending.update_one({"_id": p["_id"]}, {"$set": {"status": "cancelled"}})
+        return f"Jasmine: cancelled {p['code']} — nothing booked."
+    if is_conf:
+        return await _jasmine_confirm_and_book(message, code)
+
+    # --- otherwise only act when tagged ---
+    if not _JD.is_wake(text):
+        return None  # silent context capture
+
+    # Assemble the request (LLM parse + recent context; reference lookup fills known customers).
+    ctx = await _jasmine_recent_context(chat_id)
+    p = await _jasmine_parse(text, ctx)
+    ref = p.get("reference") or _JD.extract_reference(text) or ""
+    cust = {}
+    if ref:
+        tkt = await db.tickets.find_one({"ticket_number": ref.upper()}, {"_id": 0})
+        if tkt:
+            cust = {"customer_name": tkt.get("customer_name"), "phone": tkt.get("customer_phone"),
+                    "address": tkt.get("customer_address"), "city": tkt.get("customer_city")}
+        elif _JD.extract_reference(text):
+            return f"Jasmine: ref {ref} not found — send the customer name, address & product."
+
+    name = (cust.get("customer_name") or p.get("customer_name") or "").strip()
+    first, last = _bigship_consignee_name(name, "")
+    addr_fields, overflow = _JD.clip_address(p.get("address") or cust.get("address") or "",
+                                             "", p.get("city") or cust.get("city") or "", p.get("state") or "")
+    fields = {
+        "shipment_type": "b2c",
+        "warehouse_id": await _bigship_meerut_warehouse_id(),
+        "first_name": first, "last_name": last,
+        "phone": _JD.norm_phone(p.get("phone") or cust.get("phone")) or "",
+        "address_line1": addr_fields["address_line1"], "address_line2": addr_fields["address_line2"],
+        "city": addr_fields["city"], "state": addr_fields["state"],
+        "pincode": _JD.norm_pincode(p.get("pincode")) or "",
+        "product_name": (p.get("product") or "")[:_JD.PRODUCT_MAX],
+        "quantity": int(p.get("quantity") or 1),
+        "payment_type": "COD" if str(p.get("payment", "Prepaid")).upper() == "COD" else "Prepaid",
+        "cod_amount": float(p.get("cod_amount") or 0),
+        "invoice_amount": float(p.get("cod_amount") or 0) or 100.0,
+        "invoice_number": (ref or f"MDG-{_JD.gen_code(message.message_id)}")[:25],
+    }
+    # Resolve the SKU + dims (never blind).
+    sku = None
+    if fields["product_name"]:
+        sku = await db.master_skus.find_one(
+            {"$or": [{"name": {"$regex": re.escape(fields["product_name"][:14]), "$options": "i"}},
+                     {"sku_code": {"$regex": re.escape(fields["product_name"][:10]), "$options": "i"}}]})
+    if _JD.classify(text) == "pcb" and not sku:
+        dims = {**_JD.PCB_PROFILE, "source": "pcb"}
+        fields["product_name"] = fields["product_name"] or "PCB"
+    else:
+        dims = await _jasmine_resolve_dims(sku)
+    if sku and not fields["product_name"]:
+        fields["product_name"] = sku.get("name")
+    if not dims:
+        return (f"Jasmine: '{fields['product_name'] or 'this item'}' has no saved box size — "
+                f"reply: *dims <L>x<W>x<H> <kg>* and I'll continue.")
+    fields.update({"weight_kg": dims["weight_kg"], "length_cm": dims["length_cm"],
+                   "width_cm": dims["width_cm"], "height_cm": dims["height_cm"],
+                   "hsn_code": (sku or {}).get("hsn_code", "")})
+
+    ok, problems = _JD.validate_dispatch(fields)
+    if not ok:
+        return "Jasmine: " + "; ".join(problems) + f".  (Reply with the missing detail, then tag me again.)"
+
+    # Dedup — already booked for this reference?
+    if ref:
+        dup = await db.pratibha_shipments.find_one({"order_id": {"$regex": re.escape(ref)}, "awb": {"$nin": [None, ""]}})
+        if dup:
+            return f"Jasmine: already booked AWB {dup.get('awb')} for {ref} — not booking again."
+
+    code = _JD.gen_code(message.message_id)
+    await db.jasmine_pending.update_one(
+        {"idem": _JD.idempotency_key(fields["phone"], fields["product_name"], ref, datetime.now(timezone.utc).strftime("%Y-%m-%d"))},
+        {"$set": {"code": code, "chat_id": chat_id, "fields": fields, "ref": ref, "dim_src": dims["source"],
+                  "status": "awaiting_confirm", "overflow": overflow, "requested_by": author,
+                  "created_at": datetime.now(timezone.utc).isoformat()},
+         "$setOnInsert": {"id": str(uuid.uuid4())}}, upsert=True)
+    card = _jasmine_card(fields, code, dims["source"])
+    if overflow:
+        card += "\n⚠️ address is long — check it wasn't cut."
+    return card
+
+
+async def _jasmine_confirm_and_book(message, code):
+    """Book a pending shipment on an allowlisted 'confirm'. Idempotent + resume-on-partial."""
+    q = {"chat_id": message.chat_id, "status": "awaiting_confirm"}
+    if code:
+        q["code"] = code
+    pend = await db.jasmine_pending.find_one(q, sort=[("_id", -1)])
+    if not pend:
+        # maybe two pending → ask which
+        n = await db.jasmine_pending.count_documents({"chat_id": message.chat_id, "status": "awaiting_confirm"})
+        return "Jasmine: which one? reply *confirm <code>*." if n else None
+    if not _jasmine_confirm_allowed(message.from_number, message.author):
+        return "Jasmine: only dispatch leads can confirm a booking."
+    if pend.get("awb"):
+        return f"Jasmine: already booked — AWB {pend['awb']}."
+    try:
+        resp = await _pratibha_book_shipment(pend["fields"], {"from_addr": "jasmine"})
+    except Exception as e:
+        await db.jasmine_pending.update_one({"_id": pend["_id"]}, {"$set": {"status": "error", "error": str(e)[:300]}})
+        return f"Jasmine: booking FAILED — {str(e)[:120]}. Nothing shipped. Fix & tag me again."
+    awb = getattr(resp, "awb_number", None)
+    if not awb:
+        return "Jasmine: Bigship gave no AWB (check the panel). Nothing confirmed — do not re-tag until checked."
+    await db.jasmine_pending.update_one({"_id": pend["_id"]},
+        {"$set": {"status": "booked", "awb": awb, "booked_at": datetime.now(timezone.utc).isoformat()}})
+    label = getattr(resp, "label_url", None)
+    msg = f"Jasmine: booked ✅ *{awb}* ({getattr(resp,'courier_name','Delhivery')}) for {pend['fields']['first_name']}."
+    return msg + (f"\nLabel: {label}" if label else "")
+
+
+@api_router.post("/admin/jasmine/set-group")
+async def jasmine_set_group(chat_id: str = Query(..., description="WhatsApp group JID (…@g.us)"),
+                            user: dict = Depends(require_roles(["admin"]))):
+    """Lock the Meerut dispatch group JID Jasmine operates in."""
+    await db.pratibha_settings.update_one({"key": _JASMINE_GROUP_KEY},
+        {"$set": {"key": _JASMINE_GROUP_KEY, "value": chat_id, "set_by": user.get("id"),
+                  "set_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    return {"ok": True, "group": chat_id, "enabled": JASMINE_DISPATCH_ENABLED}
+
+
+@api_router.get("/admin/jasmine/recent-groups")
+async def jasmine_recent_groups(user: dict = Depends(require_roles(["admin"]))):
+    """List group JIDs the bridge has recently seen — pick the Meerut one to set."""
+    seen = {}
+    async for r in db.jasmine_context.find({}).sort("_id", -1).limit(200):
+        seen.setdefault(r.get("chat_id"), 0)
+        seen[r["chat_id"]] += 1
+    return {"groups": seen, "current": await _jasmine_group_jid()}
+
+
 @api_router.post("/whatsapp/message")
 async def whatsapp_message_webhook(data: dict, request: Request):
     """
@@ -84394,6 +84627,24 @@ async def whatsapp_message_webhook(data: dict, request: Request):
 
         # Conversation key: the GROUP (so Pawan+Shweta share one thread) when in a group, else the DM sender.
         conv_key = message.chat_id if (message.is_group and message.chat_id) else message.from_number
+
+        # --- Jasmine dispatch group isolation (label-making) ---
+        # The Meerut dispatch group is handled EXCLUSIVELY by Jasmine, never the customer-support chain.
+        if JASMINE_DISPATCH_ENABLED and message.is_group and message.chat_id:
+            jgid = await _jasmine_group_jid()
+            if jgid is None and _jasmine_confirm_allowed(message.from_number, message.author) \
+               and re.search(r"\bjasmine\b.*\b(setup|dispatch\s*group|meerut)\b", message.text or "", re.I):
+                await db.pratibha_settings.update_one({"key": _JASMINE_GROUP_KEY},
+                    {"$set": {"key": _JASMINE_GROUP_KEY, "value": message.chat_id, "set_by": message.author,
+                              "set_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+                return {"reply": "Jasmine online for this dispatch group ✅ Tag me with a dispatch and I'll prep the label for your confirm."}
+            if jgid and message.chat_id == jgid:
+                try:
+                    jr = await _jasmine_dispatch(message)
+                except Exception as e:
+                    logger.error(f"Jasmine dispatch failed: {e}")
+                    jr = "Jasmine hit an error — nothing was booked. Please retry or book manually."
+                return {"reply": jr}
 
         # SMART FRONT-DOOR: an LLM router picks the skill from the message + live pending-state context.
         # If it produces a reply, use it; otherwise fall through to the ordered chain below (the safety net).
