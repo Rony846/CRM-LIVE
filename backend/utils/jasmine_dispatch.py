@@ -123,6 +123,34 @@ def extract_reference(text: str):
     return m.group(1).upper() if m else None
 
 
+# Deterministic recipient extraction from a command like "send pcb to Singh Automobile" → the 32B
+# is unreliable here (it mis-files the name into 'address'), so pull the name after "to" ourselves.
+_TO_STOP = r"via|by|on|through|using|cod|prepaid|urgent|asap|please|pls|thanks|thx|today|tomorrow|now"
+_CMD_TO_RX = re.compile(r"\bto\s+([A-Za-z][\w .&/'\-]{1,40}?)(?:\s+(?:" + _TO_STOP + r")\b|[.,!?\n]|$)", re.I)
+_PRONOUNS = {"him", "her", "them", "us", "me", "this customer", "the customer", "this", "it", "customer"}
+
+def recipient_after_to(text: str) -> str:
+    """The customer named after 'to' in a dispatch command (empty for 'to him/this customer')."""
+    m = _CMD_TO_RX.search((text or "").strip())
+    if not m:
+        return ""
+    n = re.sub(r"\s+", " ", m.group(1)).strip(" .")
+    return "" if n.lower() in _PRONOUNS else n
+
+
+def clean_reference(raw, text: str) -> str:
+    """Trust a reference only if it's a real invoice/order number — the 32B sometimes dumps the whole
+    message into 'reference'. Prefer a pattern-matched ref from the text; else accept a short, single-
+    token candidate; else empty."""
+    r = extract_reference(text)
+    if r:
+        return r
+    raw = (raw or "").strip()
+    if raw and " " not in raw and len(raw) <= 25:
+        return raw
+    return ""
+
+
 PCB_PROFILE = {"weight_kg": 0.1, "length_cm": 5, "width_cm": 5, "height_cm": 5}
 
 # Pull the PCB model out of a tag like "ship E76 pcb to him" → "E76" (also "8KVA card", "MG3KW board").

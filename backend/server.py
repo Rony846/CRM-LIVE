@@ -84515,6 +84515,9 @@ async def _jasmine_parse(text, context) -> dict:
             "with keys: customer_name, phone, address, city, state, pincode, product, quantity, "
             "payment (Prepaid or COD), cod_amount, reference. Use \"\" if unknown. NEVER invent a "
             "phone or pincode — leave blank if not clearly stated. "
+            "The recipient named after 'to' (e.g. 'send pcb to Singh Automobile') is the customer_name, "
+            "NEVER the address. Put something in 'address' ONLY if a real postal address is given. "
+            "'reference' is an invoice or order number only (e.g. INV-123, MG-R-...), never the message text. "
             "If the invoice says COD / Cash on Delivery / To-Pay or shows a collectable / amount-due, "
             "set payment=COD and cod_amount to that number; otherwise payment=Prepaid and cod_amount=0.")
     out = await brain_registry.complete("jasmine", system=sysp,
@@ -84800,7 +84803,7 @@ async def _jasmine_dispatch(message):
     ctx = await _jasmine_recent_context(chat_id)
     source = (("INVOICE (authoritative for name/address/phone):\n" + inv_text + "\n\n") if inv_text else "") + "GROUP CHAT:\n" + ctx
     p = await _jasmine_parse(text, source)
-    ref = p.get("reference") or _JD.extract_reference(text) or ""
+    ref = _JD.clean_reference(p.get("reference"), text)  # ignore the 32B dumping the whole msg into 'reference'
     cust = {}
     if ref:
         tkt = await db.tickets.find_one({"ticket_number": ref.upper()}, {"_id": 0})
@@ -84810,7 +84813,11 @@ async def _jasmine_dispatch(message):
         elif _JD.extract_reference(text):
             return f"Jasmine: ref {ref} not found — send the customer name, address & product."
 
-    name = (cust.get("customer_name") or p.get("customer_name") or "").strip()
+    # Deterministic recipient from "…to <name>" beats the 32B (which mis-files the name into 'address').
+    name = (cust.get("customer_name") or _JD.recipient_after_to(text) or p.get("customer_name") or "").strip()
+    # If the 32B filed the recipient name into 'address', drop it so we never ship to a bare name.
+    if name and (p.get("address") or "").strip().lower() == name.strip().lower():
+        p["address"] = ""
     first, last = _bigship_consignee_name(name, "")
     addr_fields, overflow = _JD.clip_address(p.get("address") or cust.get("address") or "",
                                              "", p.get("city") or cust.get("city") or "", p.get("state") or "")
