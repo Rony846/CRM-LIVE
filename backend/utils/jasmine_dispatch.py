@@ -137,6 +137,33 @@ def pcb_model(text: str) -> str:
     return tok if any(c.isdigit() for c in tok) else ""
 
 
+# A bare model reply ("8KVA", "E76", "send MG3KW one") — first alphanumeric token that has BOTH a
+# digit and a letter (so a pincode/amount like "1200" or "250002" is not mistaken for a model).
+_MODEL_TOKEN_RX = re.compile(r"\b([A-Za-z0-9]{2,12})\b")
+
+def model_token(text: str) -> str:
+    for m in _MODEL_TOKEN_RX.finditer(text or ""):
+        tok = m.group(1).upper()
+        if any(c.isdigit() for c in tok) and any(c.isalpha() for c in tok):
+            return tok
+    return ""
+
+
+def validate_consignee(fields: dict):
+    """Consignee-only pre-flight (name/phone/pincode/address) — used before asking 'which PCB model?'
+    so we don't ask for the model on an invoice we couldn't even read."""
+    problems = []
+    if not (fields.get("first_name") or "").strip():
+        problems.append("couldn't read the customer name")
+    if not norm_phone(fields.get("phone")):
+        problems.append("need a valid 10-digit phone")
+    if not norm_pincode(fields.get("pincode")):
+        problems.append("need a valid 6-digit pincode")
+    if not (fields.get("address_line1") or "").strip():
+        problems.append("need the delivery address")
+    return (len(problems) == 0, problems)
+
+
 def validate_dispatch(fields: dict):
     """Deterministic pre-flight. Returns (ok, problems) where problems is a list of human-readable,
     action-oriented strings ('Need a 6-digit pincode'). Empty problems → structurally bookable

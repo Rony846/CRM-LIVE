@@ -84405,6 +84405,7 @@ async def _jasmine_resolve_dims(sku_doc) -> Optional[dict]:
 
 async def _jasmine_parse(text, context) -> dict:
     """Jasmine 32B strict-JSON extraction. Returns {} on any failure so the caller asks the human."""
+    from utils import brain_registry
     sysp = ("You extract ONE shipping request from a WhatsApp dispatch group. Output ONLY compact JSON "
             "with keys: customer_name, phone, address, city, state, pincode, product, quantity, "
             "payment (Prepaid or COD), cod_amount, reference. Use \"\" if unknown. NEVER invent a "
@@ -84450,6 +84451,31 @@ def _jasmine_invoice_text(message) -> str:
         return ""
 
 
+async def _jasmine_present_card(chat_id, fields, dims, ref, overflow, requested_by, seed):
+    """Validate → dedup → create the awaiting_confirm pending → return the confirmation card.
+    Shared by the direct path and the two-step 'which PCB model?' path."""
+    fields.update({"weight_kg": dims["weight_kg"], "length_cm": dims["length_cm"],
+                   "width_cm": dims["width_cm"], "height_cm": dims["height_cm"]})
+    ok, problems = _JD.validate_dispatch(fields)
+    if not ok:
+        return "Jasmine: " + "; ".join(problems) + ".  (Reply with the missing detail, then tag me again.)"
+    if ref:
+        dup = await db.pratibha_shipments.find_one({"order_id": {"$regex": re.escape(ref)}, "awb": {"$nin": [None, ""]}})
+        if dup:
+            return f"Jasmine: already booked AWB {dup.get('awb')} for {ref} — not booking again."
+    code = _JD.gen_code(str(seed))
+    await db.jasmine_pending.update_one(
+        {"idem": _JD.idempotency_key(fields["phone"], fields["product_name"], ref, datetime.now(timezone.utc).strftime("%Y-%m-%d"))},
+        {"$set": {"code": code, "chat_id": chat_id, "fields": fields, "ref": ref, "dim_src": dims.get("source"),
+                  "status": "awaiting_confirm", "overflow": overflow, "requested_by": requested_by,
+                  "created_at": datetime.now(timezone.utc).isoformat()},
+         "$setOnInsert": {"id": str(uuid.uuid4())}}, upsert=True)
+    card = _jasmine_card(fields, code, dims.get("source", ""))
+    if overflow:
+        card += "\n⚠️ address is long — check it wasn't cut."
+    return card
+
+
 async def _jasmine_dispatch(message):
     """Meerut-group handler. Returns a reply string, or None to stay silent (still consumes the msg
     so the customer-support chain never runs for this group)."""
@@ -84471,6 +84497,22 @@ async def _jasmine_dispatch(message):
         return f"Jasmine: cancelled {p['code']} — nothing booked."
     if is_conf:
         return await _jasmine_confirm_and_book(message, code)
+
+    # --- answering a pending "which PCB model?" (two-step PCB flow) ---
+    if not _JD.is_wake(text):
+        recent = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+        pend_m = await db.jasmine_pending.find_one(
+            {"chat_id": chat_id, "status": "awaiting_model", "created_at": {"$gte": recent}}, sort=[("_id", -1)])
+        if pend_m:
+            model = _JD.pcb_model(text) or _JD.model_token(text)
+            if model:
+                f = pend_m["fields"]
+                f["product_name"] = f"{model} PCB"
+                await db.jasmine_pending.update_one({"_id": pend_m["_id"]}, {"$set": {"status": "modeled"}})
+                return await _jasmine_present_card(chat_id, f, {**_JD.PCB_PROFILE, "source": "pcb 5x5x5/0.1kg"},
+                                                   pend_m.get("ref", ""), pend_m.get("overflow", False),
+                                                   author, (message.message_id or "") + model)
+            return None  # no model recognised → stay silent; they can restate it
 
     # --- otherwise only act when tagged ---
     if not _JD.is_wake(text):
@@ -84511,49 +84553,37 @@ async def _jasmine_dispatch(message):
         "invoice_amount": float(p.get("cod_amount") or 0) or 100.0,
         "invoice_number": (ref or f"MDG-{_JD.gen_code(message.message_id)}")[:25],
     }
-    # PCB gets the FIXED profile (5x5x5 / 0.1kg — founder rule); everything else resolves via SKU
-    # dims (never blind). The PCB model comes from the tag ("ship E76 pcb" → "E76 PCB").
-    sku = None
+    # PCB gets the FIXED profile (5x5x5 / 0.1kg — founder rule). If a PCB is requested with NO model
+    # ("send a PCB to this customer"), ASK for the model and hold the consignee (two-step flow).
     if _JD.classify(text) == "pcb":
         model = _JD.pcb_model(text)
-        fields["product_name"] = f"{model} PCB" if model else (fields["product_name"] or "PCB")
+        if not model:
+            ok_c, probs_c = _JD.validate_consignee(fields)
+            if not ok_c:
+                return "Jasmine: " + "; ".join(probs_c) + " — share the invoice or send the details."
+            await db.jasmine_pending.update_one(
+                {"chat_id": chat_id, "status": "awaiting_model"},
+                {"$set": {"chat_id": chat_id, "status": "awaiting_model", "fields": fields, "ref": ref,
+                          "overflow": overflow, "requested_by": author,
+                          "created_at": datetime.now(timezone.utc).isoformat()},
+                 "$setOnInsert": {"id": str(uuid.uuid4())}}, upsert=True)
+            return f"Jasmine: which PCB model for {fields['first_name']}? (e.g. E76, 8KVA, MG3KW)"
+        fields["product_name"] = f"{model} PCB"
         dims = {**_JD.PCB_PROFILE, "source": "pcb 5x5x5/0.1kg"}
     else:
+        sku = None
         if fields["product_name"]:
             sku = await db.master_skus.find_one(
                 {"$or": [{"name": {"$regex": re.escape(fields["product_name"][:14]), "$options": "i"}},
                          {"sku_code": {"$regex": re.escape(fields["product_name"][:10]), "$options": "i"}}]})
         if sku and not fields["product_name"]:
             fields["product_name"] = sku.get("name")
+        fields["hsn_code"] = (sku or {}).get("hsn_code", "")
         dims = await _jasmine_resolve_dims(sku)
     if not dims:
         return (f"Jasmine: '{fields['product_name'] or 'this item'}' has no saved box size — "
                 f"reply: *dims <L>x<W>x<H> <kg>* and I'll continue.")
-    fields.update({"weight_kg": dims["weight_kg"], "length_cm": dims["length_cm"],
-                   "width_cm": dims["width_cm"], "height_cm": dims["height_cm"],
-                   "hsn_code": (sku or {}).get("hsn_code", "")})
-
-    ok, problems = _JD.validate_dispatch(fields)
-    if not ok:
-        return "Jasmine: " + "; ".join(problems) + f".  (Reply with the missing detail, then tag me again.)"
-
-    # Dedup — already booked for this reference?
-    if ref:
-        dup = await db.pratibha_shipments.find_one({"order_id": {"$regex": re.escape(ref)}, "awb": {"$nin": [None, ""]}})
-        if dup:
-            return f"Jasmine: already booked AWB {dup.get('awb')} for {ref} — not booking again."
-
-    code = _JD.gen_code(message.message_id)
-    await db.jasmine_pending.update_one(
-        {"idem": _JD.idempotency_key(fields["phone"], fields["product_name"], ref, datetime.now(timezone.utc).strftime("%Y-%m-%d"))},
-        {"$set": {"code": code, "chat_id": chat_id, "fields": fields, "ref": ref, "dim_src": dims["source"],
-                  "status": "awaiting_confirm", "overflow": overflow, "requested_by": author,
-                  "created_at": datetime.now(timezone.utc).isoformat()},
-         "$setOnInsert": {"id": str(uuid.uuid4())}}, upsert=True)
-    card = _jasmine_card(fields, code, dims["source"])
-    if overflow:
-        card += "\n⚠️ address is long — check it wasn't cut."
-    return card
+    return await _jasmine_present_card(chat_id, fields, dims, ref, overflow, author, message.message_id)
 
 
 async def _jasmine_confirm_and_book(message, code):
