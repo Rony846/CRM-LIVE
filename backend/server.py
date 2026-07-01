@@ -84481,6 +84481,48 @@ async def _jasmine_present_card(chat_id, fields, dims, ref, overflow, requested_
 _PCB_DIMS = {**_JD.PCB_PROFILE, "source": "pcb 5x5x5/0.1kg"}
 
 
+async def _jasmine_find_customer(name):
+    """Look a customer up in the CRM party master by name. Returns ranked candidates that have at
+    least a 10-digit phone — most-complete first (phone+pincode+address). Empty if no usable match."""
+    toks = [re.escape(t) for t in re.findall(r"[A-Za-z0-9]{3,}", name or "")]
+    if not toks:
+        return []
+    rx = ".*".join(toks)
+    out, seen = [], set()
+    async for p in db.parties.find({"name": {"$regex": rx, "$options": "i"}}).limit(20):
+        phone = re.sub(r"\D", "", str(p.get("phone") or ""))[-10:]
+        if len(phone) != 10 or phone[0] not in "6789":
+            continue
+        addr = re.sub(r"\s+", " ", (p.get("address") or "").replace("\r", " ").replace("\n", " ")).strip()
+        pin = _JD.norm_pincode(p.get("pincode"))
+        if not pin:
+            m = re.search(r"\b(\d{6})\b", addr)
+            pin = _JD.norm_pincode(m.group(1)) if m else ""
+        key = (phone, (p.get("name") or "").lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"name": p.get("name"), "phone": phone, "address": addr[:120],
+                    "city": p.get("city") or "", "state": p.get("state") or "", "pincode": pin or ""})
+    out.sort(key=lambda c: (0 if c["pincode"] else 1, 0 if c["address"] else 1))
+    return out[:5]
+
+
+async def _jasmine_fields_from_customer(c):
+    """Build the shipment fields (consignee only) from a matched CRM customer."""
+    first, last = _bigship_consignee_name(c.get("name") or "", "")
+    addr_fields, overflow = _JD.clip_address(c.get("address") or "", "", c.get("city") or "", c.get("state") or "")
+    fields = {
+        "shipment_type": "b2c", "warehouse_id": await _bigship_meerut_warehouse_id(),
+        "first_name": first, "last_name": last, "phone": _JD.norm_phone(c.get("phone")) or "",
+        "address_line1": addr_fields["address_line1"], "address_line2": addr_fields["address_line2"],
+        "city": addr_fields["city"], "state": addr_fields["state"],
+        "pincode": _JD.norm_pincode(c.get("pincode")) or "",
+        "product_name": "", "quantity": 1, "payment_type": "Prepaid", "cod_amount": 0, "invoice_amount": 100.0,
+    }
+    return fields, overflow
+
+
 async def _jasmine_store_payment_pending(chat_id, fields, ref, overflow, seed, inv_cod, await_amount, requested_by):
     await db.jasmine_pending.update_one(
         {"chat_id": chat_id, "status": "awaiting_payment"},
@@ -84534,9 +84576,45 @@ async def _jasmine_dispatch(message):
     if is_conf:
         return await _jasmine_confirm_and_book(message, code)
 
-    # --- non-wake replies that answer a pending Jasmine question (PCB model / payment steps) ---
+    # --- non-wake replies that answer a pending Jasmine question (customer / model / payment) ---
     if not _JD.is_wake(text):
         recent = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+        # (0) answering "is this <customer>?" (CRM name-lookup confirm)
+        pend_c = await db.jasmine_pending.find_one(
+            {"chat_id": chat_id, "status": "awaiting_customer", "created_at": {"$gte": recent}}, sort=[("_id", -1)])
+        if pend_c:
+            low = text.strip().lower()
+            yes = bool(re.match(r"^(y|yes|ye|yep|yeah|yup|haan|ha|ji|sahi|correct|right|ok|okay)\b", low))
+            no = bool(re.match(r"^(n|no|nope|nahi|na|galat|wrong)\b", low))
+            cands = pend_c.get("candidates", []); idx = pend_c.get("idx", 0)
+            if yes and idx < len(cands):
+                fields, overflow = await _jasmine_fields_from_customer(cands[idx])
+                fields["invoice_number"] = (pend_c.get("ref") or ("MDG-" + _JD.gen_code(message.message_id)))[:25]
+                await db.jasmine_pending.update_one({"_id": pend_c["_id"]}, {"$set": {"status": "customer_ok"}})
+                if pend_c.get("is_pcb"):
+                    model = pend_c.get("model") or ""
+                    if model:
+                        fields["product_name"] = f"{model} PCB"
+                        return await _jasmine_pcb_payment_step(chat_id, fields, pend_c.get("ref", ""), overflow,
+                                                               author, message.message_id, pend_c.get("orig_text", ""))
+                    await db.jasmine_pending.update_one(
+                        {"chat_id": chat_id, "status": "awaiting_model"},
+                        {"$set": {"chat_id": chat_id, "status": "awaiting_model", "fields": fields,
+                                  "ref": pend_c.get("ref", ""), "overflow": overflow, "requested_by": author,
+                                  "created_at": datetime.now(timezone.utc).isoformat()},
+                         "$setOnInsert": {"id": str(uuid.uuid4())}}, upsert=True)
+                    return f"Jasmine: which PCB model for {fields['first_name']}? (e.g. E76, 8KVA, MG3KW)"
+                return "Jasmine: got the customer — which product should I send?"
+            if no:
+                idx += 1
+                if idx < len(cands):
+                    await db.jasmine_pending.update_one({"_id": pend_c["_id"]}, {"$set": {"idx": idx}})
+                    c = cands[idx]
+                    return (f"Jasmine: how about *{c['name']}*?  📞 {c['phone']}  🏠 {c['address']}"
+                            f"{(' - ' + c['pincode']) if c['pincode'] else ''}\nReply *yes* or *no*.")
+                await db.jasmine_pending.update_one({"_id": pend_c["_id"]}, {"$set": {"status": "no_match"}})
+                return "Jasmine: then I don't have other data for that name — share the invoice, or send name, address & phone."
+            return None  # unclear yes/no → stay silent
         # (a) answering "Prepaid or COD?" (or the follow-up COD amount)
         pend_p = await db.jasmine_pending.find_one(
             {"chat_id": chat_id, "status": "awaiting_payment", "created_at": {"$gte": recent}}, sort=[("_id", -1)])
@@ -84616,6 +84694,23 @@ async def _jasmine_dispatch(message):
         "invoice_amount": float(p.get("cod_amount") or 0) or 100.0,
         "invoice_number": (ref or f"MDG-{_JD.gen_code(message.message_id)}")[:25],
     }
+    # No invoice + not enough to ship, but we have a NAME → look the customer up in the CRM and ask
+    # to confirm ("send a PCB to Singh Automobiles" → "is this Singh Automobiles, 98…, <address>?").
+    if not inv_text and name and not _JD.validate_consignee(fields)[0]:
+        cands = await _jasmine_find_customer(name)
+        if cands:
+            c = cands[0]
+            await db.jasmine_pending.update_one(
+                {"chat_id": chat_id, "status": "awaiting_customer"},
+                {"$set": {"chat_id": chat_id, "status": "awaiting_customer", "candidates": cands, "idx": 0,
+                          "is_pcb": _JD.classify(text) == "pcb", "model": _JD.pcb_model(text), "ref": ref,
+                          "orig_text": text, "requested_by": author,
+                          "created_at": datetime.now(timezone.utc).isoformat()},
+                 "$setOnInsert": {"id": str(uuid.uuid4())}}, upsert=True)
+            return (f"Jasmine: is this *{c['name']}*?  📞 {c['phone']}  🏠 {c['address']}"
+                    f"{(' - ' + c['pincode']) if c['pincode'] else ''}\nReply *yes* or *no*.")
+        return f"Jasmine: I couldn't find '{name}' in the CRM — share the invoice, or send name, address & phone."
+
     # PCB gets the FIXED profile (5x5x5 / 0.1kg — founder rule). If a PCB is requested with NO model
     # ("send a PCB to this customer"), ASK for the model and hold the consignee (two-step flow).
     if _JD.classify(text) == "pcb":
