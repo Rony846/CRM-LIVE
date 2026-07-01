@@ -84774,6 +84774,28 @@ async def _jasmine_dispatch(message):
     return await _jasmine_finalize(chat_id, fields, dims, ref, overflow, author, message.message_id, text)
 
 
+async def _jasmine_record_sr(sr, f):
+    """Record a Jasmine Shiprocket booking into the CRM immediately — db.shiprocket_orders (the SR
+    tracking view) + db.pratibha_shipments (Jasmine dedup + audit) — so it's visible without waiting
+    for the 6h sync, which then keeps the status fresh (upsert by the same shiprocket_order_id)."""
+    now = datetime.now(timezone.utc).isoformat()
+    name = (f.get("first_name", "") + " " + f.get("last_name", "")).strip()
+    sid = str(sr.get("order_id") or sr.get("shipment_id") or "")
+    await db.shiprocket_orders.update_one(
+        {"shiprocket_order_id": sid},
+        {"$set": {"shiprocket_order_id": sid, "channel_order_id": f.get("invoice_number", ""),
+                  "customer_name": name, "phone": f.get("phone", ""), "products": f.get("product_name", ""),
+                  "is_pcb": "pcb" in (f.get("product_name", "").lower()), "awb": sr.get("awb") or "",
+                  "courier_name": sr.get("courier") or "Shiprocket", "status": "booked",
+                  "shipment_id": sr.get("shipment_id"), "label_url": sr.get("label_url"),
+                  "source": "jasmine", "sr_created_at": now, "synced_at": now}}, upsert=True)
+    await db.pratibha_shipments.insert_one({
+        "id": str(uuid.uuid4()), "phone": f.get("phone"), "pincode": f.get("pincode"),
+        "amount": f.get("invoice_amount"), "product": f.get("product_name"), "awb": sr.get("awb"),
+        "order_id": f.get("invoice_number"), "courier": sr.get("courier") or "Shiprocket",
+        "label_url": sr.get("label_url"), "success": True, "by": "jasmine-shiprocket", "created_at": now})
+
+
 async def _jasmine_confirm_and_book(message, code):
     """Book a pending shipment on an allowlisted 'confirm'. Idempotent + resume-on-partial."""
     q = {"chat_id": message.chat_id, "status": "awaiting_confirm"}
@@ -84806,6 +84828,7 @@ async def _jasmine_confirm_and_book(message, code):
                 await db.jasmine_pending.update_one({"_id": pend["_id"]}, {"$set": {"status": "error", "error": str(sr.get("error"))[:300]}})
                 return f"Jasmine: Shiprocket booking FAILED — {str(sr.get('error'))[:120]}. Nothing shipped."
             awb, courier_name, label = sr.get("awb"), sr.get("courier") or "Shiprocket", sr.get("label_url")
+            await _jasmine_record_sr(sr, f)  # into CRM immediately (SR view + dedup/audit)
         else:
             resp = await _pratibha_book_shipment(f, {"from_addr": "jasmine"})
             awb, courier_name, label = getattr(resp, "awb_number", None), getattr(resp, "courier_name", "Delhivery"), getattr(resp, "label_url", None)
