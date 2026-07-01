@@ -84409,7 +84409,9 @@ async def _jasmine_parse(text, context) -> dict:
     sysp = ("You extract ONE shipping request from a WhatsApp dispatch group. Output ONLY compact JSON "
             "with keys: customer_name, phone, address, city, state, pincode, product, quantity, "
             "payment (Prepaid or COD), cod_amount, reference. Use \"\" if unknown. NEVER invent a "
-            "phone or pincode — leave blank if not clearly stated.")
+            "phone or pincode — leave blank if not clearly stated. "
+            "If the invoice says COD / Cash on Delivery / To-Pay or shows a collectable / amount-due, "
+            "set payment=COD and cod_amount to that number; otherwise payment=Prepaid and cod_amount=0.")
     out = await brain_registry.complete("jasmine", system=sysp,
                                         prompt=f"Recent messages:\n{context}\n\nRequest:\n{text}\n\nJSON:",
                                         max_tokens=400, temperature=0, timeout=90)
@@ -84476,6 +84478,40 @@ async def _jasmine_present_card(chat_id, fields, dims, ref, overflow, requested_
     return card
 
 
+_PCB_DIMS = {**_JD.PCB_PROFILE, "source": "pcb 5x5x5/0.1kg"}
+
+
+async def _jasmine_store_payment_pending(chat_id, fields, ref, overflow, seed, inv_cod, await_amount, requested_by):
+    await db.jasmine_pending.update_one(
+        {"chat_id": chat_id, "status": "awaiting_payment"},
+        {"$set": {"chat_id": chat_id, "status": "awaiting_payment", "fields": fields, "ref": ref,
+                  "overflow": overflow, "seed": str(seed), "inv_cod": inv_cod, "await_amount": await_amount,
+                  "requested_by": requested_by, "created_at": datetime.now(timezone.utc).isoformat()},
+         "$setOnInsert": {"id": str(uuid.uuid4())}}, upsert=True)
+
+
+async def _jasmine_pcb_payment_step(chat_id, fields, ref, overflow, requested_by, seed, text):
+    """After the PCB model is known, resolve Prepaid vs COD (founder rule: always confirm for PCB).
+    Reads the invoice's COD amount as the default; if the message already states payment, uses it."""
+    pay, amt = _JD.parse_payment(text)
+    inv_cod = float(fields.get("cod_amount") or 0)
+    if pay == "Prepaid":
+        fields["payment_type"] = "Prepaid"; fields["cod_amount"] = 0
+        fields["invoice_amount"] = fields.get("invoice_amount") or 100.0
+        return await _jasmine_present_card(chat_id, fields, _PCB_DIMS, ref, overflow, requested_by, seed)
+    if pay == "COD":
+        cod = amt or inv_cod
+        if cod > 0:
+            fields["payment_type"] = "COD"; fields["cod_amount"] = cod; fields["invoice_amount"] = cod
+            return await _jasmine_present_card(chat_id, fields, _PCB_DIMS, ref, overflow, requested_by, seed)
+        await _jasmine_store_payment_pending(chat_id, fields, ref, overflow, seed, inv_cod, True, requested_by)
+        return f"Jasmine: COD for {fields['product_name']} — what amount to collect?"
+    # payment not stated → ASK (invoice COD amount shown as the hint)
+    await _jasmine_store_payment_pending(chat_id, fields, ref, overflow, seed, inv_cod, False, requested_by)
+    hint = f" (invoice shows COD ₹{inv_cod:.0f})" if inv_cod > 0 else ""
+    return f"Jasmine: {fields['product_name']} for {fields['first_name']} — Prepaid or COD?{hint}"
+
+
 async def _jasmine_dispatch(message):
     """Meerut-group handler. Returns a reply string, or None to stay silent (still consumes the msg
     so the customer-support chain never runs for this group)."""
@@ -84498,20 +84534,47 @@ async def _jasmine_dispatch(message):
     if is_conf:
         return await _jasmine_confirm_and_book(message, code)
 
-    # --- answering a pending "which PCB model?" (two-step PCB flow) ---
+    # --- non-wake replies that answer a pending Jasmine question (PCB model / payment steps) ---
     if not _JD.is_wake(text):
         recent = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+        # (a) answering "Prepaid or COD?" (or the follow-up COD amount)
+        pend_p = await db.jasmine_pending.find_one(
+            {"chat_id": chat_id, "status": "awaiting_payment", "created_at": {"$gte": recent}}, sort=[("_id", -1)])
+        if pend_p:
+            f = pend_p["fields"]; inv_cod = float(pend_p.get("inv_cod") or 0)
+            seed = pend_p.get("seed", ""); ref = pend_p.get("ref", ""); ov = pend_p.get("overflow", False)
+            if pend_p.get("await_amount"):
+                a = _JD.amount_only(text)
+                if a and a > 0:
+                    f["payment_type"] = "COD"; f["cod_amount"] = a; f["invoice_amount"] = a
+                    await db.jasmine_pending.update_one({"_id": pend_p["_id"]}, {"$set": {"status": "resolved"}})
+                    return await _jasmine_present_card(chat_id, f, _PCB_DIMS, ref, ov, author, seed)
+                return None
+            pay, amt = _JD.parse_payment(text)
+            if pay == "Prepaid":
+                f["payment_type"] = "Prepaid"; f["cod_amount"] = 0; f["invoice_amount"] = f.get("invoice_amount") or 100.0
+                await db.jasmine_pending.update_one({"_id": pend_p["_id"]}, {"$set": {"status": "resolved"}})
+                return await _jasmine_present_card(chat_id, f, _PCB_DIMS, ref, ov, author, seed)
+            if pay == "COD":
+                cod = amt or inv_cod
+                if cod <= 0:
+                    await db.jasmine_pending.update_one({"_id": pend_p["_id"]}, {"$set": {"await_amount": True}})
+                    return "Jasmine: COD — what amount to collect?"
+                f["payment_type"] = "COD"; f["cod_amount"] = cod; f["invoice_amount"] = cod
+                await db.jasmine_pending.update_one({"_id": pend_p["_id"]}, {"$set": {"status": "resolved"}})
+                return await _jasmine_present_card(chat_id, f, _PCB_DIMS, ref, ov, author, seed)
+            return None  # unrecognised → stay silent
+        # (b) answering "which PCB model?"
         pend_m = await db.jasmine_pending.find_one(
             {"chat_id": chat_id, "status": "awaiting_model", "created_at": {"$gte": recent}}, sort=[("_id", -1)])
         if pend_m:
             model = _JD.pcb_model(text) or _JD.model_token(text)
             if model:
-                f = pend_m["fields"]
-                f["product_name"] = f"{model} PCB"
+                f = pend_m["fields"]; f["product_name"] = f"{model} PCB"
                 await db.jasmine_pending.update_one({"_id": pend_m["_id"]}, {"$set": {"status": "modeled"}})
-                return await _jasmine_present_card(chat_id, f, {**_JD.PCB_PROFILE, "source": "pcb 5x5x5/0.1kg"},
-                                                   pend_m.get("ref", ""), pend_m.get("overflow", False),
-                                                   author, (message.message_id or "") + model)
+                # model known → now resolve Prepaid vs COD (may ask next)
+                return await _jasmine_pcb_payment_step(chat_id, f, pend_m.get("ref", ""), pend_m.get("overflow", False),
+                                                       author, (message.message_id or "") + model, text)
             return None  # no model recognised → stay silent; they can restate it
 
     # --- otherwise only act when tagged ---
@@ -84569,17 +84632,19 @@ async def _jasmine_dispatch(message):
                  "$setOnInsert": {"id": str(uuid.uuid4())}}, upsert=True)
             return f"Jasmine: which PCB model for {fields['first_name']}? (e.g. E76, 8KVA, MG3KW)"
         fields["product_name"] = f"{model} PCB"
-        dims = {**_JD.PCB_PROFILE, "source": "pcb 5x5x5/0.1kg"}
-    else:
-        sku = None
-        if fields["product_name"]:
-            sku = await db.master_skus.find_one(
-                {"$or": [{"name": {"$regex": re.escape(fields["product_name"][:14]), "$options": "i"}},
-                         {"sku_code": {"$regex": re.escape(fields["product_name"][:10]), "$options": "i"}}]})
-        if sku and not fields["product_name"]:
-            fields["product_name"] = sku.get("name")
-        fields["hsn_code"] = (sku or {}).get("hsn_code", "")
-        dims = await _jasmine_resolve_dims(sku)
+        # model known → resolve Prepaid vs COD (reads invoice COD; asks if not stated)
+        return await _jasmine_pcb_payment_step(chat_id, fields, ref, overflow, author, message.message_id, text)
+
+    # non-PCB → resolve SKU dims (never blind)
+    sku = None
+    if fields["product_name"]:
+        sku = await db.master_skus.find_one(
+            {"$or": [{"name": {"$regex": re.escape(fields["product_name"][:14]), "$options": "i"}},
+                     {"sku_code": {"$regex": re.escape(fields["product_name"][:10]), "$options": "i"}}]})
+    if sku and not fields["product_name"]:
+        fields["product_name"] = sku.get("name")
+    fields["hsn_code"] = (sku or {}).get("hsn_code", "")
+    dims = await _jasmine_resolve_dims(sku)
     if not dims:
         return (f"Jasmine: '{fields['product_name'] or 'this item'}' has no saved box size — "
                 f"reply: *dims <L>x<W>x<H> <kg>* and I'll continue.")

@@ -149,6 +149,26 @@ def model_token(text: str) -> str:
     return ""
 
 
+# Payment intent + amount. Amounts are matched as WHOLE number tokens (\b...\b) so the "76" inside
+# a model like "E76" or a pincode digit isn't mistaken for the COD amount.
+_COD_RX = re.compile(r"\b(cod|c\.?o\.?d|cash\s*on\s*delivery|to[\s-]?pay)\b", re.I)
+_PREPAID_RX = re.compile(r"\b(prepaid|pre[\s-]?paid|prepay|ppd)\b", re.I)
+_AMT_RX = re.compile(r"\b(\d[\d,]{1,6})\b")
+
+def amount_only(text: str):
+    m = _AMT_RX.search(text or "")
+    return float(m.group(1).replace(",", "")) if m else None
+
+def parse_payment(text: str):
+    """Return (payment, amount): ('COD', 1200) | ('COD', None) | ('Prepaid', None) | (None, None)."""
+    t = text or ""
+    if _COD_RX.search(t):
+        return ("COD", amount_only(t))
+    if _PREPAID_RX.search(t):
+        return ("Prepaid", None)
+    return (None, None)
+
+
 def validate_consignee(fields: dict):
     """Consignee-only pre-flight (name/phone/pincode/address) — used before asking 'which PCB model?'
     so we don't ask for the model on an invoice we couldn't even read."""
