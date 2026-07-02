@@ -27,7 +27,7 @@ import ImporterPortal from './pages/importer/ImporterPortal';
 import ImporterReconciliation from './pages/admin/ImporterReconciliation';
 import DispatcherDashboard from './pages/dispatcher/DispatcherDashboard';
 import DispatcherTVMode from './pages/dispatcher/DispatcherTVMode';
-import AdminDashboard from './pages/admin/AdminDashboard';
+import AdminDashboard1a from './pages/admin/AdminDashboard1a';
 import ClaudeFiles from './pages/admin/ClaudeFiles';
 import AdminCustomers from './pages/admin/AdminCustomers';
 import AdminWarranties from './pages/admin/AdminWarranties';
@@ -566,10 +566,10 @@ function App() {
             </ProtectedRoute>
           } />
           
-          {/* Admin Routes */}
+          {/* Admin Routes — 1a "Iron Console" is the live admin home */}
           <Route path="/admin" element={
             <ProtectedRoute allowedRoles={['admin']}>
-              <AdminDashboard />
+              <AdminDashboard1a />
             </ProtectedRoute>
           } />
           <Route path="/admin/customers" element={
