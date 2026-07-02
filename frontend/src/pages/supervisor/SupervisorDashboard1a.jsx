@@ -227,7 +227,8 @@ export default function SupervisorDashboard1a() {
   const isActive = (path) => location.pathname === path;
 
   return (
-    <div className="sup1a" style={{ display: 'grid', gridTemplateColumns: '226px 1fr', minHeight: '100vh', background: T.iron50, fontFamily: T.body, color: T.iron900 }}>
+    <div className="sup1a" style={{ display: 'grid', gridTemplateColumns: '226px 1fr', minHeight: '100vh', background: T.iron50, fontFamily: T.body, color: T.iron900,
+      colorScheme: 'light', '--input-bg': '0 0% 100%', '--input-text': '222 47% 11%', '--input-border': '30 8% 88%', '--input-placeholder': '220 9% 56%' }}>
       <Fonts />
       <aside style={{ background: T.sidebar, color: '#fff', display: 'flex', flexDirection: 'column', padding: '18px 14px', position: 'sticky', top: 0, height: '100vh' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '2px 6px 20px', cursor: 'pointer' }} onClick={() => navigate('/supervisor')}>

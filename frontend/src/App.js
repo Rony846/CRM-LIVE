@@ -34,8 +34,8 @@ import AdminWarranties from './pages/admin/AdminWarranties';
 import AdminOrders from './pages/admin/AdminOrders';
 import AdminRepairs from './pages/admin/AdminRepairs';
 import AdminUsers from './pages/admin/AdminUsers';
-import AdminTickets from './pages/admin/AdminTickets';
-import AdminTicketDetail from './pages/admin/AdminTicketDetail';
+import AdminTickets1a from './pages/admin/AdminTickets1a';
+import AdminTicketDetail1a from './pages/admin/AdminTicketDetail1a';
 import AdminCampaigns from './pages/admin/AdminCampaigns';
 import AdminGateLogs from './pages/admin/AdminGateLogs';
 import MissedLeads from './pages/admin/MissedLeads';
@@ -599,12 +599,12 @@ function App() {
           } />
           <Route path="/admin/tickets" element={
             <ProtectedRoute allowedRoles={['admin']}>
-              <AdminTickets />
+              <AdminTickets1a />
             </ProtectedRoute>
           } />
           <Route path="/admin/tickets/:ticketId" element={
             <ProtectedRoute allowedRoles={['admin']}>
-              <AdminTicketDetail />
+              <AdminTicketDetail1a />
             </ProtectedRoute>
           } />
           <Route path="/admin/campaigns" element={
