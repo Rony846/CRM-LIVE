@@ -76380,35 +76380,49 @@ async def _send_order_confirmation_email(order: dict):
 
 
 async def _create_storefront_fulfillment(order: dict):
-    """Create a pending_fulfillment record so the order enters the team's normal dispatch queue.
-    Status 'ready_to_dispatch' — inert until the team books a label (no stock/COGS movement yet)."""
+    """Push a confirmed storefront order into the team's normal order-fulfilment / label-booking
+    queue as standard pending_fulfillment rows — ONE per line item with top-level master_sku_id +
+    quantity (same shape as Amazon orders), so the existing Pending-Fulfillment view + label flow
+    act on them natively. Status 'ready_to_dispatch' (inert until a label is booked; no stock/COGS
+    movement yet). Idempotent per order."""
     if order.get("fulfillment_id"):
         return
     try:
+        onum = order.get("order_number")
+        if await db.pending_fulfillment.find_one({"order_id": onum, "type": "storefront_order"}, {"_id": 1}):
+            return                                        # already queued (webhook + browser both confirmed)
         firm_id = os.environ.get("STOREFRONT_FIRM_ID", "").strip()
         firm = await db.firms.find_one({"id": firm_id}) if firm_id else None
         if not firm:
             firm = await db.firms.find_one({"name": "MGIPL"})
         parts = (order.get("customer_name") or "").strip().split()
         sh = order.get("shipping") or {}
-        items = [{"master_sku_id": it.get("master_sku_id"), "product_name": it.get("title"),
-                  "sku": it.get("sku"), "quantity": it.get("quantity")} for it in (order.get("items") or [])]
-        fid = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
-        await db.pending_fulfillment.insert_one({
-            "id": fid, "type": "storefront_order", "order_source": "storefront",
+        base = {
+            "type": "storefront_order", "order_source": "storefront",
             "firm_id": (firm or {}).get("id"), "firm_name": (firm or {}).get("name"),
-            "order_id": order.get("order_number"),
+            "order_id": onum, "marketplace_order_id": order.get("id"),
             "customer_name": order.get("customer_name"),
             "customer_first_name": parts[0] if parts else "",
             "customer_last_name": " ".join(parts[1:]) if len(parts) > 1 else "",
             "customer_phone": order.get("customer_phone"), "phone": order.get("customer_phone"),
             "address": sh.get("address"), "city": sh.get("city"), "pincode": sh.get("pincode"),
-            "items": items, "invoice_value": order.get("total"),
             "payment_method": order.get("payment_method"), "payment_status": order.get("payment_status"),
-            "status": "ready_to_dispatch", "notes": f"Online order ({order.get('payment_method')})",
-            "created_by": "system", "created_by_name": "Storefront", "created_at": now, "updated_at": now})
-        await db.marketplace_orders.update_one({"id": order["id"]}, {"$set": {"fulfillment_id": fid}})
+            "status": "ready_to_dispatch",
+            "notes": f"Online store order {onum} ({order.get('payment_method')})",
+            "created_by": "system", "created_by_name": "Storefront", "created_at": now, "updated_at": now,
+        }
+        docs, first_id = [], None
+        for it in (order.get("items") or []):
+            fid = str(uuid.uuid4())
+            first_id = first_id or fid
+            docs.append({**base, "id": fid, "master_sku_id": it.get("master_sku_id"),
+                         "sku": it.get("sku"), "product_name": it.get("title"),
+                         "master_sku_name": it.get("title"), "quantity": it.get("quantity") or 1,
+                         "invoice_value": it.get("line_total")})
+        if docs:
+            await db.pending_fulfillment.insert_many(docs)
+            await db.marketplace_orders.update_one({"id": order["id"]}, {"$set": {"fulfillment_id": first_id}})
     except Exception as e:
         logger.warning(f"storefront fulfillment create failed: {e}")
 
