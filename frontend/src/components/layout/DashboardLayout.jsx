@@ -190,6 +190,7 @@ const adminNavGroups = [
     icon: ShoppingBag,
     items: [
       { label: 'Orders', icon: ShoppingCart, path: '/admin/online-orders?tab=shopify' },
+      { label: 'Products', icon: Package, path: '/admin/online-orders?tab=products' },
     ]
   },
   {

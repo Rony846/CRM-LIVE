@@ -22,7 +22,8 @@ export default function AdminOnlineOrders() {
   const { token } = useAuth();
   const [searchParams] = useSearchParams();
   // Deep-link support: the Shopify nav tab opens ?tab=shopify straight to the history view.
-  const [tab, setTab] = useState(searchParams.get('tab') === 'shopify' ? 'shopify' : 'live'); // 'live' | 'shopify'
+  const _initTab = searchParams.get('tab');
+  const [tab, setTab] = useState(_initTab === 'shopify' ? 'shopify' : _initTab === 'products' ? 'products' : 'live'); // 'live' | 'shopify' | 'products'
 
   // ── live storefront orders ──────────────────────────────────────────────
   const [data, setData] = useState({ orders: [], summary: {} });
@@ -72,6 +73,31 @@ export default function AdminOnlineOrders() {
   }, [token, shopQuery, shopPage, shopStore]);
 
   useEffect(() => { if (tab === 'shopify') loadShop(); }, [loadShop, tab]);
+
+  // ── products sold on Shopify (aggregated from order line-items) ──────────
+  const [prods, setProds] = useState({ products: [], totals: {} });
+  const [prodLoading, setProdLoading] = useState(false);
+  const [prodStore, setProdStore] = useState('in');
+  const [prodQuery, setProdQuery] = useState('');
+  const [prodInput, setProdInput] = useState('');
+
+  const loadProds = useCallback(async () => {
+    setProdLoading(true);
+    try {
+      const params = new URLSearchParams({ store: prodStore });
+      if (prodQuery) params.set('q', prodQuery);
+      const res = await axios.get(`${API}/admin/shopify-products?${params}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setProds(res.data);
+    } catch (e) {
+      toast.error('Failed to load Shopify products');
+    } finally {
+      setProdLoading(false);
+    }
+  }, [token, prodStore, prodQuery]);
+
+  useEffect(() => { if (tab === 'products') loadProds(); }, [loadProds, tab]);
 
   const runShopSearch = () => { setShopPage(0); setShopQuery(shopInput.trim()); };
 
@@ -133,6 +159,7 @@ export default function AdminOnlineOrders() {
       <div className="flex gap-1 border-b border-slate-700 mb-5">
         <TabBtn id="live" label="Live storefront" icon={ShoppingCart} />
         <TabBtn id="shopify" label="Shopify history" icon={History} />
+        <TabBtn id="products" label="Products" icon={Package} />
       </div>
 
       {/* ════════════════════ LIVE STOREFRONT ════════════════════ */}
@@ -354,6 +381,78 @@ export default function AdminOnlineOrders() {
             </>
           )}
         </>
+      )}
+
+      {tab === 'products' && (
+        <div>
+          <div className="flex items-center gap-2 mb-4">
+            <span className="text-xs text-slate-400 uppercase tracking-wide">Store</span>
+            {['in', 'hk'].map((s) => (
+              <button key={s} onClick={() => setProdStore(s)}
+                className={`px-3 py-1 rounded text-sm font-medium ${prodStore === s ? 'bg-cyan-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200'}`}>
+                {STORE_NAMES[s]}
+              </button>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+            <Card className="bg-slate-800 border-slate-700"><CardContent className="p-4">
+              <p className="text-xs text-slate-400">Products sold</p>
+              <p className="text-2xl font-bold text-white">{prods.totals?.products || 0}</p>
+            </CardContent></Card>
+            <Card className="bg-slate-800 border-slate-700"><CardContent className="p-4">
+              <p className="text-xs text-slate-400">Units sold</p>
+              <p className="text-2xl font-bold text-white">{(prods.totals?.units || 0).toLocaleString('en-IN')}</p>
+            </CardContent></Card>
+            <Card className="bg-slate-800 border-slate-700"><CardContent className="p-4">
+              <p className="text-xs text-slate-400">Revenue (non-cancelled)</p>
+              <p className="text-2xl font-bold text-emerald-400">{cfmt(prods.totals?.revenue, prods.totals?.currency)}</p>
+            </CardContent></Card>
+          </div>
+          <div className="flex gap-2 mb-4">
+            <input value={prodInput} onChange={(e) => setProdInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && setProdQuery(prodInput)}
+              placeholder="Search product or SKU…"
+              className="flex-1 px-3 py-2 rounded bg-slate-800 border border-slate-700 text-slate-200 text-sm" />
+            <button onClick={() => setProdQuery(prodInput)} className="px-4 py-2 rounded bg-cyan-600 text-white text-sm">Search</button>
+          </div>
+          {prodLoading ? (
+            <div className="flex justify-center py-10"><Loader2 className="w-8 h-8 animate-spin text-slate-500" /></div>
+          ) : (prods.products || []).length === 0 ? (
+            <div className="text-center py-10 text-slate-500">No products found.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-slate-400 border-b border-slate-700">
+                    <th className="py-2 pr-3">Product</th>
+                    <th className="py-2 px-3">SKU</th>
+                    <th className="py-2 px-3 text-right">Units</th>
+                    <th className="py-2 px-3 text-right">Revenue</th>
+                    <th className="py-2 px-3 text-right">Orders</th>
+                    <th className="py-2 px-3">Last sold</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {prods.products.map((p, i) => (
+                    <tr key={i} className="border-b border-slate-800 hover:bg-slate-800/40">
+                      <td className="py-2 pr-3 text-slate-200">
+                        {p.name}
+                        {(p.variants || []).filter(Boolean).length > 0 && (
+                          <span className="text-xs text-slate-500 ml-1">({p.variants.filter(Boolean).join(', ')})</span>
+                        )}
+                      </td>
+                      <td className="py-2 px-3 font-mono text-xs text-slate-400">{p.sku || '—'}</td>
+                      <td className="py-2 px-3 text-right text-white font-semibold">{p.units}</td>
+                      <td className="py-2 px-3 text-right text-emerald-400">{cfmt(p.revenue, prods.totals?.currency)}</td>
+                      <td className="py-2 px-3 text-right text-slate-300">{p.order_count}</td>
+                      <td className="py-2 px-3 text-slate-400 text-xs">{p.last_sold ? new Date(p.last_sold).toLocaleDateString('en-IN', { dateStyle: 'medium' }) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       )}
     </DashboardLayout>
   );

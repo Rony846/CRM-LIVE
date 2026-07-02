@@ -76356,6 +76356,45 @@ async def admin_online_order_update(oid: str, body: dict,
     return {"success": True}
 
 
+@api_router.get("/admin/shopify-products")
+async def admin_shopify_products(q: Optional[str] = None, store: str = "in",
+                                 user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Products sold on the imported Shopify store, aggregated from order line-items (no separate
+    product catalog was imported). Per product: units, revenue (non-cancelled orders), order count,
+    variants, last sold. `store` = in/hk. Searchable by name/SKU."""
+    store = (store or "in").strip().lower()
+    pipeline = [
+        {"$match": {"store": store, "cancelled_at": {"$in": [None, ""]}}},
+        {"$unwind": "$line_items"},
+        {"$group": {
+            "_id": {"$toLower": {"$ifNull": ["$line_items.resolved_sku",
+                    {"$ifNull": ["$line_items.sku", "$line_items.title"]}]}},
+            "name": {"$first": {"$ifNull": ["$line_items.resolved_name", "$line_items.title"]}},
+            "sku": {"$first": {"$ifNull": ["$line_items.resolved_sku", "$line_items.sku"]}},
+            "units": {"$sum": {"$toInt": {"$ifNull": ["$line_items.quantity", 0]}}},
+            "revenue": {"$sum": {"$multiply": [
+                {"$toDouble": {"$ifNull": ["$line_items.price", 0]}},
+                {"$toInt": {"$ifNull": ["$line_items.quantity", 0]}}]}},
+            "orders": {"$addToSet": "$id"},
+            "variants": {"$addToSet": "$line_items.variant"},
+            "last_sold": {"$max": "$shopify_created_at"},
+        }},
+        {"$project": {"_id": 0, "name": 1, "sku": 1, "units": 1, "revenue": 1,
+                      "order_count": {"$size": "$orders"},
+                      "variants": {"$filter": {"input": "$variants", "as": "v", "cond": {"$ne": ["$$v", None]}}},
+                      "last_sold": 1}},
+        {"$sort": {"units": -1}},
+    ]
+    rows = await db.shopify_orders.aggregate(pipeline).to_list(3000)
+    if q and q.strip():
+        s = q.strip().lower()
+        rows = [r for r in rows if s in (r.get("name") or "").lower() or s in (r.get("sku") or "").lower()]
+    doc = await db.shopify_orders.find_one({"store": store}, {"currency": 1})
+    totals = {"products": len(rows), "units": sum(r.get("units") or 0 for r in rows),
+              "revenue": sum(r.get("revenue") or 0 for r in rows), "currency": (doc or {}).get("currency")}
+    return {"products": rows, "totals": totals, "store": store}
+
+
 @api_router.get("/admin/shopify-orders")
 async def admin_shopify_orders(q: Optional[str] = None, status: Optional[str] = None,
                                store: str = "in", limit: int = 50, skip: int = 0,
