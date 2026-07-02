@@ -77,3 +77,27 @@ export const fmtDateTime = (d) => {
   try { return new Date(d).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }); }
   catch { return '-'; }
 };
+
+/* Complete admin navigation (mirrors the legacy DashboardLayout menu so no option is lost).
+   Grouped; rendered collapsibly by IronSidebar. [groupLabel, [ [itemLabel, path], ... ] ] */
+export const IRON_ADMIN_NAV = [
+  ['Dashboard', [['Overview', '/admin'], ['Compliance', '/admin/compliance']]],
+  ['Team Dashboards', [['Call Support', '/support'], ['Supervisor', '/supervisor'], ['Technician', '/technician'], ['Accountant', '/accountant'], ['Dispatcher', '/dispatcher'], ['Gate', '/gate']]],
+  ['CRM', [['All Tickets', '/admin/tickets'], ['Call Center', '/calls'], ['Omnidim Calls', '/admin/omnidim-calls'], ['Customer WhatsApp', '/admin/whatsapp-chats'], ['Sales Leads', '/leads'], ['Repairs', '/admin/repairs'], ['Customers', '/admin/customers'], ['Warranties', '/admin/warranties'], ['Zoho Desk', '/admin/zoho-tickets'], ['Zoho Forms', '/admin/zoho-forms']]],
+  ['Solar Samrat', [['Samrat Admin', '/admin/solar-samrat']]],
+  ['Sales', [['Orders', '/admin/orders'], ['Quotations', '/quotations'], ['PI Pending Action', '/quotations/pending-action']]],
+  ['Inventory', [['Master SKUs', '/admin/master-sku'], ['Firms', '/admin/firms'], ['Serial Numbers', '/inventory/serial-numbers'], ['Stock Reports', '/admin/reports'], ['Product Datasheets', '/admin/product-datasheets']]],
+  ['Operations', [['Amazon Orders', '/operations/amazon-orders'], ['SKU Weights', '/admin/sku-weights'], ['File Repository', '/admin/file-repository'], ['Courier Shipping', '/operations/courier-shipping'], ['Courier Tracking', '/operations/courier-tracking'], ['Incoming Queue', '/accountant/incoming-queue'], ['Inventory', '/accountant/inventory'], ['Production', '/accountant/production'], ['Battery Production', '/admin/supervisor-production'], ['Pending Fulfillment', '/accountant/pending-fulfillment'], ['Dispatch Queue', '/view/dispatch-queue']]],
+  ['Folders', [['Order Folders', '/admin/orders-folders']]],
+  ['Shopify', [['Orders', '/admin/online-orders?tab=shopify'], ['Products', '/admin/online-orders?tab=products']]],
+  ['Browser Agents', [['EBAY UP Browser', '/admin/browser-agent/a9b65de0-ef07-47d7-b778-2a9f63ef52ab'], ['SPV Browser', '/admin/browser-agent/c715c1b7-aca3-4100-8b00-4f711a729829'], ['Electronics Bay Browser', '/admin/browser-agent/76b41510-bb17-42be-887f-abcbfd9f4180'], ['MuscleGrid Gurgaon Browser', '/admin/browser-agent/8bf93db6-045f-4aed-988c-352103ed049d'], ['MGIPL Bigship Browser', '/admin/browser-agent/16abb602-875d-4283-bed9-f8789e688a17']]],
+  ['Finance', [['Finance Analytics', '/finance/analytics'], ['Finance & GST', '/finance'], ['Online Orders', '/admin/online-orders'], ['Amazon Refunds', '/admin/refunds'], ['Refund Losses (Legal)', '/admin/refund-losses'], ['A-Z Claims', '/admin/az-claims'], ['Legal Cases', '/admin/legal-cases'], ['TDS Management', '/finance/tds'], ['GST / HSN', '/finance/gst-hsn'], ['GST Audit', '/finance/gst-audit'], ['Amazon Unmapped', '/admin/amazon-unmapped'], ['Bank Match', '/finance/reconciliation'], ['E-commerce Recon', '/finance/ecommerce-reconciliation'], ['Import Costing', '/finance/import-costing'], ['Importer Reconciliation', '/admin/importer-reconciliation'], ['Bank Reconciliation', '/finance/bank-reconciliation'], ['Unbooked Receipts', '/finance/unbooked-receipts'], ['Sales Register', '/accountant/sales'], ['Purchase Register', '/accountant/purchases'], ['Party Master', '/admin/parties'], ['Party Ledger', '/accountant/ledger'], ['Payments', '/accountant/payments'], ['Expenses & Tax Credits', '/accountant/expenses'], ['Credit Notes', '/accountant/credit-notes'], ['Accounting Reports', '/accountant/reports'], ['Reconciliation', '/accountant/reconciliation']]],
+  ['Agents', [['Email Agent', '/admin/email-agent'], ['Finance Agent', '/agents/finance'], ['Watch Live', '/agents/finance/watch'], ['Data Inbox', '/agents/finance/inbox']]],
+  ['HR & Payroll', [['Salary & Payroll', '/admin/payroll'], ['Employees', '/admin/employees'], ['Attendance', '/admin/attendance'], ['Incentives', '/admin/incentives'], ['Users', '/admin/users']]],
+  ['Dealer Portal', [['Applications', '/admin/dealer-applications'], ['All Dealers', '/admin/dealers'], ['Dealer Orders', '/admin/dealer-applications?tab=orders'], ['Dealer Products', '/admin/dealer-applications?tab=products'], ['Warranty Claims', '/admin/warranty-claims'], ['Spare Parts Catalog', '/admin/spare-parts'], ['Spare Orders', '/admin/spare-orders'], ['T&C Audit', '/admin/dealer-terms']]],
+  ['System', [['WhatsApp Agent', '/admin/whatsapp-agent'], ['Analytics', '/admin/analytics'], ['Activity Logs', '/admin/activity-logs'], ['Scheduled Jobs', '/admin/cron-runs'], ['Knowledge Base', '/admin/knowledge-base'], ['QA Scorecards', '/supervisor/qa-scorecards'], ['Smartflo Agents', '/admin/smartflo-agents'], ['Amazon Settings', '/admin/amazon-settings'], ['Data Management', '/admin/data-management'], ['Gate Logs', '/admin/gate-logs'], ['Files for Claude', '/admin/files-for-claude'], ['Review Rescue', '/admin/review-rescue']]],
+];
+
+export const IRON_SUPERVISOR_NAV = [
+  ['Workspace', [['Dashboard', '/supervisor'], ['Warranties', '/supervisor/warranties'], ['Production', '/supervisor/production'], ['Dispatch', '/supervisor/dispatch-tasks'], ['Calendar', '/supervisor/calendar'], ['QA Scorecards', '/supervisor/qa-scorecards']]],
+];

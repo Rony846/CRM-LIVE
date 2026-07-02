@@ -3,6 +3,8 @@ import axios from 'axios';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { API, useAuth } from '@/App';
 import SupervisorTeam from './SupervisorTeam';
+import IronSidebar from '@/components/iron/IronSidebar';
+import { IRON_SUPERVISOR_NAV } from '@/components/iron/IronKit';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -216,51 +218,11 @@ export default function SupervisorDashboard1a() {
     { label: 'RESOLVED TODAY', value: stats?.resolved_today ?? 0, sub: 'CLOSED IN 24H', accent: T.green },
   ];
 
-  const nav = [
-    ['Dashboard', LayoutDashboard, '/supervisor'],
-    ['Warranties', ShieldCheck, '/supervisor/warranties'],
-    ['Production', Factory, '/supervisor/production'],
-    ['Dispatch', Truck, '/supervisor/dispatch-tasks'],
-    ['Calendar', Calendar, '/supervisor/calendar'],
-    ['QA Scores', ClipboardCheck, '/supervisor/qa-scorecards'],
-  ];
-  const isActive = (path) => location.pathname === path;
-
   return (
     <div className="sup1a" style={{ display: 'grid', gridTemplateColumns: '226px 1fr', minHeight: '100vh', background: T.iron50, fontFamily: T.body, color: T.iron900,
       colorScheme: 'light', '--input-bg': '0 0% 100%', '--input-text': '222 47% 11%', '--input-border': '30 8% 88%', '--input-placeholder': '220 9% 56%' }}>
       <Fonts />
-      <aside style={{ background: T.sidebar, color: '#fff', display: 'flex', flexDirection: 'column', padding: '18px 14px', position: 'sticky', top: 0, height: '100vh' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '2px 6px 20px', cursor: 'pointer' }} onClick={() => navigate('/supervisor')}>
-          <img src="/redesign/mg-monogram.png" alt="MG" style={{ width: 34, height: 34 }} />
-          <div>
-            <div style={{ fontFamily: T.display, fontWeight: 800, fontSize: 17, letterSpacing: '.02em' }}>MUSCLEGRID</div>
-            <Caps size={8} color={T.orange} ls=".22em">Supervisor</Caps>
-          </div>
-        </div>
-        <Caps size={8.5} color="#6f6f6f" style={{ padding: '6px 8px' }}>Workspace</Caps>
-        {nav.map(([label, Icon, path]) => {
-          const active = isActive(path);
-          return (
-            <div key={label} className="sup1a-nav" onClick={() => navigate(path)} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '9px 10px', borderRadius: 8, marginBottom: 2, cursor: 'pointer',
-              background: active ? 'rgba(245,130,32,.16)' : 'transparent', color: active ? '#fff' : '#c9c9c9' }}>
-              <Icon size={15} color={active ? T.orange : '#9a9a9a'} strokeWidth={1.75} />
-              <span style={{ fontFamily: T.headline, fontWeight: 600, fontSize: 12.5 }}>{label}</span>
-            </div>
-          );
-        })}
-        <div style={{ flex: 1 }} />
-        <div style={{ border: '1px solid rgba(255,255,255,.08)', borderRadius: 8, padding: 10, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 9 }}>
-          <div style={{ width: 30, height: 30, borderRadius: 999, background: T.orange, color: '#fff', display: 'grid', placeItems: 'center', fontFamily: T.headline, fontWeight: 800, fontSize: 11 }}>{initials(`${user?.first_name || ''} ${user?.last_name || ''}`) || 'SU'}</div>
-          <div>
-            <div style={{ fontFamily: T.headline, fontWeight: 700, fontSize: 12 }}>{`${user?.first_name || 'Supervisor'} ${user?.last_name || ''}`.trim()}</div>
-            <Caps size={8} color="#8a8a8a" ls=".1em">Supervisor</Caps>
-          </div>
-        </div>
-        <div className="sup1a-nav" onClick={() => { logout?.(); navigate('/login'); }} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', color: '#9a9a9a', cursor: 'pointer', borderRadius: 8 }}>
-          <LogOut size={14} strokeWidth={1.75} /><Caps size={10} color="#9a9a9a">Sign Out</Caps>
-        </div>
-      </aside>
+      <IronSidebar nav={IRON_SUPERVISOR_NAV} roleLabel="Supervisor" />
 
       <div style={{ display: 'flex', flexDirection: 'column' }}>
         <header style={{ height: 58, background: T.white, borderBottom: `1px solid ${T.iron200}`, display: 'flex', alignItems: 'center', gap: 16, padding: '0 22px', position: 'sticky', top: 0, zIndex: 5 }}>
