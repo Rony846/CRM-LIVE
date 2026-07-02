@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import axios from 'axios';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { API, useAuth } from '@/App';
 import DashboardLayout from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
@@ -758,10 +758,11 @@ function KpiStrip({ tickets, missedCount, onJumpToBreached, onOpenMissed }) {
 export default function CallSupportInbox() {
   const { token, user } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [tickets, setTickets] = useState([]);
   const [missedCount, setMissedCount] = useState(0);
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedId, setSelectedId] = useState(() => new URLSearchParams(window.location.search).get('ticket') || null);
   const [selectedTicket, setSelectedTicket] = useState(null);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('open');
@@ -845,6 +846,13 @@ export default function CallSupportInbox() {
   }, [token]);
 
   useEffect(() => { loadSelected(selectedId); }, [selectedId, loadSelected]);
+
+  // Deep-link: open a specific ticket when arriving via ?ticket=<id> (e.g. from the
+  // inbound-call screen-pop), even if the agent is already on this page.
+  useEffect(() => {
+    const tid = new URLSearchParams(location.search).get('ticket');
+    if (tid) setSelectedId(tid);
+  }, [location.search]);
 
   // Auto-select first when nothing is selected and tickets arrive
   useEffect(() => {

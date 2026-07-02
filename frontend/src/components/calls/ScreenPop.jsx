@@ -87,11 +87,15 @@ export default function ScreenPop() {
   const close = () => { setEvent(null); setContext(null); };
 
   const goToTicket = (id) => {
+    if (!id) return;
     close();
-    navigate(`/support`);
-    // Caller will land on Call Support dashboard; the page-level search by phone
-    // gets them to the ticket quickly. A dedicated /support/ticket/:id route
-    // does not currently exist as a deep-link in this repo.
+    // Deep-link straight to the specific ticket, using the destination each role
+    // can actually open it in: admins have a dedicated detail page; supervisors
+    // and support open it in-place via ?ticket=<id>.
+    const role = user?.role;
+    if (role === 'admin') navigate(`/admin/tickets/${id}`);
+    else if (role === 'supervisor') navigate(`/supervisor?ticket=${id}`);
+    else navigate(`/support?ticket=${id}`);
   };
 
   return (
