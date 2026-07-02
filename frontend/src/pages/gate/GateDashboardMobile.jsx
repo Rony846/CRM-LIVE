@@ -60,6 +60,9 @@ export default function GateDashboardMobile() {
   // Recent scans
   const [recentScans, setRecentScans] = useState([]);
   const [loadingRecent, setLoadingRecent] = useState(true);
+
+  // Amazon Return-OTP batches — OTP unlocks once every listed parcel is scanned inward
+  const [returnBatches, setReturnBatches] = useState([]);
   
   // Expected queues (incoming/outgoing)
   const [scheduled, setScheduled] = useState({ incoming: [], outgoing: [] });
@@ -85,12 +88,26 @@ export default function GateDashboardMobile() {
     }
   }, []);
   
-  // Load recent scans on mount
+  // Load recent scans on mount + keep the return-OTP list fresh (unlocks within 30s of the last scan)
   useEffect(() => {
     loadRecentScans();
     loadScheduled();
     loadPendingUploads();
+    loadReturnBatches();
+    const iv = setInterval(loadReturnBatches, 30000);
+    return () => clearInterval(iv);
   }, [token]);
+
+  const loadReturnBatches = async () => {
+    try {
+      const res = await axios.get(`${API}/gate/return-batches?days=7`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setReturnBatches(res.data.batches || []);
+    } catch (error) {
+      console.error('Failed to load return OTP batches:', error);
+    }
+  };
   
   const loadRecentScans = async () => {
     try {
@@ -464,7 +481,48 @@ export default function GateDashboardMobile() {
           <h1 className="text-2xl font-bold text-white mb-1">Gate Control</h1>
           <p className="text-slate-400 text-sm">Scan, view queues, or upload media</p>
         </div>
-        
+
+        {/* Amazon Return-OTP — OTP stays locked until every listed parcel is scanned inward */}
+        {returnBatches.length > 0 && (
+          <div className="mb-4 rounded-xl border border-amber-700/60 bg-slate-800 p-3">
+            <div className="text-sm font-bold text-amber-300 flex items-center gap-2 mb-2">
+              ↩️ Amazon Returns — OTP Gate
+              <span className="text-[11px] font-normal text-slate-400">scan every parcel to unlock</span>
+            </div>
+            <div className="space-y-3">
+              {returnBatches.map((b) => {
+                const done = !b.otp_locked;
+                const expired = b.status === 'expired';
+                return (
+                  <div key={b.id} className={`rounded-lg border p-3 ${done ? 'border-green-600/70 bg-green-900/20' : expired ? 'border-red-700/70 bg-red-900/20' : 'border-slate-600 bg-slate-900/50'}`}>
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <span className="text-xs px-2 py-0.5 rounded bg-slate-700 text-slate-200">{b.scanned_count}/{b.total} scanned</span>
+                      {done ? (
+                        <span className="font-mono font-bold text-green-300 text-2xl tracking-widest">🔓 {b.otp}</span>
+                      ) : (
+                        <span className="font-mono text-slate-500 text-2xl tracking-widest">🔒 ••••••</span>
+                      )}
+                    </div>
+                    <div className="mt-1 text-[11px] text-slate-400">
+                      {(b.firm || (b.firm_names || ['?'])[0])} · {b.email_date}
+                      {b.valid_through ? ` · valid ${b.valid_through}` : ''}{expired ? ' · EXPIRED' : ''}
+                    </div>
+                    <div className="mt-2 space-y-1">
+                      {(b.items || []).map((it, i) => (
+                        <div key={i} className="flex items-center gap-2 text-[11px]">
+                          <span className={it.scanned ? 'text-green-400' : 'text-slate-500'}>{it.scanned ? '✅' : '⬜'}</span>
+                          <span className="font-mono text-slate-400">{it.tracking_id}</span>
+                          <span className="text-slate-400 truncate flex-1">{it.product}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Tab Navigation */}
         <div className="flex gap-2 mb-4 overflow-x-auto">
           <button
