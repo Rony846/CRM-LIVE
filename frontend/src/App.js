@@ -109,6 +109,7 @@ import FileRepositoryPage from './pages/admin/browser-agent/FileRepositoryPage';
 import OrdersFoldersPage from './pages/admin/OrdersFoldersPage';
 import WhatsAppAgentPage from './pages/admin/whatsapp/WhatsAppAgentPage';
 import PublicDatasheetView from './pages/public/PublicDatasheetView';
+import StoreFront from './pages/store/StoreFront';
 import CatalogueHome from './pages/public/CatalogueHome';
 import BatteryShowcase from './pages/public/BatteryShowcase';
 import StabilizerShowcase from './pages/public/StabilizerShowcase';
@@ -340,8 +341,13 @@ const RoleRedirect = () => {
 };
 
 function App() {
+  // The public storefront runs on its own host (store.musclegrid.in) — serve it standalone,
+  // outside the CRM auth/router/theme shell.
+  const isStoreHost = typeof window !== 'undefined' && window.location.hostname.startsWith('store.');
+
   // Initialize theme from localStorage — Obsidian Elite is the default.
   useEffect(() => {
+    if (isStoreHost) return;
     // One-time migration: roll everyone onto Obsidian Elite as the new default.
     if (!localStorage.getItem('mg-theme-v2')) {
       localStorage.setItem('mg-theme', 'obsidian');
@@ -359,6 +365,8 @@ function App() {
     }
   }, []);
 
+  if (isStoreHost) return <StoreFront />;
+
   return (
     <AuthProvider>
       <Toaster position="top-right" richColors />
@@ -366,6 +374,8 @@ function App() {
         <ChatProvider>
         <Routes>
           {/* Public Routes */}
+          <Route path="/store" element={<StoreFront />} />
+          <Route path="/store-preview" element={<StoreFront />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/register" element={<RegisterPage />} />
