@@ -52954,25 +52954,57 @@ async def screen_pop_context(
     open_tickets = await db.tickets.find(
         {"customer_phone": phone_regex, "status": {"$nin": closed}},
         {"_id": 0, "id": 1, "ticket_number": 1, "status": 1, "issue_description": 1,
-         "device_type": 1, "created_at": 1, "sla_due": 1}
+         "device_type": 1, "created_at": 1, "sla_due": 1,
+         "customer_name": 1, "customer_city": 1, "customer_email": 1}
     ).sort("created_at", -1).limit(5).to_list(5)
 
     # All tickets count
     total_tickets = await db.tickets.count_documents({"customer_phone": phone_regex})
 
+    # Most recent ticket of any status — used to name the caller when there is no
+    # standalone customers record (many callers exist only as tickets).
+    latest_ticket = open_tickets[0] if open_tickets else await db.tickets.find_one(
+        {"customer_phone": phone_regex},
+        {"_id": 0, "customer_name": 1, "customer_city": 1, "customer_email": 1},
+        sort=[("created_at", -1)]
+    )
+
     # Warranties
     warranties = await db.warranties.find(
         {"phone": phone_regex},
         {"_id": 0, "id": 1, "warranty_number": 1, "device_type": 1, "status": 1,
-         "warranty_end_date": 1, "order_id": 1}
+         "warranty_end_date": 1, "order_id": 1, "customer_name": 1}
     ).sort("warranty_end_date", -1).limit(5).to_list(5)
 
     # Recent dispatches (proxy for orders)
     dispatches = await db.dispatches.find(
         {"customer_phone": phone_regex},
         {"_id": 0, "id": 1, "dispatch_number": 1, "status": 1, "tracking_id": 1,
-         "product_name": 1, "created_at": 1}
+         "product_name": 1, "created_at": 1, "customer_name": 1}
     ).sort("created_at", -1).limit(3).to_list(3)
+
+    # Resolve a display name from any source, so the screen-pop never says
+    # "Unknown caller" when we clearly know this customer from their tickets.
+    caller_name = (
+        (customer or {}).get("name")
+        or (latest_ticket or {}).get("customer_name")
+        or (warranties[0].get("customer_name") if warranties else None)
+        or (dispatches[0].get("customer_name") if dispatches else None)
+    )
+    caller_name = (caller_name or "").strip() or None
+
+    # If we have no customers record but we do know the caller from tickets,
+    # synthesize a lightweight customer card so the pop shows their details.
+    if not customer and (caller_name or latest_ticket):
+        lt = latest_ticket or {}
+        customer = {
+            "name": caller_name,
+            "phone": p10,
+            "email": lt.get("customer_email"),
+            "city": lt.get("customer_city"),
+            "state": None,
+            "from_ticket": True,
+        }
 
     # Most recent past call
     last_call = await db.smartflo_calls.find_one(
@@ -52983,6 +53015,7 @@ async def screen_pop_context(
 
     return {
         "phone": p10,
+        "caller_name": caller_name,
         "customer": customer,
         "open_tickets": open_tickets,
         "total_tickets": total_tickets,
@@ -54934,10 +54967,12 @@ async def smartflo_webhook(request: Request):
             if len(clean_phone) > 10:
                 clean_phone = clean_phone[-10:]  # Get last 10 digits
             
-            # Look up customer in tickets
+            # Look up customer in tickets (tickets store the phone as customer_phone;
+            # match the last-10-digits as a suffix so +91 / spacing variants still hit).
             ticket = await db.tickets.find_one(
-                {"phone": {"$regex": clean_phone}},
-                {"_id": 0, "id": 1, "ticket_number": 1, "customer_name": 1, "phone": 1}
+                {"customer_phone": {"$regex": clean_phone + "$"}},
+                {"_id": 0, "id": 1, "ticket_number": 1, "customer_name": 1, "customer_phone": 1},
+                sort=[("created_at", -1)]
             )
             
             if ticket:

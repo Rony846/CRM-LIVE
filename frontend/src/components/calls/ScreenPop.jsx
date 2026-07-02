@@ -78,9 +78,10 @@ export default function ScreenPop() {
   if (!event) return null;
 
   const phone = event.phone || event.raw_phone;
-  const callerName = context?.customer?.name
+  const callerName = context?.caller_name
+    || context?.customer?.name
     || (context?.warranties?.[0]?.customer_name)
-    || event.agent_name
+    || (context?.open_tickets?.[0]?.customer_name)
     || 'Unknown caller';
 
   const close = () => { setEvent(null); setContext(null); };
