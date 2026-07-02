@@ -98,6 +98,19 @@ export const IRON_ADMIN_NAV = [
   ['System', [['WhatsApp Agent', '/admin/whatsapp-agent'], ['Analytics', '/admin/analytics'], ['Activity Logs', '/admin/activity-logs'], ['Scheduled Jobs', '/admin/cron-runs'], ['Knowledge Base', '/admin/knowledge-base'], ['QA Scorecards', '/supervisor/qa-scorecards'], ['Smartflo Agents', '/admin/smartflo-agents'], ['Amazon Settings', '/admin/amazon-settings'], ['Data Management', '/admin/data-management'], ['Gate Logs', '/admin/gate-logs'], ['Files for Claude', '/admin/files-for-claude'], ['Review Rescue', '/admin/review-rescue']]],
 ];
 
+// Mirrors the legacy DashboardLayout supervisor menu exactly (all 11 items).
 export const IRON_SUPERVISOR_NAV = [
-  ['Workspace', [['Dashboard', '/supervisor'], ['Warranties', '/supervisor/warranties'], ['Production', '/supervisor/production'], ['Dispatch', '/supervisor/dispatch-tasks'], ['Calendar', '/supervisor/calendar'], ['QA Scorecards', '/supervisor/qa-scorecards']]],
+  ['Workspace', [
+    ['Dashboard', '/supervisor'],
+    ['Call Center', '/calls'],
+    ['QA Scorecards', '/supervisor/qa-scorecards'],
+    ['Knowledge Base', '/admin/knowledge-base'],
+    ['Warranties', '/supervisor/warranties'],
+    ['Production', '/supervisor/production'],
+    ['Dispatch Battery', '/supervisor/dispatch-tasks'],
+    ['Calendar', '/supervisor/calendar'],
+    ['Dispatch Queue', '/view/dispatch-queue'],
+    ['Pending Fulfillment', '/view/pending-fulfillment'],
+    ['My Attendance', '/my-attendance'],
+  ]],
 ];
