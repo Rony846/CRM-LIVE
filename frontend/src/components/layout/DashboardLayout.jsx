@@ -186,6 +186,13 @@ const adminNavGroups = [
     ]
   },
   {
+    label: 'Shopify',
+    icon: ShoppingBag,
+    items: [
+      { label: 'Orders', icon: ShoppingCart, path: '/admin/online-orders?tab=shopify' },
+    ]
+  },
+  {
     label: 'Browser Agents',
     icon: Monitor,
     items: [

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { API, useAuth } from '@/App';
@@ -19,7 +20,9 @@ const SHOP_PAGE = 50;
 
 export default function AdminOnlineOrders() {
   const { token } = useAuth();
-  const [tab, setTab] = useState('live'); // 'live' | 'shopify'
+  const [searchParams] = useSearchParams();
+  // Deep-link support: the Shopify nav tab opens ?tab=shopify straight to the history view.
+  const [tab, setTab] = useState(searchParams.get('tab') === 'shopify' ? 'shopify' : 'live'); // 'live' | 'shopify'
 
   // ── live storefront orders ──────────────────────────────────────────────
   const [data, setData] = useState({ orders: [], summary: {} });
