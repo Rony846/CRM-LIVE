@@ -180,6 +180,7 @@ import AdminSpareParts from './pages/admin/AdminSpareParts';
 import AdminSpareOrders from './pages/admin/AdminSpareOrders';
 import AmazonRefundLosses from './pages/admin/AmazonRefundLosses';
 import AdminOnlineOrders from './pages/admin/AdminOnlineOrders';
+import RedesignPreview from './pages/admin/RedesignPreview';
 import LegalCases from './pages/admin/LegalCases';
 import AZClaims from './pages/admin/AZClaims';
 import AdminReviewRescue from './pages/admin/AdminReviewRescue';
@@ -1204,6 +1205,11 @@ function App() {
           <Route path="/admin/online-orders" element={
             <ProtectedRoute allowedRoles={['admin', 'accountant']}>
               <AdminOnlineOrders />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/redesign-preview" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <RedesignPreview />
             </ProtectedRoute>
           } />
           <Route path="/admin/legal-cases" element={
