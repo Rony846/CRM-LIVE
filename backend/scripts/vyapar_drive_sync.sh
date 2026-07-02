@@ -33,8 +33,10 @@ fail() { log "FAILED: $*"; notify "⚠️ Vyapar→CRM sync failed: $*"; exit 1;
 log "=== vyapar drive sync start (remote=$REMOTE) ==="
 
 # newest .vyb (rclone --format 'tp' = "<modtime>;<path>")
-latest=$(rclone lsf "$REMOTE" --include "*.vyb" --format "tp" 2>>"$LOG" | sort -r | head -1 | cut -d';' -f2)
+# Recursive: Vyapar organises backups into month subfolders (e.g. Jul-2026/…vyb).
+latest=$(rclone lsf "$REMOTE" --include "*.vyb" --format "tp" -R 2>>"$LOG" | sort -r | head -1 | cut -d';' -f2)
 [ -z "$latest" ] && { log "no .vyb found in $REMOTE (configure Vyapar auto-backup there)"; exit 0; }
+base=$(basename "$latest")   # rclone copy flattens into $WORK/, so unzip/rm use the basename
 
 marker="$WORK/.last_processed"
 if [ -f "$marker" ] && [ "$(cat "$marker")" = "$latest" ]; then
@@ -44,7 +46,7 @@ fi
 log "downloading $latest"
 rclone copy "$REMOTE/$latest" "$WORK/" >>"$LOG" 2>&1 || fail "rclone download"
 rm -rf "$WORK/extract" && mkdir -p "$WORK/extract"
-unzip -o -q "$WORK/$latest" -d "$WORK/extract" || fail "unzip"
+unzip -o -q "$WORK/$base" -d "$WORK/extract" || fail "unzip"
 vyp=$(ls "$WORK/extract"/*.vyp 2>/dev/null | head -1)
 [ -z "$vyp" ] && fail "no .vyp inside $latest"
 
@@ -54,5 +56,5 @@ log "txn import...";   "$PY" scripts/vyapar_txn_import.py "$vyp" --commit >>"$LO
 log "unbooked flag..."; "$PY" scripts/flag_unbooked_dealer_receipts.py "$vyp" --commit >>"$LOG" 2>&1 || fail "unbooked flag"
 
 echo "$latest" > "$marker"
-rm -f "$WORK/$latest"          # keep only the marker + extracted (small); drop the zip
+rm -f "$WORK/$base"          # keep only the marker + extracted (small); drop the zip
 log "=== DONE: synced $latest ==="
