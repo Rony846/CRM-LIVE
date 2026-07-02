@@ -54,6 +54,9 @@ cd "$BE" || fail "cd backend"
 log "party sync...";   "$PY" scripts/vyapar_party_sync.py "$vyp" --commit >>"$LOG" 2>&1 || fail "party sync"
 log "txn import...";   "$PY" scripts/vyapar_txn_import.py "$vyp" --commit >>"$LOG" 2>&1 || fail "txn import"
 log "unbooked flag..."; "$PY" scripts/flag_unbooked_dealer_receipts.py "$vyp" --commit >>"$LOG" 2>&1 || fail "unbooked flag"
+# Bridge current-month Vyapar sales into sales_invoices for MGIPL months with no authoritative
+# import yet, so the dashboard/reports reflect live Vyapar. Self-retires per month (see script).
+log "gap-fill sales_invoices..."; "$PY" scripts/vyapar_sales_gapfill.py --commit >>"$LOG" 2>&1 || fail "gap-fill"
 
 echo "$latest" > "$marker"
 rm -f "$WORK/$base"          # keep only the marker + extracted (small); drop the zip
