@@ -57,7 +57,6 @@ import FinanceAgentWatch from './pages/agents/FinanceAgentWatch';
 import FinanceAgentInbox from './pages/agents/FinanceAgentInbox';
 import TechnicianDashboard from './pages/technician/TechnicianDashboard';
 import GateDashboard from './pages/gate/GateDashboard';
-import SupervisorDashboard from './pages/supervisor/SupervisorDashboard';
 import SupervisorDashboard1a from './pages/supervisor/SupervisorDashboard1a';
 import SupervisorWarranties from './pages/supervisor/SupervisorWarranties';
 import SupervisorCalendar from './pages/supervisor/SupervisorCalendar';
@@ -460,13 +459,8 @@ function App() {
             </ProtectedRoute>
           } />
           
-          {/* Supervisor Routes */}
+          {/* Supervisor Routes — 1a "Iron Console" is the live dashboard */}
           <Route path="/supervisor" element={
-            <ProtectedRoute allowedRoles={['supervisor', 'admin']}>
-              <SupervisorDashboard />
-            </ProtectedRoute>
-          } />
-          <Route path="/supervisor/preview-1a" element={
             <ProtectedRoute allowedRoles={['supervisor', 'admin']}>
               <SupervisorDashboard1a />
             </ProtectedRoute>
@@ -488,7 +482,7 @@ function App() {
           } />
           <Route path="/supervisor/*" element={
             <ProtectedRoute allowedRoles={['supervisor', 'admin']}>
-              <SupervisorDashboard />
+              <SupervisorDashboard1a />
             </ProtectedRoute>
           } />
           
