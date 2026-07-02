@@ -308,8 +308,155 @@ function Login() {
   );
 }
 
+/* ---------------- CUSTOMER 360 (1a) ---------------- */
+const C360 = {
+  name: 'Anil Sharma', id: 'CU-88412', city: 'Jaipur · RJ', phone: '+91 98290 44xxx', email: 'anil.sharma@example.in',
+  dealer: 'Shree Balaji Solar',
+  products: [
+    { name: 'MGH0648 Hybrid 6.2kW Inverter', serial: 'MGH0648-25-08812', bought: '12 Aug 2025', till: '11 Aug 2028', in: true },
+    { name: 'MG120AH 48V Lithium Battery', serial: 'MG48V-25-13004', bought: '12 Aug 2025', till: '11 Aug 2030', in: true },
+    { name: 'MG5KVA Stabilizer', serial: 'MG5KVA-23-04410', bought: '03 Mar 2023', till: '02 Mar 2025', in: false },
+  ],
+  tickets: [
+    { id: 'MG-4821', date: '02 Jul 2026', issue: 'Display error E-07 after firmware update', status: 'New', res: '—' },
+    { id: 'MG-3980', date: '18 Apr 2026', issue: 'Battery not charging past 80%', status: 'Resolved', res: '2d 4h' },
+    { id: 'MG-3120', date: '02 Jan 2026', issue: 'Firmware update request', status: 'Resolved', res: '6h 10m' },
+    { id: 'MG-2044', date: '20 Sep 2025', issue: 'Installation guidance', status: 'Resolved', res: '1h 05m' },
+  ],
+  dispatches: [
+    { docket: 'BD-778812345', courier: 'BlueDart Surface', item: 'DSP-07 Display Board', status: 'In Transit', eta: 'ETA 04 Jul' },
+    { docket: 'DL-441120987', courier: 'Delhivery 10kg', item: 'MG120AH Battery (replacement)', status: 'Delivered', eta: '28 Jun' },
+  ],
+  activity: [
+    { at: '02 Jul · 16:20', by: 'Arjun M', note: 'Raised MG-4821 — advised battery + charging check before pickup.' },
+    { at: '28 Jun · 11:05', by: 'System', note: 'Replacement battery delivered — code-verified.' },
+    { at: '18 Apr · 09:40', by: 'Neha P', note: 'Resolved MG-3980 under warranty; BMS recalibrated.' },
+  ],
+};
+
+function SectionCard({ title, children, right }) {
+  return (
+    <div style={{ background: T.white, border: `1px solid ${T.iron200}`, borderRadius: 8, boxShadow: '0 1px 2px rgba(15,15,15,.06)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', padding: '11px 14px', borderBottom: `1px solid ${T.iron200}` }}>
+        <Caps size={10} color={T.iron900} ls=".1em">{title}</Caps>
+        <div style={{ flex: 1 }} />{right}
+      </div>
+      <div>{children}</div>
+    </div>
+  );
+}
+
+function Customer360() {
+  const [tab, setTab] = useState('Overview');
+  const tabs = ['Overview', 'Tickets', 'Dispatches'];
+  return (
+    <div style={{ minHeight: '100vh', background: T.iron50, fontFamily: T.body, color: T.iron900 }}>
+      {/* header */}
+      <header style={{ height: 58, background: T.white, borderBottom: `1px solid ${T.iron200}`, display: 'flex', alignItems: 'center', gap: 14, padding: '0 22px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: T.iron500, cursor: 'pointer' }}>
+          <ChevronLeft size={16} strokeWidth={1.75} /><Caps size={10} color={T.iron500}>Dashboard</Caps>
+        </div>
+        <div style={{ width: 1, height: 24, background: T.iron200 }} />
+        <div style={{ width: 34, height: 34, borderRadius: 999, background: T.iron900, color: '#fff', display: 'grid', placeItems: 'center', fontFamily: T.headline, fontWeight: 800, fontSize: 13 }}>AS</div>
+        <div>
+          <div style={{ fontFamily: T.headline, fontWeight: 700, fontSize: 15 }}>{C360.name}</div>
+          <span style={{ fontFamily: T.mono, fontSize: 10, color: T.iron400 }}>{C360.id} · {C360.city}</span>
+        </div>
+        <span style={{ padding: '3px 9px', borderRadius: 999, background: T.greenTint, color: T.green, border: '1px solid #CBE5D6', fontFamily: T.headline, fontWeight: 700, fontSize: 9.5, letterSpacing: '.06em' }}>2 IN WARRANTY</span>
+        <div style={{ flex: 1 }} />
+        <button style={{ background: T.orange, color: '#fff', border: 'none', borderRadius: 8, padding: '9px 16px', fontFamily: T.headline, fontWeight: 700, fontSize: 12, letterSpacing: '.04em', textTransform: 'uppercase', cursor: 'pointer' }}>New Ticket</button>
+      </header>
+
+      {/* contact strip */}
+      <div style={{ background: T.white, borderBottom: `1px solid ${T.iron200}`, padding: '10px 22px', display: 'flex', gap: 28 }}>
+        {[['PHONE', C360.phone], ['EMAIL', C360.email], ['VIA DEALER', C360.dealer]].map(([l, v]) => (
+          <div key={l}><Caps size={8.5} color={T.iron400}>{l}</Caps><div style={{ fontSize: 12.5, marginTop: 2, fontFamily: l === 'PHONE' ? T.mono : T.body }}>{v}</div></div>
+        ))}
+      </div>
+
+      {/* tabs */}
+      <div style={{ background: T.white, borderBottom: `1px solid ${T.iron200}`, padding: '0 22px', display: 'flex', gap: 22 }}>
+        {tabs.map((t) => (
+          <div key={t} onClick={() => setTab(t)} style={{ padding: '12px 2px', cursor: 'pointer', borderBottom: `2px solid ${tab === t ? T.orange : 'transparent'}`,
+            fontFamily: T.headline, fontWeight: 700, fontSize: 12.5, color: tab === t ? T.iron900 : T.iron400 }}>{t}</div>
+        ))}
+      </div>
+
+      <main style={{ padding: 22, display: 'grid', gridTemplateColumns: (tab === 'Overview' ? '1.4fr 1fr' : '1fr'), gap: 16, alignItems: 'start' }}>
+        {(tab === 'Overview' || tab === 'Tickets') && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {tab === 'Overview' && (
+              <SectionCard title="Registered Products">
+                {C360.products.map((p, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 14px', borderBottom: i < C360.products.length - 1 ? `1px solid ${T.iron200}` : 'none' }}>
+                    <div style={{ width: 40, height: 40, borderRadius: 6, background: T.iron900 }} />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontFamily: T.headline, fontWeight: 600, fontSize: 12.5 }}>{p.name}</div>
+                      <span style={{ fontFamily: T.mono, fontSize: 10, color: T.iron400 }}>{p.serial} · bought {p.bought}</span>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <span style={{ padding: '2px 8px', borderRadius: 999, fontFamily: T.headline, fontWeight: 700, fontSize: 9, letterSpacing: '.06em',
+                        background: p.in ? T.greenTint : T.iron100, color: p.in ? T.green : T.iron500, border: `1px solid ${p.in ? '#CBE5D6' : T.iron200}` }}>{p.in ? 'IN WARRANTY' : 'EXPIRED'}</span>
+                      <div style={{ fontFamily: T.mono, fontSize: 9.5, color: T.iron400, marginTop: 4 }}>till {p.till}</div>
+                    </div>
+                  </div>
+                ))}
+              </SectionCard>
+            )}
+            <SectionCard title="Ticket History">
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <tbody>
+                  {C360.tickets.map((t, i) => (
+                    <tr key={i} className="mgp-row" style={{ borderBottom: i < C360.tickets.length - 1 ? `1px solid ${T.iron200}` : 'none' }}>
+                      <td style={{ padding: '9px 14px', fontFamily: T.mono, fontWeight: 700, fontSize: 11.5, width: 78 }}>{t.id}</td>
+                      <td style={{ padding: '9px 6px', fontSize: 11.5, color: T.iron700 }}>{t.issue}</td>
+                      <td style={{ padding: '9px 6px', width: 90 }}><StatusPill s={t.status} /></td>
+                      <td style={{ padding: '9px 14px', textAlign: 'right', fontFamily: T.mono, fontSize: 10.5, color: T.iron400, width: 74 }}>{t.res}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </SectionCard>
+          </div>
+        )}
+        {(tab === 'Overview' || tab === 'Dispatches') && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <SectionCard title="Replacement Dispatches">
+              {C360.dispatches.map((d, i) => (
+                <div key={i} style={{ padding: '11px 14px', borderBottom: i < C360.dispatches.length - 1 ? `1px solid ${T.iron200}` : 'none' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontFamily: T.mono, fontWeight: 700, fontSize: 11.5 }}>{d.docket}</span>
+                    <span style={{ padding: '2px 8px', borderRadius: 999, fontFamily: T.headline, fontWeight: 700, fontSize: 9, letterSpacing: '.06em',
+                      background: d.status === 'Delivered' ? T.greenTint : T.blueTint, color: d.status === 'Delivered' ? T.green : T.blue, border: `1px solid ${d.status === 'Delivered' ? '#CBE5D6' : '#CBE0F0'}` }}>{d.status.toUpperCase()}</span>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: T.iron700, marginTop: 4 }}>{d.item}</div>
+                  <Caps size={9} color={T.iron400} ls=".06em" style={{ marginTop: 2, display: 'block' }}>{d.courier} · {d.eta}</Caps>
+                </div>
+              ))}
+            </SectionCard>
+            {tab === 'Overview' && (
+              <SectionCard title="Activity">
+                {C360.activity.map((a, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 10, padding: '11px 14px', borderBottom: i < C360.activity.length - 1 ? `1px solid ${T.iron200}` : 'none' }}>
+                    <div style={{ width: 6, height: 6, borderRadius: 999, background: T.orange, marginTop: 5 }} />
+                    <div>
+                      <span style={{ fontFamily: T.mono, fontSize: 9.5, color: T.iron400 }}>{a.at} · {a.by}</span>
+                      <div style={{ fontSize: 11.5, color: T.iron700, marginTop: 2 }}>{a.note}</div>
+                    </div>
+                  </div>
+                ))}
+              </SectionCard>
+            )}
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
 export default function RedesignPreview() {
   const [screen, setScreen] = useState('dashboard');
+  const LABELS = { dashboard: 'Dashboard', customer360: 'Customer 360', login: 'Login' };
   return (
     <div className="mgp" style={{ fontFamily: T.body }}>
       <Fonts />
@@ -317,12 +464,12 @@ export default function RedesignPreview() {
       <div style={{ position: 'fixed', top: 12, right: 12, zIndex: 50, display: 'flex', alignItems: 'center', gap: 8,
         background: 'rgba(20,20,20,.92)', border: '1px solid rgba(255,255,255,.14)', borderRadius: 8, padding: '6px 8px' }}>
         <Caps size={8.5} color={T.orange} ls=".14em">Preview · 1a Iron Console</Caps>
-        {['dashboard', 'login'].map((s) => (
+        {['dashboard', 'customer360', 'login'].map((s) => (
           <button key={s} onClick={() => setScreen(s)} style={{ border: 'none', cursor: 'pointer', borderRadius: 6, padding: '4px 10px',
-            background: screen === s ? T.orange : 'transparent', color: screen === s ? '#fff' : '#c9c9c9', fontFamily: T.headline, fontWeight: 700, fontSize: 11, textTransform: 'capitalize' }}>{s}</button>
+            background: screen === s ? T.orange : 'transparent', color: screen === s ? '#fff' : '#c9c9c9', fontFamily: T.headline, fontWeight: 700, fontSize: 11 }}>{LABELS[s]}</button>
         ))}
       </div>
-      {screen === 'dashboard' ? <Dashboard /> : <Login />}
+      {screen === 'dashboard' ? <Dashboard /> : screen === 'customer360' ? <Customer360 /> : <Login />}
     </div>
   );
 }

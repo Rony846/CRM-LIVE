@@ -58,6 +58,7 @@ import FinanceAgentInbox from './pages/agents/FinanceAgentInbox';
 import TechnicianDashboard from './pages/technician/TechnicianDashboard';
 import GateDashboard from './pages/gate/GateDashboard';
 import SupervisorDashboard from './pages/supervisor/SupervisorDashboard';
+import SupervisorDashboard1a from './pages/supervisor/SupervisorDashboard1a';
 import SupervisorWarranties from './pages/supervisor/SupervisorWarranties';
 import SupervisorCalendar from './pages/supervisor/SupervisorCalendar';
 import AdminSKUManagement from './pages/admin/AdminSKUManagement';
@@ -463,6 +464,11 @@ function App() {
           <Route path="/supervisor" element={
             <ProtectedRoute allowedRoles={['supervisor', 'admin']}>
               <SupervisorDashboard />
+            </ProtectedRoute>
+          } />
+          <Route path="/supervisor/preview-1a" element={
+            <ProtectedRoute allowedRoles={['supervisor', 'admin']}>
+              <SupervisorDashboard1a />
             </ProtectedRoute>
           } />
           <Route path="/supervisor/warranties" element={
