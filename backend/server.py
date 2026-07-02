@@ -76218,6 +76218,62 @@ async def shop_checkout_verify(body: ShopCheckoutVerify):
     return {"success": True, "order_number": order.get("order_number")}
 
 
+@api_router.post("/razorpay/webhook")
+async def razorpay_webhook(request: Request):
+    """Razorpay server-to-server webhook — the reliable source of truth for payment capture and
+    refunds, independent of the shopper's browser. Verifies X-Razorpay-Signature (HMAC-SHA256 with
+    RAZORPAY_WEBHOOK_SECRET), then reconciles the marketplace order atomically (fires the team
+    notification exactly once even if the browser callback also confirmed). No auth — Razorpay calls it."""
+    raw = await request.body()
+    sig = request.headers.get("X-Razorpay-Signature", "")
+    if not RAZORPAY_WEBHOOK_SECRET:
+        raise HTTPException(status_code=503, detail="Razorpay webhook not configured")
+    import hmac as _hmac, hashlib as _hashlib
+    expected = _hmac.new(RAZORPAY_WEBHOOK_SECRET.encode(), raw, _hashlib.sha256).hexdigest()
+    if not _hmac.compare_digest(expected, sig):
+        logger.warning("Razorpay webhook: bad signature")
+        raise HTTPException(status_code=400, detail="Invalid webhook signature")
+    try:
+        data = json.loads(raw or b"{}")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Bad JSON")
+    event = data.get("event", "")
+    now = datetime.now(timezone.utc).isoformat()
+    payload = data.get("payload") or {}
+    pay = ((payload.get("payment") or {}).get("entity")) or {}
+    rzp_order_id = pay.get("order_id")
+    rzp_payment_id = pay.get("id")
+    try:
+        if event in ("payment.captured", "order.paid"):
+            if rzp_order_id:
+                res = await db.marketplace_orders.update_one(
+                    {"razorpay_order_id": rzp_order_id, "payment_status": {"$ne": "paid"}},
+                    {"$set": {"payment_status": "paid", "status": "confirmed",
+                              "razorpay_payment_id": rzp_payment_id, "paid_at": now,
+                              "paid_via": "webhook", "updated_at": now}})
+                if res.modified_count == 1:  # this webhook (not the browser) confirmed it → notify once
+                    fresh = await db.marketplace_orders.find_one({"razorpay_order_id": rzp_order_id}, {"_id": 0})
+                    await _notify_new_storefront_order(fresh)
+        elif event == "payment.failed":
+            if rzp_order_id:
+                await db.marketplace_orders.update_one(
+                    {"razorpay_order_id": rzp_order_id, "payment_status": {"$ne": "paid"}},
+                    {"$set": {"payment_status": "failed", "updated_at": now}})
+        elif event.startswith("refund."):
+            ref = ((payload.get("refund") or {}).get("entity")) or {}
+            if ref.get("payment_id"):
+                await db.marketplace_orders.update_one(
+                    {"razorpay_payment_id": ref["payment_id"]},
+                    {"$set": {"payment_status": "refunded", "refund_id": ref.get("id"),
+                              "refund_amount": (ref.get("amount") or 0) / 100.0, "updated_at": now}})
+    except Exception as e:
+        logger.error(f"Razorpay webhook handling error ({event}): {e}")
+    await db.razorpay_webhook_log.insert_one({
+        "id": str(uuid.uuid4()), "event": event, "rzp_order_id": rzp_order_id,
+        "rzp_payment_id": rzp_payment_id, "at": now})
+    return {"ok": True}
+
+
 async def _notify_new_storefront_order(order: dict):
     """Free WhatsApp ping to the team so no online order goes unseen. Fires on COD placement
     and on successful online payment."""
