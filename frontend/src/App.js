@@ -37,12 +37,12 @@ import AdminRepairs from './pages/admin/AdminRepairsIron';
 import AdminUsers from './pages/admin/AdminUsersIron';
 import AdminTickets1a from './pages/admin/AdminTickets1a';
 import AdminTicketDetail1a from './pages/admin/AdminTicketDetail1a';
-import AdminCampaigns from './pages/admin/AdminCampaigns';
-import AdminGateLogs from './pages/admin/AdminGateLogs';
+import AdminCampaigns from './pages/admin/AdminCampaignsIron';
+import AdminGateLogs from './pages/admin/AdminGateLogsIron';
 import MissedLeads from './pages/admin/MissedLeads';
 import ReviewRewards from './pages/admin/ReviewRewards';
 import AdminAnalytics from './pages/admin/AdminAnalytics';
-import AdminActivityLogs from './pages/admin/AdminActivityLogs';
+import AdminActivityLogs from './pages/admin/AdminActivityLogsIron';
 import AdminDataManagement from './pages/admin/AdminDataManagement';
 import SmartfloAgents from './pages/admin/SmartfloAgents';
 import FinanceDashboard from './pages/finance/FinanceDashboard';
@@ -61,12 +61,12 @@ import GateDashboard from './pages/gate/GateDashboard';
 import SupervisorDashboard1a from './pages/supervisor/SupervisorDashboard1a';
 import SupervisorWarranties from './pages/supervisor/SupervisorWarranties';
 import SupervisorCalendar from './pages/supervisor/SupervisorCalendar';
-import AdminSKUManagement from './pages/admin/AdminSKUManagement';
-import AdminFirms from './pages/admin/AdminFirms';
+import AdminSKUManagement from './pages/admin/AdminSKUManagementIron';
+import AdminFirms from './pages/admin/AdminFirmsIron';
 import AdminMasterSKU from './pages/admin/AdminMasterSKU';
-import AdminZohoTickets from './pages/admin/AdminZohoTickets';
-import AdminZohoForms from './pages/admin/AdminZohoForms';
-import AdminSupervisorProduction from './pages/admin/AdminSupervisorProduction';
+import AdminZohoTickets from './pages/admin/AdminZohoTicketsIron';
+import AdminZohoForms from './pages/admin/AdminZohoFormsIron';
+import AdminSupervisorProduction from './pages/admin/AdminSupervisorProductionIron';
 import AdminEmployees from './pages/admin/AdminEmployeesIron';
 import AdminSolarSamrat from './pages/admin/AdminSolarSamrat';
 import StockReports from './pages/admin/StockReports';
@@ -138,9 +138,9 @@ import AdminIncentives from './pages/incentives/AdminIncentives';
 
 // Payroll & Attendance Pages
 import AdminPayroll from './pages/admin/AdminPayroll';
-import AdminOmnidimCalls from './pages/admin/AdminOmnidimCalls';
+import AdminOmnidimCalls from './pages/admin/AdminOmnidimCallsIron';
 import AdminWhatsAppChats from './pages/admin/AdminWhatsAppChats';
-import AdminAttendance from './pages/admin/AdminAttendance';
+import AdminAttendance from './pages/admin/AdminAttendanceIron';
 import MyAttendance from './pages/employee/MyAttendance';
 
 // Dealer Portal Pages
@@ -176,16 +176,16 @@ import { ChatProvider } from '@/components/chat/ChatProvider';
 import ChatDock from '@/components/chat/ChatDock';
 import ChatErrorBoundary from '@/components/chat/ChatErrorBoundary';
 import ChatPage from './pages/chat/ChatPage';
-import AdminDealerTerms from './pages/admin/AdminDealerTerms';
+import AdminDealerTerms from './pages/admin/AdminDealerTermsIron';
 import AdminWarrantyClaims from './pages/admin/AdminWarrantyClaimsIron';
 import AdminSpareParts from './pages/admin/AdminSparePartsIron';
 import AdminSpareOrders from './pages/admin/AdminSpareOrdersIron';
 import AmazonRefundLosses from './pages/admin/AmazonRefundLosses';
-import AdminOnlineOrders from './pages/admin/AdminOnlineOrders';
+import AdminOnlineOrders from './pages/admin/AdminOnlineOrdersIron';
 import RedesignPreview from './pages/admin/RedesignPreview';
 import LegalCases from './pages/admin/LegalCases';
-import AZClaims from './pages/admin/AZClaims';
-import AdminReviewRescue from './pages/admin/AdminReviewRescue';
+import AZClaims from './pages/admin/AZClaimsIron';
+import AdminReviewRescue from './pages/admin/AdminReviewRescueIron';
 import AdminWhatsAppAgent from './pages/admin/AdminWhatsAppAgent';
 
 // Leads Pages
