@@ -21,12 +21,12 @@ import CallSupportDashboard from './pages/support/CallSupportDashboard';
 import CallSupportInbox from './pages/support/CallSupportInbox';
 import CustomerThreeSixty from './pages/support/CustomerThreeSixty';
 import EmailTicketInbox from './pages/support/EmailTicketInbox';
-import ServiceAgentDashboard from './pages/service/ServiceAgentDashboard';
+import ServiceAgentDashboard from './pages/service/ServiceAgentDashboardIron';
 import AccountantDashboard from './pages/accountant/AccountantDashboard';
-import CADashboard from './pages/ca/CADashboard';
-import ImporterPortal from './pages/importer/ImporterPortal';
+import CADashboard from './pages/ca/CADashboardIron';
+import ImporterPortal from './pages/importer/ImporterPortalIron';
 import ImporterReconciliation from './pages/admin/ImporterReconciliationIron';
-import DispatcherDashboard from './pages/dispatcher/DispatcherDashboard';
+import DispatcherDashboard from './pages/dispatcher/DispatcherDashboardIron';
 import DispatcherTVMode from './pages/dispatcher/DispatcherTVMode';
 import AdminDashboard1a from './pages/admin/AdminDashboard1a';
 import ClaudeFiles from './pages/admin/ClaudeFilesIron';
@@ -45,8 +45,8 @@ import AdminAnalytics from './pages/admin/AdminAnalytics';
 import AdminActivityLogs from './pages/admin/AdminActivityLogsIron';
 import AdminDataManagement from './pages/admin/AdminDataManagement';
 import SmartfloAgents from './pages/admin/SmartfloAgents';
-import FinanceDashboard from './pages/finance/FinanceDashboard';
-import FinanceAnalytics from './pages/finance/FinanceAnalytics';
+import FinanceDashboard from './pages/finance/FinanceDashboardIron';
+import FinanceAnalytics from './pages/finance/FinanceAnalyticsIron';
 import TDSDashboard from './pages/finance/TDSDashboard';
 import GSTHSNDashboard from './pages/finance/GSTHSNDashboard';
 import EcommerceReconciliation from './pages/finance/EcommerceReconciliation';
@@ -56,8 +56,8 @@ import UnbookedReceipts from './pages/finance/UnbookedReceiptsIron';
 import FinanceAgent from './pages/agents/FinanceAgent';
 import FinanceAgentWatch from './pages/agents/FinanceAgentWatch';
 import FinanceAgentInbox from './pages/agents/FinanceAgentInbox';
-import TechnicianDashboard from './pages/technician/TechnicianDashboard';
-import GateDashboard from './pages/gate/GateDashboard';
+import TechnicianDashboard from './pages/technician/TechnicianDashboardIron';
+import GateDashboard from './pages/gate/GateDashboardIron';
 import SupervisorDashboard1a from './pages/supervisor/SupervisorDashboard1a';
 import SupervisorWarranties from './pages/supervisor/SupervisorWarranties';
 import SupervisorCalendar from './pages/supervisor/SupervisorCalendar';
@@ -90,8 +90,8 @@ import ReconciliationReports from './pages/accountant/ReconciliationReportsIron'
 import ExpensesDashboard from './pages/accountant/ExpensesDashboardIron';
 import SerialNumbersManagement from './pages/inventory/SerialNumbersManagement';
 import SupervisorProduction from './pages/supervisor/SupervisorProduction';
-import TechnicianProduction from './pages/technician/TechnicianProduction';
-import DispatchTasks from './pages/dispatch/DispatchTasks';
+import TechnicianProduction from './pages/technician/TechnicianProductionIron';
+import DispatchTasks from './pages/dispatch/DispatchTasksIron';
 import AmazonOrders from './pages/operations/AmazonOrders';
 import SkuWeights from './pages/admin/SkuWeightsIron';
 import EmailAgent from './pages/admin/EmailAgentIron';
@@ -133,7 +133,7 @@ import PublicQuotationView from './pages/quotations/PublicQuotationView';
 import PIPendingAction from './pages/quotations/PIPendingAction';
 
 // Incentive Pages
-import MyIncentives from './pages/incentives/MyIncentives';
+import MyIncentives from './pages/incentives/MyIncentivesIron';
 import AdminIncentives from './pages/incentives/AdminIncentives';
 
 // Payroll & Attendance Pages
@@ -141,12 +141,12 @@ import AdminPayroll from './pages/admin/AdminPayroll';
 import AdminOmnidimCalls from './pages/admin/AdminOmnidimCallsIron';
 import AdminWhatsAppChats from './pages/admin/AdminWhatsAppChats';
 import AdminAttendance from './pages/admin/AdminAttendanceIron';
-import MyAttendance from './pages/employee/MyAttendance';
+import MyAttendance from './pages/employee/MyAttendanceIron';
 
 // Dealer Portal Pages
 import DealerLogin from './pages/dealer/DealerLogin';
 import DealerRegister from './pages/dealer/DealerRegister';
-import DealerDashboard from './pages/dealer/DealerDashboard';
+import DealerDashboard from './pages/dealer/DealerDashboardIron';
 import DealerDeposit from './pages/dealer/DealerDeposit';
 import DealerPlaceOrder from './pages/dealer/DealerPlaceOrder';
 import DealerOrders from './pages/dealer/DealerOrders';
