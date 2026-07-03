@@ -2,6 +2,8 @@ import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { API } from '@/App';
 import { ShoppingCart, Search, ChevronLeft, Plus, Minus, Trash2, Loader2, ShieldCheck, Truck, BadgeCheck, X, MapPin, Check, PackageSearch } from 'lucide-react';
+import StoreLegal from './StoreLegal';
+import { LEGAL_DOCS, LEGAL_ORDER } from './legalContent';
 
 /* MuscleGrid Storefront MVP — public, guest checkout, wired to the existing /shop APIs.
    Server computes all prices from master_skus; the client only sends product ids + quantities.
@@ -41,6 +43,16 @@ export default function StoreFront() {
   const [svcLoading, setSvcLoading] = useState(false);
   const [pin, setPin] = useState({ v: '', res: null, loading: false });   // product-page delivery checker
   const [track, setTrack] = useState({ order: '', phone: '', res: null, loading: false, err: '' });
+  const [legalDoc, setLegalDoc] = useState('terms');
+  const openLegal = (slug) => { setLegalDoc(slug); setView('legal'); goTop(); };
+
+  // Base storefront SEO (legal pages set their own title and restore to this on exit).
+  useEffect(() => {
+    document.title = 'MuscleGrid — Solar Inverters, Lithium & Inverter Batteries, Voltage Stabilizers';
+    let m = document.head.querySelector('meta[name="description"]');
+    if (!m) { m = document.createElement('meta'); m.setAttribute('name', 'description'); document.head.appendChild(m); }
+    m.setAttribute('content', 'Buy MuscleGrid solar inverters, hybrid inverters, lithium & inverter batteries and voltage stabilizers online in India. Hassle-free pickup, repair & return warranty service. Secure payments.');
+  }, []);
 
   const checkPincode = useCallback(async (raw) => {
     const p = (raw || '').replace(/\D/g, '');
@@ -381,10 +393,45 @@ export default function StoreFront() {
             <button className="mgs-btn" onClick={() => { setView('catalog'); goTop(); }} style={{ border: 'none', background: O, color: '#fff', borderRadius: 10, padding: '12px 28px', cursor: 'pointer', fontFamily: FH, fontWeight: 700, fontSize: 14 }}>Continue Shopping</button>
           </div>
         </div>
+      ) : view === 'legal' ? (
+        <StoreLegal slug={legalDoc} onBack={() => { setView('catalog'); goTop(); }} onNav={openLegal} />
       ) : null}
 
-      <footer style={{ borderTop: `1px solid ${LINE}`, background: '#fff', padding: '22px 20px', textAlign: 'center', color: MUT, fontSize: 12 }}>
-        © MuscleGrid · Official Store · <span style={{ fontFamily: FM }}>store.musclegrid.in</span> — secure payments by Razorpay
+      <footer style={{ borderTop: `1px solid ${LINE}`, background: '#fff', padding: '30px 20px 26px', color: SUB, fontSize: 12.5 }}>
+        <div style={{ maxWidth: 1080, margin: '0 auto', display: 'flex', flexWrap: 'wrap', gap: 18, alignItems: 'flex-start', justifyContent: 'space-between' }}>
+          <div style={{ maxWidth: 320 }}>
+            <div style={{ fontFamily: FH, fontWeight: 800, fontSize: 15, color: INK, marginBottom: 6 }}>MuscleGrid</div>
+            <div style={{ lineHeight: 1.6, color: MUT }}>
+              Solar inverters, lithium &amp; inverter batteries and voltage stabilizers — with hassle-free
+              pickup, repair &amp; return warranty service across India.
+            </div>
+          </div>
+          <div>
+            <div style={{ fontFamily: FH, fontWeight: 700, fontSize: 12.5, color: INK, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Policies</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {LEGAL_ORDER.map((s) => (
+                <button key={s} className="mgs-btn" onClick={() => openLegal(s)}
+                  style={{ border: 'none', background: 'none', padding: 0, textAlign: 'left', cursor: 'pointer', fontFamily: F, fontSize: 12.5, color: SUB }}>
+                  {LEGAL_DOCS[s].nav}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div style={{ maxWidth: 260 }}>
+            <div style={{ fontFamily: FH, fontWeight: 700, fontSize: 12.5, color: INK, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Contact</div>
+            <div style={{ lineHeight: 1.7, color: MUT }}>
+              MuscleGrid India Private Limited<br />
+              24 B2, Neb Sarai, New Delhi – 110068<br />
+              <span style={{ fontFamily: FM }}>founder@musclegrid.in</span><br />
+              <span style={{ fontFamily: FM }}>+91 95603 77363</span><br />
+              GSTIN: <span style={{ fontFamily: FM }}>07AATCM1213F1ZM</span>
+            </div>
+          </div>
+        </div>
+        <div style={{ maxWidth: 1080, margin: '20px auto 0', paddingTop: 16, borderTop: `1px solid ${LINE}`, textAlign: 'center', color: MUT, fontSize: 12 }}>
+          © {new Date().getFullYear()} MuscleGrid India Private Limited · Official Store ·{' '}
+          <span style={{ fontFamily: FM }}>store.musclegrid.in</span> — secure payments by Razorpay
+        </div>
       </footer>
     </div>
   );
