@@ -64,6 +64,7 @@ import SupervisorCalendar from './pages/supervisor/SupervisorCalendarIron';
 import AdminSKUManagement from './pages/admin/AdminSKUManagementIron';
 import AdminFirms from './pages/admin/AdminFirmsIron';
 import AdminMasterSKU from './pages/admin/AdminMasterSKU';
+import AdminStoreProducts from './pages/admin/AdminStoreProducts';
 import AdminZohoTickets from './pages/admin/AdminZohoTicketsIron';
 import AdminZohoForms from './pages/admin/AdminZohoFormsIron';
 import AdminSupervisorProduction from './pages/admin/AdminSupervisorProductionIron';
@@ -771,6 +772,11 @@ function App() {
           <Route path="/admin/master-sku" element={
             <ProtectedRoute allowedRoles={['admin', 'accountant']}>
               <AdminMasterSKU />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/store-products" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AdminStoreProducts />
             </ProtectedRoute>
           } />
           <Route path="/admin/omnidim-calls" element={

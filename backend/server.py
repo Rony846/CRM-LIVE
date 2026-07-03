@@ -76418,13 +76418,16 @@ def _shop_card(m: dict) -> dict:
         "gst": _gst_rate(m),
         "compare_at": m.get("mrp") if (m.get("mrp") or 0) > (m.get("selling_price") or 0) else None,
         "image": m.get("image_url"),
-        "gallery": m.get("image_gallery") or ([m.get("image_url")] if m.get("image_url") else []),
+        "gallery": m.get("images") or m.get("image_gallery") or ([m.get("image_url")] if m.get("image_url") else []),
         "sku": m.get("sku_code"),
         "description": m.get("description"),
+        "seo_title": m.get("seo_title"),
+        "seo_description": m.get("seo_description"),
     }
 
 
-_SHOP_BASEQ = {"is_active": {"$ne": False}, "selling_price": {"$gt": 0}, "image_url": {"$nin": [None, ""]}}
+_SHOP_BASEQ = {"is_active": {"$ne": False}, "selling_price": {"$gt": 0},
+               "image_url": {"$nin": [None, ""]}, "store_hidden": {"$ne": True}}
 
 
 def _shop_query(store: Optional[str] = None) -> dict:
@@ -76436,6 +76439,83 @@ def _shop_query(store: Optional[str] = None) -> dict:
         return {"store": store.strip().lower(), "selling_price": {"$gt": 0},
                 "image_url": {"$nin": [None, ""]}}
     return dict(_SHOP_BASEQ)
+
+
+class StoreProductContent(BaseModel):
+    images: Optional[List[str]] = None           # gallery; images[0] becomes the primary image
+    description: Optional[str] = None
+    seo_title: Optional[str] = None
+    seo_description: Optional[str] = None
+    web_slug: Optional[str] = None
+    category: Optional[str] = None
+    selling_price: Optional[float] = None
+    mrp: Optional[float] = None
+    store_hidden: Optional[bool] = None
+
+
+def _store_status(m: dict) -> str:
+    imgs = m.get("images") or ([m["image_url"]] if m.get("image_url") else [])
+    if m.get("is_active", True) is False:
+        return "inactive"
+    if bool(m.get("store_hidden")):
+        return "hidden"
+    if not (m.get("selling_price") or 0) > 0:
+        return "no_price"
+    if not imgs:
+        return "no_image"
+    return "published"
+
+
+@api_router.get("/admin/store/products")
+async def admin_store_products(q: Optional[str] = None, status: Optional[str] = None,
+                               user: dict = Depends(require_roles(["admin"]))):
+    """Every product for the store CMS — published or not — with a computed store status so the
+    admin can see and fix what is/isn't live."""
+    query = {}
+    if q:
+        query["$or"] = [{"name": {"$regex": re.escape(q), "$options": "i"}},
+                        {"sku_code": {"$regex": re.escape(q), "$options": "i"}}]
+    out = []
+    async for m in db.master_skus.find(query, {"_id": 0}).sort("name", 1):
+        imgs = m.get("images") or ([m["image_url"]] if m.get("image_url") else [])
+        st = _store_status(m)
+        if status and st != status:
+            continue
+        out.append({
+            "id": m.get("id"), "name": m.get("name"), "sku_code": m.get("sku_code"),
+            "category": m.get("category"), "selling_price": m.get("selling_price"), "mrp": m.get("mrp"),
+            "gst_rate": m.get("gst_rate"), "description": m.get("description"),
+            "seo_title": m.get("seo_title"), "seo_description": m.get("seo_description"),
+            "web_slug": m.get("web_slug"), "images": imgs, "image_url": m.get("image_url"),
+            "store_hidden": bool(m.get("store_hidden")), "is_active": m.get("is_active", True) is not False,
+            "status": st,
+        })
+    counts = {}
+    for p in out:
+        counts[p["status"]] = counts.get(p["status"], 0) + 1
+    return {"products": out, "count": len(out), "status_counts": counts,
+            "categories": sorted([c for c in await db.master_skus.distinct("category", {}) if c])}
+
+
+@api_router.post("/admin/store/product/{sku_id}")
+async def save_store_product(sku_id: str, body: StoreProductContent,
+                             user: dict = Depends(require_roles(["admin"]))):
+    """Save store-facing product content: image gallery (first = primary), description, SEO title/
+    description, URL slug, category, price/MRP, and the store publish toggle."""
+    m = await db.master_skus.find_one({"id": sku_id})
+    if not m:
+        raise HTTPException(status_code=404, detail="Product not found")
+    upd = {k: v for k, v in body.dict().items() if v is not None}
+    if "images" in upd:
+        imgs = [u for u in (upd["images"] or []) if u]
+        upd["images"] = imgs
+        upd["image_url"] = imgs[0] if imgs else ""     # primary = first; none → hides from store
+    if upd.get("web_slug"):
+        upd["web_slug"] = re.sub(r"[^a-z0-9-]", "", upd["web_slug"].strip().lower().replace(" ", "-")).strip("-")
+    upd["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.master_skus.update_one({"id": sku_id}, {"$set": upd})
+    fresh = await db.master_skus.find_one({"id": sku_id}, {"_id": 0})
+    return {"ok": True, "status": _store_status(fresh)}
 
 
 @api_router.get("/shop/config")
