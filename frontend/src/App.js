@@ -7,10 +7,10 @@ import { Toaster } from 'sonner';
 import OrderBotWidget from './components/orderbot/OrderBotWidget';
 
 // Pages
-import LoginPage from './pages/LoginPage';
-import ForgotPassword from './pages/ForgotPassword';
-import RegisterPage from './pages/RegisterPage';
-import CompleteProfilePage from './pages/CompleteProfilePage';
+import LoginPage from './pages/LoginPageIron';
+import ForgotPassword from './pages/ForgotPasswordIron';
+import RegisterPage from './pages/RegisterPageIron';
+import CompleteProfilePage from './pages/CompleteProfilePageIron';
 import CustomerDashboard from './pages/customer/CustomerDashboardIron';
 import CustomerTickets from './pages/customer/CustomerTicketsIron';
 import CreateTicket from './pages/customer/CreateTicketIron';
@@ -146,8 +146,8 @@ import AdminAttendance from './pages/admin/AdminAttendanceIron';
 import MyAttendance from './pages/employee/MyAttendanceIron';
 
 // Dealer Portal Pages
-import DealerLogin from './pages/dealer/DealerLogin';
-import DealerRegister from './pages/dealer/DealerRegister';
+import DealerLogin from './pages/dealer/DealerLoginIron';
+import DealerRegister from './pages/dealer/DealerRegisterIron';
 import DealerDashboard from './pages/dealer/DealerDashboardIron';
 import DealerDeposit from './pages/dealer/DealerDepositIron';
 import DealerPlaceOrder from './pages/dealer/DealerPlaceOrderIron';
@@ -194,7 +194,7 @@ import AdminWhatsAppAgent from './pages/admin/AdminWhatsAppAgentIron';
 import LeadsPage from './pages/leads/LeadsPageIron';
 
 // Public Pages
-import VerifyDealer from './pages/public/VerifyDealer';
+import VerifyDealer from './pages/public/VerifyDealerIron';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
