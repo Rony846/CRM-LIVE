@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import IronShell from '@/components/iron/IronShell';
 import { T, Caps, IronCard, mono, badgeStyle } from '@/components/iron/IronKit';
-import GateDashboardMobile from './GateDashboardMobile';
+import GateDashboardMobile from './GateDashboardMobileIron';
 
 const inputStyle = { border: `1px solid ${T.iron200}`, borderRadius: 6, padding: '9px 11px', fontSize: 13, color: T.iron900, background: T.white, fontFamily: T.body, outline: 'none', width: '100%' };
 const selectStyle = { ...inputStyle, cursor: 'pointer' };
