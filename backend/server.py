@@ -13192,7 +13192,25 @@ async def gate_scan(
                     
                     if ledger_entries:
                         await db.inventory_ledger.insert_many(ledger_entries)
-                    
+                    # Post COGS journal for the traded items deducted here. Previously the gate-scan
+                    # finalize booked the sales invoice but SKIPPED COGS — the P&L rebuilt without the
+                    # cost side. (Manufactured make-to-order COGS is booked at the make step as consumed
+                    # raw materials, so it's not double-counted.) Gated with FULFILLMENT_V2 so live
+                    # accounting output is unchanged until the founder flips the new flow on.
+                    if ledger_entries and FULFILLMENT_V2:
+                        _cl = []
+                        for _e in ledger_entries:
+                            try:
+                                _w = await calculate_wac(_e["item_type"], _e["item_id"], firm_id)
+                            except Exception:
+                                _w = 0.0
+                            _cl.append({"item_id": _e["item_id"], "item_type": _e["item_type"],
+                                        "item_name": _e.get("item_name"), "quantity": _e.get("quantity"),
+                                        "wac": _w, "value": round(float(_w or 0) * float(_e.get("quantity", 0) or 0), 2)})
+                        _acc = str(dispatch.get("purchase_date") or dispatch.get("dispatched_at") or now.isoformat())[:10]
+                        await _post_cogs_journal_lines("dispatch", dispatch["id"], dispatch.get("dispatch_number"),
+                                                       firm_id, _cl, user, now, acc_date_str=_acc, acc_date_source="gate_scan")
+
                     # Create sales records
                     dispatch["scanned_out_at"] = now.isoformat()
                     await create_sales_order_from_dispatch(dispatch, db)
@@ -22599,6 +22617,34 @@ async def list_dispatch_tasks(user: dict = Depends(require_roles(["service_agent
     return out
 
 
+async def _post_cogs_journal_lines(ref_type, ref_id, ref_number, firm_id, cogs_lines, user, now,
+                                   acc_date_str=None, acc_date_source=None):
+    """Post Dr Cost of Goods Sold / Cr Inventory journal entries (journal_type='cogs_posting') so
+    the P&L captures the cost side. Shared by the gate-scan finalize (traded items) and the make-to-
+    order make step (consumed raw materials). cogs_lines: [{item_id,item_type,item_name,quantity,wac,value}]."""
+    created_at = now.isoformat() if hasattr(now, "isoformat") else str(now)
+    uname = f"{user.get('first_name','')} {user.get('last_name','')}".strip() or user.get("email")
+    entries = []
+    for l in cogs_lines:
+        val = round(float(l.get("value") or 0), 2)
+        if val <= 0:
+            continue
+        entries.append({
+            "id": str(uuid.uuid4()), "journal_type": "cogs_posting", "firm_id": firm_id,
+            "reference_type": ref_type, "reference_id": ref_id, "reference_number": ref_number,
+            "item_id": l.get("item_id"), "item_type": l.get("item_type"), "item_name": l.get("item_name"),
+            "quantity": l.get("quantity"), "wac_per_unit": round(float(l.get("wac") or 0), 4),
+            "lines": [{"account": "Cost of Goods Sold", "debit": val, "credit": 0},
+                      {"account": "Inventory", "debit": 0, "credit": val}],
+            "amount": val,
+            "narration": f"COGS {ref_number} ({l.get('quantity')} × {float(l.get('wac') or 0):.2f})",
+            "created_by": user.get("id"), "created_by_name": uname, "created_at": created_at,
+            "accounting_date": acc_date_str, "accounting_date_source": acc_date_source})
+    if entries:
+        await db.journal_entries.insert_many(entries)
+    return len(entries)
+
+
 async def _book_make_to_order_unit(dispatch: dict, sku_id: str, serial_number: str, maker: dict):
     """Books ONE manufactured unit at make-to-order dispatch time (FULFILLMENT_V2). Mirrors the
     production-receive bookkeeping but for a single unit that is made-and-shipped (never stocked):
@@ -22615,7 +22661,8 @@ async def _book_make_to_order_unit(dispatch: dict, sku_id: str, serial_number: s
     maker_role = maker.get("role")
     maker_name = f"{maker.get('first_name','')} {maker.get('last_name','')}".strip() or maker.get("email")
 
-    # 1. BOM raw-material consumption (best-effort, one unit)
+    # 1. BOM raw-material consumption (best-effort, one unit) + accumulate COGS lines
+    cogs_lines = []
     for bom_item in ((sku or {}).get("bill_of_materials") or []):
         try:
             rm = await db.raw_materials.find_one({"id": bom_item.get("raw_material_id")})
@@ -22635,8 +22682,25 @@ async def _book_make_to_order_unit(dispatch: dict, sku_id: str, serial_number: s
                 "reference_id": dispatch.get("id"),
                 "notes": f"Make-to-order dispatch {dispatch.get('dispatch_number')} (serial {serial_number})",
                 "created_by": maker.get("id"), "created_by_name": maker_name, "created_at": now})
+            try:
+                w = await calculate_wac("raw_material", bom_item["raw_material_id"], firm_id)
+            except Exception:
+                w = 0.0
+            if w and consume_qty:
+                cogs_lines.append({"item_id": bom_item["raw_material_id"], "item_type": "raw_material",
+                                   "item_name": rm.get("name"), "quantity": consume_qty, "wac": w,
+                                   "value": round(float(w) * consume_qty, 2)})
         except Exception as e:
             logger.warning(f"make-to-order BOM consume failed ({bom_item.get('raw_material_id')}): {e}")
+    # COGS journal for this made unit = the raw materials consumed (make-to-order cost side)
+    if cogs_lines:
+        try:
+            await _post_cogs_journal_lines("make_to_order", dispatch.get("id"), dispatch.get("dispatch_number"),
+                                           firm_id, cogs_lines, maker, now,
+                                           acc_date_str=str(dispatch.get("purchase_date") or now)[:10],
+                                           acc_date_source="make_to_order")
+        except Exception as e:
+            logger.warning(f"make-to-order COGS journal failed: {e}")
 
     # 2. Finished-good serial — born dispatched, linked to the dispatch
     serial_id = str(uuid.uuid4())
