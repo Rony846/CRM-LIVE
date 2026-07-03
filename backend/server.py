@@ -76253,6 +76253,88 @@ async def shop_checkout_verify(body: ShopCheckoutVerify):
     return {"success": True, "order_number": order.get("order_number")}
 
 
+# ---- Storefront serviceability (public). Bigship rate calculator is the source of truth;
+# cached per pincode (7d) so a public keystroke check never hammers the courier API. ----
+async def _bigship_serviceable(pincode: str) -> dict:
+    origin = re.sub(r"\D", "", os.environ.get("STOREFRONT_ORIGIN_PINCODE", "250002"))
+    try:
+        token = await get_bigship_token()
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.post(f"{BIGSHIP_API_URL}/calculator", json={
+                "shipment_category": "B2C", "payment_type": "Prepaid",
+                "pickup_pincode": int(origin or 0), "destination_pincode": int(pincode),
+                "shipment_invoice_amount": 10000,
+                "box_details": [{"each_box_dead_weight": 5.0, "each_box_length": 30,
+                                 "each_box_width": 30, "each_box_height": 30, "box_count": 1}],
+                "risk_type": "",
+            }, headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
+            data = (r.json() or {}).get("data") or []
+        couriers = [c for c in data if c.get("courier_name")]
+        rates = [float(c.get("total_shipping_charges") or c.get("courier_charge") or 0)
+                 for c in couriers if (c.get("total_shipping_charges") or c.get("courier_charge"))]
+        return {"serviceable": bool(couriers), "cod": bool(couriers),
+                "rate_from": round(min(rates)) if rates else None, "checked": True}
+    except Exception as e:
+        logger.warning(f"serviceability check failed for {pincode}: {e}")
+        return {"serviceable": True, "cod": True, "checked": False}   # never block a sale on our API failing
+
+
+@api_router.get("/shop/serviceability")
+async def shop_serviceability(pincode: str):
+    pin = re.sub(r"\D", "", pincode or "")
+    if len(pin) != 6:
+        raise HTTPException(status_code=400, detail="Enter a valid 6-digit pincode")
+    now = datetime.now(timezone.utc)
+    cached = await db.shop_serviceability.find_one({"pincode": pin}, {"_id": 0})
+    if cached and cached.get("expires_at") and now.isoformat() < cached["expires_at"]:
+        return {"pincode": pin, "serviceable": cached.get("serviceable"), "cod": cached.get("cod"), "rate_from": cached.get("rate_from")}
+    res = await _bigship_serviceable(pin)
+    if res.get("checked"):
+        await db.shop_serviceability.update_one({"pincode": pin}, {"$set": {
+            "pincode": pin, "serviceable": res["serviceable"], "cod": res["cod"], "rate_from": res.get("rate_from"),
+            "expires_at": (now + timedelta(days=7)).isoformat(), "updated_at": now.isoformat()}}, upsert=True)
+    return {"pincode": pin, "serviceable": res["serviceable"], "cod": res["cod"], "rate_from": res.get("rate_from")}
+
+
+@api_router.get("/shop/track")
+async def shop_track(order: str, phone: str = ""):
+    """Public order tracking — order number + the phone used on the order (privacy gate)."""
+    onum = (order or "").strip().upper()
+    o = await db.marketplace_orders.find_one({"order_number": onum, "source": "storefront"}, {"_id": 0})
+    if not o:
+        raise HTTPException(status_code=404, detail="Order not found. Please check the order number.")
+    ph = re.sub(r"\D", "", phone or "")[-10:]
+    if not ph or ph != re.sub(r"\D", "", str(o.get("customer_phone") or ""))[-10:]:
+        raise HTTPException(status_code=403, detail="Enter the phone number used on the order.")
+    pf = await db.pending_fulfillment.find_one({"order_id": onum}, {"_id": 0}) or {}
+    tracking_id = pf.get("tracking_id")
+    cs = None
+    if tracking_id:
+        cs = (await db.courier_shipments.find_one({"awb_number": tracking_id}, {"_id": 0, "status": 1, "courier_name": 1})
+              or await db.delhivery_tracking.find_one({"awb": tracking_id}, {"_id": 0, "status": 1}))
+    courier_status = (cs or {}).get("status") or pf.get("status")
+    pay, st = o.get("payment_status"), o.get("status")
+    stage = 1
+    if st == "confirmed" or pay == "paid" or pay == "cod_pending":
+        stage = 2
+    if pf.get("status") in ("label_created", "ready_for_dispatch", "pending_dispatch"):
+        stage = 3
+    if tracking_id:
+        stage = 4
+    if courier_status and "deliver" in str(courier_status).lower():
+        stage = 5
+    return {
+        "order_number": onum, "placed_at": o.get("created_at"), "status": st,
+        "payment_status": pay, "payment_method": o.get("payment_method"), "total": o.get("total"),
+        "items": [{"title": it.get("title"), "quantity": it.get("quantity"), "line_total": it.get("line_total")}
+                  for it in (o.get("items") or [])],
+        "ship_city": (o.get("shipping") or {}).get("city"),
+        "stage": stage, "steps": ["Placed", "Confirmed", "Packed", "Shipped", "Delivered"],
+        "courier": pf.get("courier") or pf.get("courier_name") or (cs or {}).get("courier_name"),
+        "tracking_id": tracking_id, "courier_status": courier_status,
+    }
+
+
 @api_router.post("/razorpay/webhook")
 async def razorpay_webhook(request: Request):
     """Razorpay server-to-server webhook — the reliable source of truth for payment capture and
