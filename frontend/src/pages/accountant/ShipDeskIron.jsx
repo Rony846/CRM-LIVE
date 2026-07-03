@@ -25,7 +25,7 @@ export default function ShipDesk() {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sel, setSel] = useState(null);          // order being shipped
-  const [form, setForm] = useState({ category: 'auto', awb: '', courier: 'Delhivery', file: null });
+  const [form, setForm] = useState({ category: 'auto', awb: '', courier: 'Delhivery', file: null, mode: 'upload' });
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -40,14 +40,15 @@ export default function ShipDesk() {
   }, [token]);
   useEffect(() => { load(); }, [load]);
 
-  const open = (o) => { setSel(o); setForm({ category: 'auto', awb: '', courier: 'Delhivery', file: null }); };
+  const open = (o) => { setSel(o); setForm({ category: 'auto', awb: '', courier: 'Delhivery', file: null, mode: 'upload' }); };
 
   const ship = async () => {
-    if (!form.awb.trim() && !form.file) { toast.error('Enter the AWB or upload the label'); return; }
+    if (form.mode !== 'bigship' && !form.awb.trim() && !form.file) { toast.error('Enter the AWB or upload the label'); return; }
     setBusy(true);
     try {
       const fd = new FormData();
       fd.append('category', form.category);
+      if (form.mode === 'bigship') fd.append('book_bigship', 'true');
       if (form.awb.trim()) fd.append('awb', form.awb.trim());
       if (form.courier.trim()) fd.append('courier', form.courier.trim());
       if (form.file) fd.append('label_file', form.file);
@@ -109,18 +110,31 @@ export default function ShipDesk() {
                   {CATS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                 </select></div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12 }}>
-                <div><Caps size={9} color={T.iron400} style={{ marginBottom: 5 }}>AWB / tracking</Caps>
-                  <input value={form.awb} onChange={(e) => setForm((f) => ({ ...f, awb: e.target.value }))} placeholder="Bigship AWB" style={{ ...inputStyle, fontFamily: T.mono }} /></div>
-                <div><Caps size={9} color={T.iron400} style={{ marginBottom: 5 }}>Courier</Caps>
-                  <input value={form.courier} onChange={(e) => setForm((f) => ({ ...f, courier: e.target.value }))} style={inputStyle} /></div>
+              <div>
+                <Caps size={9} color={T.iron400} style={{ marginBottom: 5 }}>Label</Caps>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                  {[['bigship', 'Book Bigship in CRM'], ['upload', 'Upload label PDF']].map(([m, l]) => (
+                    <button key={m} onClick={() => setForm((f) => ({ ...f, mode: m }))}
+                      style={{ flex: 1, border: '1px solid ' + (form.mode === m ? T.orange : T.iron200), background: form.mode === m ? 'rgba(245,130,32,.08)' : T.white, color: form.mode === m ? T.orangeDeep : T.iron700, borderRadius: 6, padding: '9px 10px', fontFamily: T.headline, fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>{l}</button>
+                  ))}
+                </div>
+                {form.mode === 'bigship' ? (
+                  <div style={{ border: '1px solid ' + T.iron200, borderRadius: 8, padding: '12px 14px', background: T.iron50, fontSize: 12.5, color: T.iron500, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Truck size={15} /> Books a Bigship (Delhivery B2C) label now — AWB + label are fetched and attached automatically. Dedup-guarded.
+                  </div>
+                ) : (<>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12, marginBottom: 12 }}>
+                    <div><Caps size={9} color={T.iron400} style={{ marginBottom: 5 }}>AWB / tracking</Caps>
+                      <input value={form.awb} onChange={(e) => setForm((f) => ({ ...f, awb: e.target.value }))} placeholder="Bigship AWB" style={{ ...inputStyle, fontFamily: T.mono }} /></div>
+                    <div><Caps size={9} color={T.iron400} style={{ marginBottom: 5 }}>Courier</Caps>
+                      <input value={form.courier} onChange={(e) => setForm((f) => ({ ...f, courier: e.target.value }))} style={inputStyle} /></div>
+                  </div>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 10, border: '1px dashed ' + T.iron200, borderRadius: 8, padding: '14px', cursor: 'pointer', background: T.iron50, color: T.iron500, fontSize: 12.5 }}>
+                    <Upload size={16} />{form.file ? form.file.name : 'Upload the label PDF'}
+                    <input type="file" accept="application/pdf,image/*" style={{ display: 'none' }} onChange={(e) => setForm((f) => ({ ...f, file: e.target.files?.[0] || null }))} />
+                  </label>
+                </>)}
               </div>
-
-              <div><Caps size={9} color={T.iron400} style={{ marginBottom: 5 }}>Label PDF (from Bigship panel)</Caps>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 10, border: '1px dashed ' + T.iron200, borderRadius: 8, padding: '14px', cursor: 'pointer', background: T.iron50, color: T.iron500, fontSize: 12.5 }}>
-                  <Upload size={16} />{form.file ? form.file.name : 'Upload the label PDF'}
-                  <input type="file" accept="application/pdf,image/*" style={{ display: 'none' }} onChange={(e) => setForm((f) => ({ ...f, file: e.target.files?.[0] || null }))} />
-                </label></div>
 
               <div style={{ fontSize: 11.5, color: T.iron400, display: 'flex', alignItems: 'center', gap: 6 }}>
                 <Truck size={13} /> The maker enters the serial when they dispatch. Gate scan → finalize books COGS + GST.
@@ -129,7 +143,7 @@ export default function ShipDesk() {
             <div style={{ position: 'sticky', bottom: 0, background: T.white, borderTop: '1px solid ' + T.iron200, padding: '14px 22px', display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
               <button onClick={() => setSel(null)} style={btnOutline}>Cancel</button>
               <button onClick={ship} disabled={busy} style={{ ...btnPrimary, opacity: busy ? 0.6 : 1, display: 'inline-flex', alignItems: 'center', gap: 7 }}>
-                {busy ? <Loader2 size={15} className="animate-spin" /> : <PackageCheck size={16} />} Attach label & route
+                {busy ? <Loader2 size={15} className="animate-spin" /> : <PackageCheck size={16} />} {form.mode === 'bigship' ? 'Book Bigship & route' : 'Attach label & route'}
               </button>
             </div>
           </div>

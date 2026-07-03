@@ -22467,6 +22467,7 @@ async def ship_desk_dispatch(
     awb: Optional[str] = Form(None),
     courier: Optional[str] = Form(None),
     notes: Optional[str] = Form(None),
+    book_bigship: bool = Form(False),       # book the Bigship label in-CRM instead of uploading
     label_file: Optional[UploadFile] = File(None),
     user: dict = Depends(require_roles(["admin", "accountant"])),
 ):
@@ -22486,6 +22487,12 @@ async def ship_desk_dispatch(
     if existing:
         return {"message": "Dispatch already exists", "dispatch_id": existing["id"],
                 "dispatch_number": existing.get("dispatch_number"), "duplicate": True}
+
+    # Book the Bigship label in-CRM (Delhivery B2C) — writes the AWB back as tracking_id + stores the
+    # label on the PF row; dedup-guarded + idempotent. Then we re-read the record and route as usual.
+    if book_bigship:
+        await bigship_label_for_fulfillment(fulfillment_id, dry_run=False, warehouse_id=None, force=False, user=user)
+        entry = await db.pending_fulfillment.find_one({"id": fulfillment_id}) or entry
 
     items = entry.get("items") or []
     if not items and entry.get("master_sku_id"):
