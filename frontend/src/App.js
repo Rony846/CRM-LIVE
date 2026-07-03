@@ -76,6 +76,7 @@ import AccountantInventory from './pages/accountant/AccountantInventory';
 import IncomingInventoryQueue from './pages/accountant/IncomingInventoryQueueIron';
 import ProductionRequests from './pages/accountant/ProductionRequestsIron';
 import PendingFulfillment from './pages/accountant/PendingFulfillmentIron';
+import ShipDesk from './pages/accountant/ShipDeskIron';
 import PurchaseRegister from './pages/accountant/PurchaseRegisterIron';
 import SalesRegister from './pages/accountant/SalesRegisterIron';
 import PartyMaster from './pages/admin/PartyMasterIron';
@@ -846,6 +847,11 @@ function App() {
           <Route path="/accountant/pending-fulfillment" element={
             <ProtectedRoute allowedRoles={['accountant', 'admin']}>
               <PendingFulfillment />
+            </ProtectedRoute>
+          } />
+          <Route path="/accountant/ship-desk" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin']}>
+              <ShipDesk />
             </ProtectedRoute>
           } />
           

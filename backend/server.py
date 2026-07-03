@@ -22587,6 +22587,9 @@ async def list_dispatch_tasks(user: dict = Depends(require_roles(["service_agent
                 "label_url": d.get("label_file") or d.get("label_url"),
                 "invoice_url": d.get("invoice_url"),
                 "items": my_items,
+                # make-to-order: the manufactured lines in THIS task that need a serial captured
+                "serial_items": t.get("serial_items") or [],
+                "serials_needed": sum(int(si.get("quantity") or 1) for si in (t.get("serial_items") or [])),
                 "all_tasks": [{"group": x["group"], "label": x["label"], "status": x["status"],
                                "completed_by_name": x.get("completed_by_name")} for x in (d.get("split_tasks") or [])],
                 "created_at": d.get("created_at"),

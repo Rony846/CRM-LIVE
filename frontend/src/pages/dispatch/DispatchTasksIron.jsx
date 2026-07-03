@@ -20,6 +20,7 @@ export default function DispatchTasks() {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState(null);
+  const [serialModal, setSerialModal] = useState(null);   // { t, serials: [] }
 
   const role = user?.role;
   const heading =
@@ -47,22 +48,36 @@ export default function DispatchTasks() {
     return () => clearInterval(t);
   }, [load]);
 
-  const markSent = async (t) => {
+  const markSent = async (t, serials = null) => {
     setBusyId(t.dispatch_id);
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const res = await axios.put(`${API}/dispatch-tasks/${t.dispatch_id}/ready`, {}, { headers });
+      const res = await axios.put(`${API}/dispatch-tasks/${t.dispatch_id}/ready`,
+        serials ? { serials } : {}, { headers });
       toast.success(
         res.data?.all_ready
           ? `${t.group_label} sent — both products ready, awaiting gate scan ✅`
           : `${t.group_label} marked sent ✅`
       );
+      setSerialModal(null);
       await load();
     } catch (e) {
       toast.error(e?.response?.data?.detail || 'Could not mark sent');
     } finally {
       setBusyId(null);
     }
+  };
+
+  // Manufactured items (inverter/battery) need a serial captured now; traded items don't.
+  const onSend = (t) => {
+    if ((t.serials_needed || 0) > 0) setSerialModal({ t, serials: Array(t.serials_needed).fill('') });
+    else markSent(t);
+  };
+  const submitSerials = () => {
+    const s = (serialModal.serials || []).map((x) => (x || '').trim());
+    if (s.some((x) => !x)) return toast.error('Enter every serial number');
+    if (new Set(s).size !== s.length) return toast.error('Serial numbers must be unique');
+    markSent(serialModal.t, s);
   };
 
   const pendingCount = tasks.filter((t) => t.status !== 'ready').length;
@@ -211,10 +226,10 @@ export default function DispatchTasks() {
                         <button
                           style={sendBtn(busyId === t.dispatch_id)}
                           disabled={busyId === t.dispatch_id}
-                          onClick={() => markSent(t)}
+                          onClick={() => onSend(t)}
                         >
                           <PackageCheck size={18} />
-                          {busyId === t.dispatch_id ? 'Saving…' : `Mark ${t.group_label} as Sent`}
+                          {busyId === t.dispatch_id ? 'Saving…' : (t.serials_needed > 0 ? `Made & Dispatch (enter ${t.serials_needed} serial${t.serials_needed > 1 ? 's' : ''})` : `Mark ${t.group_label} as Sent`)}
                         </button>
                       )}
                     </div>
@@ -225,6 +240,35 @@ export default function DispatchTasks() {
           </div>
         )}
       </div>
+
+      {serialModal && (
+        <div onClick={() => busyId ? null : setSerialModal(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,15,15,.5)', zIndex: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: 'min(440px,100%)', background: T.white, borderRadius: 12, padding: 22, boxShadow: '0 20px 60px rgba(0,0,0,.3)' }}>
+            <div style={{ fontFamily: T.headline, fontWeight: 800, fontSize: 17, color: T.iron900 }}>Enter serial number{serialModal.serials.length > 1 ? 's' : ''}</div>
+            <div style={{ fontSize: 12.5, color: T.iron500, margin: '6px 0 16px' }}>
+              You made {serialModal.serials.length} unit{serialModal.serials.length > 1 ? 's' : ''} for {serialModal.t.group_label} — enter the serial for each before dispatch.
+            </div>
+            {(serialModal.t.serial_items || []).map((si, k) => (
+              <div key={k} style={{ fontFamily: T.mono, fontSize: 11.5, color: T.iron400, marginBottom: 4 }}>{si.product_name} × {si.quantity}</div>
+            ))}
+            {serialModal.serials.map((v, i) => (
+              <input key={i} value={v} autoFocus={i === 0}
+                onChange={(e) => setSerialModal((m) => ({ ...m, serials: m.serials.map((x, j) => j === i ? e.target.value : x) }))}
+                onKeyDown={(e) => e.key === 'Enter' && i === serialModal.serials.length - 1 && submitSerials()}
+                placeholder={`Serial #${i + 1}`}
+                style={{ width: '100%', border: `1px solid ${T.iron200}`, borderRadius: 6, padding: '9px 11px', fontSize: 13, fontFamily: T.mono, marginBottom: 8, outline: 'none' }} />
+            ))}
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 8 }}>
+              <button onClick={() => setSerialModal(null)} disabled={!!busyId}
+                style={{ border: `1px solid ${T.iron200}`, background: T.white, color: T.iron700, borderRadius: 6, padding: '9px 16px', fontFamily: T.headline, fontWeight: 700, fontSize: 12.5, cursor: 'pointer' }}>Cancel</button>
+              <button onClick={submitSerials} disabled={!!busyId}
+                style={{ border: 'none', background: T.orange, color: '#fff', borderRadius: 6, padding: '9px 18px', fontFamily: T.headline, fontWeight: 700, fontSize: 12.5, cursor: 'pointer', opacity: busyId ? 0.6 : 1 }}>
+                {busyId ? 'Saving…' : 'Confirm & Dispatch'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </IronShell>
   );
 }
