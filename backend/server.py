@@ -22159,9 +22159,9 @@ def _dispatch_items_for_split(dispatch: dict) -> list:
     return []
 
 
-async def _classify_dispatch_split(items: list):
+async def _classify_dispatch_split(items: list, category_override: str = None):
     """Thin wrapper binding the shared classifier (utils/dispatch_split) to this module's db."""
-    return await _classify_dispatch_split_impl(db, items)
+    return await _classify_dispatch_split_impl(db, items, category_override=category_override)
 
 
 @api_router.post("/pending-fulfillment/{fulfillment_id}/dispatch")
@@ -22440,6 +22440,124 @@ async def dispatch_pending_fulfillment(
         "status": dispatch_doc["status"],
         "split_managed": split_present,
     }
+
+
+@api_router.post("/ship-desk/{fulfillment_id}")
+async def ship_desk_dispatch(
+    fulfillment_id: str,
+    category: str = Form("auto"),           # inverter | battery | stabilizer | combo | auto
+    awb: Optional[str] = Form(None),
+    courier: Optional[str] = Form(None),
+    notes: Optional[str] = Form(None),
+    label_file: Optional[UploadFile] = File(None),
+    user: dict = Depends(require_roles(["admin", "accountant"])),
+):
+    """FULFILLMENT_V2 — the accountant's ONE-STEP action. Attach the shipping label (uploaded PDF +
+    AWB) and pick a category; the order becomes a dispatch routed to the right make-to-order queue —
+    inverter→Gaurav, battery→Angad, stabilizer/other→Angad (no serial), combo→both. Serials are
+    captured later by the maker at the task step. Pricing is carried onto the dispatch so the GST
+    invoice bills the real marketplace/storefront price (not internal MRP)."""
+    if not FULFILLMENT_V2:
+        raise HTTPException(status_code=403, detail="Ship Desk (Fulfilment V2) is not enabled")
+    entry = await db.pending_fulfillment.find_one({"id": fulfillment_id})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if entry.get("status") in ("dispatched", "cancelled"):
+        raise HTTPException(status_code=400, detail=f"Order is {entry.get('status')}")
+    existing = await db.dispatches.find_one({"pending_fulfillment_id": fulfillment_id, "status": {"$ne": "cancelled"}})
+    if existing:
+        return {"message": "Dispatch already exists", "dispatch_id": existing["id"],
+                "dispatch_number": existing.get("dispatch_number"), "duplicate": True}
+
+    items = entry.get("items") or []
+    if not items and entry.get("master_sku_id"):
+        items = [{"master_sku_id": entry.get("master_sku_id"), "master_sku_name": entry.get("master_sku_name"),
+                  "sku_code": entry.get("sku_code"), "quantity": entry.get("quantity", 1)}]
+    if not items:
+        raise HTTPException(status_code=400, detail="No items in this order")
+
+    now = datetime.now(timezone.utc)
+    firm = await db.firms.find_one({"id": entry.get("firm_id")})
+    dispatch_id = str(uuid.uuid4())
+    dispatch_number = f"DSP-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:4].upper()}"
+
+    # Make-to-order: NO serial reservation here — the maker enters the serial at the task step.
+    dispatch_items, total_qty = [], 0
+    for it in items:
+        m = await db.master_skus.find_one({"id": it.get("master_sku_id")})
+        q = int(it.get("quantity") or 1)
+        total_qty += q
+        dispatch_items.append({
+            "master_sku_id": it.get("master_sku_id"),
+            "master_sku_name": (m or {}).get("name") or it.get("master_sku_name"),
+            "sku_code": (m or {}).get("sku_code") or it.get("sku_code"),
+            "hsn_code": (m or {}).get("hsn_code"), "gst_rate": (m or {}).get("gst_rate", 18),
+            "quantity": q, "serial_number": None,
+            "is_manufactured": (m or {}).get("product_type") == "manufactured"})
+
+    label_url = entry.get("label_url")
+    if label_file is not None:
+        content = await label_file.read()
+        rel, _st = await storage_upload(file_data=content, folder="labels",
+                                        original_filename=label_file.filename, filename_prefix=f"label_{dispatch_number}")
+        label_url = f"/api/files/{rel}"
+
+    order_source = entry.get("order_source", "amazon" if entry.get("type") == "amazon_order" else "direct")
+    dispatch_type = "amazon_order" if entry.get("type") == "amazon_order" else "new_order"
+    is_marketplace = order_source in ("amazon", "flipkart") or dispatch_type == "amazon_order" or entry.get("type") == "storefront_order"
+    full_name = f"{user.get('first_name','')} {user.get('last_name','')}".strip()
+    first = dispatch_items[0]
+    dispatch_doc = {
+        "id": dispatch_id, "dispatch_number": dispatch_number, "dispatch_type": dispatch_type,
+        "order_source": order_source, "firm_id": entry.get("firm_id"), "firm_name": firm.get("name") if firm else None,
+        "master_sku_id": first.get("master_sku_id"), "master_sku_name": first.get("master_sku_name"),
+        "sku": first.get("sku_code"), "sku_code": first.get("sku_code"),
+        "quantity": total_qty, "items": dispatch_items, "serial_number": None,
+        "order_id": entry.get("order_id"), "marketplace_order_id": entry.get("amazon_order_id") or entry.get("order_id"),
+        "customer_name": entry.get("customer_name"), "phone": entry.get("phone"),
+        "address": entry.get("address"), "city": entry.get("city"), "state": entry.get("state"), "pincode": entry.get("pincode"),
+        "tracking_id": (awb or "").strip() or entry.get("tracking_id"),
+        "courier": (courier or "").strip() or entry.get("carrier_name"),
+        "invoice_number": entry.get("invoice_number"), "invoice_url": entry.get("invoice_url"),
+        "label_url": label_url, "label_file": label_url,
+        # Pricing carried from the order so the auto sales_invoice bills the real price, not MRP.
+        "invoice_value": entry.get("invoice_value") or entry.get("order_total") or entry.get("total_amount"),
+        "taxable_value": entry.get("taxable_value"), "gst_amount": entry.get("gst_amount"), "selling_price": entry.get("selling_price"),
+        "is_marketplace_order": is_marketplace,
+        "price_is_gst_inclusive": bool(is_marketplace) or bool(entry.get("price_is_gst_inclusive")),
+        "pending_fulfillment_id": fulfillment_id, "ship_desk_category": category,
+        "status": "ready_for_dispatch", "notes": notes,
+        "prepared_by": user["id"], "prepared_by_name": full_name,
+        "created_by": user["id"], "created_by_name": full_name, "created_at": now.isoformat()}
+
+    split_tasks, split_present = await _classify_dispatch_split(
+        dispatch_items, category_override=(None if (category or "").lower() in ("", "auto") else category))
+    if split_present:
+        dispatch_doc["split_tasks"] = split_tasks
+        dispatch_doc["split_managed"] = True
+        dispatch_doc["split_status"] = "pending"
+        dispatch_doc["status"] = SPLIT_STATUS_AWAITING
+    await db.dispatches.insert_one(dispatch_doc)
+    await db.pending_fulfillment.update_one({"id": fulfillment_id}, {"$set": {
+        "status": "in_dispatch_queue", "dispatch_id": dispatch_id, "dispatch_number": dispatch_number,
+        "ship_desk_category": category, "updated_at": now.isoformat()}})
+
+    if split_present:
+        if any(t["group"] == "inverter" for t in split_tasks):
+            await create_notification(title="Inverter to make & dispatch",
+                message=f"Order {entry.get('order_id')}: build + dispatch the INVERTER (enter serial). Dispatch #{dispatch_number}",
+                notification_type="info", target_roles=[SPLIT_INVERTER_ROLE], priority="high")
+        if any(t["group"] == "rest" for t in split_tasks):
+            await create_notification(title="Battery & items to make & dispatch",
+                message=f"Order {entry.get('order_id')}: build + dispatch the BATTERY & other items. Dispatch #{dispatch_number}",
+                notification_type="info", target_roles=[SPLIT_REST_ROLE], priority="high")
+    else:
+        await create_notification(title="New Dispatch Ready",
+            message=f"Order {entry.get('order_id')} ready. Dispatch #{dispatch_number}",
+            notification_type="info", target_roles=["dispatcher", "admin"], priority="high")
+
+    return {"message": "Label attached & routed", "dispatch_id": dispatch_id, "dispatch_number": dispatch_number,
+            "status": dispatch_doc["status"], "split_managed": split_present, "category": category}
 
 
 @api_router.get("/dispatch-tasks")

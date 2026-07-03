@@ -28,11 +28,13 @@ def item_class(cat, ptype):
     return is_inverter, is_combo, is_manufactured
 
 
-async def classify_dispatch_split(db, items: list):
+async def classify_dispatch_split(db, items: list, category_override: str = None):
     """Group items into an INVERTER task (technician/Gaurav) and a REST task (supervisor/Angad) by
     master_skus.category. A COMBO line goes to BOTH. Each task also carries `serial_indexes` — the
     item indexes that are manufactured make-to-order and therefore need a serial captured when that
-    owner marks the task dispatched. Returns (split_tasks, present)."""
+    owner marks the task dispatched. `category_override` (inverter|battery|stabilizer|combo) is the
+    accountant's explicit Ship-Desk pick and forces the routing + serial requirement for all lines.
+    Returns (split_tasks, present)."""
     if not SPLIT_DISPATCH_ENABLED or not items:
         return [], False
     sku_ids = [it.get("master_sku_id") for it in items if it.get("master_sku_id")]
@@ -40,10 +42,21 @@ async def classify_dispatch_split(db, items: list):
     if sku_ids:
         async for s in db.master_skus.find({"id": {"$in": sku_ids}}, {"id": 1, "category": 1, "product_type": 1}):
             meta[s["id"]] = (s.get("category"), s.get("product_type"))
+    ov = (category_override or "").strip().lower()
     inv_idx, rest_idx, serial_set = [], [], set()
     for i, it in enumerate(items):
         cat, ptype = meta.get(it.get("master_sku_id"), ("", ""))
         is_inverter, is_combo, is_manufactured = item_class(cat, ptype)
+        if ov:                                             # accountant Ship-Desk override
+            if ov == "inverter":
+                inv_idx.append(i); serial_set.add(i)
+            elif ov == "combo":
+                inv_idx.append(i); rest_idx.append(i); serial_set.add(i)
+            elif ov == "battery":
+                rest_idx.append(i); serial_set.add(i)
+            else:                                          # stabilizer / traded / other → Angad, no serial
+                rest_idx.append(i)
+            continue
         if is_combo and FULFILLMENT_V2:
             inv_idx.append(i); rest_idx.append(i)          # both owners handle their half (V2)
         elif is_inverter:
