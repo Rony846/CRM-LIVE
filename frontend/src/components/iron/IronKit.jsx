@@ -133,3 +133,31 @@ export const IRON_SUPPORT_NAV = [
     ['My Attendance', '/my-attendance'],
   ]],
 ];
+
+export const IRON_ACCOUNTANT_NAV = [
+  ['Dashboard', [['Overview', '/accountant'], ['Compliance', '/admin/compliance']]],
+  ['Marketplace', [['Amazon Orders', '/operations/amazon-orders'], ['Courier Shipping', '/operations/courier-shipping'], ['Courier Tracking', '/operations/courier-tracking'], ['E-commerce Recon', '/finance/ecommerce-reconciliation'], ['Expenses & Tax Credits', '/accountant/expenses']]],
+  ['Finance', [['Finance Analytics', '/finance/analytics'], ['Finance & GST', '/finance'], ['Online Orders', '/admin/online-orders'], ['Amazon Refunds', '/admin/refunds'], ['Refund Losses (Legal)', '/admin/refund-losses'], ['A-Z Claims', '/admin/az-claims'], ['Legal Cases', '/admin/legal-cases'], ['TDS Management', '/finance/tds'], ['GST / HSN', '/finance/gst-hsn'], ['GST Audit', '/finance/gst-audit'], ['Amazon Unmapped', '/admin/amazon-unmapped'], ['Bank Match', '/finance/reconciliation'], ['Sales Register', '/accountant/sales'], ['Purchase Register', '/accountant/purchases'], ['Party Master', '/admin/parties'], ['Party Ledger', '/accountant/ledger'], ['Payments', '/accountant/payments'], ['Credit Notes', '/accountant/credit-notes'], ['Reports', '/accountant/reports'], ['Reconciliation', '/accountant/reconciliation']]],
+  ['Agents', [['Finance Agent', '/agents/finance'], ['Data Inbox', '/agents/finance/inbox']]],
+  ['Sales', [['Quotations', '/quotations'], ['PI Pending Action', '/quotations/pending-action']]],
+  ['Operations', [['Incoming Queue', '/accountant/incoming-queue'], ['Inventory', '/accountant/inventory'], ['Serial Numbers', '/inventory/serial-numbers'], ['Production', '/accountant/production'], ['Battery Production', '/admin/supervisor-production'], ['Pending Fulfillment', '/accountant/pending-fulfillment'], ['Master SKUs', '/admin/master-sku'], ['Product Datasheets', '/admin/product-datasheets']]],
+  ['Folders', [['Order Folders', '/admin/orders-folders']]],
+];
+
+export const IRON_TECHNICIAN_NAV = [['Workspace', [['Dashboard', '/technician'], ['Repair Queue', '/technician/queue'], ['Production', '/technician/production'], ['Dispatch Inverter', '/technician/dispatch-tasks'], ['My Repairs', '/technician/my-repairs'], ['Dispatch Queue', '/view/dispatch-queue'], ['Pending Fulfillment', '/view/pending-fulfillment'], ['My Attendance', '/my-attendance']]]];
+export const IRON_DISPATCHER_NAV = [['Workspace', [['Dashboard', '/dispatcher'], ['Dispatch Queue', '/dispatcher/queue'], ['Courier Shipping', '/operations/courier-shipping'], ['Courier Tracking', '/operations/courier-tracking'], ['Pending Fulfillment', '/view/pending-fulfillment'], ['TV Mode', '/dispatcher/tv'], ['My Attendance', '/my-attendance']]]];
+export const IRON_GATE_NAV = [['Workspace', [['Dashboard', '/gate'], ['Scan Parcel', '/gate/scan'], ['Gate Logs', '/gate/logs'], ['Scheduled', '/gate/scheduled'], ['Dispatch Queue', '/view/dispatch-queue'], ['Pending Fulfillment', '/view/pending-fulfillment'], ['My Attendance', '/my-attendance']]]];
+export const IRON_CUSTOMER_NAV = [['Workspace', [['Dashboard', '/customer'], ['My Quotations', '/customer/quotations'], ['My Tickets', '/customer/tickets'], ['Create Ticket', '/customer/tickets/new'], ['Book Appointment', '/customer/appointments'], ['Register Warranty', '/customer/warranty/register'], ['My Warranties', '/customer/warranties']]]];
+export const IRON_DEALER_NAV = [['Workspace', [['Dashboard', '/dealer'], ['Customer Book', '/dealer/customers'], ['Product Catalogue', '/dealer/catalogue'], ['Place Order', '/dealer/orders/new'], ['My Orders', '/dealer/orders'], ['Track Dispatches', '/dealer/dispatches'], ['Reorder Suggestions', '/dealer/reorder-suggestions'], ['Sales Targets', '/dealer/targets'], ['Warranty Registration', '/dealer/warranty'], ['Warranty Claims', '/dealer/warranty-claims'], ['Spare Parts', '/dealer/spare-parts'], ['Spare Orders', '/dealer/spare-orders'], ['Announcements', '/dealer/announcements'], ['Ledger', '/dealer/ledger'], ['Performance', '/dealer/performance'], ['Certificate', '/dealer/certificate'], ['Downloads', '/dealer/documents'], ['My Profile', '/dealer/profile'], ['Deposit Status', '/dealer/deposit'], ['Support Tickets', '/dealer/tickets'], ['Promotions', '/dealer/promotions'], ['Dealer Agreement', '/dealer/terms']]]];
+
+// Pick the right sidebar for whoever is viewing (admin sees the full admin menu).
+export const NAV_BY_ROLE = {
+  admin: IRON_ADMIN_NAV, supervisor: IRON_SUPERVISOR_NAV, call_support: IRON_SUPPORT_NAV,
+  accountant: IRON_ACCOUNTANT_NAV, technician: IRON_TECHNICIAN_NAV, service_agent: IRON_TECHNICIAN_NAV,
+  dispatcher: IRON_DISPATCHER_NAV, gate: IRON_GATE_NAV, customer: IRON_CUSTOMER_NAV, dealer: IRON_DEALER_NAV,
+};
+export const ROLE_LABEL = {
+  admin: 'Admin Console', supervisor: 'Supervisor', call_support: 'Call Support', accountant: 'Accounts',
+  technician: 'Technician', service_agent: 'Technician', dispatcher: 'Dispatch', gate: 'Gate',
+  customer: 'Customer Portal', dealer: 'Dealer Portal',
+};

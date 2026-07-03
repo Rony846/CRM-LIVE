@@ -6,7 +6,7 @@ import {
   FolderOpen, ShoppingBag, Monitor, IndianRupee, Bot, UserCog, Building2,
   Settings, ChevronDown, ChevronRight, LogOut,
 } from 'lucide-react';
-import { T, Caps, initials, IRON_ADMIN_NAV } from './IronKit';
+import { T, Caps, initials, IRON_ADMIN_NAV, NAV_BY_ROLE, ROLE_LABEL } from './IronKit';
 
 const GROUP_ICON = {
   Dashboard: LayoutDashboard, 'Team Dashboards': Users, CRM: Ticket, 'Solar Samrat': Crown,
@@ -17,10 +17,14 @@ const GROUP_ICON = {
 
 /* Reusable Iron Console dark sidebar with the COMPLETE grouped nav (nothing dropped vs the
    legacy menu). Collapsible groups; the group holding the active route auto-expands. */
-export default function IronSidebar({ nav = IRON_ADMIN_NAV, roleLabel = 'Admin Console' }) {
+export default function IronSidebar({ nav, roleLabel }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const role = user?.role || 'admin';
+  nav = nav || NAV_BY_ROLE[role] || IRON_ADMIN_NAV;         // auto-pick the viewer's menu
+  roleLabel = roleLabel || ROLE_LABEL[role] || 'Console';
+  const home = role === 'admin' ? '/admin' : (nav[0] && nav[0][1] && nav[0][1][0] && nav[0][1][0][1]) || '/';
   const cur = location.pathname + location.search;
   const isActive = (p) => (p.includes('?') ? cur === p : location.pathname === p);
   const groupHasActive = (items) => items.some(([, p]) => isActive(p));
@@ -38,7 +42,7 @@ export default function IronSidebar({ nav = IRON_ADMIN_NAV, roleLabel = 'Admin C
 
   return (
     <aside style={{ width: 226, flex: 'none', background: T.sidebar, color: '#fff', display: 'flex', flexDirection: 'column', padding: '18px 12px 14px', position: 'sticky', top: 0, height: '100vh' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '0 6px 16px', cursor: 'pointer', flex: 'none' }} onClick={() => navigate('/admin')}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '0 6px 16px', cursor: 'pointer', flex: 'none' }} onClick={() => navigate(home)}>
         <img src="/redesign/mg-monogram.png" alt="MG" style={{ width: 34, height: 34 }} />
         <div>
           <div style={{ fontFamily: T.display, fontWeight: 800, fontSize: 17, letterSpacing: '.02em', lineHeight: 1 }}>MUSCLEGRID</div>
