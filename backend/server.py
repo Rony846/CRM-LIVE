@@ -28555,12 +28555,32 @@ async def list_parties(
             )
             party["last_transaction_date"] = last_entry.get("created_at") if last_entry else None
 
+        # A stray NaN/inf balance (from a bad import) is not JSON-serializable and 500s the
+        # whole list (breaking the quotation form's party load). Coerce non-finite to 0.
+        cb = party.get("current_balance")
+        if cb is None or cb != cb or cb in (float("inf"), float("-inf")):
+            cb = 0.0
+        party["current_balance"] = cb
+
         if party["current_balance"] > 0:
             party["total_receivable"] = party["current_balance"]
             party["total_payable"] = 0
         else:
             party["total_receivable"] = 0
             party["total_payable"] = abs(party["current_balance"])
+
+    # Belt-and-braces: any non-finite float ANYWHERE in a party doc (e.g. a NaN in the
+    # nested unbooked_bank_receipts[] from a bad import) is not JSON-serializable and would
+    # 500 the whole list. Recursively coerce every non-finite float to 0 before returning.
+    def _finite(o):
+        if isinstance(o, float):
+            return 0.0 if (o != o or o in (float("inf"), float("-inf"))) else o
+        if isinstance(o, dict):
+            return {k: _finite(v) for k, v in o.items()}
+        if isinstance(o, list):
+            return [_finite(v) for v in o]
+        return o
+    parties = [_finite(p) for p in parties]
 
     return parties
 
