@@ -46818,6 +46818,36 @@ async def get_dealer_application(
     return app
 
 
+async def _find_party_for_dealer(gstin: str = None, phone: str = None):
+    """Find an EXISTING accounting party for a dealer by GSTIN (exact) then phone (last-10 suffix),
+    skipping parties already linked to a different dealer. Prefer one that actually has invoices
+    (that's the party carrying their historical MuscleGrid purchases). Returns the party or None."""
+    def _cands(rows):
+        rows = [r for r in rows if not r.get("dealer_id")]
+        return rows
+    g = re.sub(r"[^0-9A-Za-z]", "", str(gstin or "")).upper()
+    matches = []
+    if len(g) == 15:
+        matches = _cands(await db.parties.find(
+            {"$or": [{"gstin": {"$regex": f"^{g}$", "$options": "i"}}, {"gst_number": {"$regex": f"^{g}$", "$options": "i"}}]},
+            {"_id": 0}).to_list(20))
+    if not matches:
+        p10 = re.sub(r"\D", "", str(phone or ""))[-10:]
+        if len(p10) == 10:
+            matches = _cands(await db.parties.find(
+                {"$or": [{"phone": {"$regex": p10 + "$"}}, {"mobile": {"$regex": p10 + "$"}}]},
+                {"_id": 0}).to_list(20))
+    if not matches:
+        return None
+    # Prefer the candidate with the most invoices (the real purchase-bearing party).
+    best, best_n = matches[0], -1
+    for m in matches:
+        n = await db.sales_invoices.count_documents({"party_id": m["id"]})
+        if n > best_n:
+            best, best_n = m, n
+    return best
+
+
 @api_router.post("/admin/dealer-applications/{application_id}/approve")
 async def approve_dealer_application(
     application_id: str,
@@ -46923,31 +46953,28 @@ async def approve_dealer_application(
     }
 
     await db.dealers.insert_one(dealer_doc)
-    
-    # Create dealer as Party in accounting
-    party_id = str(uuid.uuid4())
-    party_doc = {
-        "id": party_id,
-        "party_type": "dealer",
-        "name": application["firm_name"],
-        "contact_person": application["contact_person"],
-        "phone": application.get("phone") or application.get("mobile"),
-        "email": application["email"],
-        "gstin": application.get("gstin"),
-        "address": f"{application.get('address_line1', '')} {application.get('address_line2', '')}".strip(),
-        "city": application.get("city"),
-        "state": application.get("state"),
-        "pincode": application.get("pincode"),
-        "firm_id": dealer_firm_id,
-        "opening_balance": 0,
-        "current_balance": 0,
-        "is_active": True,
-        "dealer_id": dealer_id,
-        "created_at": now,
-        "updated_at": now
-    }
 
-    await db.parties.insert_one(party_doc)
+    # Link to the dealer's ACCOUNTING PARTY. Prefer an existing party matched by GSTIN then phone
+    # (that's where their historical MuscleGrid invoices live — a fresh party would show 0 purchases).
+    # Only create a new party if no existing one matches.
+    existing = await _find_party_for_dealer(application.get("gstin"),
+                                            application.get("phone") or application.get("mobile"))
+    if existing:
+        party_id = existing["id"]
+        await db.parties.update_one({"id": party_id}, {"$set": {"dealer_id": dealer_id, "updated_at": now}})
+    else:
+        party_id = str(uuid.uuid4())
+        await db.parties.insert_one({
+            "id": party_id, "party_type": "dealer", "name": application["firm_name"],
+            "contact_person": application["contact_person"],
+            "phone": application.get("phone") or application.get("mobile"),
+            "email": application["email"], "gstin": application.get("gstin"),
+            "address": f"{application.get('address_line1', '')} {application.get('address_line2', '')}".strip(),
+            "city": application.get("city"), "state": application.get("state"), "pincode": application.get("pincode"),
+            "firm_id": dealer_firm_id, "opening_balance": 0, "current_balance": 0,
+            "is_active": True, "dealer_id": dealer_id, "created_at": now, "updated_at": now,
+        })
+    await db.dealers.update_one({"id": dealer_id}, {"$set": {"party_id": party_id}})
 
     # NOTE: No security-deposit ledger entry is created here. Previously this
     # endpoint booked a ₹security_deposit_amount "receipt" the moment a dealer
