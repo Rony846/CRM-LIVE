@@ -76846,6 +76846,12 @@ async def save_store_product(sku_id: str, body: StoreProductContent,
     return {"ok": True, "status": _store_status(fresh)}
 
 
+@api_router.get("/config/flags")
+async def config_flags(user: dict = Depends(get_current_user)):
+    """Feature flags the frontend needs to know about (e.g. to retire old screens under V2)."""
+    return {"fulfillment_v2": FULFILLMENT_V2}
+
+
 @api_router.get("/shop/config")
 async def shop_config():
     """Public storefront config — marketing pixel / analytics IDs (set in .env, empty = disabled).

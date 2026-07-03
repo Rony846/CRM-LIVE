@@ -87,7 +87,7 @@ export const IRON_ADMIN_NAV = [
   ['Solar Samrat', [['Samrat Admin', '/admin/solar-samrat']]],
   ['Sales', [['Orders', '/admin/orders'], ['Quotations', '/quotations'], ['PI Pending Action', '/quotations/pending-action']]],
   ['Inventory', [['Master SKUs', '/admin/master-sku'], ['Firms', '/admin/firms'], ['Serial Numbers', '/inventory/serial-numbers'], ['Stock Reports', '/admin/reports'], ['Product Datasheets', '/admin/product-datasheets']]],
-  ['Operations', [['Ship Desk', '/accountant/ship-desk'], ['Amazon Orders', '/operations/amazon-orders'], ['SKU Weights', '/admin/sku-weights'], ['File Repository', '/admin/file-repository'], ['Courier Shipping', '/operations/courier-shipping'], ['Courier Tracking', '/operations/courier-tracking'], ['Incoming Queue', '/accountant/incoming-queue'], ['Inventory', '/accountant/inventory'], ['Production', '/accountant/production'], ['Battery Production', '/admin/supervisor-production'], ['Pending Fulfillment', '/accountant/pending-fulfillment'], ['Dispatch Queue', '/view/dispatch-queue']]],
+  ['Operations', [['Ship Desk', '/accountant/ship-desk'], ['Amazon Orders', '/operations/amazon-orders'], ['SKU Weights', '/admin/sku-weights'], ['File Repository', '/admin/file-repository'], ['Courier Shipping', '/operations/courier-shipping'], ['Courier Tracking', '/operations/courier-tracking'], ['Incoming Queue', '/accountant/incoming-queue'], ['Inventory', '/accountant/inventory'], ['Battery Production', '/admin/supervisor-production'],['Dispatch Queue', '/view/dispatch-queue']]],
   ['Folders', [['Order Folders', '/admin/orders-folders']]],
   ['Online Store', [['Products', '/admin/store-products'], ['Store Orders', '/admin/online-orders']]],
   ['Shopify', [['Orders', '/admin/online-orders?tab=shopify'], ['Products', '/admin/online-orders?tab=products']]],
@@ -108,11 +108,9 @@ export const IRON_SUPERVISOR_NAV = [
     ['QA Scorecards', '/supervisor/qa-scorecards'],
     ['Knowledge Base', '/admin/knowledge-base'],
     ['Warranties', '/supervisor/warranties'],
-    ['Production', '/supervisor/production'],
     ['Dispatch Battery', '/supervisor/dispatch-tasks'],
     ['Calendar', '/supervisor/calendar'],
     ['Dispatch Queue', '/view/dispatch-queue'],
-    ['Pending Fulfillment', '/view/pending-fulfillment'],
     ['My Attendance', '/my-attendance'],
   ]],
 ];
@@ -129,7 +127,6 @@ export const IRON_SUPPORT_NAV = [
     ['Quotations', '/quotations'],
     ['Create Quotation', '/quotations/new'],
     ['Dispatch Queue', '/view/dispatch-queue'],
-    ['Pending Fulfillment', '/view/pending-fulfillment'],
     ['My Incentives', '/my-incentives'],
     ['My Attendance', '/my-attendance'],
   ]],
@@ -141,13 +138,13 @@ export const IRON_ACCOUNTANT_NAV = [
   ['Finance', [['Finance Analytics', '/finance/analytics'], ['Finance & GST', '/finance'], ['Online Orders', '/admin/online-orders'], ['Amazon Refunds', '/admin/refunds'], ['Refund Losses (Legal)', '/admin/refund-losses'], ['A-Z Claims', '/admin/az-claims'], ['Legal Cases', '/admin/legal-cases'], ['TDS Management', '/finance/tds'], ['GST / HSN', '/finance/gst-hsn'], ['GST Audit', '/finance/gst-audit'], ['Amazon Unmapped', '/admin/amazon-unmapped'], ['Bank Match', '/finance/reconciliation'], ['Sales Register', '/accountant/sales'], ['Purchase Register', '/accountant/purchases'], ['Party Master', '/admin/parties'], ['Party Ledger', '/accountant/ledger'], ['Payments', '/accountant/payments'], ['Credit Notes', '/accountant/credit-notes'], ['Reports', '/accountant/reports'], ['Reconciliation', '/accountant/reconciliation']]],
   ['Agents', [['Finance Agent', '/agents/finance'], ['Data Inbox', '/agents/finance/inbox']]],
   ['Sales', [['Quotations', '/quotations'], ['PI Pending Action', '/quotations/pending-action']]],
-  ['Operations', [['Ship Desk', '/accountant/ship-desk'], ['Incoming Queue', '/accountant/incoming-queue'], ['Inventory', '/accountant/inventory'], ['Serial Numbers', '/inventory/serial-numbers'], ['Production', '/accountant/production'], ['Battery Production', '/admin/supervisor-production'], ['Pending Fulfillment', '/accountant/pending-fulfillment'], ['Master SKUs', '/admin/master-sku'], ['Product Datasheets', '/admin/product-datasheets']]],
+  ['Operations', [['Ship Desk', '/accountant/ship-desk'], ['Incoming Queue', '/accountant/incoming-queue'], ['Inventory', '/accountant/inventory'], ['Serial Numbers', '/inventory/serial-numbers'], ['Battery Production', '/admin/supervisor-production'],['Master SKUs', '/admin/master-sku'], ['Product Datasheets', '/admin/product-datasheets']]],
   ['Folders', [['Order Folders', '/admin/orders-folders']]],
 ];
 
-export const IRON_TECHNICIAN_NAV = [['Workspace', [['Dashboard', '/technician'], ['Repair Queue', '/technician/queue'], ['Production', '/technician/production'], ['Dispatch Inverter', '/technician/dispatch-tasks'], ['My Repairs', '/technician/my-repairs'], ['Dispatch Queue', '/view/dispatch-queue'], ['Pending Fulfillment', '/view/pending-fulfillment'], ['My Attendance', '/my-attendance']]]];
-export const IRON_DISPATCHER_NAV = [['Workspace', [['Dashboard', '/dispatcher'], ['Dispatch Queue', '/dispatcher/queue'], ['Courier Shipping', '/operations/courier-shipping'], ['Courier Tracking', '/operations/courier-tracking'], ['Pending Fulfillment', '/view/pending-fulfillment'], ['TV Mode', '/dispatcher/tv'], ['My Attendance', '/my-attendance']]]];
-export const IRON_GATE_NAV = [['Workspace', [['Dashboard', '/gate'], ['Scan Parcel', '/gate/scan'], ['Gate Logs', '/gate/logs'], ['Scheduled', '/gate/scheduled'], ['Dispatch Queue', '/view/dispatch-queue'], ['Pending Fulfillment', '/view/pending-fulfillment'], ['My Attendance', '/my-attendance']]]];
+export const IRON_TECHNICIAN_NAV = [['Workspace', [['Dashboard', '/technician'], ['Repair Queue', '/technician/queue'], ['Dispatch Inverter', '/technician/dispatch-tasks'], ['My Repairs', '/technician/my-repairs'], ['Dispatch Queue', '/view/dispatch-queue'], ['My Attendance', '/my-attendance']]]];
+export const IRON_DISPATCHER_NAV = [['Workspace', [['Dashboard', '/dispatcher'], ['Dispatch Queue', '/dispatcher/queue'], ['Courier Shipping', '/operations/courier-shipping'], ['Courier Tracking', '/operations/courier-tracking'], ['TV Mode', '/dispatcher/tv'], ['My Attendance', '/my-attendance']]]];
+export const IRON_GATE_NAV = [['Workspace', [['Dashboard', '/gate'], ['Scan Parcel', '/gate/scan'], ['Gate Logs', '/gate/logs'], ['Scheduled', '/gate/scheduled'], ['Dispatch Queue', '/view/dispatch-queue'], ['My Attendance', '/my-attendance']]]];
 export const IRON_CUSTOMER_NAV = [['Workspace', [['Dashboard', '/customer'], ['My Quotations', '/customer/quotations'], ['My Tickets', '/customer/tickets'], ['Create Ticket', '/customer/tickets/new'], ['Book Appointment', '/customer/appointments'], ['Register Warranty', '/customer/warranty/register'], ['My Warranties', '/customer/warranties']]]];
 export const IRON_DEALER_NAV = [['Workspace', [['Dashboard', '/dealer'], ['Customer Book', '/dealer/customers'], ['Product Catalogue', '/dealer/catalogue'], ['Place Order', '/dealer/orders/new'], ['My Orders', '/dealer/orders'], ['Track Dispatches', '/dealer/dispatches'], ['Reorder Suggestions', '/dealer/reorder-suggestions'], ['Sales Targets', '/dealer/targets'], ['Warranty Registration', '/dealer/warranty'], ['Warranty Claims', '/dealer/warranty-claims'], ['Spare Parts', '/dealer/spare-parts'], ['Spare Orders', '/dealer/spare-orders'], ['Announcements', '/dealer/announcements'], ['Ledger', '/dealer/ledger'], ['Performance', '/dealer/performance'], ['Certificate', '/dealer/certificate'], ['Downloads', '/dealer/documents'], ['My Profile', '/dealer/profile'], ['Deposit Status', '/dealer/deposit'], ['Support Tickets', '/dealer/tickets'], ['Promotions', '/dealer/promotions'], ['Dealer Agreement', '/dealer/terms']]]];
 

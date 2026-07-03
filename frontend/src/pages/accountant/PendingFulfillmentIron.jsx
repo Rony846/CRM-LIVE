@@ -36,6 +36,11 @@ const statusPill = (entry) => {
 
 export default function PendingFulfillment() {
   const { token } = useAuth();
+  const [v2Retired, setV2Retired] = useState(false);
+  useEffect(() => {
+    axios.get(`${API}/config/flags`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(({ data }) => setV2Retired(!!data.fulfillment_v2)).catch(() => {});
+  }, [token]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [entries, setEntries] = useState([]);
@@ -573,6 +578,13 @@ export default function PendingFulfillment() {
 
   return (
     <IronShell title="Pending Fulfillment" subtitle="ACCOUNTANT · FULFILLMENT QUEUE" onRefresh={fetchData} headerRight={headerRight}>
+      {v2Retired && (
+        <div style={{ marginBottom: 16, border: `1px solid ${T.orange}`, background: 'rgba(245,130,32,.08)', borderRadius: 8, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontFamily: T.headline, fontWeight: 700, fontSize: 13, color: T.iron900 }}>This queue is retired.</span>
+          <span style={{ fontSize: 12.5, color: T.iron500 }}>Fulfilment now runs through <strong>Ship Desk</strong> — upload the label, pick the category, and it routes to the maker automatically.</span>
+          <a href="/accountant/ship-desk" style={{ marginLeft: 'auto', border: 'none', background: T.orange, color: '#fff', borderRadius: 6, padding: '8px 14px', fontFamily: T.headline, fontWeight: 700, fontSize: 12.5, textDecoration: 'none' }}>Go to Ship Desk →</a>
+        </div>
+      )}
       {loading ? (
         <div style={{ display: 'grid', placeItems: 'center', height: 320 }}><Loader2 className="animate-spin" size={30} color={T.iron400} /></div>
       ) : (
