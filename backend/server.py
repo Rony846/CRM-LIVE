@@ -76438,6 +76438,20 @@ def _shop_query(store: Optional[str] = None) -> dict:
     return dict(_SHOP_BASEQ)
 
 
+@api_router.get("/shop/config")
+async def shop_config():
+    """Public storefront config — marketing pixel / analytics IDs (set in .env, empty = disabled).
+    The store injects GA4 + Google Ads (the 'Google pixel') + Meta Pixel from these and fires real
+    view/add-to-cart/checkout/purchase events. Add IDs to backend/.env and restart; no code change."""
+    return {
+        "ga4_id": os.environ.get("GA4_MEASUREMENT_ID", "").strip(),               # e.g. G-XXXXXXXXXX
+        "google_ads_id": os.environ.get("GOOGLE_ADS_CONVERSION_ID", "").strip(),  # e.g. AW-XXXXXXXXX
+        "google_ads_purchase_label": os.environ.get("GOOGLE_ADS_PURCHASE_LABEL", "").strip(),  # conversion label
+        "meta_pixel_id": os.environ.get("META_PIXEL_ID", "").strip(),             # e.g. 1234567890
+        "currency": "INR",
+    }
+
+
 @api_router.get("/shop/products")
 async def shop_products(limit: int = 300, category: Optional[str] = None, q: Optional[str] = None,
                         store: Optional[str] = None):

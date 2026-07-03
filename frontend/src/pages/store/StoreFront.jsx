@@ -4,6 +4,7 @@ import { API } from '@/App';
 import { ShoppingCart, Search, ChevronLeft, Plus, Minus, Trash2, Loader2, ShieldCheck, Truck, BadgeCheck, X, MapPin, Check, PackageSearch } from 'lucide-react';
 import StoreLegal from './StoreLegal';
 import { LEGAL_DOCS, LEGAL_ORDER } from './legalContent';
+import { initAnalytics, trackViewItem, trackAddToCart, trackBeginCheckout, trackPurchase } from './storeAnalytics';
 
 /* MuscleGrid Storefront MVP — public, guest checkout, wired to the existing /shop APIs.
    Server computes all prices from master_skus; the client only sends product ids + quantities.
@@ -119,13 +120,24 @@ export default function StoreFront() {
   const cartLines = cart.map((c) => ({ ...c, p: byId(c.id) })).filter((c) => c.p);
   const subtotal = cartLines.reduce((a, c) => a + (c.p.price || 0) * c.qty, 0);
 
-  const addToCart = (id, qty = 1) => setCart((prev) => {
-    const ex = prev.find((c) => c.id === id);
-    return ex ? prev.map((c) => c.id === id ? { ...c, qty: c.qty + qty } : c) : [...prev, { id, qty }];
-  });
+  const addToCart = (id, qty = 1) => {
+    setCart((prev) => {
+      const ex = prev.find((c) => c.id === id);
+      return ex ? prev.map((c) => c.id === id ? { ...c, qty: c.qty + qty } : c) : [...prev, { id, qty }];
+    });
+    const p = products.find((x) => x.id === id);
+    if (p) trackAddToCart({ id, sku: p.sku, title: p.title, price: p.price }, qty);
+  };
   const setQty = (id, qty) => setCart((prev) => qty <= 0 ? prev.filter((c) => c.id !== id) : prev.map((c) => c.id === id ? { ...c, qty } : c));
   const goTop = () => window.scrollTo({ top: 0 });
-  const open = (p) => { setSel(p); setView('product'); goTop(); };
+  const open = (p) => { setSel(p); setView('product'); trackViewItem(p); goTop(); };
+  const detailCart = () => cart.map((c) => { const p = products.find((x) => x.id === c.id) || {}; return { id: c.id, sku: p.sku, title: p.title, price: p.price, qty: c.qty }; });
+  const cartTotal = () => detailCart().reduce((s, i) => s + (Number(i.price) || 0) * i.qty, 0);
+
+  // Load marketing pixels (GA4 + Google Ads + Meta) from backend config.
+  useEffect(() => {
+    axios.get(`${API}/shop/config`).then(({ data }) => initAnalytics(data)).catch(() => {});
+  }, []);
 
   const filtered = products.filter((p) =>
     (!cat || (p.category || '').toLowerCase() === cat.toLowerCase()) &&
@@ -141,7 +153,7 @@ export default function StoreFront() {
       const items = cart.map((c) => ({ id: c.id, qty: c.qty }));
       const body = { items, name: form.name.trim(), phone, email: form.email || undefined, address: form.address, city: form.city, pincode: form.pincode, gstin: form.gstin || undefined, payment_method: pay, store: 'in' };
       const { data } = await axios.post(`${API}/shop/checkout/create`, body);
-      if (data.cod) { setLastOrder(data.order_number); setCart([]); setView('success'); goTop(); return; }
+      if (data.cod) { trackPurchase({ orderNumber: data.order_number, total: data.total, cart: detailCart() }); setLastOrder(data.order_number); setCart([]); setView('success'); goTop(); return; }
       const ok = await loadRzp();
       if (!ok) { alert('Could not load the payment gateway. Please try again.'); return; }
       const rzp = new window.Razorpay({
@@ -151,6 +163,7 @@ export default function StoreFront() {
         handler: async (resp) => {
           try {
             await axios.post(`${API}/shop/checkout/verify`, { order_id: data.order_id, razorpay_order_id: resp.razorpay_order_id, razorpay_payment_id: resp.razorpay_payment_id, razorpay_signature: resp.razorpay_signature });
+            trackPurchase({ orderNumber: data.order_number, total: data.total, cart: detailCart() });
             setLastOrder(data.order_number); setCart([]); setView('success'); goTop();
           } catch (e) { alert('Payment captured but verification failed — our team will confirm your order shortly.'); }
         },
@@ -303,7 +316,7 @@ export default function StoreFront() {
               ))}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 18, background: '#fff', border: `1px solid ${LINE}`, borderRadius: 12, padding: '16px 18px' }}>
                 <div><div style={{ fontSize: 12, color: SUB }}>Subtotal (incl. GST)</div><div style={{ fontFamily: FM, fontWeight: 700, fontSize: 22 }}>{inr(subtotal)}</div></div>
-                <button className="mgs-btn" onClick={() => { setView('checkout'); goTop(); }} style={{ border: 'none', background: O, color: '#fff', borderRadius: 10, padding: '13px 26px', cursor: 'pointer', fontFamily: FH, fontWeight: 700, fontSize: 14 }}>Proceed to Checkout</button>
+                <button className="mgs-btn" onClick={() => { trackBeginCheckout(detailCart(), cartTotal()); setView('checkout'); goTop(); }} style={{ border: 'none', background: O, color: '#fff', borderRadius: 10, padding: '13px 26px', cursor: 'pointer', fontFamily: FH, fontWeight: 700, fontSize: 14 }}>Proceed to Checkout</button>
               </div>
             </>
           )}
