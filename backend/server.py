@@ -72340,6 +72340,21 @@ async def _bigship_create_warehouse(name, address_line1, address_line2, landmark
         wid = (d.get("data") or {}).get("warehouse_id")
         if r.status_code < 400 and wid:
             return int(wid)
+        # "Already Exists": the warehouse name is taken (a prior RVP attempt for the same
+        # customer+pincode). Reuse the existing warehouse by matching its name.
+        if "already exist" in str(d.get("message", "")).lower():
+            want = payload["warehouse_name"].strip().lower()
+            try:
+                for pg in range(1, 26):                       # Bigship caps page_size at 200; paginate to find it
+                    wh = await get_courier_warehouses(page=pg, page_size=200, current_user=_PRATIBHA_AGENT_USER)
+                    rows = wh.get("warehouses") or []
+                    for w in rows:
+                        if str(w.get("warehouse_name", "")).strip().lower() == want and w.get("warehouse_id"):
+                            return int(w["warehouse_id"])
+                    if len(rows) < 200:
+                        break
+            except Exception as e:
+                logger.error(f"Bigship warehouse reuse-by-name failed: {e}")
         logger.error(f"Bigship warehouse create failed [{r.status_code}]: {r.text[:400]}")
         return None
 
@@ -72381,7 +72396,9 @@ async def _pratibha_book_reverse_pickup(rp: dict, ctx: dict):
         "quantity": int(rp.get("quantity") or 1),
         "invoice_amount": float(rp.get("invoice_amount") or 0) or 100.0,
         "payment_type": "Prepaid", "cod_amount": 0,
-        "invoice_number": (rp.get("order_id") or f"RP-{uuid.uuid4().hex[:8].upper()}"),
+        # A reverse pickup is always a NEW shipment — give it a unique invoice_number (Bigship rejects
+        # a reused one with "Already Exists"). Keep a tail of the order id for traceability.
+        "invoice_number": f"RP-{re.sub(r'[^A-Za-z0-9]', '', str(rp.get('order_id') or ''))[-12:]}-{uuid.uuid4().hex[:5].upper()}".strip("-"),
         "weight_kg": float(rp.get("weight_kg") or 5.0),
         "length_cm": int(rp.get("length_cm") or 30),
         "width_cm": int(rp.get("width_cm") or rp.get("breadth_cm") or 30),
@@ -72393,6 +72410,43 @@ async def _pratibha_book_reverse_pickup(rp: dict, ctx: dict):
     except Exception:
         pass
     return resp
+
+
+class ManualReversePickup(BaseModel):
+    first_name: str
+    last_name: Optional[str] = ""
+    phone: str
+    address_line1: str
+    address_line2: Optional[str] = ""
+    landmark: Optional[str] = ""
+    city: str
+    state: str
+    pincode: str
+    product_name: str
+    quantity: int = 1
+    invoice_amount: float = 0
+    order_id: Optional[str] = ""
+    weight_kg: float = 5.0
+    length_cm: int = 30
+    width_cm: int = 30
+    height_cm: int = 30
+
+
+@api_router.post("/admin/book-reverse-pickup")
+async def admin_book_reverse_pickup(
+    body: ManualReversePickup,
+    user: dict = Depends(require_roles(["admin", "supervisor", "call_support"]))
+):
+    """Manually book a Bigship reverse pickup from a customer's address back to the Meerut warehouse
+    (same tested flow Pratibha uses: register the customer address as a pickup warehouse, then ship
+    it to the return warehouse). Books a REAL shipment."""
+    resp = await _pratibha_book_reverse_pickup(body.dict(), {"from_addr": f"manual:{user.get('email')}"})
+    awb = getattr(resp, "awb_number", None)
+    return {
+        "success": bool(awb), "awb": awb, "courier": getattr(resp, "courier_name", None),
+        "label_url": getattr(resp, "label_url", None), "message": getattr(resp, "message", None),
+        "pickup_warehouse_id": getattr(resp, "pickup_warehouse_id", None),
+    }
 
 
 async def _bigship_meerut_warehouse_id():
