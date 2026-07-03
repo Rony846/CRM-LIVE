@@ -17,10 +17,10 @@ import CreateTicket from './pages/customer/CreateTicketIron';
 import WarrantyRegistration from './pages/customer/WarrantyRegistrationIron';
 import MyWarranties from './pages/customer/MyWarrantiesIron';
 import CustomerQuotations from './pages/customer/CustomerQuotationsIron';
-import CallSupportDashboard from './pages/support/CallSupportDashboard';
-import CallSupportInbox from './pages/support/CallSupportInbox';
+import CallSupportDashboard from './pages/support/CallSupportDashboardIron';
+import CallSupportInbox from './pages/support/CallSupportInboxIron';
 import CustomerThreeSixty from './pages/support/CustomerThreeSixty';
-import EmailTicketInbox from './pages/support/EmailTicketInbox';
+import EmailTicketInbox from './pages/support/EmailTicketInboxIron';
 import ServiceAgentDashboard from './pages/service/ServiceAgentDashboardIron';
 import AccountantDashboard from './pages/accountant/AccountantDashboard';
 import CADashboard from './pages/ca/CADashboardIron';
@@ -53,9 +53,9 @@ import EcommerceReconciliation from './pages/finance/EcommerceReconciliation';
 import ImportCosting from './pages/finance/ImportCostingIron';
 import BankReconciliation from './pages/finance/BankReconciliationIron';
 import UnbookedReceipts from './pages/finance/UnbookedReceiptsIron';
-import FinanceAgent from './pages/agents/FinanceAgent';
-import FinanceAgentWatch from './pages/agents/FinanceAgentWatch';
-import FinanceAgentInbox from './pages/agents/FinanceAgentInbox';
+import FinanceAgent from './pages/agents/FinanceAgentIron';
+import FinanceAgentWatch from './pages/agents/FinanceAgentWatchIron';
+import FinanceAgentInbox from './pages/agents/FinanceAgentInboxIron';
 import TechnicianDashboard from './pages/technician/TechnicianDashboardIron';
 import GateDashboard from './pages/gate/GateDashboardIron';
 import SupervisorDashboard1a from './pages/supervisor/SupervisorDashboard1a';
@@ -122,7 +122,7 @@ import AccessoriesListing from './pages/public/AccessoriesListing';
 import CategoryListing from './pages/public/CategoryListing';
 
 // Call Center Pages
-import CallsDashboard from './pages/calls/CallsDashboard';
+import CallsDashboard from './pages/calls/CallsDashboardIron';
 
 // View-Only Pages (for employees)
 import ViewDispatchQueue from './pages/view/ViewDispatchQueueIron';
@@ -162,7 +162,7 @@ import DealerLedger from './pages/dealer/DealerLedgerIron';
 import DealerDispatches from './pages/dealer/DealerDispatchesIron';
 import DealerDocuments from './pages/dealer/DealerDocumentsIron';
 import DealerCatalogue from './pages/dealer/DealerCatalogueIron';
-import DealerAnnouncements from './pages/dealer/DealerAnnouncements';
+import DealerAnnouncements from './pages/dealer/DealerAnnouncementsIron';
 import DealerTargets from './pages/dealer/DealerTargets';
 import DealerWarrantyRegistration from './pages/dealer/DealerWarrantyRegistrationIron';
 import DealerTerms from './pages/dealer/DealerTermsIron';
