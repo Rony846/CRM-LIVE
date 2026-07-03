@@ -83,7 +83,7 @@ export const fmtDateTime = (d) => {
 export const IRON_ADMIN_NAV = [
   ['Dashboard', [['Overview', '/admin'], ['Compliance', '/admin/compliance']]],
   ['Team Dashboards', [['Call Support', '/support'], ['Supervisor', '/supervisor'], ['Technician', '/technician'], ['Accountant', '/accountant'], ['Dispatcher', '/dispatcher'], ['Gate', '/gate']]],
-  ['CRM', [['All Tickets', '/admin/tickets'], ['Call Center', '/calls'], ['Omnidim Calls', '/admin/omnidim-calls'], ['Customer WhatsApp', '/admin/whatsapp-chats'], ['Sales Leads', '/leads'], ['Repairs', '/admin/repairs'], ['Customers', '/admin/customers'], ['Warranties', '/admin/warranties'], ['Zoho Desk', '/admin/zoho-tickets'], ['Zoho Forms', '/admin/zoho-forms']]],
+  ['CRM', [['All Tickets', '/admin/tickets'], ['Call Center', '/calls'], ['Omnidim Calls', '/admin/omnidim-calls'], ['Customer WhatsApp', '/admin/whatsapp-chats'], ['Sales Leads', '/leads'], ['Repairs', '/admin/repairs'], ['Customers', '/admin/customers'], ['Customer 360', '/customer-360'], ['Warranties', '/admin/warranties'], ['Zoho Desk', '/admin/zoho-tickets'], ['Zoho Forms', '/admin/zoho-forms']]],
   ['Solar Samrat', [['Samrat Admin', '/admin/solar-samrat']]],
   ['Sales', [['Orders', '/admin/orders'], ['Quotations', '/quotations'], ['PI Pending Action', '/quotations/pending-action']]],
   ['Inventory', [['Master SKUs', '/admin/master-sku'], ['Firms', '/admin/firms'], ['Serial Numbers', '/inventory/serial-numbers'], ['Stock Reports', '/admin/reports'], ['Product Datasheets', '/admin/product-datasheets']]],
@@ -98,10 +98,11 @@ export const IRON_ADMIN_NAV = [
   ['System', [['WhatsApp Agent', '/admin/whatsapp-agent'], ['Analytics', '/admin/analytics'], ['Activity Logs', '/admin/activity-logs'], ['Scheduled Jobs', '/admin/cron-runs'], ['Knowledge Base', '/admin/knowledge-base'], ['QA Scorecards', '/supervisor/qa-scorecards'], ['Smartflo Agents', '/admin/smartflo-agents'], ['Amazon Settings', '/admin/amazon-settings'], ['Data Management', '/admin/data-management'], ['Gate Logs', '/admin/gate-logs'], ['Files for Claude', '/admin/files-for-claude'], ['Review Rescue', '/admin/review-rescue']]],
 ];
 
-// Mirrors the legacy DashboardLayout supervisor menu exactly (all 11 items).
+// Mirrors the legacy DashboardLayout supervisor menu exactly (all 11 items) + Customer 360.
 export const IRON_SUPERVISOR_NAV = [
   ['Workspace', [
     ['Dashboard', '/supervisor'],
+    ['Customer 360', '/customer-360'],
     ['Call Center', '/calls'],
     ['QA Scorecards', '/supervisor/qa-scorecards'],
     ['Knowledge Base', '/admin/knowledge-base'],
@@ -111,6 +112,24 @@ export const IRON_SUPERVISOR_NAV = [
     ['Calendar', '/supervisor/calendar'],
     ['Dispatch Queue', '/view/dispatch-queue'],
     ['Pending Fulfillment', '/view/pending-fulfillment'],
+    ['My Attendance', '/my-attendance'],
+  ]],
+];
+
+// Call-support menu (mirrors the legacy DashboardLayout call_support menu) + Customer 360.
+export const IRON_SUPPORT_NAV = [
+  ['Workspace', [
+    ['Dashboard', '/support'],
+    ['Customer 360', '/customer-360'],
+    ['My Calls', '/calls'],
+    ['Ticket Queue', '/support/tickets'],
+    ['Create Ticket', '/support/create'],
+    ['Sales Leads', '/leads'],
+    ['Quotations', '/quotations'],
+    ['Create Quotation', '/quotations/new'],
+    ['Dispatch Queue', '/view/dispatch-queue'],
+    ['Pending Fulfillment', '/view/pending-fulfillment'],
+    ['My Incentives', '/my-incentives'],
     ['My Attendance', '/my-attendance'],
   ]],
 ];

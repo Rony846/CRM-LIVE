@@ -407,6 +407,7 @@ const roleNavItems = {
   ],
   call_support: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/support' },
+    { label: 'Customer 360', icon: Users, path: '/customer-360' },
     { label: 'My Calls', icon: Phone, path: '/calls' },
     { label: 'Ticket Queue', icon: Ticket, path: '/support/tickets' },
     { label: 'Create Ticket', icon: FileText, path: '/support/create' },
@@ -420,6 +421,7 @@ const roleNavItems = {
   ],
   supervisor: [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/supervisor' },
+    { label: 'Customer 360', icon: Users, path: '/customer-360' },
     { label: 'Call Center', icon: Phone, path: '/calls' },
     { label: 'QA Scorecards', icon: BarChart3, path: '/supervisor/qa-scorecards' },
     { label: 'Knowledge Base', icon: BookOpen, path: '/admin/knowledge-base' },

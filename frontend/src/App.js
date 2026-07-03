@@ -19,6 +19,7 @@ import MyWarranties from './pages/customer/MyWarranties';
 import CustomerQuotations from './pages/customer/CustomerQuotations';
 import CallSupportDashboard from './pages/support/CallSupportDashboard';
 import CallSupportInbox from './pages/support/CallSupportInbox';
+import CustomerThreeSixty from './pages/support/CustomerThreeSixty';
 import EmailTicketInbox from './pages/support/EmailTicketInbox';
 import ServiceAgentDashboard from './pages/service/ServiceAgentDashboard';
 import AccountantDashboard from './pages/accountant/AccountantDashboard';
@@ -376,6 +377,11 @@ function App() {
           {/* Public Routes */}
           <Route path="/store" element={<StoreFront />} />
           <Route path="/store-preview" element={<StoreFront />} />
+          <Route path="/customer-360" element={
+            <ProtectedRoute allowedRoles={['call_support', 'supervisor', 'admin', 'service_agent', 'technician']}>
+              <CustomerThreeSixty />
+            </ProtectedRoute>
+          } />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/register" element={<RegisterPage />} />

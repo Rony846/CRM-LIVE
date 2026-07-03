@@ -53025,6 +53025,86 @@ async def screen_pop_context(
     }
 
 
+@api_router.get("/customer-360")
+async def customer_360(
+    phone: str = Query(..., min_length=4),
+    user: dict = Depends(require_roles(["call_support", "supervisor", "admin", "service_agent", "technician"]))
+):
+    """Full 360° customer view — profile, registered products (warranties), all tickets, replacement
+    dispatches, and an activity timeline. Identity is derived from tickets when there is no standalone
+    customers record (same fallback as the inbound-call screen-pop)."""
+    p10 = _normalize_phone(phone)
+    if not p10:
+        return {"phone": phone, "customer": None, "products": [], "tickets": [], "dispatches": [], "activity": [], "stats": {}}
+    rx = {"$regex": p10 + "$"}
+
+    customer = await db.customers.find_one(
+        {"$or": [{"phone": rx}, {"mobile": rx}, {"whatsapp": rx}]},
+        {"_id": 0, "id": 1, "name": 1, "phone": 1, "email": 1, "city": 1, "state": 1})
+
+    tickets = await db.tickets.find(
+        {"customer_phone": rx},
+        {"_id": 0, "id": 1, "ticket_number": 1, "status": 1, "issue_description": 1, "device_type": 1,
+         "product_name": 1, "serial_number": 1, "created_at": 1, "closed_at": 1, "sla_due": 1,
+         "customer_name": 1, "customer_city": 1, "customer_email": 1, "assigned_to_name": 1,
+         "dealer_name": 1, "history": 1}
+    ).sort("created_at", -1).limit(50).to_list(50)
+
+    warranties = await db.warranties.find(
+        {"phone": rx},
+        {"_id": 0, "id": 1, "warranty_number": 1, "device_type": 1, "product_name": 1, "serial_number": 1,
+         "status": 1, "warranty_start_date": 1, "warranty_end_date": 1, "order_id": 1, "purchase_date": 1,
+         "customer_name": 1}
+    ).sort("warranty_end_date", -1).limit(20).to_list(20)
+
+    dispatches = await db.dispatches.find(
+        {"customer_phone": rx},
+        {"_id": 0, "id": 1, "dispatch_number": 1, "status": 1, "tracking_id": 1, "courier": 1,
+         "product_name": 1, "sku": 1, "created_at": 1}
+    ).sort("created_at", -1).limit(10).to_list(10)
+
+    latest = tickets[0] if tickets else None
+    name = ((customer or {}).get("name") or (latest or {}).get("customer_name")
+            or (warranties[0].get("customer_name") if warranties else None))
+    name = (name or "").strip() or None
+    dealer = next((t.get("dealer_name") for t in tickets if t.get("dealer_name")), None)
+    if not customer and (name or latest):
+        lt = latest or {}
+        customer = {"name": name, "phone": p10, "email": lt.get("customer_email"),
+                    "city": lt.get("customer_city"), "state": None, "from_ticket": True}
+    if customer and dealer:
+        customer["dealer_name"] = dealer
+
+    activity = []
+    for t in tickets[:12]:
+        for h in (t.get("history") or [])[-3:]:
+            det = h.get("details") if isinstance(h.get("details"), dict) else {}
+            activity.append({"ticket_number": t.get("ticket_number"), "action": h.get("action"),
+                             "by": h.get("by"), "timestamp": h.get("timestamp"),
+                             "notes": det.get("notes") or h.get("notes")})
+    activity = sorted([a for a in activity if a.get("timestamp")], key=lambda x: str(x["timestamp"]), reverse=True)[:12]
+    for t in tickets:
+        t.pop("history", None)
+
+    terminal = {"closed", "closed_by_agent", "resolved_on_call", "resolved", "delivered", "cancelled"}
+    today = datetime.now(timezone.utc).isoformat()[:10]
+
+    def _in_warranty(w):
+        if str(w.get("status") or "").lower() in ("active", "in_warranty"):
+            return True
+        end = w.get("warranty_end_date")
+        return bool(end) and str(end)[:10] >= today
+
+    stats = {
+        "total_tickets": len(tickets),
+        "open_tickets": sum(1 for t in tickets if (t.get("status") or "") not in terminal),
+        "products": len(warranties),
+        "in_warranty": sum(1 for w in warranties if _in_warranty(w)),
+    }
+    return {"phone": p10, "customer": customer, "products": warranties, "tickets": tickets,
+            "dispatches": dispatches, "activity": activity, "stats": stats}
+
+
 # =============================================================================
 # INTERNAL TEAM CHAT — Slack-style staff messaging embedded in the dashboard.
 # Internal staff only (never customers/dealers). Real-time via SSE (mirrors the
