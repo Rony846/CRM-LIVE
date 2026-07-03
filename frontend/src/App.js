@@ -50,7 +50,7 @@ import FinanceAnalytics from './pages/finance/FinanceAnalyticsIron';
 import TDSDashboard from './pages/finance/TDSDashboardIron';
 import GSTHSNDashboard from './pages/finance/GSTHSNDashboardIron';
 import EcommerceReconciliation from './pages/finance/EcommerceReconciliation';
-import ImportCosting from './pages/finance/ImportCosting';
+import ImportCosting from './pages/finance/ImportCostingIron';
 import BankReconciliation from './pages/finance/BankReconciliationIron';
 import UnbookedReceipts from './pages/finance/UnbookedReceiptsIron';
 import FinanceAgent from './pages/agents/FinanceAgent';
@@ -72,9 +72,9 @@ import AdminSolarSamrat from './pages/admin/AdminSolarSamrat';
 import StockReports from './pages/admin/StockReports';
 import CustomerAppointments from './pages/customer/CustomerAppointments';
 import AccountantInventory from './pages/accountant/AccountantInventory';
-import IncomingInventoryQueue from './pages/accountant/IncomingInventoryQueue';
-import ProductionRequests from './pages/accountant/ProductionRequests';
-import PendingFulfillment from './pages/accountant/PendingFulfillment';
+import IncomingInventoryQueue from './pages/accountant/IncomingInventoryQueueIron';
+import ProductionRequests from './pages/accountant/ProductionRequestsIron';
+import PendingFulfillment from './pages/accountant/PendingFulfillmentIron';
 import PurchaseRegister from './pages/accountant/PurchaseRegisterIron';
 import SalesRegister from './pages/accountant/SalesRegisterIron';
 import PartyMaster from './pages/admin/PartyMasterIron';
@@ -88,7 +88,7 @@ import ReconciliationMatch from './pages/finance/ReconciliationMatchIron';
 import CreditNotes from './pages/accountant/CreditNotesIron';
 import ReconciliationReports from './pages/accountant/ReconciliationReportsIron';
 import ExpensesDashboard from './pages/accountant/ExpensesDashboardIron';
-import SerialNumbersManagement from './pages/inventory/SerialNumbersManagement';
+import SerialNumbersManagement from './pages/inventory/SerialNumbersManagementIron';
 import SupervisorProduction from './pages/supervisor/SupervisorProduction';
 import TechnicianProduction from './pages/technician/TechnicianProductionIron';
 import DispatchTasks from './pages/dispatch/DispatchTasksIron';
@@ -124,17 +124,17 @@ import CallsDashboard from './pages/calls/CallsDashboard';
 
 // View-Only Pages (for employees)
 import ViewDispatchQueue from './pages/view/ViewDispatchQueueIron';
-import ViewPendingFulfillment from './pages/view/ViewPendingFulfillment';
+import ViewPendingFulfillment from './pages/view/ViewPendingFulfillmentIron';
 
 // Quotation Pages
-import QuotationList from './pages/quotations/QuotationList';
+import QuotationList from './pages/quotations/QuotationListIron';
 import QuotationForm from './pages/quotations/QuotationForm';
 import PublicQuotationView from './pages/quotations/PublicQuotationView';
-import PIPendingAction from './pages/quotations/PIPendingAction';
+import PIPendingAction from './pages/quotations/PIPendingActionIron';
 
 // Incentive Pages
 import MyIncentives from './pages/incentives/MyIncentivesIron';
-import AdminIncentives from './pages/incentives/AdminIncentives';
+import AdminIncentives from './pages/incentives/AdminIncentivesIron';
 
 // Payroll & Attendance Pages
 import AdminPayroll from './pages/admin/AdminPayroll';
@@ -189,7 +189,7 @@ import AdminReviewRescue from './pages/admin/AdminReviewRescueIron';
 import AdminWhatsAppAgent from './pages/admin/AdminWhatsAppAgent';
 
 // Leads Pages
-import LeadsPage from './pages/leads/LeadsPage';
+import LeadsPage from './pages/leads/LeadsPageIron';
 
 // Public Pages
 import VerifyDealer from './pages/public/VerifyDealer';
