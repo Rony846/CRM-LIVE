@@ -7,7 +7,7 @@
    home technician visit. Each doc carries its own SEO title + meta description. */
 
 export const COMPANY = {
-  legalName: 'MuscleGrid India Private Limited',
+  legalName: 'MuscleGrid Industries Private Limited',
   brand: 'MuscleGrid',
   short: 'MGIPL',
   gstin: '07AATCM1213F1ZM',
@@ -15,7 +15,7 @@ export const COMPANY = {
   email: 'founder@musclegrid.in',
   phone: '+91 95603 77363',
   site: 'https://store.musclegrid.in',
-  grievanceOfficer: 'Grievance Officer, MuscleGrid India Private Limited',
+  grievanceOfficer: 'Grievance Officer, MuscleGrid Industries Private Limited',
 };
 
 const C = COMPANY;

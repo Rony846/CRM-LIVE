@@ -30,7 +30,8 @@ export default function StoreFront() {
   const [products, setProducts] = useState([]);
   const [cats, setCats] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState('catalog');       // catalog | product | cart | checkout | success
+  const _initSlug = (typeof window !== 'undefined' && (window.location.pathname.match(/^\/policies\/([a-z]+)/) || [])[1]) || '';
+  const [view, setView] = useState(LEGAL_DOCS[_initSlug] ? 'legal' : 'catalog');   // catalog | product | cart | checkout | success | legal | track
   const [sel, setSel] = useState(null);
   const [cat, setCat] = useState('');
   const [q, setQ] = useState('');
@@ -43,8 +44,27 @@ export default function StoreFront() {
   const [svcLoading, setSvcLoading] = useState(false);
   const [pin, setPin] = useState({ v: '', res: null, loading: false });   // product-page delivery checker
   const [track, setTrack] = useState({ order: '', phone: '', res: null, loading: false, err: '' });
-  const [legalDoc, setLegalDoc] = useState('terms');
-  const openLegal = (slug) => { setLegalDoc(slug); setView('legal'); goTop(); };
+  const [legalDoc, setLegalDoc] = useState(LEGAL_DOCS[_initSlug] ? _initSlug : 'terms');
+  const openLegal = (slug) => {
+    setLegalDoc(slug); setView('legal');
+    try { window.history.pushState({}, '', '/policies/' + slug + '/'); } catch (e) {}
+    goTop();
+  };
+  const closeLegal = () => {
+    setView('catalog');
+    try { window.history.pushState({}, '', '/'); } catch (e) {}
+    goTop();
+  };
+
+  // Browser back/forward between a policy URL and the store.
+  useEffect(() => {
+    const onPop = () => {
+      const s = (window.location.pathname.match(/^\/policies\/([a-z]+)/) || [])[1];
+      if (s && LEGAL_DOCS[s]) { setLegalDoc(s); setView('legal'); } else setView('catalog');
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
 
   // Base storefront SEO (legal pages set their own title and restore to this on exit).
   useEffect(() => {
@@ -394,7 +414,7 @@ export default function StoreFront() {
           </div>
         </div>
       ) : view === 'legal' ? (
-        <StoreLegal slug={legalDoc} onBack={() => { setView('catalog'); goTop(); }} onNav={openLegal} />
+        <StoreLegal slug={legalDoc} onBack={closeLegal} onNav={openLegal} />
       ) : null}
 
       <footer style={{ borderTop: `1px solid ${LINE}`, background: '#fff', padding: '30px 20px 26px', color: SUB, fontSize: 12.5 }}>
@@ -420,7 +440,7 @@ export default function StoreFront() {
           <div style={{ maxWidth: 260 }}>
             <div style={{ fontFamily: FH, fontWeight: 700, fontSize: 12.5, color: INK, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Contact</div>
             <div style={{ lineHeight: 1.7, color: MUT }}>
-              MuscleGrid India Private Limited<br />
+              MuscleGrid Industries Private Limited<br />
               24 B2, Neb Sarai, New Delhi – 110068<br />
               <span style={{ fontFamily: FM }}>founder@musclegrid.in</span><br />
               <span style={{ fontFamily: FM }}>+91 95603 77363</span><br />
@@ -429,7 +449,7 @@ export default function StoreFront() {
           </div>
         </div>
         <div style={{ maxWidth: 1080, margin: '20px auto 0', paddingTop: 16, borderTop: `1px solid ${LINE}`, textAlign: 'center', color: MUT, fontSize: 12 }}>
-          © {new Date().getFullYear()} MuscleGrid India Private Limited · Official Store ·{' '}
+          © {new Date().getFullYear()} MuscleGrid Industries Private Limited · Official Store ·{' '}
           <span style={{ fontFamily: FM }}>store.musclegrid.in</span> — secure payments by Razorpay
         </div>
       </footer>

@@ -1,3 +1,5 @@
 User-agent: *
 Allow: /
-Sitemap: https://musclegrid.in/sitemap.xml
+Disallow: /api/
+
+Sitemap: https://store.musclegrid.in/sitemap.xml

@@ -33,7 +33,7 @@ export default function StoreLegal({ slug = 'terms', onBack, onNav }) {
     setMeta('og:title', doc.seoTitle, 'property');
     setMeta('og:description', doc.seoDescription, 'property');
     setMeta('og:type', 'website', 'property');
-    setCanonical(`${COMPANY.site}/policies/${doc.slug}`);
+    setCanonical(`${COMPANY.site}/policies/${doc.slug}/`);
 
     const ld = document.createElement('script');
     ld.type = 'application/ld+json';
