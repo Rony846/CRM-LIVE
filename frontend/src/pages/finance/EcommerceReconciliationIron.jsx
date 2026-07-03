@@ -1,0 +1,1851 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import axios from 'axios';
+import { toast } from 'sonner';
+import { API, useAuth } from '@/App';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
+import {
+  Upload, Download, FileSpreadsheet, AlertTriangle, CheckCircle2, XCircle,
+  IndianRupee, Package, RefreshCw, Loader2, Search, Link2,
+  ExternalLink, Eye, AlertCircle, ReceiptText,
+  Trash2, CheckCheck, CreditCard
+} from 'lucide-react';
+import IronShell from '@/components/iron/IronShell';
+import { T, Caps, IronCard, mono, thCell, tdCell, badgeStyle } from '@/components/iron/IronKit';
+
+const formatCurrency = (amount, decimals = 0) => {
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  }).format(amount || 0);
+};
+
+const formatDate = (dateStr) => {
+  if (!dateStr) return '-';
+  try {
+    return new Date(dateStr).toLocaleDateString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric'
+    });
+  } catch {
+    return dateStr;
+  }
+};
+
+const PLATFORMS = [
+  { value: 'amazon', label: 'Amazon', color: 'bg-orange-500' },
+  { value: 'flipkart', label: 'Flipkart', color: 'bg-yellow-500' }
+];
+
+const inputStyle = { border: `1px solid ${T.iron200}`, borderRadius: 6, padding: '7px 10px', fontSize: 12.5, color: T.iron900, background: T.white, fontFamily: T.body, outline: 'none' };
+const primaryBtn = { border: 'none', background: T.orange, color: '#fff', borderRadius: 6, padding: '8px 14px', fontFamily: T.headline, fontWeight: 700, fontSize: 12, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 };
+const outlineBtn = { border: `1px solid ${T.iron200}`, background: T.white, color: T.iron700, borderRadius: 6, padding: '8px 14px', fontFamily: T.headline, fontWeight: 700, fontSize: 12, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 };
+const iconBtn = { border: `1px solid ${T.iron200}`, background: T.white, borderRadius: 6, width: 30, height: 30, display: 'inline-grid', placeItems: 'center', cursor: 'pointer', color: T.iron700 };
+const iconDanger = { ...iconBtn, color: T.rose };
+const moneyColor = (v) => ((v || 0) >= 0 ? T.green : T.rose);
+
+const platformTone = (p) => (p === 'amazon' ? 'bad' : p === 'flipkart' ? 'warn' : p === 'vyapar' ? 'ok' : 'slate');
+
+export default function EcommerceReconciliation() {
+  const { token } = useAuth();
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState('statements');
+
+  // Data states
+  const [firms, setFirms] = useState([]);
+  const [statements, setStatements] = useState([]);
+  const [selectedStatement, setSelectedStatement] = useState(null);
+  const [statementDetails, setStatementDetails] = useState(null);
+  const [alerts, setAlerts] = useState([]);
+  const [dispatches, setDispatches] = useState([]);
+
+  // Filter states
+  const [firmFilter, setFirmFilter] = useState('all');
+  const [platformFilter, setPlatformFilter] = useState('all');
+  const [matchFilter, setMatchFilter] = useState('all');
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // Upload states
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+  const [uploadPlatform, setUploadPlatform] = useState('amazon');
+  const [uploadFirmId, setUploadFirmId] = useState('');
+  const [uploadFile, setUploadFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
+
+  // Per-order Amazon verification (live Seller Central scrape)
+  const [verifyOpen, setVerifyOpen] = useState(false);
+  const [verifyOrderId, setVerifyOrderId] = useState(null);
+  const [verifyLoading, setVerifyLoading] = useState(false);
+  const [verifyResult, setVerifyResult] = useState(null);
+
+  // MTR Upload states
+  const [mtrUploadDialogOpen, setMtrUploadDialogOpen] = useState(false);
+  const [mtrType, setMtrType] = useState('b2c');
+  const [mtrPlatform, setMtrPlatform] = useState('amazon'); // 'amazon', 'flipkart', or 'vyapar'
+  const [mtrFirmId, setMtrFirmId] = useState('');
+  const [mtrFile, setMtrFile] = useState(null);
+  const [mtrUploading, setMtrUploading] = useState(false);
+  const [mtrReports, setMtrReports] = useState([]);
+  const [mtrPeriodMonth, setMtrPeriodMonth] = useState(new Date().getMonth() + 1);
+  const [mtrPeriodYear, setMtrPeriodYear] = useState(new Date().getFullYear());
+
+  // Consolidated report states
+  const [consolidatedDialogOpen, setConsolidatedDialogOpen] = useState(false);
+  const [consolidatedFirmId, setConsolidatedFirmId] = useState('');
+  const [consolidatedMonth, setConsolidatedMonth] = useState(new Date().getMonth() + 1);
+  const [consolidatedYear, setConsolidatedYear] = useState(new Date().getFullYear());
+  const [consolidatedType, setConsolidatedType] = useState('gstr1');
+  const [consolidatedPreview, setConsolidatedPreview] = useState(null);
+  const [consolidatedLoading, setConsolidatedLoading] = useState(false);
+
+  // Link dialog
+  const [linkDialogOpen, setLinkDialogOpen] = useState(false);
+  const [linkTransaction, setLinkTransaction] = useState(null);
+  const [linkDispatchId, setLinkDispatchId] = useState('');
+  const [dispatchSearch, setDispatchSearch] = useState('');
+  const [linkLoading, setLinkLoading] = useState(false);
+  const [manualOrderId, setManualOrderId] = useState('');
+  const [linkMode, setLinkMode] = useState('search'); // 'search' or 'manual'
+
+  const headers = { Authorization: `Bearer ${token}` };
+
+  const fetchFirms = useCallback(async () => {
+    try {
+      const res = await axios.get(`${API}/firms`, { headers });
+      setFirms(res.data || []);
+    } catch (error) {
+      console.error('Failed to fetch firms:', error);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const fetchStatements = useCallback(async () => {
+    try {
+      const params = {};
+      if (platformFilter && platformFilter !== 'all') params.platform = platformFilter;
+      if (firmFilter && firmFilter !== 'all') params.firm_id = firmFilter;
+      const res = await axios.get(`${API}/ecommerce/statements`, { headers, params });
+      setStatements(res.data);
+    } catch (error) {
+      toast.error('Failed to fetch statements');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, platformFilter, firmFilter]);
+
+  const fetchAlerts = useCallback(async (statementId = null) => {
+    try {
+      const params = statementId ? { statement_id: statementId } : {};
+      const res = await axios.get(`${API}/ecommerce/alerts`, { headers, params });
+      setAlerts(res.data);
+    } catch (error) {
+      console.error('Failed to fetch alerts:', error);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const fetchStatementDetails = async (statementId) => {
+    setLoading(true);
+    try {
+      const res = await axios.get(`${API}/ecommerce/statements/${statementId}`, { headers });
+      setStatementDetails(res.data);
+      setSelectedStatement(res.data.statement);
+      await fetchAlerts(statementId);
+    } catch (error) {
+      toast.error('Failed to fetch statement details');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchDispatches = async (search = '') => {
+    try {
+      const params = { limit: 50 };
+      if (search) params.search = search;
+      const res = await axios.get(`${API}/dispatches`, { headers, params });
+      setDispatches(res.data?.dispatches || res.data || []);
+    } catch (error) {
+      console.error('Failed to fetch dispatches:', error);
+    }
+  };
+
+  useEffect(() => {
+    const loadData = async () => {
+      setLoading(true);
+      await fetchFirms();
+      await fetchStatements();
+      await fetchAlerts();
+      await fetchMtrReports();
+      setLoading(false);
+    };
+    loadData();
+  }, [fetchStatements, fetchAlerts, fetchFirms]);
+
+  const fetchMtrReports = async () => {
+    try {
+      const res = await axios.get(`${API}/ecommerce/mtr-reports`, { headers });
+      setMtrReports(res.data || []);
+    } catch (error) {
+      console.error('Failed to fetch MTR reports:', error);
+    }
+  };
+
+  const handleMtrUpload = async (e) => {
+    e.preventDefault();
+    if (!mtrFile) {
+      toast.error('Please select a file');
+      return;
+    }
+    if (!mtrFirmId) {
+      toast.error('Please select a firm');
+      return;
+    }
+
+    setMtrUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', mtrFile);
+
+      let url;
+      if (mtrPlatform === 'flipkart') {
+        url = `${API}/ecommerce/upload-flipkart-sales?report_type=${mtrType}&firm_id=${mtrFirmId}`;
+      } else if (mtrPlatform === 'vyapar') {
+        url = `${API}/ecommerce/upload-vyapar-gstr?report_type=${mtrType}&firm_id=${mtrFirmId}&period_month=${mtrPeriodMonth}&period_year=${mtrPeriodYear}`;
+      } else {
+        url = `${API}/ecommerce/upload-mtr?mtr_type=${mtrType}&firm_id=${mtrFirmId}`;
+      }
+
+      const res = await axios.post(url, formData, {
+        headers: { ...headers, 'Content-Type': 'multipart/form-data' }
+      });
+
+      toast.success(res.data.message || 'Report uploaded successfully');
+      setMtrUploadDialogOpen(false);
+      setMtrFile(null);
+      setMtrFirmId('');
+      setMtrPlatform('amazon');
+      setMtrType('b2c');
+      await fetchMtrReports();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Upload failed');
+    } finally {
+      setMtrUploading(false);
+    }
+  };
+
+  const fetchConsolidatedPreview = async () => {
+    if (!consolidatedFirmId) {
+      toast.error('Please select a firm');
+      return;
+    }
+
+    setConsolidatedLoading(true);
+    try {
+      const res = await axios.get(
+        `${API}/gst/consolidated-report?firm_id=${consolidatedFirmId}&period_month=${consolidatedMonth}&period_year=${consolidatedYear}&report_type=${consolidatedType}`,
+        { headers }
+      );
+      setConsolidatedPreview(res.data);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to fetch preview');
+    } finally {
+      setConsolidatedLoading(false);
+    }
+  };
+
+  const downloadConsolidatedReport = async () => {
+    if (!consolidatedFirmId) {
+      toast.error('Please select a firm');
+      return;
+    }
+
+    setConsolidatedLoading(true);
+    try {
+      const response = await axios.get(
+        `${API}/gst/download-consolidated?firm_id=${consolidatedFirmId}&period_month=${consolidatedMonth}&period_year=${consolidatedYear}&report_type=${consolidatedType}`,
+        { headers, responseType: 'blob' }
+      );
+
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `Consolidated_${consolidatedType.toUpperCase()}_${consolidatedYear}-${consolidatedMonth.toString().padStart(2, '0')}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+
+      toast.success('Report downloaded!');
+    } catch (error) {
+      toast.error('Failed to download report');
+    } finally {
+      setConsolidatedLoading(false);
+    }
+  };
+
+  const handleDeleteMtrReport = async (reportId) => {
+    try {
+      await axios.delete(`${API}/ecommerce/mtr-reports/${reportId}`, { headers });
+      toast.success('MTR report deleted');
+      await fetchMtrReports();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to delete report');
+    }
+  };
+
+  const handleUpload = async (e) => {
+    e.preventDefault();
+    if (!uploadFile) {
+      toast.error('Please select a file');
+      return;
+    }
+    if (!uploadFirmId) {
+      toast.error('Please select a firm');
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', uploadFile);
+
+      const res = await axios.post(
+        `${API}/ecommerce/upload-payout?platform=${uploadPlatform}&firm_id=${uploadFirmId}`,
+        formData,
+        { headers: { ...headers, 'Content-Type': 'multipart/form-data' } }
+      );
+
+      toast.success(res.data.message || 'Statement uploaded successfully');
+      setUploadDialogOpen(false);
+      setUploadFile(null);
+      setUploadFirmId('');
+      await fetchStatements();
+      await fetchAlerts();
+
+      // Auto-open the uploaded statement
+      if (res.data.statement_id) {
+        await fetchStatementDetails(res.data.statement_id);
+        setActiveTab('details');
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Upload failed');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleLinkTransaction = async () => {
+    if (!linkTransaction) {
+      toast.error('No transaction selected');
+      return;
+    }
+
+    // Validate based on mode
+    if (linkMode === 'search' && !linkDispatchId) {
+      toast.error('Please select a dispatch to link');
+      return;
+    }
+    if (linkMode === 'manual' && !manualOrderId.trim()) {
+      toast.error('Please enter an order ID');
+      return;
+    }
+
+    setLinkLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (linkMode === 'search') {
+        params.append('crm_dispatch_id', linkDispatchId);
+      } else {
+        params.append('manual_order_id', manualOrderId.trim());
+      }
+
+      await axios.put(
+        `${API}/ecommerce/transactions/${linkTransaction.id}/link-crm?${params.toString()}`,
+        {},
+        { headers }
+      );
+      toast.success('Transaction linked successfully');
+      setLinkDialogOpen(false);
+      setLinkTransaction(null);
+      setLinkDispatchId('');
+      setManualOrderId('');
+      setLinkMode('search');
+
+      // Refresh data - both statement details and statements list
+      if (selectedStatement) {
+        await fetchStatementDetails(selectedStatement.id);
+      }
+      await fetchStatements(); // Refresh main list to update counts
+      await fetchAlerts();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to link transaction');
+    } finally {
+      setLinkLoading(false);
+    }
+  };
+
+  const handleExport = async (exportType) => {
+    if (!selectedStatement) return;
+
+    try {
+      const res = await axios.get(
+        `${API}/ecommerce/export/${selectedStatement.id}?export_type=${exportType}`,
+        { headers, responseType: 'blob' }
+      );
+
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `${selectedStatement.platform}_${exportType}_${selectedStatement.statement_number}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      toast.success('Export downloaded');
+    } catch (error) {
+      toast.error('Export failed');
+    }
+  };
+
+  const handleDeleteStatement = async (statementId) => {
+    try {
+      await axios.delete(`${API}/ecommerce/statements/${statementId}`, { headers });
+      toast.success('Statement deleted successfully');
+      setSelectedStatement(null);
+      setStatementDetails(null);
+      await fetchStatements();
+      await fetchAlerts();
+      setActiveTab('statements');
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to delete statement');
+    }
+  };
+
+  const handleFinalizeStatement = async () => {
+    if (!selectedStatement) return;
+
+    try {
+      const res = await axios.post(
+        `${API}/ecommerce/statements/${selectedStatement.id}/finalize`,
+        {},
+        { headers }
+      );
+      toast.success(res.data.message || 'Statement finalized successfully');
+      await fetchStatementDetails(selectedStatement.id);
+      await fetchStatements();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to finalize statement');
+    }
+  };
+
+  // Trigger an on-demand Seller Central scrape for one order. Opens the
+  // dialog immediately with a loading state so the user knows we heard the
+  // click — the scrape itself takes 5-60s (longer if the Claude brain
+  // fallback engages). Cached server-side for 6h.
+  const openVerifyDialog = async (orderId, { force = false } = {}) => {
+    if (!orderId) return;
+    setVerifyOrderId(orderId);
+    setVerifyResult(null);
+    setVerifyLoading(true);
+    setVerifyOpen(true);
+    try {
+      const qs = force ? '?force=true' : '';
+      const res = await axios.post(
+        `${API}/finance/amazon/order/${encodeURIComponent(orderId)}/scrape-transactions${qs}`,
+        {},
+        { headers, timeout: 180000 }
+      );
+      setVerifyResult(res.data);
+      if (res.data?.status === 'ok') {
+        const n = (res.data.transactions || []).length;
+        toast.success(`Pulled ${n} transaction${n === 1 ? '' : 's'} for ${orderId}${res.data.from_cache ? ' (cached)' : ''}`);
+      } else if (res.data?.status === 'not_logged_in') {
+        toast.warning('Browser is not logged in to Seller Central — open /admin/browser-agent');
+      } else {
+        toast.error(res.data?.error || `Scrape returned ${res.data?.status}`);
+      }
+    } catch (e) {
+      const msg = e.response?.data?.detail || e.message || 'Verify failed';
+      toast.error(msg);
+      setVerifyResult({ status: 'error', error: msg, transactions: [], totals: {} });
+    } finally {
+      setVerifyLoading(false);
+    }
+  };
+
+  const openLinkDialog = (transaction) => {
+    setLinkTransaction(transaction);
+    setLinkDispatchId('');
+    setDispatchSearch(transaction.marketplace_order_id || '');
+    fetchDispatches(transaction.marketplace_order_id);
+    setLinkDialogOpen(true);
+  };
+
+  // Filter transactions
+  const filteredTransactions = statementDetails?.transactions?.filter(t => {
+    if (matchFilter && matchFilter !== 'all' && t.crm_match_status !== matchFilter) return false;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      return (
+        t.marketplace_order_id?.toLowerCase().includes(q) ||
+        t.transaction_type?.toLowerCase().includes(q) ||
+        t.product_details?.toLowerCase().includes(q)
+      );
+    }
+    return true;
+  }) || [];
+
+  const filteredOrders = statementDetails?.order_summaries?.filter(o => {
+    if (matchFilter && matchFilter !== 'all' && o.crm_match_status !== matchFilter) return false;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      return (
+        o.marketplace_order_id?.toLowerCase().includes(q) ||
+        o.product_details?.toLowerCase().includes(q)
+      );
+    }
+    return true;
+  }) || [];
+
+  const isFlipkart = selectedStatement?.platform === 'flipkart';
+
+  // Main tab definitions (Iron nav). Disabled tabs no-op on click.
+  const mainTabs = [
+    { key: 'statements', label: 'Statements', icon: FileSpreadsheet, disabled: false },
+    { key: 'details', label: 'Details', icon: Eye, disabled: !selectedStatement },
+    { key: 'orders', label: 'Orders', icon: Package, disabled: !statementDetails },
+    ...(isFlipkart ? [
+      { key: 'charges', label: 'Charges', icon: ReceiptText, disabled: !statementDetails },
+      { key: 'taxes', label: 'Tax Breakdown', icon: IndianRupee, disabled: !statementDetails },
+    ] : []),
+    { key: 'alerts', label: `Alerts (${alerts.length})`, icon: AlertCircle, disabled: false },
+    { key: 'mtr', label: 'MTR Reports', icon: ReceiptText, disabled: false },
+  ];
+
+  const Kpi = ({ label, value, tone }) => (
+    <IronCard pad={14}>
+      <Caps size={9} color={T.iron400} style={{ display: 'block', marginBottom: 8 }}>{label}</Caps>
+      <div style={{ ...mono, fontSize: 18, fontWeight: 700, color: tone || T.iron900 }}>{value}</div>
+    </IronCard>
+  );
+
+  const matchedCount = selectedStatement ? (selectedStatement.matched_count ?? selectedStatement.summary?.matched_orders ?? 0) : 0;
+  const unmatchedCount = selectedStatement ? (selectedStatement.unmatched_count ?? selectedStatement.summary?.unmatched_orders ?? 0) : 0;
+  const matchTotal = matchedCount + unmatchedCount;
+  const matchPct = matchTotal > 0 ? (matchedCount / matchTotal) * 100 : 0;
+
+  const headerRight = (
+    <button onClick={() => setUploadDialogOpen(true)} data-testid="upload-statement-btn" style={primaryBtn}>
+      <Upload size={14} /> Upload Statement
+    </button>
+  );
+
+  return (
+    <IronShell
+      title="E-commerce Recon"
+      subtitle="AMAZON · FLIPKART PAYOUT RECONCILIATION"
+      onRefresh={() => { fetchStatements(); fetchAlerts(); }}
+      headerRight={headerRight}
+    >
+      <div data-testid="ecommerce-reconciliation">
+        {loading && statements.length === 0 ? (
+          <div style={{ display: 'grid', placeItems: 'center', height: 340 }}>
+            <Loader2 className="animate-spin" size={30} color={T.iron400} />
+          </div>
+        ) : (
+          <>
+            {/* Alert Summary */}
+            {alerts.length > 0 && (
+              <IronCard style={{ borderColor: '#F6D8BA', background: '#FDEEE6', marginBottom: 16 }} pad={14}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <AlertTriangle size={20} color={T.orangeDeep} />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontFamily: T.headline, fontWeight: 700, fontSize: 13, color: T.orangeDeep }}>
+                      {alerts.length} Reconciliation Alert{alerts.length > 1 ? 's' : ''}
+                    </div>
+                    <div style={{ fontSize: 12, color: T.orangeDeep, opacity: 0.85, marginTop: 2 }}>
+                      {alerts.filter(a => a.type === 'unmatched_order').length} unmatched orders,
+                      {' '}{alerts.filter(a => a.type === 'unmatched_refund').length} unmatched refunds,
+                      {' '}{alerts.filter(a => a.type === 'high_fees').length} high fee alerts
+                    </div>
+                  </div>
+                  <button onClick={() => setActiveTab('alerts')} style={{ ...outlineBtn, borderColor: '#F6D8BA', color: T.orangeDeep, background: T.white }}>
+                    View Alerts
+                  </button>
+                </div>
+              </IronCard>
+            )}
+
+            {/* Main tab nav */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 16 }}>
+              {mainTabs.map((tb) => {
+                const Icon = tb.icon;
+                const active = activeTab === tb.key;
+                return (
+                  <button
+                    key={tb.key}
+                    data-testid={`${tb.key}-tab`}
+                    disabled={tb.disabled}
+                    onClick={() => !tb.disabled && setActiveTab(tb.key)}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 6,
+                      border: `1px solid ${active ? T.orange : T.iron200}`,
+                      background: active ? T.orange : T.white,
+                      color: active ? '#fff' : (tb.disabled ? T.iron400 : T.iron700),
+                      borderRadius: 6, padding: '7px 13px',
+                      cursor: tb.disabled ? 'not-allowed' : 'pointer',
+                      opacity: tb.disabled ? 0.5 : 1,
+                      fontFamily: T.headline, fontWeight: 700, fontSize: 12
+                    }}
+                  >
+                    <Icon size={14} strokeWidth={2} />{tb.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Statements Tab */}
+            {activeTab === 'statements' && (
+              <IronCard pad={0} style={{ overflow: 'hidden' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 14px', borderBottom: `1px solid ${T.iron200}`, background: T.iron50 }}>
+                  <div style={{ fontFamily: T.headline, fontWeight: 700, fontSize: 14, color: T.iron900 }}>Uploaded Statements</div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <select value={firmFilter} onChange={(e) => setFirmFilter(e.target.value)} data-testid="firm-filter" style={{ ...inputStyle, cursor: 'pointer' }}>
+                      <option value="all">All Firms</option>
+                      {firms.map(f => (<option key={f.id} value={f.id}>{f.name}</option>))}
+                    </select>
+                    <select value={platformFilter} onChange={(e) => setPlatformFilter(e.target.value)} data-testid="platform-filter" style={{ ...inputStyle, cursor: 'pointer' }}>
+                      <option value="all">All Platforms</option>
+                      {PLATFORMS.map(p => (<option key={p.value} value={p.value}>{p.label}</option>))}
+                    </select>
+                  </div>
+                </div>
+                {statements.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '60px 0', color: T.iron400 }}>
+                    <FileSpreadsheet size={44} style={{ margin: '0 auto 10px', opacity: 0.4 }} />
+                    <div style={{ fontSize: 13 }}>No statements uploaded yet</div>
+                    <button style={{ ...outlineBtn, margin: '16px auto 0' }} onClick={() => setUploadDialogOpen(true)}>Upload First Statement</button>
+                  </div>
+                ) : (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                      <thead><tr style={{ borderBottom: `1px solid ${T.iron200}`, background: T.iron50 }}>
+                        {['Statement #', 'Firm', 'Platform', 'Period', 'Net Payout', 'Matched', 'Unmatched', 'Status', 'Action'].map((h, i) => (
+                          <th key={i} style={{ ...thCell, textAlign: (i === 4) ? 'right' : (i === 5 || i === 6) ? 'center' : 'left' }}><Caps size={8.5}>{h}</Caps></th>
+                        ))}
+                      </tr></thead>
+                      <tbody>
+                        {statements.map((stmt) => {
+                          const unm = stmt.unmatched_count ?? stmt.summary?.unmatched_orders ?? 0;
+                          return (
+                            <tr
+                              key={stmt.id}
+                              className="iron-row"
+                              style={{ borderBottom: `1px solid ${T.iron200}`, cursor: 'pointer', background: selectedStatement?.id === stmt.id ? '#FDEEE6' : undefined }}
+                              onClick={() => fetchStatementDetails(stmt.id)}
+                              data-testid={`statement-row-${stmt.id}`}
+                            >
+                              <td style={{ ...tdCell, ...mono, fontWeight: 700, color: T.orangeDeep }}>{stmt.statement_number}</td>
+                              <td style={{ ...tdCell, fontFamily: T.headline, fontWeight: 600, color: T.iron900 }}>{stmt.firm_name || '-'}</td>
+                              <td style={tdCell}><span style={badgeStyle(platformTone(stmt.platform))}>{stmt.platform?.toUpperCase()}</span></td>
+                              <td style={{ ...tdCell, ...mono, fontSize: 11, color: T.iron500 }}>
+                                {formatDate(stmt.statement_period_start)} – {formatDate(stmt.statement_period_end)}
+                              </td>
+                              <td style={{ ...tdCell, ...mono, textAlign: 'right', fontWeight: 600, color: T.iron900 }}>{formatCurrency(stmt.summary?.net_payout, 2)}</td>
+                              <td style={{ ...tdCell, textAlign: 'center' }}><span style={badgeStyle('ok')}>{stmt.matched_count ?? stmt.summary?.matched_orders ?? 0}</span></td>
+                              <td style={{ ...tdCell, textAlign: 'center' }}>
+                                <span style={badgeStyle(unm > 0 ? 'bad' : 'slate')}>{unm}</span>
+                              </td>
+                              <td style={tdCell}>
+                                <span style={badgeStyle(stmt.status === 'processed' ? 'info' : 'slate')}>{stmt.status}</span>
+                                {stmt.finance_status === 'finalized' && (
+                                  <span style={{ ...badgeStyle('ok'), marginLeft: 4 }}>Finalized</span>
+                                )}
+                              </td>
+                              <td style={tdCell}>
+                                <div style={{ display: 'inline-flex', gap: 6 }}>
+                                  <button title="View" style={iconBtn} onClick={(e) => { e.stopPropagation(); fetchStatementDetails(stmt.id); setActiveTab('details'); }}><Eye size={13} /></button>
+                                  <AlertDialog>
+                                    <AlertDialogTrigger asChild>
+                                      <button title="Delete" style={iconDanger} onClick={(e) => e.stopPropagation()}><Trash2 size={13} /></button>
+                                    </AlertDialogTrigger>
+                                    <AlertDialogContent>
+                                      <AlertDialogHeader>
+                                        <AlertDialogTitle>Delete Statement?</AlertDialogTitle>
+                                        <AlertDialogDescription>
+                                          This will permanently delete statement {stmt.statement_number} and all related transactions, order summaries, and finance entries. This action cannot be undone.
+                                        </AlertDialogDescription>
+                                      </AlertDialogHeader>
+                                      <AlertDialogFooter>
+                                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                        <AlertDialogAction
+                                          className="bg-red-600 hover:bg-red-700"
+                                          onClick={(e) => { e.stopPropagation(); handleDeleteStatement(stmt.id); }}
+                                        >
+                                          Delete
+                                        </AlertDialogAction>
+                                      </AlertDialogFooter>
+                                    </AlertDialogContent>
+                                  </AlertDialog>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </IronCard>
+            )}
+
+            {/* Statement Details Tab */}
+            {activeTab === 'details' && selectedStatement && (
+              <>
+                {/* Summary Cards */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 12, marginBottom: 16 }}>
+                  <Kpi label="Order Payments" tone={T.green} value={formatCurrency(selectedStatement.summary?.total_order_payments || selectedStatement.summary?.total_sales)} />
+                  <Kpi label="Refunds" tone={T.rose} value={formatCurrency(selectedStatement.summary?.total_refunds)} />
+                  <Kpi label="Platform Fees" tone={T.orangeDeep} value={formatCurrency(selectedStatement.summary?.total_platform_fees || selectedStatement.summary?.total_marketplace_fees)} />
+                  {isFlipkart ? (
+                    <>
+                      <Kpi label="Ad Spend" tone="#6D4AB0" value={formatCurrency(selectedStatement.summary?.total_ad_spend)} />
+                      <Kpi label="Service Charges" tone={T.blue} value={formatCurrency(selectedStatement.summary?.total_service_charges)} />
+                    </>
+                  ) : (
+                    <>
+                      <Kpi label="Reserve Held" tone={T.voltageText} value={formatCurrency(selectedStatement.summary?.reserve_held)} />
+                      <Kpi label="Reserve Released" tone={T.blue} value={formatCurrency(selectedStatement.summary?.reserve_released)} />
+                    </>
+                  )}
+                  <IronCard pad={14} style={{ borderColor: '#F6D8BA', background: '#FDEEE6' }}>
+                    <Caps size={9} color={T.orangeDeep} style={{ display: 'block', marginBottom: 8 }}>Net Payout</Caps>
+                    <div style={{ ...mono, fontSize: 18, fontWeight: 700, color: T.orangeDeep }}>{formatCurrency(selectedStatement.summary?.net_payout, 2)}</div>
+                  </IronCard>
+                </div>
+
+                {/* Match Progress */}
+                <IronCard pad={14} style={{ marginBottom: 16 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
+                    <Caps size={9} color={T.iron400}>Order Matching Progress</Caps>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                      <span style={{ ...mono, fontSize: 12, color: T.iron500 }}>
+                        {matchedCount} / {matchTotal} matched
+                      </span>
+                      {selectedStatement.finance_status === 'finalized' ? (
+                        <span style={{ ...badgeStyle('ok'), display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <CheckCheck size={12} /> Finalized
+                        </span>
+                      ) : (
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <button style={{ ...primaryBtn, background: T.green }}>
+                              <CreditCard size={14} /> Finalize to Finance
+                            </button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Finalize Statement to Finance?</AlertDialogTitle>
+                              <AlertDialogDescription className="space-y-2">
+                                <p>This will create finance entries for this statement:</p>
+                                <ul className="list-disc list-inside text-sm space-y-1">
+                                  <li>Payment Entry: {formatCurrency(selectedStatement.summary?.net_payout, 2)} (Net Payout)</li>
+                                  <li>Expense: Platform Fees {formatCurrency(selectedStatement.summary?.total_marketplace_fees || selectedStatement.summary?.total_platform_fees)}</li>
+                                  {selectedStatement.summary?.total_ad_spend > 0 && (
+                                    <li>Expense: Ads {formatCurrency(selectedStatement.summary?.total_ad_spend)}</li>
+                                  )}
+                                  {selectedStatement.summary?.total_tcs > 0 && (
+                                    <li>Journal: TCS Credit {formatCurrency(selectedStatement.summary?.total_tcs)}</li>
+                                  )}
+                                  {selectedStatement.summary?.total_tds > 0 && (
+                                    <li>Journal: TDS Credit {formatCurrency(selectedStatement.summary?.total_tds)}</li>
+                                  )}
+                                </ul>
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Cancel</AlertDialogCancel>
+                              <AlertDialogAction className="bg-emerald-600 hover:bg-emerald-700" onClick={handleFinalizeStatement}>
+                                Finalize & Create Entries
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ height: 8, background: T.iron100, borderRadius: 999, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${matchPct}%`, background: T.orange }} />
+                  </div>
+                </IronCard>
+
+                {/* Transactions */}
+                <IronCard pad={0} style={{ overflow: 'hidden' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 14px', borderBottom: `1px solid ${T.iron200}`, background: T.iron50 }}>
+                    <div style={{ fontFamily: T.headline, fontWeight: 700, fontSize: 14, color: T.iron900 }}>Transactions ({filteredTransactions.length})</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                      <div style={{ position: 'relative' }}>
+                        <Search size={14} color={T.iron400} style={{ position: 'absolute', left: 9, top: 9 }} />
+                        <input placeholder="Search order ID..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} data-testid="search-input" style={{ ...inputStyle, paddingLeft: 30, width: 190 }} />
+                      </div>
+                      <select value={matchFilter} onChange={(e) => setMatchFilter(e.target.value)} data-testid="match-filter" style={{ ...inputStyle, cursor: 'pointer' }}>
+                        <option value="all">All Status</option>
+                        <option value="matched">Matched</option>
+                        <option value="unmatched">Unmatched</option>
+                      </select>
+                      <button style={outlineBtn} onClick={() => handleExport('summary')}><Download size={14} /> Summary</button>
+                      <button style={outlineBtn} onClick={() => handleExport('transactions')}><Download size={14} /> All Transactions</button>
+                    </div>
+                  </div>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                      <thead><tr style={{ borderBottom: `1px solid ${T.iron200}`, background: T.iron50 }}>
+                        {['Date', 'Type', 'Order ID', 'Product', 'Product Charges', 'Fees', 'Total', 'Match', 'Action'].map((h, i) => (
+                          <th key={i} style={{ ...thCell, textAlign: (i >= 4 && i <= 6) ? 'right' : 'left' }}><Caps size={8.5}>{h}</Caps></th>
+                        ))}
+                      </tr></thead>
+                      <tbody>
+                        {filteredTransactions.slice(0, 100).map((trans) => {
+                          const catTone = trans.transaction_category === 'order_payment' ? 'ok' : trans.transaction_category === 'refund' ? 'bad' : trans.transaction_category === 'reserve_held' ? 'warn' : 'slate';
+                          return (
+                            <tr key={trans.id} className="iron-row" style={{ borderBottom: `1px solid ${T.iron200}`, background: trans.crm_match_status === 'unmatched' ? '#FDF5F1' : undefined }} data-testid={`transaction-row-${trans.id}`}>
+                              <td style={{ ...tdCell, ...mono, fontSize: 11, color: T.iron500 }}>{formatDate(trans.date)}</td>
+                              <td style={tdCell}><span style={badgeStyle(catTone)}>{trans.transaction_category?.replace('_', ' ')}</span></td>
+                              <td style={{ ...tdCell, ...mono, color: T.iron900 }}>{trans.marketplace_order_id || '-'}</td>
+                              <td style={{ ...tdCell, maxWidth: 200, color: T.iron500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={trans.product_details}>{trans.product_details || '-'}</td>
+                              <td style={{ ...tdCell, ...mono, textAlign: 'right', color: T.iron900 }}>{formatCurrency(trans.total_product_charges)}</td>
+                              <td style={{ ...tdCell, ...mono, textAlign: 'right', color: T.orangeDeep }}>{trans.platform_fees ? `-${formatCurrency(Math.abs(trans.platform_fees))}` : '-'}</td>
+                              <td style={{ ...tdCell, ...mono, textAlign: 'right', fontWeight: 600, color: moneyColor(trans.total_amount) }}>{formatCurrency(trans.total_amount)}</td>
+                              <td style={tdCell}>
+                                {trans.crm_match_status === 'matched' ? (
+                                  <span style={{ ...badgeStyle('ok'), display: 'inline-flex', alignItems: 'center', gap: 4 }}><CheckCircle2 size={11} /> Matched</span>
+                                ) : trans.marketplace_order_id ? (
+                                  <span style={{ ...badgeStyle('bad'), display: 'inline-flex', alignItems: 'center', gap: 4 }}><XCircle size={11} /> Unmatched</span>
+                                ) : (
+                                  <span style={badgeStyle('slate')}>N/A</span>
+                                )}
+                              </td>
+                              <td style={tdCell}>
+                                {trans.crm_match_status === 'unmatched' && trans.marketplace_order_id && (
+                                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                    <button style={outlineBtn} onClick={() => openLinkDialog(trans)} data-testid={`link-btn-${trans.id}`}><Link2 size={13} /> Link</button>
+                                    <button style={iconBtn} onClick={() => openVerifyDialog(trans.marketplace_order_id)} title="Live scrape this order's financials from Seller Central" data-testid={`verify-btn-${trans.id}`}><Eye size={13} /></button>
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  {filteredTransactions.length > 100 && (
+                    <div style={{ ...mono, fontSize: 11, color: T.iron400, padding: '12px 0', textAlign: 'center' }}>
+                      Showing first 100 of {filteredTransactions.length} transactions
+                    </div>
+                  )}
+                </IronCard>
+              </>
+            )}
+
+            {/* Orders Tab */}
+            {activeTab === 'orders' && statementDetails && (
+              <IronCard pad={0} style={{ overflow: 'hidden' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 14px', borderBottom: `1px solid ${T.iron200}`, background: T.iron50 }}>
+                  <div style={{ fontFamily: T.headline, fontWeight: 700, fontSize: 14, color: T.iron900 }}>Order Summaries ({filteredOrders.length})</div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <select value={matchFilter} onChange={(e) => setMatchFilter(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+                      <option value="all">All Status</option>
+                      <option value="matched">Matched</option>
+                      <option value="unmatched">Unmatched</option>
+                    </select>
+                    <button style={outlineBtn} onClick={() => handleExport('orders')}><Download size={14} /> Export Orders</button>
+                  </div>
+                </div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead><tr style={{ borderBottom: `1px solid ${T.iron200}`, background: T.iron50 }}>
+                      {['Order ID', 'Product', 'Gross Sale', 'Platform Fees', 'Promos', 'Refunds', 'Net Realized', 'Finance Status', 'CRM Match'].map((h, i) => (
+                        <th key={i} style={{ ...thCell, textAlign: (i >= 2 && i <= 6) ? 'right' : 'left' }}><Caps size={8.5}>{h}</Caps></th>
+                      ))}
+                    </tr></thead>
+                    <tbody>
+                      {filteredOrders.map((order) => {
+                        const finTone = order.finance_status === 'paid' ? 'ok' : order.finance_status === 'refunded' ? 'bad' : 'warn';
+                        return (
+                          <tr key={order.id} className="iron-row" style={{ borderBottom: `1px solid ${T.iron200}`, background: order.crm_match_status === 'unmatched' ? '#FDF5F1' : undefined }}>
+                            <td style={{ ...tdCell, ...mono, color: T.iron900 }}>{order.marketplace_order_id}</td>
+                            <td style={{ ...tdCell, maxWidth: 200, color: T.iron500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={order.product_details}>{order.product_details || '-'}</td>
+                            <td style={{ ...tdCell, ...mono, textAlign: 'right', color: T.iron900 }}>{formatCurrency(order.gross_sale)}</td>
+                            <td style={{ ...tdCell, ...mono, textAlign: 'right', color: T.orangeDeep }}>-{formatCurrency(order.platform_fees)}</td>
+                            <td style={{ ...tdCell, ...mono, textAlign: 'right', color: '#6D4AB0' }}>-{formatCurrency(order.promotional_rebates)}</td>
+                            <td style={{ ...tdCell, ...mono, textAlign: 'right', color: T.rose }}>{order.refund_amount > 0 ? `-${formatCurrency(order.refund_amount)}` : '-'}</td>
+                            <td style={{ ...tdCell, ...mono, textAlign: 'right', fontWeight: 700, color: moneyColor(order.net_realized) }}>{formatCurrency(order.net_realized)}</td>
+                            <td style={tdCell}><span style={badgeStyle(finTone)}>{order.finance_status}</span></td>
+                            <td style={tdCell}>
+                              {order.crm_match_status === 'matched' ? <CheckCircle2 size={18} color={T.green} /> : <XCircle size={18} color={T.rose} />}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </IronCard>
+            )}
+
+            {/* Charges Tab (Flipkart only) */}
+            {activeTab === 'charges' && statementDetails && isFlipkart && (
+              <IronCard pad={0} style={{ overflow: 'hidden' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 14px', borderBottom: `1px solid ${T.iron200}`, background: T.iron50 }}>
+                  <div>
+                    <div style={{ fontFamily: T.headline, fontWeight: 700, fontSize: 14, color: T.iron900 }}>Non-Order Charges & Adjustments</div>
+                    <div style={{ fontSize: 11.5, color: T.iron500, marginTop: 2 }}>Platform fees, ads, services, rebates, and other deductions not tied to specific orders</div>
+                  </div>
+                  <button style={outlineBtn} onClick={() => handleExport('charges')}><Download size={14} /> Export Charges</button>
+                </div>
+                {(!statementDetails.non_order_charges || statementDetails.non_order_charges.length === 0) ? (
+                  <div style={{ textAlign: 'center', padding: '40px 0', color: T.iron400 }}>
+                    <ReceiptText size={40} style={{ margin: '0 auto 8px', opacity: 0.4 }} />
+                    <div style={{ fontSize: 13 }}>No non-order charges in this statement</div>
+                  </div>
+                ) : (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                      <thead><tr style={{ borderBottom: `1px solid ${T.iron200}`, background: T.iron50 }}>
+                        {['Date', 'Type', 'Category', 'Description', 'SKU / Order', 'Amount'].map((h, i) => (
+                          <th key={i} style={{ ...thCell, textAlign: i === 5 ? 'right' : 'left' }}><Caps size={8.5}>{h}</Caps></th>
+                        ))}
+                      </tr></thead>
+                      <tbody>
+                        {statementDetails.non_order_charges.map((charge) => {
+                          const ct = charge.charge_type;
+                          const chTone = (ct === 'ads' || ct === 'google_ads') ? 'violet' : ct === 'mp_fee_rebate' ? 'ok' : ct === 'storage_recall' ? 'info' : ct === 'protection_fund' ? 'ok' : 'slate';
+                          return (
+                            <tr key={charge.id} className="iron-row" style={{ borderBottom: `1px solid ${T.iron200}` }}>
+                              <td style={{ ...tdCell, ...mono, fontSize: 11, color: T.iron500 }}>{formatDate(charge.date)}</td>
+                              <td style={tdCell}><span style={badgeStyle(chTone)}>{charge.charge_type?.replace('_', ' ')}</span></td>
+                              <td style={{ ...tdCell, textTransform: 'capitalize', color: T.iron500 }}>{charge.category}</td>
+                              <td style={{ ...tdCell, maxWidth: 250, color: T.iron500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={charge.description}>{charge.description || '-'}</td>
+                              <td style={{ ...tdCell, ...mono, color: T.iron900 }}>{charge.sku || charge.order_id || charge.campaign_id || '-'}</td>
+                              <td style={{ ...tdCell, ...mono, textAlign: 'right', fontWeight: 600, color: moneyColor(charge.amount) }}>{formatCurrency(charge.amount)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </IronCard>
+            )}
+
+            {/* Tax Breakdown Tab (Flipkart only) */}
+            {activeTab === 'taxes' && statementDetails && isFlipkart && (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 12, marginBottom: 16 }}>
+                  <Kpi label="Total TCS" tone={T.orangeDeep} value={formatCurrency(selectedStatement.summary?.total_tcs)} />
+                  <Kpi label="Total TDS" tone="#6D4AB0" value={formatCurrency(selectedStatement.summary?.total_tds)} />
+                  <Kpi label="GST on Fees" tone={T.blue} value={formatCurrency(selectedStatement.summary?.total_gst_on_fees)} />
+                  <IronCard pad={14} style={{ borderColor: '#F6D8BA', background: '#FDEEE6' }}>
+                    <Caps size={9} color={T.orangeDeep} style={{ display: 'block', marginBottom: 8 }}>Total Taxes</Caps>
+                    <div style={{ ...mono, fontSize: 18, fontWeight: 700, color: T.orangeDeep }}>
+                      {formatCurrency((selectedStatement.summary?.total_tcs || 0) + (selectedStatement.summary?.total_tds || 0) + (selectedStatement.summary?.total_gst_on_fees || 0))}
+                    </div>
+                  </IronCard>
+                </div>
+
+                <IronCard pad={0} style={{ overflow: 'hidden' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 14px', borderBottom: `1px solid ${T.iron200}`, background: T.iron50 }}>
+                    <div style={{ fontFamily: T.headline, fontWeight: 700, fontSize: 14, color: T.iron900 }}>Tax Entries Detail</div>
+                    <button style={outlineBtn} onClick={() => handleExport('taxes')}><Download size={14} /> Export Tax Details</button>
+                  </div>
+                  {(!statementDetails.tax_entries || statementDetails.tax_entries.length === 0) ? (
+                    <div style={{ textAlign: 'center', padding: '40px 0', color: T.iron400 }}>
+                      <IndianRupee size={40} style={{ margin: '0 auto 8px', opacity: 0.4 }} />
+                      <div style={{ fontSize: 13 }}>No detailed tax entries in this statement</div>
+                    </div>
+                  ) : (
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                        <thead><tr style={{ borderBottom: `1px solid ${T.iron200}`, background: T.iron50 }}>
+                          {['Tax Type', 'Fee Name', 'Reference', 'CGST', 'SGST', 'IGST', 'Total GST'].map((h, i) => (
+                            <th key={i} style={{ ...thCell, textAlign: i >= 3 ? 'right' : 'left' }}><Caps size={8.5}>{h}</Caps></th>
+                          ))}
+                        </tr></thead>
+                        <tbody>
+                          {statementDetails.tax_entries.map((tax) => {
+                            const txTone = tax.tax_type === 'tcs_recovery' ? 'bad' : tax.tax_type === 'tds' ? 'violet' : 'info';
+                            return (
+                              <tr key={tax.id} className="iron-row" style={{ borderBottom: `1px solid ${T.iron200}` }}>
+                                <td style={tdCell}><span style={badgeStyle(txTone)}>{tax.tax_type?.replace('_', ' ').toUpperCase()}</span></td>
+                                <td style={{ ...tdCell, color: T.iron500 }}>{tax.fee_name || '-'}</td>
+                                <td style={{ ...tdCell, ...mono, color: T.iron900 }}>{tax.order_item_id || tax.transaction_id || tax.claim_id || '-'}</td>
+                                <td style={{ ...tdCell, ...mono, textAlign: 'right', color: T.iron900 }}>{tax.cgst_amount ? formatCurrency(tax.cgst_amount) : '-'}</td>
+                                <td style={{ ...tdCell, ...mono, textAlign: 'right', color: T.iron900 }}>{tax.sgst_amount ? formatCurrency(tax.sgst_amount) : '-'}</td>
+                                <td style={{ ...tdCell, ...mono, textAlign: 'right', color: T.iron900 }}>{tax.igst_amount ? formatCurrency(tax.igst_amount) : '-'}</td>
+                                <td style={{ ...tdCell, ...mono, textAlign: 'right', fontWeight: 600, color: T.iron900 }}>{formatCurrency(tax.amount || tax.total_gst)}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </IronCard>
+              </>
+            )}
+
+            {/* Alerts Tab */}
+            {activeTab === 'alerts' && (
+              <IronCard pad={0} style={{ overflow: 'hidden' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 14px', borderBottom: `1px solid ${T.iron200}`, background: T.iron50 }}>
+                  <div style={{ fontFamily: T.headline, fontWeight: 700, fontSize: 14, color: T.iron900 }}>Reconciliation Alerts</div>
+                  <button style={{ ...outlineBtn, opacity: selectedStatement ? 1 : 0.5, cursor: selectedStatement ? 'pointer' : 'not-allowed' }} onClick={() => selectedStatement && handleExport('unmatched')} disabled={!selectedStatement}><Download size={14} /> Export Unmatched</button>
+                </div>
+                <div style={{ padding: 14 }}>
+                  {alerts.length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: '48px 0', color: T.iron400 }}>
+                      <CheckCircle2 size={44} color={T.green} style={{ margin: '0 auto 10px', opacity: 0.8 }} />
+                      <div style={{ fontSize: 13 }}>No alerts — all orders reconciled!</div>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                      {alerts.map((alert, idx) => {
+                        const sevColor = alert.severity === 'high' ? T.rose : T.orangeDeep;
+                        const sevBg = alert.severity === 'high' ? '#FDF0EC' : '#FDEEE6';
+                        const typeTone = alert.type === 'unmatched_order' ? 'bad' : alert.type === 'unmatched_refund' ? 'violet' : alert.type === 'high_fees' ? 'warn' : 'info';
+                        return (
+                          <div key={idx} style={{ padding: 14, borderRadius: 8, border: `1px solid ${sevColor}33`, background: sevBg }} data-testid={`alert-${idx}`}>
+                            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                              <AlertTriangle size={18} color={sevColor} style={{ marginTop: 2 }} />
+                              <div style={{ flex: 1 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                  <span style={badgeStyle(typeTone)}>{alert.type?.replace('_', ' ')}</span>
+                                  <span style={badgeStyle('slate')}>{alert.severity}</span>
+                                </div>
+                                <div style={{ marginTop: 6, fontSize: 13, fontWeight: 600, color: T.iron900 }}>{alert.message}</div>
+                                <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 16, fontSize: 12, color: T.iron500 }}>
+                                  {alert.order_id && (<span>Order: <span style={{ ...mono, color: T.iron900 }}>{alert.order_id}</span></span>)}
+                                  {alert.amount && (<span>Amount: <span style={{ ...mono, color: T.iron900 }}>{formatCurrency(alert.amount)}</span></span>)}
+                                  {alert.date && (<span>Date: {formatDate(alert.date)}</span>)}
+                                </div>
+                              </div>
+                              {alert.type === 'unmatched_order' && alert.transaction_id && (
+                                <button style={outlineBtn} onClick={() => {
+                                  const trans = statementDetails?.transactions?.find(t => t.id === alert.transaction_id);
+                                  if (trans) openLinkDialog(trans);
+                                }}><Link2 size={13} /> Link to CRM</button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </IronCard>
+            )}
+
+            {/* MTR Reports Tab */}
+            {activeTab === 'mtr' && (
+              <IronCard pad={0} style={{ overflow: 'hidden' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 14px', borderBottom: `1px solid ${T.iron200}`, background: T.iron50 }}>
+                  <div>
+                    <div style={{ fontFamily: T.headline, fontWeight: 700, fontSize: 14, color: T.iron900 }}>GST Data Reports</div>
+                    <div style={{ fontSize: 11.5, color: T.iron500, marginTop: 2 }}>Upload Amazon MTR, Flipkart Sales & Vyapar GSTR reports for consolidation</div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button style={{ ...outlineBtn, borderColor: '#CBE5D6', color: T.green }} onClick={() => setConsolidatedDialogOpen(true)} data-testid="download-consolidated-btn"><Download size={14} /> Download Consolidated</button>
+                    <button style={primaryBtn} onClick={() => setMtrUploadDialogOpen(true)} data-testid="upload-mtr-btn"><Upload size={14} /> Upload Report</button>
+                  </div>
+                </div>
+                <div style={{ padding: 14 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 16 }}>
+                    <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', padding: 12, borderRadius: 8, border: '1px solid #F6D8BA', background: '#FDEEE6' }}>
+                      <div style={{ width: 32, height: 32, borderRadius: 6, display: 'grid', placeItems: 'center', background: T.orange, color: '#fff', fontWeight: 700 }}>A</div>
+                      <div>
+                        <div style={{ fontWeight: 700, color: T.orangeDeep, fontSize: 13 }}>Amazon MTR</div>
+                        <div style={{ fontSize: 11, color: T.orangeDeep, opacity: 0.8, marginTop: 2 }}>Seller Central → Reports → Tax → MTR</div>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', padding: 12, borderRadius: 8, border: '1px solid #EDDFA6', background: T.voltageTint }}>
+                      <div style={{ width: 32, height: 32, borderRadius: 6, display: 'grid', placeItems: 'center', background: T.voltage, color: '#fff', fontWeight: 700 }}>F</div>
+                      <div>
+                        <div style={{ fontWeight: 700, color: T.voltageText, fontSize: 13 }}>Flipkart Sales</div>
+                        <div style={{ fontSize: 11, color: T.voltageText, opacity: 0.8, marginTop: 2 }}>Seller Hub → Reports → Sales Report</div>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', padding: 12, borderRadius: 8, border: '1px solid #CBE5D6', background: T.greenTint }}>
+                      <div style={{ width: 32, height: 32, borderRadius: 6, display: 'grid', placeItems: 'center', background: T.green, color: '#fff', fontWeight: 700 }}>V</div>
+                      <div>
+                        <div style={{ fontWeight: 700, color: T.green, fontSize: 13 }}>Vyapar GSTR</div>
+                        <div style={{ fontSize: 11, color: T.green, opacity: 0.8, marginTop: 2 }}>Vyapar App → GSTR1 / GSTR3B Export</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {mtrReports.length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: '48px 0', color: T.iron400 }}>
+                      <ReceiptText size={44} style={{ margin: '0 auto 12px', opacity: 0.4 }} />
+                      <div style={{ fontSize: 13 }}>No reports uploaded yet</div>
+                      <div style={{ fontSize: 12, marginTop: 4 }}>Upload Amazon MTR or Flipkart Sales Report to enrich dispatch GST data</div>
+                    </div>
+                  ) : (
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                        <thead><tr style={{ borderBottom: `1px solid ${T.iron200}`, background: T.iron50 }}>
+                          {['Report Type', 'Filename', 'Firm', 'Rows', 'Matched', 'State Updated', 'GST Updated', 'Uploaded', 'Actions'].map((h, i) => (
+                            <th key={i} style={{ ...thCell, textAlign: (i >= 3 && i <= 6) ? 'right' : 'left' }}><Caps size={8.5}>{h}</Caps></th>
+                          ))}
+                        </tr></thead>
+                        <tbody>
+                          {mtrReports.map((report) => {
+                            const rTone = report.platform === 'flipkart' ? 'warn' : report.platform === 'vyapar' ? 'ok' : report.mtr_type === 'b2b' ? 'violet' : 'info';
+                            const rLabel = report.platform === 'flipkart' ? 'Flipkart' : report.platform === 'vyapar' ? 'Vyapar' : report.mtr_type?.toUpperCase();
+                            const isV = report.platform === 'vyapar';
+                            return (
+                              <tr key={report.id} className="iron-row" style={{ borderBottom: `1px solid ${T.iron200}` }}>
+                                <td style={tdCell}>
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
+                                    <span style={badgeStyle(rTone)}>{rLabel}</span>
+                                    {(report.platform === 'flipkart' || report.platform === 'vyapar') && (
+                                      <span style={{ ...mono, fontSize: 10, color: T.iron500 }}>{report.mtr_type?.replace('flipkart_', '').toUpperCase()}</span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td style={{ ...tdCell, ...mono, maxWidth: 190, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: T.iron900 }}>
+                                  {report.filename}
+                                  {report.period_key && (<div style={{ ...mono, fontSize: 10, color: T.iron500 }}>{report.period_key}</div>)}
+                                </td>
+                                <td style={{ ...tdCell, color: T.iron900 }}>{report.firm_name}</td>
+                                <td style={{ ...tdCell, ...mono, textAlign: 'right', color: T.iron900 }}>{isV ? (report.stats?.total_invoices || report.stats?.hsn_entries || 0) : (report.stats?.total_rows || 0)}</td>
+                                <td style={{ ...tdCell, ...mono, textAlign: 'right' }}>{isV ? <span style={{ color: T.green, fontWeight: 600 }}>{report.stats?.b2b_invoices || 0} B2B</span> : <span style={{ color: T.green, fontWeight: 600 }}>{report.stats?.matched_dispatches || 0}</span>}</td>
+                                <td style={{ ...tdCell, ...mono, textAlign: 'right' }}>{isV ? <span style={{ color: T.blue }}>{report.stats?.b2c_invoices || 0} B2C</span> : <span style={{ color: T.blue }}>{report.stats?.state_updated || 0}</span>}</td>
+                                <td style={{ ...tdCell, ...mono, textAlign: 'right' }}>{isV ? <span style={{ color: T.orangeDeep }}>{report.stats?.hsn_entries || 0} HSN</span> : <span style={{ color: T.orangeDeep }}>{report.stats?.gst_updated || 0}</span>}</td>
+                                <td style={tdCell}>
+                                  <div style={{ color: T.iron900, fontSize: 12 }}>{formatDate(report.created_at)}</div>
+                                  <div style={{ ...mono, fontSize: 10, color: T.iron500 }}>{report.created_by_name}</div>
+                                </td>
+                                <td style={tdCell}>
+                                  <AlertDialog>
+                                    <AlertDialogTrigger asChild>
+                                      <button style={iconDanger} title="Delete"><Trash2 size={13} /></button>
+                                    </AlertDialogTrigger>
+                                    <AlertDialogContent>
+                                      <AlertDialogHeader>
+                                        <AlertDialogTitle>Delete Report?</AlertDialogTitle>
+                                        <AlertDialogDescription>
+                                          This will delete the report record, allowing you to re-upload the same file.
+                                          Note: GST data already enriched on dispatches will NOT be removed.
+                                        </AlertDialogDescription>
+                                      </AlertDialogHeader>
+                                      <AlertDialogFooter>
+                                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                        <AlertDialogAction onClick={() => handleDeleteMtrReport(report.id)} className="bg-red-600 hover:bg-red-700">Delete</AlertDialogAction>
+                                      </AlertDialogFooter>
+                                    </AlertDialogContent>
+                                  </AlertDialog>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </IronCard>
+            )}
+          </>
+        )}
+
+        {/* Upload Statement Dialog */}
+        <Dialog open={uploadDialogOpen} onOpenChange={setUploadDialogOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Upload Payout Statement</DialogTitle>
+            </DialogHeader>
+            <form onSubmit={handleUpload} className="space-y-4">
+              <div className="space-y-2">
+                <Label>Select Firm *</Label>
+                <Select value={uploadFirmId} onValueChange={setUploadFirmId}>
+                  <SelectTrigger data-testid="upload-firm-select">
+                    <SelectValue placeholder="Select the firm for this statement" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {firms.map(f => (
+                      <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Each firm has its own reconciliation. Select the firm this statement belongs to.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Platform *</Label>
+                <Select value={uploadPlatform} onValueChange={setUploadPlatform}>
+                  <SelectTrigger data-testid="upload-platform-select">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PLATFORMS.map(p => (
+                      <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label>{uploadPlatform === 'flipkart' ? 'Excel File' : 'CSV File'} *</Label>
+                <Input
+                  type="file"
+                  accept={uploadPlatform === 'flipkart' ? '.xlsx,.xls' : '.csv'}
+                  onChange={(e) => setUploadFile(e.target.files?.[0])}
+                  data-testid="upload-file-input"
+                />
+                <p className="text-xs text-muted-foreground">
+                  {uploadPlatform === 'amazon'
+                    ? 'Upload the payout/transaction report CSV from Amazon Seller Central'
+                    : 'Upload the settlement Excel workbook from Flipkart Seller Hub (multi-sheet format)'}
+                </p>
+              </div>
+
+              {uploadPlatform === 'amazon' ? (
+                <div className="bg-muted/60 p-3 rounded-lg text-sm border border-border">
+                  <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">Expected columns (Amazon)</p>
+                  <ul className="text-muted-foreground space-y-1 text-xs">
+                    <li>• Date, Transaction type, Order ID</li>
+                    <li>• Product Details, Total product charges</li>
+                    <li>• Total promotional rebates, Amazon fees</li>
+                    <li>• Other, Total (INR)</li>
+                  </ul>
+                </div>
+              ) : (
+                <div className="bg-yellow-500/10 p-3 rounded-lg text-sm border border-yellow-500/25">
+                  <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-yellow-400 mb-2">Expected sheets (Flipkart)</p>
+                  <ul className="text-yellow-400/80 space-y-1 text-xs">
+                    <li>• Orders, MP Fee Rebate, Non_Order_SPF</li>
+                    <li>• Storage_Recall, Value Added Services</li>
+                    <li>• Google Ads Services, Ads</li>
+                    <li>• TCS_Recovery, TDS, GST_Details</li>
+                  </ul>
+                </div>
+              )}
+
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setUploadDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={uploading || !uploadFile || !uploadFirmId} className="bg-primary text-primary-foreground hover:bg-primary/90">
+                  {uploading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Processing...
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-4 h-4 mr-2" />
+                      Upload & Process
+                    </>
+                  )}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        {/* Link Transaction Dialog */}
+        <Dialog open={linkDialogOpen} onOpenChange={(open) => {
+          setLinkDialogOpen(open);
+          if (open && linkTransaction) {
+            // Auto-populate search with marketplace order ID
+            setDispatchSearch(linkTransaction.marketplace_order_id || '');
+            fetchDispatches(linkTransaction.marketplace_order_id || '');
+          }
+        }}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Link Transaction to CRM Dispatch</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              {linkTransaction && (
+                <div className="bg-muted/60 p-3 rounded-lg border border-border">
+                  <p className="text-sm text-muted-foreground">
+                    <span className="font-medium text-foreground">Order ID:</span>{' '}
+                    <span className="font-mono text-foreground">{linkTransaction.marketplace_order_id}</span>
+                  </p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    <span className="font-medium text-foreground">Amount:</span>{' '}
+                    {formatCurrency(linkTransaction.total_amount)}
+                  </p>
+                </div>
+              )}
+
+              {/* Link Mode Tabs */}
+              <Tabs value={linkMode} onValueChange={setLinkMode} className="w-full">
+                <TabsList className="grid w-full grid-cols-2">
+                  <TabsTrigger value="search">Search Dispatch</TabsTrigger>
+                  <TabsTrigger value="manual">Manual Order ID</TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="search" className="space-y-4 mt-4">
+                  <div className="space-y-2">
+                    <Label>Search CRM Dispatch</Label>
+                    <div className="flex gap-2">
+                      <Input
+                        placeholder="Search by dispatch #, order ID, or customer"
+                        value={dispatchSearch}
+                        onChange={(e) => setDispatchSearch(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && fetchDispatches(dispatchSearch)}
+                        data-testid="dispatch-search-input"
+                      />
+                      <Button type="button" variant="outline" onClick={() => fetchDispatches(dispatchSearch)}>
+                        <Search className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Select Dispatch</Label>
+                    <Select value={linkDispatchId} onValueChange={setLinkDispatchId}>
+                      <SelectTrigger data-testid="dispatch-select">
+                        <SelectValue placeholder="Select a dispatch to link" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {dispatches.length === 0 ? (
+                          <div className="p-2 text-center text-sm text-muted-foreground">
+                            No dispatches found. Try searching with a different term.
+                          </div>
+                        ) : (
+                          dispatches.map(d => (
+                            <SelectItem key={d.id} value={d.id}>
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-xs">{d.dispatch_number}</span>
+                                <span className="text-muted-foreground">|</span>
+                                <span className="text-sm">{d.customer_name}</span>
+                                <span className="text-muted-foreground">|</span>
+                                <span className="font-mono text-xs text-muted-foreground">{d.order_id || d.marketplace_order_id || '-'}</span>
+                              </div>
+                            </SelectItem>
+                          ))
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </TabsContent>
+
+                <TabsContent value="manual" className="space-y-4 mt-4">
+                  <div className="space-y-2">
+                    <Label>Enter CRM Order ID</Label>
+                    <Input
+                      placeholder="Enter the order ID from your CRM dispatch (e.g., 909-909)"
+                      value={manualOrderId}
+                      onChange={(e) => setManualOrderId(e.target.value)}
+                      data-testid="manual-order-id-input"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      This will search dispatches by order_id or marketplace_order_id and link automatically.
+                    </p>
+                  </div>
+                </TabsContent>
+              </Tabs>
+
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => {
+                  setLinkDialogOpen(false);
+                  setLinkMode('search');
+                  setManualOrderId('');
+                  setDispatchSearch('');
+                  setLinkDispatchId('');
+                }}>
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleLinkTransaction}
+                  disabled={linkLoading || (linkMode === 'search' && !linkDispatchId) || (linkMode === 'manual' && !manualOrderId.trim())}
+                  className="bg-primary text-primary-foreground hover:bg-primary/90"
+                >
+                  {linkLoading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <>
+                      <Link2 className="w-4 h-4 mr-2" />
+                      Link Transaction
+                    </>
+                  )}
+                </Button>
+              </DialogFooter>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* MTR Upload Dialog */}
+        <Dialog open={mtrUploadDialogOpen} onOpenChange={setMtrUploadDialogOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <ReceiptText className={`w-5 h-5 ${mtrPlatform === 'vyapar' ? 'text-emerald-400' : mtrPlatform === 'flipkart' ? 'text-yellow-400' : 'text-orange-400'}`} />
+                Upload {mtrPlatform === 'vyapar' ? 'Vyapar GSTR' : mtrPlatform === 'flipkart' ? 'Flipkart Sales' : 'Amazon MTR'} Report
+              </DialogTitle>
+            </DialogHeader>
+            <form onSubmit={handleMtrUpload} className="space-y-4">
+              <div className="space-y-2">
+                <Label>Select Firm *</Label>
+                <Select value={mtrFirmId} onValueChange={setMtrFirmId}>
+                  <SelectTrigger data-testid="mtr-firm-select">
+                    <SelectValue placeholder="Select the firm for this report" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {firms.map(f => (
+                      <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Platform *</Label>
+                <Select value={mtrPlatform} onValueChange={(v) => {
+                  setMtrPlatform(v);
+                  if (v === 'amazon') setMtrType('b2c');
+                  else if (v === 'flipkart') setMtrType('sales');
+                  else setMtrType('gstr1');
+                }}>
+                  <SelectTrigger data-testid="mtr-platform-select">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="amazon">
+                      <span className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-orange-500"></span>
+                        Amazon MTR
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="flipkart">
+                      <span className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-yellow-500"></span>
+                        Flipkart Sales Report
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="vyapar">
+                      <span className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                        Vyapar GSTR Report
+                      </span>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Report Type *</Label>
+                <Select value={mtrType} onValueChange={setMtrType}>
+                  <SelectTrigger data-testid="mtr-type-select">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {mtrPlatform === 'amazon' ? (
+                      <>
+                        <SelectItem value="b2c">B2C (Business to Consumer)</SelectItem>
+                        <SelectItem value="b2b">B2B (Business to Business)</SelectItem>
+                      </>
+                    ) : mtrPlatform === 'flipkart' ? (
+                      <>
+                        <SelectItem value="sales">Sales Report</SelectItem>
+                        <SelectItem value="gst">GST Report</SelectItem>
+                      </>
+                    ) : (
+                      <>
+                        <SelectItem value="gstr1">GSTR1 (Outward Supplies)</SelectItem>
+                        <SelectItem value="gstr3b">GSTR3B (Summary Return)</SelectItem>
+                      </>
+                    )}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  {mtrPlatform === 'amazon'
+                    ? 'Download from Amazon Seller Central → Reports → Tax → MTR'
+                    : mtrPlatform === 'flipkart'
+                      ? 'Download from Flipkart Seller Hub → Reports → Sales Report'
+                      : 'Export from Vyapar App → GSTR Reports'}
+                </p>
+              </div>
+
+              {mtrPlatform === 'vyapar' && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>Period Month *</Label>
+                    <Select value={mtrPeriodMonth.toString()} onValueChange={(v) => setMtrPeriodMonth(parseInt(v))}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {['January', 'February', 'March', 'April', 'May', 'June',
+                          'July', 'August', 'September', 'October', 'November', 'December'].map((m, i) => (
+                          <SelectItem key={i+1} value={(i+1).toString()}>{m}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Period Year *</Label>
+                    <Select value={mtrPeriodYear.toString()} onValueChange={(v) => setMtrPeriodYear(parseInt(v))}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {[2024, 2025, 2026, 2027].map(y => (
+                          <SelectItem key={y} value={y.toString()}>{y}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <Label>{mtrPlatform === 'amazon' ? 'MTR CSV File' : mtrPlatform === 'flipkart' ? 'Sales Report Excel File' : 'Vyapar GSTR Excel File'} *</Label>
+                <Input
+                  type="file"
+                  accept={mtrPlatform === 'amazon' ? '.csv' : '.xlsx,.xls'}
+                  onChange={(e) => setMtrFile(e.target.files?.[0])}
+                  data-testid="mtr-file-input"
+                />
+              </div>
+
+              <div className={`border rounded-lg p-3 text-sm ${
+                mtrPlatform === 'amazon'
+                  ? 'bg-orange-500/10 border-orange-500/25'
+                  : mtrPlatform === 'flipkart'
+                  ? 'bg-yellow-500/10 border-yellow-500/25'
+                  : 'bg-emerald-500/10 border-emerald-500/25'
+              }`}>
+                <p className={`font-mono text-[11px] font-semibold uppercase tracking-wide mb-2 ${
+                  mtrPlatform === 'amazon' ? 'text-orange-400' : mtrPlatform === 'flipkart' ? 'text-yellow-400' : 'text-emerald-400'
+                }`}>
+                  {mtrPlatform === 'vyapar' ? 'What gets stored:' : 'What happens on upload:'}
+                </p>
+                <ul className={`space-y-1 text-xs ${
+                  mtrPlatform === 'amazon' ? 'text-orange-400/80' : mtrPlatform === 'flipkart' ? 'text-yellow-400/80' : 'text-emerald-400/80'
+                }`}>
+                  {mtrPlatform === 'vyapar' ? (
+                    <>
+                      <li>• Stores B2B invoices with GSTIN, amounts, taxes</li>
+                      <li>• Stores B2C supplies by state</li>
+                      <li>• Stores HSN-wise summary</li>
+                      <li>• Used for consolidated GSTR1/3B generation</li>
+                    </>
+                  ) : (
+                    <>
+                      <li>• Matches orders with existing CRM dispatches</li>
+                      <li>• Updates dispatch records with state info</li>
+                      <li>• Adds CGST/SGST/IGST breakdowns</li>
+                      <li>• Does NOT create duplicate entries</li>
+                    </>
+                  )}
+                </ul>
+              </div>
+
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setMtrUploadDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={mtrUploading || !mtrFile || !mtrFirmId}
+                  className="bg-primary text-primary-foreground hover:bg-primary/90"
+                >
+                  {mtrUploading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Processing...
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-4 h-4 mr-2" />
+                      Upload {mtrPlatform === 'amazon' ? 'MTR' : mtrPlatform === 'flipkart' ? 'Sales Report' : 'GSTR'}
+                    </>
+                  )}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        {/* Consolidated Report Download Dialog */}
+        <Dialog open={consolidatedDialogOpen} onOpenChange={setConsolidatedDialogOpen}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Download className="w-5 h-5 text-emerald-400" />
+                Download Consolidated GST Report
+              </DialogTitle>
+              <DialogDescription>
+                Combines data from Amazon MTR, Flipkart Sales, and Vyapar GSTR reports
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label>Select Firm *</Label>
+                <Select value={consolidatedFirmId} onValueChange={setConsolidatedFirmId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select firm" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {firms.map(f => (
+                      <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Period Month *</Label>
+                  <Select value={consolidatedMonth.toString()} onValueChange={(v) => setConsolidatedMonth(parseInt(v))}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {['January', 'February', 'March', 'April', 'May', 'June',
+                        'July', 'August', 'September', 'October', 'November', 'December'].map((m, i) => (
+                        <SelectItem key={i+1} value={(i+1).toString()}>{m}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Period Year *</Label>
+                  <Select value={consolidatedYear.toString()} onValueChange={(v) => setConsolidatedYear(parseInt(v))}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {[2024, 2025, 2026, 2027].map(y => (
+                        <SelectItem key={y} value={y.toString()}>{y}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Report Type *</Label>
+                <Select value={consolidatedType} onValueChange={setConsolidatedType}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="gstr1">GSTR1 (Outward Supplies)</SelectItem>
+                    <SelectItem value="gstr3b">GSTR3B (Summary Return)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <Button
+                variant="outline"
+                onClick={fetchConsolidatedPreview}
+                disabled={consolidatedLoading || !consolidatedFirmId}
+                className="w-full"
+              >
+                {consolidatedLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Eye className="w-4 h-4 mr-2" />}
+                Preview Consolidated Data
+              </Button>
+
+              {consolidatedPreview && (
+                <div className="mg-card bg-muted/40 border border-border rounded-lg p-4 space-y-3">
+                  <h4 className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-muted-foreground">Data Summary</h4>
+
+                  <div className="grid grid-cols-3 gap-2 text-sm">
+                    <div className="bg-orange-500/10 border border-orange-500/25 rounded p-2">
+                      <p className="text-orange-400 font-medium">Amazon</p>
+                      <p className="text-orange-400/80 font-mono tabular-nums">{consolidatedPreview.sources?.amazon?.dispatches || 0} entries</p>
+                      <p className="text-orange-400/70 font-mono tabular-nums text-xs">₹{(consolidatedPreview.sources?.amazon?.total_taxable || 0).toLocaleString()}</p>
+                    </div>
+                    <div className="bg-yellow-500/10 border border-yellow-500/25 rounded p-2">
+                      <p className="text-yellow-400 font-medium">Flipkart</p>
+                      <p className="text-yellow-400/80 font-mono tabular-nums">{consolidatedPreview.sources?.flipkart?.dispatches || 0} entries</p>
+                      <p className="text-yellow-400/70 font-mono tabular-nums text-xs">₹{(consolidatedPreview.sources?.flipkart?.total_taxable || 0).toLocaleString()}</p>
+                    </div>
+                    <div className="bg-emerald-500/10 border border-emerald-500/25 rounded p-2">
+                      <p className="text-emerald-400 font-medium">Vyapar</p>
+                      <p className="text-emerald-400/80 font-mono tabular-nums">{consolidatedPreview.sources?.vyapar?.invoices || 0} invoices</p>
+                      <p className="text-emerald-400/70 font-mono tabular-nums text-xs">₹{(consolidatedPreview.sources?.vyapar?.total_taxable || 0).toLocaleString()}</p>
+                    </div>
+                  </div>
+
+                  <div className="bg-primary/10 border border-primary/30 rounded p-3 mt-2">
+                    <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.07em] text-primary/70 mb-2">Consolidated Total</p>
+                    <div className="grid grid-cols-2 gap-2 text-sm mt-1">
+                      <p className="font-mono tabular-nums text-primary">Taxable: ₹{(consolidatedPreview.consolidated?.total_taxable || 0).toLocaleString()}</p>
+                      <p className="font-mono tabular-nums text-primary">Total GST: ₹{(consolidatedPreview.consolidated?.total_gst || 0).toLocaleString()}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setConsolidatedDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={downloadConsolidatedReport}
+                disabled={consolidatedLoading || !consolidatedFirmId}
+                className="bg-primary text-primary-foreground hover:bg-primary/90"
+              >
+                {consolidatedLoading ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <Download className="w-4 h-4 mr-2" />
+                )}
+                Download Excel
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Per-order Amazon verification dialog */}
+        <Dialog open={verifyOpen} onOpenChange={setVerifyOpen}>
+          <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Eye className="w-5 h-5 text-primary" />
+                Verify on Amazon · {verifyOrderId}
+              </DialogTitle>
+              <DialogDescription>
+                Live scrape from Seller Central — what Amazon actually shows for this order.
+                {verifyResult?.from_cache && (
+                  <span className="ml-2 text-xs font-mono opacity-70">(cached, &lt;6h old)</span>
+                )}
+                {verifyResult?.brain_used && (
+                  <span className="ml-2 text-xs font-mono opacity-70">(Claude brain · {verifyResult.brain_turns}t)</span>
+                )}
+              </DialogDescription>
+            </DialogHeader>
+
+            {verifyLoading && (
+              <div className="py-12 flex flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+                <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                <div>Driving the browser to {verifyOrderId} — this can take up to a minute.</div>
+                <div className="text-xs opacity-70">If selectors miss, the Claude brain takes over (slower).</div>
+              </div>
+            )}
+
+            {!verifyLoading && verifyResult && (
+              <div className="space-y-4">
+                {/* Status banner */}
+                <div className={`rounded border px-3 py-2 text-sm flex items-start gap-2 ${
+                  verifyResult.status === 'ok' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' :
+                  verifyResult.status === 'not_logged_in' ? 'bg-orange-400/10 border-orange-400/30 text-orange-400' :
+                  'bg-rose-500/10 border-rose-500/30 text-rose-400'
+                }`}>
+                  {verifyResult.status === 'ok'
+                    ? <CheckCircle2 className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                    : <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />}
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium uppercase tracking-wider font-mono text-[11px]">{verifyResult.status}</div>
+                    {verifyResult.error && (
+                      <div className="text-xs mt-0.5 opacity-90">{verifyResult.error}</div>
+                    )}
+                    {verifyResult.url && (
+                      <a href={verifyResult.url} target="_blank" rel="noopener noreferrer"
+                         className="text-xs mt-0.5 inline-flex items-center gap-1 underline opacity-80 hover:opacity-100 break-all">
+                        <ExternalLink className="w-3 h-3" /> Open the page Amazon served
+                      </a>
+                    )}
+                  </div>
+                </div>
+
+                {/* Roll-up totals */}
+                {verifyResult.totals && Object.keys(verifyResult.totals).length > 0 && (
+                  <div>
+                    <div className="text-xs font-mono uppercase tracking-wider text-muted-foreground mb-2">Roll-up totals (from page)</div>
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
+                      {Object.entries(verifyResult.totals).map(([k, v]) => (
+                        <div key={k} className="border border-border rounded px-3 py-2 bg-muted/30">
+                          <div className="text-[10px] uppercase font-mono text-muted-foreground tracking-wider">{k.replace(/_/g, ' ')}</div>
+                          <div className={`font-mono tabular-nums text-sm font-medium ${v >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {formatCurrency(v)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Transaction table */}
+                {verifyResult.transactions && verifyResult.transactions.length > 0 ? (
+                  <div>
+                    <div className="text-xs font-mono uppercase tracking-wider text-muted-foreground mb-2">
+                      Transactions ({verifyResult.transactions.length})
+                    </div>
+                    <div className="border border-border rounded overflow-hidden">
+                      <Table cards>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="text-[10px] uppercase font-mono">Date</TableHead>
+                            <TableHead className="text-[10px] uppercase font-mono">Type</TableHead>
+                            <TableHead className="text-[10px] uppercase font-mono">Description</TableHead>
+                            <TableHead className="text-[10px] uppercase font-mono text-right">Amount</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {verifyResult.transactions.map((t, i) => (
+                            <TableRow key={i}>
+                              <TableCell className="text-xs font-mono">{t.date || '-'}</TableCell>
+                              <TableCell className="text-xs">{t.type || '-'}</TableCell>
+                              <TableCell className="text-xs text-muted-foreground truncate max-w-[280px]">{t.description || '-'}</TableCell>
+                              <TableCell className={`text-xs font-mono tabular-nums text-right ${(t.amount || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {formatCurrency(t.amount || 0)}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                ) : verifyResult.status === 'ok' && (
+                  <div className="text-sm text-muted-foreground py-4 text-center">
+                    Page loaded but no transaction rows extracted.
+                  </div>
+                )}
+
+                {/* Diagnostic: brain action trail */}
+                {verifyResult.brain_actions?.length > 0 && (
+                  <details className="text-xs">
+                    <summary className="cursor-pointer text-muted-foreground font-mono uppercase tracking-wider">
+                      Claude brain action trail ({verifyResult.brain_actions.length} steps)
+                    </summary>
+                    <pre className="mt-2 p-3 bg-muted/40 rounded text-[10px] overflow-x-auto whitespace-pre-wrap font-mono text-muted-foreground">
+                      {verifyResult.brain_actions.join('\n')}
+                    </pre>
+                  </details>
+                )}
+              </div>
+            )}
+
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setVerifyOpen(false)}>Close</Button>
+              {verifyOrderId && !verifyLoading && (
+                <Button onClick={() => openVerifyDialog(verifyOrderId, { force: true })}>
+                  <RefreshCw className="w-4 h-4 mr-1.5" />
+                  Re-scrape
+                </Button>
+              )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+    </IronShell>
+  );
+}
