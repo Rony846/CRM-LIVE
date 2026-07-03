@@ -55,6 +55,17 @@ export default function DealerOrders() {
   const [showPaymentDialog, setShowPaymentDialog] = useState(false);
   const [paymentForm, setPaymentForm] = useState({ amount: '', reference: '', file: null });
   const [submitting, setSubmitting] = useState(false);
+  const [purchases, setPurchases] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await axios.get(`${API}/dealer/purchases`, { headers: { Authorization: `Bearer ${token}` } });
+        setPurchases(r.data);
+      } catch (e) { setPurchases(null); }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
 
   useEffect(() => {
     if (token) {
@@ -395,6 +406,42 @@ export default function DealerOrders() {
             </button>
           </Link>
         </div>
+
+        {/* Purchase history — the dealer's actual MuscleGrid invoices (not just portal orders) */}
+        {purchases?.party_linked && purchases.count > 0 && (
+          <Card className="border-border bg-card">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <FileText className="w-4 h-4 text-primary" /> Purchase History — MuscleGrid Invoices
+                <span className="ml-auto font-mono text-sm text-muted-foreground">
+                  {purchases.count} invoices · ₹{Number(purchases.total_purchased).toLocaleString('en-IN')}
+                </span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs uppercase tracking-wide text-muted-foreground border-b border-border">
+                      <th className="py-2 pr-3 font-medium">Invoice</th><th className="py-2 pr-3 font-medium">Date</th>
+                      <th className="py-2 pr-3 font-medium">Item</th><th className="py-2 pr-3 font-medium text-right">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {purchases.purchases.map((p) => (
+                      <tr key={p.id} className="border-b border-border/60 last:border-0">
+                        <td className="py-2 pr-3 font-mono text-xs text-primary">{p.invoice_number || '—'}</td>
+                        <td className="py-2 pr-3 font-mono text-xs text-muted-foreground">{p.date}</td>
+                        <td className="py-2 pr-3 text-muted-foreground max-w-[280px] truncate">{p.items_summary}</td>
+                        <td className="py-2 pr-3 font-mono text-right tabular-nums">₹{Number(p.amount).toLocaleString('en-IN')}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Tab filter bar */}
         <div className="flex">

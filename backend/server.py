@@ -47456,6 +47456,44 @@ async def get_dealer_orders(
     return orders
 
 
+@api_router.get("/dealer/purchases")
+async def get_dealer_purchases(user: dict = Depends(require_roles(["dealer"]))):
+    """The dealer's ACTUAL purchase history from MuscleGrid — the invoices raised against their
+    party (sales_invoices, our canonical billing collection), not just orders placed in the portal.
+    This is what a dealer means by 'my purchases'."""
+    dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer profile not found")
+    party = await db.parties.find_one({"dealer_id": dealer["id"]}, {"_id": 0, "id": 1, "name": 1})
+    if not party:
+        return {"party_linked": False, "purchases": [], "total_purchased": 0, "count": 0,
+                "note": "No billing account is linked to this dealer yet."}
+
+    rows = await db.sales_invoices.find(
+        {"party_id": party["id"]},
+        {"_id": 0, "id": 1, "invoice_number": 1, "invoice_date": 1, "created_at": 1,
+         "grand_total": 1, "total_gst": 1, "taxable_value": 1, "items": 1, "source": 1,
+         "payment_status": 1, "firm_name": 1}
+    ).sort("invoice_date", -1).to_list(1000)
+
+    purchases = []
+    for r in rows:
+        items = r.get("items") or []
+        title = (items[0].get("name") or items[0].get("title") or items[0].get("product_name")) if items else None
+        if title and len(items) > 1:
+            title = f"{title} +{len(items) - 1} more"
+        purchases.append({
+            "id": r.get("id"), "invoice_number": r.get("invoice_number"),
+            "date": str(r.get("invoice_date") or r.get("created_at") or "")[:10],
+            "amount": float(r.get("grand_total") or 0), "gst": float(r.get("total_gst") or 0),
+            "items_summary": title or "—", "items_count": len(items),
+            "payment_status": r.get("payment_status"), "firm": r.get("firm_name"),
+        })
+    total = round(sum(p["amount"] for p in purchases), 2)
+    return {"party_linked": True, "party_name": party.get("name"), "count": len(purchases),
+            "total_purchased": total, "purchases": purchases}
+
+
 @api_router.get("/dealer/orders/{order_id}")
 async def get_dealer_order(
     order_id: str,
