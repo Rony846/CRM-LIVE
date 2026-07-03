@@ -408,7 +408,7 @@ export default function DealerOrders() {
         </div>
 
         {/* Purchase history — the dealer's actual MuscleGrid invoices (not just portal orders) */}
-        {purchases?.party_linked && purchases.count > 0 && (
+        {purchases?.linked && purchases.count > 0 && (
           <Card className="border-border bg-card">
             <CardHeader className="pb-3">
               <CardTitle className="text-base flex items-center gap-2">

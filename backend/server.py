@@ -47483,42 +47483,124 @@ async def get_dealer_orders(
     return orders
 
 
+def _norm_gstin(s):
+    return re.sub(r"[^0-9A-Za-z]", "", str(s or "")).upper()
+
+
+def _norm_pname(s):
+    return re.sub(r"[^a-z0-9]", "", str(s or "").lower())
+
+
+def _invoice_amounts(r):
+    """Robustly derive (net, gst, total) from a sales_invoices row. Field population is wildly
+    inconsistent across import sources — total_amount/subtotal/gst_amount are often null on
+    gapfill/GSTR rows, where the value lives only inside items[]. Fall back down the chain."""
+    total = r.get("total_amount")
+    sub = r.get("subtotal")
+    gst = r.get("gst_amount")
+    try:
+        total = float(total) if total is not None else None
+    except Exception:
+        total = None
+    try:
+        sub = float(sub) if sub is not None else None
+    except Exception:
+        sub = None
+    try:
+        gst = float(gst) if gst is not None else None
+    except Exception:
+        gst = None
+    if not sub and not total:
+        # rebuild from items
+        s = 0.0
+        for it in (r.get("items") or []):
+            a = it.get("amount")
+            if a:
+                try:
+                    s += float(a)
+                except Exception:
+                    pass
+            else:
+                try:
+                    s += float(it.get("unit_price") or 0) * float(it.get("quantity") or 1)
+                except Exception:
+                    pass
+        sub = s
+    net = sub if sub is not None else (total or 0.0)
+    if total is None:
+        total = (sub or 0.0) + (gst or 0.0)
+    return round(net or 0.0, 2), round(gst or 0.0, 2), round(total or 0.0, 2)
+
+
+async def _dealer_purchase_invoices(dealer: dict):
+    """The dealer's REAL MuscleGrid purchase invoices. The party_id link on sales_invoices is
+    unreliable (only ~23% of rows carry one, and dealer↔party links are duplicated), so we match
+    the dealer's own identity against the invoice buyer: GSTIN first (strong), else exact
+    normalised firm-name (fallback, only when the dealer has no GSTIN). Inter-company transfers
+    are excluded — those are internal stock moves, not dealer purchases."""
+    g = _norm_gstin(dealer.get("gst_number"))
+    match_by = None
+    query = None
+    if len(g) == 15:
+        query = {"party_gstin": {"$regex": f"^{re.escape(g)}$", "$options": "i"},
+                 "is_inter_company_transfer": {"$ne": True}}
+        match_by = "gstin"
+    else:
+        nm = _norm_pname(dealer.get("firm_name"))
+        if len(nm) >= 6:
+            # exact normalised name match — pull candidates by loose name then filter precisely
+            cands = await db.sales_invoices.find(
+                {"party_name": {"$regex": re.escape((dealer.get("firm_name") or "").strip()[:40]), "$options": "i"},
+                 "is_inter_company_transfer": {"$ne": True}},
+                {"_id": 0, "id": 1, "invoice_number": 1, "invoice_date": 1, "created_at": 1,
+                 "subtotal": 1, "gst_amount": 1, "total_amount": 1, "items": 1, "source": 1,
+                 "payment_status": 1, "firm_name": 1, "party_name": 1}).to_list(2000)
+            rows = [c for c in cands if _norm_pname(c.get("party_name")) == nm]
+            return rows, "name"
+        return [], None
+    rows = await db.sales_invoices.find(
+        query,
+        {"_id": 0, "id": 1, "invoice_number": 1, "invoice_date": 1, "created_at": 1,
+         "subtotal": 1, "gst_amount": 1, "total_amount": 1, "items": 1, "source": 1,
+         "payment_status": 1, "firm_name": 1, "party_name": 1}).to_list(3000)
+    return rows, match_by
+
+
 @api_router.get("/dealer/purchases")
 async def get_dealer_purchases(user: dict = Depends(require_roles(["dealer"]))):
-    """The dealer's ACTUAL purchase history from MuscleGrid — the invoices raised against their
-    party (sales_invoices, our canonical billing collection), not just orders placed in the portal.
-    This is what a dealer means by 'my purchases'."""
+    """The dealer's ACTUAL purchase history from MuscleGrid — the tax invoices raised against them
+    (sales_invoices, our canonical billing collection), matched by their GSTIN/firm name, not just
+    orders placed in the portal. This is what a dealer means by 'my purchases'."""
     dealer = await db.dealers.find_one({"user_id": user["id"]}, {"_id": 0})
     if not dealer:
         raise HTTPException(status_code=404, detail="Dealer profile not found")
-    party = await db.parties.find_one({"dealer_id": dealer["id"]}, {"_id": 0, "id": 1, "name": 1})
-    if not party:
-        return {"party_linked": False, "purchases": [], "total_purchased": 0, "count": 0,
-                "note": "No billing account is linked to this dealer yet."}
 
-    rows = await db.sales_invoices.find(
-        {"party_id": party["id"]},
-        {"_id": 0, "id": 1, "invoice_number": 1, "invoice_date": 1, "created_at": 1,
-         "grand_total": 1, "total_gst": 1, "taxable_value": 1, "items": 1, "source": 1,
-         "payment_status": 1, "firm_name": 1}
-    ).sort("invoice_date", -1).to_list(1000)
+    rows, match_by = await _dealer_purchase_invoices(dealer)
+    if not rows:
+        return {"linked": False, "matched_by": None, "purchases": [], "total_purchased": 0,
+                "total_gst": 0, "count": 0,
+                "note": "No MuscleGrid tax invoices are linked to your account yet."}
 
     purchases = []
     for r in rows:
         items = r.get("items") or []
-        title = (items[0].get("name") or items[0].get("title") or items[0].get("product_name")) if items else None
+        title = (items[0].get("description") or items[0].get("name") or items[0].get("title")
+                 or items[0].get("product_name")) if items else None
         if title and len(items) > 1:
             title = f"{title} +{len(items) - 1} more"
+        net, gst, total = _invoice_amounts(r)
         purchases.append({
             "id": r.get("id"), "invoice_number": r.get("invoice_number"),
             "date": str(r.get("invoice_date") or r.get("created_at") or "")[:10],
-            "amount": float(r.get("grand_total") or 0), "gst": float(r.get("total_gst") or 0),
+            "amount": total, "net": net, "gst": gst,
             "items_summary": title or "—", "items_count": len(items),
             "payment_status": r.get("payment_status"), "firm": r.get("firm_name"),
         })
+    purchases.sort(key=lambda p: p["date"], reverse=True)
     total = round(sum(p["amount"] for p in purchases), 2)
-    return {"party_linked": True, "party_name": party.get("name"), "count": len(purchases),
-            "total_purchased": total, "purchases": purchases}
+    total_gst = round(sum(p["gst"] for p in purchases), 2)
+    return {"linked": True, "matched_by": match_by, "count": len(purchases),
+            "total_purchased": total, "total_gst": total_gst, "purchases": purchases}
 
 
 @api_router.get("/dealer/orders/{order_id}")
