@@ -5,6 +5,7 @@ import { ShoppingCart, Search, ChevronLeft, Plus, Minus, Trash2, Loader2, Shield
 import StoreLegal from './StoreLegal';
 import { LEGAL_DOCS, LEGAL_ORDER } from './legalContent';
 import { initAnalytics, trackViewItem, trackAddToCart, trackBeginCheckout, trackPurchase } from './storeAnalytics';
+import { setProductSeo, setBaseSeo } from './storeSeo';
 
 /* MuscleGrid Storefront MVP — public, guest checkout, wired to the existing /shop APIs.
    Server computes all prices from master_skus; the client only sends product ids + quantities.
@@ -31,8 +32,11 @@ export default function StoreFront() {
   const [products, setProducts] = useState([]);
   const [cats, setCats] = useState([]);
   const [loading, setLoading] = useState(true);
-  const _initSlug = (typeof window !== 'undefined' && (window.location.pathname.match(/^\/policies\/([a-z]+)/) || [])[1]) || '';
-  const [view, setView] = useState(LEGAL_DOCS[_initSlug] ? 'legal' : 'catalog');   // catalog | product | cart | checkout | success | legal | track
+  const _path = typeof window !== 'undefined' ? window.location.pathname : '/';
+  const _initSlug = (_path.match(/^\/policies\/([a-z]+)/) || [])[1] || '';
+  const _initProduct = (_path.match(/^\/product\/([^/]+)/) || [])[1] || '';
+  const [view, setView] = useState(LEGAL_DOCS[_initSlug] ? 'legal' : (_initProduct ? 'product' : 'catalog'));   // catalog | product | cart | checkout | success | legal | track
+  const [pendingProduct, setPendingProduct] = useState(_initProduct);
   const [sel, setSel] = useState(null);
   const [cat, setCat] = useState('');
   const [q, setQ] = useState('');
@@ -57,23 +61,31 @@ export default function StoreFront() {
     goTop();
   };
 
-  // Browser back/forward between a policy URL and the store.
+  // Browser back/forward between policy / product URLs and the store.
   useEffect(() => {
     const onPop = () => {
-      const s = (window.location.pathname.match(/^\/policies\/([a-z]+)/) || [])[1];
-      if (s && LEGAL_DOCS[s]) { setLegalDoc(s); setView('legal'); } else setView('catalog');
+      const path = window.location.pathname;
+      const s = (path.match(/^\/policies\/([a-z]+)/) || [])[1];
+      const pr = (path.match(/^\/product\/([^/]+)/) || [])[1];
+      if (s && LEGAL_DOCS[s]) { setLegalDoc(s); setView('legal'); }
+      else if (pr) { setPendingProduct(pr); setView('product'); }
+      else { setSel(null); setView('catalog'); }
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
-  // Base storefront SEO (legal pages set their own title and restore to this on exit).
+  // Per-view SEO: product pages set their own title/meta/Product-schema; everything else = base.
   useEffect(() => {
-    document.title = 'MuscleGrid — Solar Inverters, Lithium & Inverter Batteries, Voltage Stabilizers';
-    let m = document.head.querySelector('meta[name="description"]');
-    if (!m) { m = document.createElement('meta'); m.setAttribute('name', 'description'); document.head.appendChild(m); }
-    m.setAttribute('content', 'Buy MuscleGrid solar inverters, hybrid inverters, lithium & inverter batteries and voltage stabilizers online in India. Hassle-free pickup, repair & return warranty service. Secure payments.');
-  }, []);
+    if (view === 'product' && sel) setProductSeo(sel);
+    else if (view === 'legal') { /* StoreLegal manages its own SEO */ }
+    else {
+      setBaseSeo();
+      if (window.location.pathname.startsWith('/product/') && !pendingProduct) {
+        try { window.history.replaceState({}, '', '/'); } catch (e) {}
+      }
+    }
+  }, [view, sel, pendingProduct]);
 
   const checkPincode = useCallback(async (raw) => {
     const p = (raw || '').replace(/\D/g, '');
@@ -110,9 +122,18 @@ export default function StoreFront() {
     (async () => {
       try {
         const r = await axios.get(`${API}/shop/products`, { params: { limit: 300 } });
-        setProducts(r.data.products || []); setCats(r.data.categories || []);
+        const list = r.data.products || [];
+        setProducts(list); setCats(r.data.categories || []);
+        // Deep-link: /product/<slug> loaded directly → open that product once the list is in.
+        if (pendingProduct) {
+          const hit = list.find((p) => p.slug === pendingProduct || p.handle === pendingProduct || p.id === pendingProduct || p.sku === pendingProduct);
+          if (hit) { setSel(hit); setView('product'); }
+          else { setView('catalog'); try { window.history.replaceState({}, '', '/'); } catch (e) {} }
+          setPendingProduct('');
+        }
       } catch (e) { /* */ } finally { setLoading(false); }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const cartCount = cart.reduce((a, c) => a + c.qty, 0);
@@ -130,7 +151,11 @@ export default function StoreFront() {
   };
   const setQty = (id, qty) => setCart((prev) => qty <= 0 ? prev.filter((c) => c.id !== id) : prev.map((c) => c.id === id ? { ...c, qty } : c));
   const goTop = () => window.scrollTo({ top: 0 });
-  const open = (p) => { setSel(p); setView('product'); trackViewItem(p); goTop(); };
+  const open = (p) => {
+    setSel(p); setView('product');
+    try { window.history.pushState({}, '', `/product/${p.slug || p.handle || p.id}/`); } catch (e) {}
+    trackViewItem(p); goTop();
+  };
   const detailCart = () => cart.map((c) => { const p = products.find((x) => x.id === c.id) || {}; return { id: c.id, sku: p.sku, title: p.title, price: p.price, qty: c.qty }; });
   const cartTotal = () => detailCart().reduce((s, i) => s + (Number(i.price) || 0) * i.qty, 0);
 

@@ -84,4 +84,61 @@ for (const slug of LEGAL_ORDER) {
   fs.writeFileSync(INDEX, html);
 }
 
-console.log(`[prerender] wrote ${n} policy pages + home shell`);
+// ---- Product pages: fetch the live catalogue and bake a static page + Product schema each ----
+let products = [];
+try {
+  const res = await fetch('http://127.0.0.1:8001/api/shop/products?limit=500');
+  products = (await res.json()).products || [];
+} catch (e) {
+  console.log('[prerender] could not fetch products (backend down?) — skipping product pages:', e.message);
+}
+
+function renderProduct(p) {
+  const price = Math.round(Number(p.price) || 0);
+  let h = '<main style="max-width:900px;margin:0 auto;padding:28px 20px 56px;font-family:Inter,system-ui,sans-serif;color:#1A1A1A">';
+  h += `<h1 style="font-size:26px;margin:0 0 12px">${esc(p.title)}</h1>`;
+  if (p.image) h += `<img src="${esc(p.image)}" alt="${esc(p.title)}" style="max-width:360px;width:100%;border:1px solid #E6E6E6;border-radius:10px"/>`;
+  h += `<div style="font-size:22px;font-weight:700;color:#D96A0A;margin:14px 0">₹${price.toLocaleString('en-IN')}</div>`;
+  const desc = (p.description || '').trim();
+  if (desc) h += `<div style="color:#4B4B4B;line-height:1.7;white-space:pre-wrap">${esc(desc)}</div>`;
+  h += '<p style="margin-top:20px"><a href="/">&larr; All products</a></p></main>';
+  return h;
+}
+
+let pn = 0;
+for (const p of products) {
+  const slug = p.slug || p.handle || p.id;
+  if (!slug) continue;
+  const url = `${COMPANY.site}/product/${slug}/`;
+  const title = (p.seo_title || `${p.title} | MuscleGrid`).slice(0, 65);
+  const desc = (p.seo_description || (p.description || '').replace(/\s+/g, ' ').trim() || `Buy ${p.title} online from MuscleGrid. Secure payment, warranty & pickup-repair-return service across India.`).slice(0, 300);
+  const ld = JSON.stringify({
+    '@context': 'https://schema.org', '@type': 'Product', name: p.title,
+    image: (p.gallery && p.gallery.length ? p.gallery : (p.image ? [p.image] : [])),
+    description: desc, sku: p.sku, brand: { '@type': 'Brand', name: 'MuscleGrid' },
+    offers: { '@type': 'Offer', url, priceCurrency: 'INR', price: String(Math.round(Number(p.price) || 0)), availability: 'https://schema.org/InStock', itemCondition: 'https://schema.org/NewCondition' },
+  });
+  let html = baseHtml.replace(/<title>.*?<\/title>/, `<title>${esc(title)}</title>`);
+  if (/<meta name="description"[^>]*>/.test(html)) html = html.replace(/<meta name="description"[^>]*>/, `<meta name="description" content="${esc(desc)}"/>`);
+  else html = html.replace('</head>', `<meta name="description" content="${esc(desc)}"/></head>`);
+  const head = `<link rel="canonical" href="${url}"/><meta property="og:title" content="${esc(title)}"/>`
+    + `<meta property="og:description" content="${esc(desc)}"/><meta property="og:type" content="product"/>`
+    + (p.image ? `<meta property="og:image" content="${esc(p.image)}"/>` : '')
+    + `<script type="application/ld+json">${ld}</script>`;
+  html = html.replace('</head>', head + '</head>');
+  html = html.replace('<div id="root"></div>', `<div id="root">${renderProduct(p)}</div>`);
+  const dir = path.join(BUILD, 'product', slug);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'index.html'), html);
+  pn++;
+}
+
+// ---- Sitemap: home + policies + every product ----
+const urls = [`${COMPANY.site}/`]
+  .concat(LEGAL_ORDER.map((s) => `${COMPANY.site}/policies/${s}/`))
+  .concat(products.map((p) => `${COMPANY.site}/product/${p.slug || p.handle || p.id}/`));
+const sitemap = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+  + urls.map((u) => `  <url><loc>${u}</loc></url>`).join('\n') + '\n</urlset>\n';
+fs.writeFileSync(path.join(BUILD, 'sitemap.xml'), sitemap);
+
+console.log(`[prerender] wrote ${n} policy pages + ${pn} product pages + home shell + sitemap (${urls.length} urls)`);
