@@ -112,12 +112,14 @@ for (const p of products) {
   const url = `${COMPANY.site}/product/${slug}/`;
   const title = (p.seo_title || `${p.title} | MuscleGrid`).slice(0, 65);
   const desc = (p.seo_description || (p.description || '').replace(/\s+/g, ' ').trim() || `Buy ${p.title} online from MuscleGrid. Secure payment, warranty & pickup-repair-return service across India.`).slice(0, 300);
-  const ld = JSON.stringify({
+  const ldObj = {
     '@context': 'https://schema.org', '@type': 'Product', name: p.title,
     image: (p.gallery && p.gallery.length ? p.gallery : (p.image ? [p.image] : [])),
     description: desc, sku: p.sku, brand: { '@type': 'Brand', name: 'MuscleGrid' },
     offers: { '@type': 'Offer', url, priceCurrency: 'INR', price: String(Math.round(Number(p.price) || 0)), availability: 'https://schema.org/InStock', itemCondition: 'https://schema.org/NewCondition' },
-  });
+  };
+  if (p.rating && p.reviews) ldObj.aggregateRating = { '@type': 'AggregateRating', ratingValue: String(p.rating), reviewCount: String(p.reviews) };
+  const ld = JSON.stringify(ldObj);
   let html = baseHtml.replace(/<title>.*?<\/title>/, `<title>${esc(title)}</title>`);
   if (/<meta name="description"[^>]*>/.test(html)) html = html.replace(/<meta name="description"[^>]*>/, `<meta name="description" content="${esc(desc)}"/>`);
   else html = html.replace('</head>', `<meta name="description" content="${esc(desc)}"/></head>`);

@@ -35,6 +35,7 @@ export function setProductSeo(p) {
     description: desc, sku: p.sku, brand: { '@type': 'Brand', name: 'MuscleGrid' },
     offers: { '@type': 'Offer', url, priceCurrency: 'INR', price: String(Math.round(Number(p.price) || 0)), availability: 'https://schema.org/InStock', itemCondition: 'https://schema.org/NewCondition' },
   };
+  if (p.rating && p.reviews) ld.aggregateRating = { '@type': 'AggregateRating', ratingValue: String(p.rating), reviewCount: String(p.reviews) };
   clearProductLd();
   const s = document.createElement('script');
   s.type = 'application/ld+json'; s.setAttribute('data-product-ld', '1'); s.text = JSON.stringify(ld);

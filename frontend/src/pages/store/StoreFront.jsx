@@ -14,6 +14,10 @@ import { setProductSeo, setBaseSeo } from './storeSeo';
 const O = '#F58220', OD = '#D96A0A', INK = '#1A1A1A', SUB = '#6B6B6B', MUT = '#9A9A9A', LINE = '#E6E6E6', PAPER = '#FAFAF8', GREEN = '#1F8A4C';
 const F = "'Inter', system-ui, sans-serif", FH = "'Inter Tight', system-ui, sans-serif", FM = "'JetBrains Mono', ui-monospace, monospace", FD = "'Saira Condensed', system-ui, sans-serif";
 const inr = (n) => '₹' + Math.round(Number(n) || 0).toLocaleString('en-IN');
+const Stars = ({ v = 0, size = 13 }) => {
+  const r = Math.round(Number(v) || 0);
+  return <span style={{ color: '#F5A623', fontSize: size, letterSpacing: 1, fontFamily: 'system-ui' }}>{'★'.repeat(r)}<span style={{ color: '#D9D9D9' }}>{'★'.repeat(5 - r)}</span></span>;
+};
 const CART_KEY = 'mg_store_cart';
 
 const Fonts = () => (<style>{`
@@ -49,6 +53,9 @@ export default function StoreFront() {
   const [svcLoading, setSvcLoading] = useState(false);
   const [pin, setPin] = useState({ v: '', res: null, loading: false });   // product-page delivery checker
   const [track, setTrack] = useState({ order: '', phone: '', res: null, loading: false, err: '' });
+  const [coupon, setCoupon] = useState({ code: '', applied: null, err: '', busy: false });
+  const [reviews, setReviews] = useState({ count: 0, average: 0, reviews: [] });
+  const [rev, setRev] = useState({ name: '', rating: 5, title: '', comment: '', phone: '', busy: false, done: false });
   const [legalDoc, setLegalDoc] = useState(LEGAL_DOCS[_initSlug] ? _initSlug : 'terms');
   const openLegal = (slug) => {
     setLegalDoc(slug); setView('legal');
@@ -140,6 +147,37 @@ export default function StoreFront() {
   const byId = useCallback((id) => products.find((p) => p.id === id), [products]);
   const cartLines = cart.map((c) => ({ ...c, p: byId(c.id) })).filter((c) => c.p);
   const subtotal = cartLines.reduce((a, c) => a + (c.p.price || 0) * c.qty, 0);
+  const discount = coupon.applied?.discount || 0;
+  const payable = Math.max(0, subtotal - discount);
+
+  // Load reviews when a product opens.
+  useEffect(() => {
+    if (view === 'product' && sel) {
+      setRev({ name: '', rating: 5, title: '', comment: '', phone: '', busy: false, done: false });
+      axios.get(`${API}/shop/product/${sel.id}/reviews`).then(({ data }) => setReviews(data)).catch(() => setReviews({ count: 0, average: 0, reviews: [] }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sel]);
+
+  const submitReview = async () => {
+    if (!rev.name.trim()) return alert('Please enter your name');
+    setRev((s) => ({ ...s, busy: true }));
+    try {
+      await axios.post(`${API}/shop/product/${sel.id}/review`, { name: rev.name.trim(), rating: rev.rating, title: rev.title, comment: rev.comment, phone: rev.phone || undefined });
+      const { data } = await axios.get(`${API}/shop/product/${sel.id}/reviews`);
+      setReviews(data); setRev((s) => ({ ...s, busy: false, done: true, comment: '', title: '' }));
+    } catch (e) { alert(e.response?.data?.detail || 'Could not submit review'); setRev((s) => ({ ...s, busy: false })); }
+  };
+
+  const applyCoupon = async () => {
+    if (!coupon.code.trim()) return;
+    setCoupon((s) => ({ ...s, busy: true, err: '' }));
+    try {
+      const { data } = await axios.get(`${API}/shop/coupon`, { params: { code: coupon.code.trim(), subtotal } });
+      if (data.code && data.discount > 0) setCoupon((s) => ({ ...s, applied: data, err: '', busy: false }));
+      else setCoupon((s) => ({ ...s, applied: null, err: 'Not applicable to this cart', busy: false }));
+    } catch (e) { setCoupon((s) => ({ ...s, applied: null, err: e.response?.data?.detail || 'Invalid coupon', busy: false })); }
+  };
 
   const addToCart = (id, qty = 1) => {
     setCart((prev) => {
@@ -176,7 +214,7 @@ export default function StoreFront() {
     setPlacing(true);
     try {
       const items = cart.map((c) => ({ id: c.id, qty: c.qty }));
-      const body = { items, name: form.name.trim(), phone, email: form.email || undefined, address: form.address, city: form.city, pincode: form.pincode, gstin: form.gstin || undefined, payment_method: pay, store: 'in' };
+      const body = { items, name: form.name.trim(), phone, email: form.email || undefined, address: form.address, city: form.city, pincode: form.pincode, gstin: form.gstin || undefined, payment_method: pay, store: 'in', coupon_code: coupon.applied?.code || undefined };
       const { data } = await axios.post(`${API}/shop/checkout/create`, body);
       if (data.cod) { trackPurchase({ orderNumber: data.order_number, total: data.total, cart: detailCart() }); setLastOrder(data.order_number); setCart([]); setView('success'); goTop(); return; }
       const ok = await loadRzp();
@@ -271,6 +309,7 @@ export default function StoreFront() {
                 </div>
                 <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
                   <div style={{ fontFamily: FH, fontWeight: 600, fontSize: 13, lineHeight: 1.35, color: INK, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', minHeight: 36 }}>{p.title}</div>
+                  {p.rating > 0 && <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}><Stars v={p.rating} size={11} /><span style={{ fontSize: 11, color: MUT }}>({p.reviews})</span></div>}
                   <div style={{ marginTop: 'auto' }}><Price p={p} /></div>
                   <button className="mgs-btn" onClick={(e) => { e.stopPropagation(); addToCart(p.id); }} style={{ border: 'none', background: O, color: '#fff', borderRadius: 8, padding: '9px 0', cursor: 'pointer', fontFamily: FH, fontWeight: 700, fontSize: 13 }}>Add to Cart</button>
                 </div>
@@ -288,6 +327,11 @@ export default function StoreFront() {
             </div>
             <div>
               <div style={{ fontFamily: FH, fontWeight: 700, fontSize: 24, lineHeight: 1.25 }}>{sel.title}</div>
+              {reviews.count > 0 && (
+                <a href="#reviews" style={{ display: 'inline-flex', alignItems: 'center', gap: 7, marginTop: 8, textDecoration: 'none', color: SUB, fontSize: 12.5 }}>
+                  <Stars v={reviews.average} size={15} /> <span>{reviews.average} · {reviews.count} review{reviews.count > 1 ? 's' : ''}</span>
+                </a>
+              )}
               <div style={{ margin: '14px 0' }}><Price p={sel} big /></div>
               <div style={{ fontSize: 12, color: SUB }}>Inclusive of {sel.gst || 0}% GST · Free standard delivery</div>
               {sel.description && <p style={{ fontSize: 13.5, color: SUB, lineHeight: 1.6, marginTop: 16 }}>{sel.description}</p>}
@@ -311,6 +355,49 @@ export default function StoreFront() {
                 {[[ShieldCheck, 'Genuine warranty'], [Truck, 'Pan-India delivery'], [BadgeCheck, 'Secure Razorpay payment']].map(([Ic, t]) => (
                   <div key={t} style={{ display: 'flex', alignItems: 'center', gap: 7, color: SUB, fontSize: 12 }}><Ic size={15} color={GREEN} /> {t}</div>
                 ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Reviews */}
+          <div id="reviews" style={{ marginTop: 40, borderTop: `1px solid ${LINE}`, paddingTop: 28 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 18 }}>
+              <div style={{ fontFamily: FH, fontWeight: 800, fontSize: 20 }}>Customer Reviews</div>
+              {reviews.count > 0 && <div style={{ color: SUB, fontSize: 13 }}><Stars v={reviews.average} size={15} /> {reviews.average} out of 5 · {reviews.count} review{reviews.count > 1 ? 's' : ''}</div>}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.4fr) minmax(0,1fr)', gap: 30 }}>
+              <div>
+                {reviews.reviews.length === 0 ? (
+                  <div style={{ color: MUT, fontSize: 13.5 }}>No reviews yet. Be the first to review this product.</div>
+                ) : reviews.reviews.map((r, i) => (
+                  <div key={i} style={{ borderBottom: `1px solid ${LINE}`, paddingBottom: 14, marginBottom: 14 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <Stars v={r.rating} />
+                      <span style={{ fontFamily: FH, fontWeight: 700, fontSize: 13 }}>{r.name}</span>
+                      {r.verified_purchase && <span style={{ fontSize: 10, color: GREEN, border: `1px solid ${GREEN}`, borderRadius: 4, padding: '1px 5px' }}>Verified</span>}
+                      <span style={{ marginLeft: 'auto', fontSize: 11, color: MUT }}>{r.date}</span>
+                    </div>
+                    {r.title && <div style={{ fontWeight: 700, fontSize: 13.5, marginTop: 6 }}>{r.title}</div>}
+                    {r.comment && <div style={{ fontSize: 13, color: SUB, marginTop: 4, lineHeight: 1.6 }}>{r.comment}</div>}
+                  </div>
+                ))}
+              </div>
+              <div style={{ background: '#fff', border: `1px solid ${LINE}`, borderRadius: 12, padding: 18, alignSelf: 'start' }}>
+                {rev.done ? (
+                  <div style={{ textAlign: 'center', color: GREEN, fontSize: 13.5, padding: '10px 0' }}><Check size={22} /><div style={{ marginTop: 6 }}>Thanks for your review!</div></div>
+                ) : (<>
+                  <div style={{ fontFamily: FH, fontWeight: 800, fontSize: 15, marginBottom: 12 }}>Write a review</div>
+                  <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+                    {[1, 2, 3, 4, 5].map((n) => (
+                      <button key={n} onClick={() => setRev((s) => ({ ...s, rating: n }))} style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 24, lineHeight: 1, color: n <= rev.rating ? '#F5A623' : '#D9D9D9' }}>★</button>
+                    ))}
+                  </div>
+                  {[['name', 'Your name'], ['title', 'Title (optional)'], ['phone', 'Phone (for Verified badge, optional)']].map(([k, ph]) => (
+                    <input key={k} value={rev[k]} onChange={(e) => setRev((s) => ({ ...s, [k]: e.target.value }))} placeholder={ph} style={{ width: '100%', border: `1px solid ${LINE}`, borderRadius: 8, padding: '9px 10px', fontSize: 12.5, marginBottom: 8, outline: 'none' }} />
+                  ))}
+                  <textarea value={rev.comment} onChange={(e) => setRev((s) => ({ ...s, comment: e.target.value }))} placeholder="Share your experience…" rows={3} style={{ width: '100%', border: `1px solid ${LINE}`, borderRadius: 8, padding: '9px 10px', fontSize: 12.5, marginBottom: 10, outline: 'none', resize: 'vertical' }} />
+                  <button className="mgs-btn" onClick={submitReview} disabled={rev.busy} style={{ width: '100%', border: 'none', background: O, color: '#fff', borderRadius: 8, padding: '11px 0', cursor: 'pointer', fontFamily: FH, fontWeight: 700, fontSize: 13, opacity: rev.busy ? 0.6 : 1 }}>{rev.busy ? 'Submitting…' : 'Submit review'}</button>
+                </>)}
               </div>
             </div>
           </div>
@@ -388,11 +475,29 @@ export default function StoreFront() {
                 <span style={{ fontFamily: FM, color: INK }}>{inr(c.p.price * c.qty)}</span>
               </div>
             ))}
-            <div style={{ borderTop: `1px solid ${LINE}`, marginTop: 10, paddingTop: 12, display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ fontFamily: FH, fontWeight: 700 }}>Total</span><span style={{ fontFamily: FM, fontWeight: 700, fontSize: 18 }}>{inr(subtotal)}</span>
+            <div style={{ borderTop: `1px solid ${LINE}`, marginTop: 10, paddingTop: 12 }}>
+              {coupon.applied ? (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12.5, color: GREEN, marginBottom: 8 }}>
+                  <span>✓ {coupon.applied.code} applied</span>
+                  <button onClick={() => setCoupon({ code: '', applied: null, err: '', busy: false })} style={{ border: 'none', background: 'none', color: MUT, cursor: 'pointer', fontSize: 11, textDecoration: 'underline' }}>remove</button>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                  <input value={coupon.code} onChange={(e) => setCoupon((s) => ({ ...s, code: e.target.value.toUpperCase() }))} onKeyDown={(e) => e.key === 'Enter' && applyCoupon()} placeholder="Coupon code" style={{ flex: 1, border: `1px solid ${LINE}`, borderRadius: 8, padding: '9px 10px', fontSize: 12.5, fontFamily: FM, textTransform: 'uppercase', outline: 'none' }} />
+                  <button className="mgs-btn" onClick={applyCoupon} disabled={coupon.busy} style={{ border: `1px solid ${O}`, background: '#fff', color: OD, borderRadius: 8, padding: '0 14px', cursor: 'pointer', fontFamily: FH, fontWeight: 700, fontSize: 12.5 }}>Apply</button>
+                </div>
+              )}
+              {coupon.err && <div style={{ fontSize: 11.5, color: '#C0392B', marginBottom: 8 }}>{coupon.err}</div>}
+              {discount > 0 && (<>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: SUB, marginBottom: 4 }}><span>Subtotal</span><span style={{ fontFamily: FM }}>{inr(subtotal)}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: GREEN, marginBottom: 6 }}><span>Discount</span><span style={{ fontFamily: FM }}>− {inr(discount)}</span></div>
+              </>)}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontFamily: FH, fontWeight: 700 }}>Total</span><span style={{ fontFamily: FM, fontWeight: 700, fontSize: 18 }}>{inr(payable)}</span>
+              </div>
             </div>
             <button className="mgs-btn" disabled={placing || cartLines.length === 0} onClick={placeOrder} style={{ width: '100%', marginTop: 14, border: 'none', background: O, color: '#fff', borderRadius: 10, padding: '13px 0', cursor: placing ? 'default' : 'pointer', opacity: placing ? .7 : 1, fontFamily: FH, fontWeight: 700, fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-              {placing && <Loader2 size={16} className="animate-spin" />}{pay === 'cod' ? 'Place Order (COD)' : `Pay ${inr(subtotal)}`}
+              {placing && <Loader2 size={16} className="animate-spin" />}{pay === 'cod' ? 'Place Order (COD)' : `Pay ${inr(payable)}`}
             </button>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center', marginTop: 10, color: MUT, fontSize: 11 }}><ShieldCheck size={13} /> Secured by Razorpay</div>
           </div>

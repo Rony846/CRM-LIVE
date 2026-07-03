@@ -76544,6 +76544,15 @@ async def shop_products(limit: int = 300, category: Optional[str] = None, q: Opt
         query["name"] = {"$regex": re.escape(q), "$options": "i"}
     cur = db.master_skus.find(query).sort("mrp", -1).limit(min(limit, 500))
     items = [_shop_card(m) async for m in cur]
+    # Attach review rating aggregates (one grouped query for the whole page).
+    ids = [i["id"] for i in items if i.get("id")]
+    if ids:
+        async for r in db.product_reviews.aggregate([
+                {"$match": {"master_sku_id": {"$in": ids}, "approved": {"$ne": False}}},
+                {"$group": {"_id": "$master_sku_id", "avg": {"$avg": "$rating"}, "n": {"$sum": 1}}}]):
+            for i in items:
+                if i["id"] == r["_id"]:
+                    i["rating"] = round(r["avg"], 1); i["reviews"] = r["n"]
     cats = await db.master_skus.distinct("category", base)
     return {"products": items, "count": len(items), "categories": sorted([c for c in cats if c])}
 
@@ -76561,7 +76570,76 @@ async def shop_product(pid: str, store: Optional[str] = None):
                                                {"web_slug": pid}]}]})
     if not m:
         raise HTTPException(status_code=404, detail="Product not found")
-    return {"product": _shop_card(m)}
+    card = _shop_card(m)
+    ag = await db.product_reviews.aggregate([
+        {"$match": {"master_sku_id": m["id"], "approved": {"$ne": False}}},
+        {"$group": {"_id": None, "avg": {"$avg": "$rating"}, "n": {"$sum": 1}}}]).to_list(1)
+    if ag:
+        card["rating"] = round(ag[0]["avg"], 1)
+        card["reviews"] = ag[0]["n"]
+    return {"product": card}
+
+
+async def _resolve_shop_product(pid: str):
+    return await db.master_skus.find_one(
+        {"$or": [{"id": pid}, {"sku_code": pid}, {"shopify_handle": pid}, {"web_slug": pid}]},
+        {"_id": 0, "id": 1, "name": 1})
+
+
+@api_router.get("/shop/coupon")
+async def shop_coupon(code: str, subtotal: float = 0):
+    """Public coupon validation for the storefront — returns the discount for this cart subtotal."""
+    disc, norm = await _coupon_discount(code, float(subtotal or 0))
+    c = await db.coupons.find_one({"code": (norm or code.upper().strip())}, {"_id": 0})
+    return {"code": norm, "discount": disc, "description": (c or {}).get("description", "")}
+
+
+class ShopReview(BaseModel):
+    name: str
+    rating: int
+    title: Optional[str] = None
+    comment: Optional[str] = None
+    phone: Optional[str] = None
+
+
+@api_router.get("/shop/product/{pid}/reviews")
+async def shop_product_reviews(pid: str):
+    m = await _resolve_shop_product(pid)
+    if not m:
+        raise HTTPException(status_code=404, detail="Product not found")
+    rows = await db.product_reviews.find(
+        {"master_sku_id": m["id"], "approved": {"$ne": False}},
+        {"_id": 0, "name": 1, "rating": 1, "title": 1, "comment": 1, "verified_purchase": 1, "created_at": 1}
+    ).sort("created_at", -1).to_list(200)
+    n = len(rows)
+    avg = round(sum(r.get("rating", 0) for r in rows) / n, 1) if n else 0
+    for r in rows:
+        r["date"] = str(r.pop("created_at", ""))[:10]
+    return {"count": n, "average": avg, "reviews": rows}
+
+
+@api_router.post("/shop/product/{pid}/review")
+async def shop_add_review(pid: str, body: ShopReview):
+    m = await _resolve_shop_product(pid)
+    if not m:
+        raise HTTPException(status_code=404, detail="Product not found")
+    if not (body.name or "").strip():
+        raise HTTPException(status_code=400, detail="Please enter your name")
+    rating = max(1, min(5, int(body.rating or 0)))
+    phone = re.sub(r"\D", "", body.phone or "")[-10:]
+    verified = False
+    if len(phone) == 10:
+        verified = bool(await db.marketplace_orders.find_one(
+            {"customer_phone": phone, "payment_status": {"$in": ["paid", "cod_pending"]}}, {"_id": 1}))
+        # one review per buyer per product — replace any earlier one
+        await db.product_reviews.delete_many({"master_sku_id": m["id"], "phone": phone})
+    await db.product_reviews.insert_one({
+        "id": str(uuid.uuid4()), "master_sku_id": m["id"], "product_name": m.get("name"),
+        "name": body.name.strip()[:60], "rating": rating,
+        "title": (body.title or "").strip()[:120], "comment": (body.comment or "").strip()[:1500],
+        "phone": phone or None, "verified_purchase": verified, "approved": True,
+        "created_at": datetime.now(timezone.utc).isoformat()})
+    return {"ok": True, "verified_purchase": verified}
 
 
 # ---- Public guest checkout (storefront). Prices are computed SERVER-SIDE from master_skus —
@@ -76583,6 +76661,7 @@ class ShopCheckoutCreate(BaseModel):
     gstin: Optional[str] = None        # B2B GST purchase → GST invoice
     payment_method: str = "razorpay"   # "razorpay" | "cod"
     store: Optional[str] = None        # storefront the order came from ("in" default, "hk", …)
+    coupon_code: Optional[str] = None  # optional discount code
 
 
 class ShopCheckoutVerify(BaseModel):
@@ -76634,7 +76713,19 @@ async def shop_checkout_create(body: ShopCheckoutCreate):
                            "taxable_value": round(lt - line_gst, 2)})
     if not line_items:
         raise HTTPException(status_code=400, detail="No valid items in cart")
-    total = round(subtotal, 2)
+    subtotal = round(subtotal, 2)
+    # Coupon: validated + capped server-side, then distributed proportionally across the lines so
+    # each line's taxable/GST (which flow to the invoice) still reconcile to the amount collected.
+    discount, coupon_code = await _coupon_discount(body.coupon_code, subtotal)
+    if discount > 0 and subtotal > 0:
+        factor = (subtotal - discount) / subtotal
+        gst_total = 0.0
+        for li in line_items:
+            li["line_total"] = round(li["line_total"] * factor, 2)
+            li["gst_amount"] = round(li["line_total"] - li["line_total"] / (1 + li["gst_rate"] / 100.0), 2)
+            li["taxable_value"] = round(li["line_total"] - li["gst_amount"], 2)
+            gst_total += li["gst_amount"]
+    total = round(subtotal - discount, 2)
     gst_total = round(gst_total, 2)
     gstin = (body.gstin or "").strip().upper() or None
     now = datetime.now(timezone.utc).isoformat()
@@ -76646,7 +76737,7 @@ async def shop_checkout_create(body: ShopCheckoutCreate):
         "id": oid, "order_number": onum, "source": "storefront", "store": store,
         "customer_name": body.name.strip(), "customer_phone": phone, "customer_email": body.email,
         "party_id": (party or {}).get("id"),
-        "items": line_items, "subtotal": total, "discount": 0, "total": total,
+        "items": line_items, "subtotal": subtotal, "discount": discount, "coupon_code": coupon_code, "total": total,
         "gst_included": gst_total, "taxable_value": round(total - gst_total, 2), "gstin": gstin,
         "state": cust_state,
         "shipping": {"name": body.name.strip(), "phone": phone, "address": body.address,
@@ -76859,7 +76950,22 @@ async def _notify_new_storefront_order(order: dict):
         await _alert_founder_free(body, "online_order")
     except Exception as e:
         logger.warning(f"storefront order notify failed: {e}")
-    await _send_order_confirmation_email(order)     # buyer confirmation
+    await _send_order_confirmation_email(order)     # buyer confirmation (email)
+    # Buyer confirmation on WhatsApp — transactional, but flag-gated to respect bridge-ban caution.
+    # Closes the gap where a buyer who skips email gets no confirmation. Set STORE_BUYER_WA_CONFIRM=1.
+    if os.environ.get("STORE_BUYER_WA_CONFIRM", "").strip() in ("1", "true", "True"):
+        try:
+            ph = re.sub(r"\D", "", order.get("customer_phone") or "")[-10:]
+            if len(ph) == 10:
+                items2 = "\n".join(f"• {it.get('quantity')}× {(it.get('title') or '')[:34]}"
+                                   for it in (order.get("items") or [])[:6])
+                pm2 = "Cash on Delivery" if order.get("payment_method") == "cod" else "Paid online ✅"
+                msg = (f"Thank you for your order with MuscleGrid! 🙏\n\n"
+                       f"Order {order.get('order_number')} — ₹{float(order.get('total') or 0):,.0f} ({pm2})\n"
+                       f"{items2}\n\nWe'll message you when it ships. Track anytime at store.musclegrid.in")
+                await send_whatsapp_message("91" + ph, msg, force=True)
+        except Exception as e:
+            logger.warning(f"buyer WA confirm failed: {e}")
     await _create_storefront_fulfillment(order)     # into the dispatch queue
 
 
