@@ -22,6 +22,7 @@ export default function DealerPlaceOrder() {
   const [cart, setCart] = useState([]);
   const [canOrder, setCanOrder] = useState(false);
   const [notes, setNotes] = useState('');
+  const [credit, setCredit] = useState({ limit: 0, outstanding: 0 });
 
   useEffect(() => {
     if (token) {
@@ -37,6 +38,10 @@ export default function DealerPlaceOrder() {
       ]);
       setProducts(productsRes.data || []);
       setCanOrder(dashboardRes.data.can_place_orders);
+      setCredit({
+        limit: Number(dashboardRes.data?.dealer?.credit_limit || 0),
+        outstanding: Number(dashboardRes.data?.stats?.outstanding_balance || 0),
+      });
     } catch (error) {
       toast.error('Failed to load products');
     } finally {
@@ -169,6 +174,29 @@ export default function DealerPlaceOrder() {
           <span className="font-mono font-semibold text-primary tabular-nums">{products.length}</span> products available
         </p>
       </div>
+
+      {/* Credit / balance snapshot */}
+      {(() => {
+        const limit = credit.limit || 0;
+        const outstanding = credit.outstanding || 0;
+        const cartTotal = calculateTotal();
+        const available = limit > 0 ? limit - outstanding : null;
+        const over = limit > 0 && (outstanding + cartTotal) > limit;
+        const inr = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+        return (
+          <div className={`mb-5 rounded-lg border p-4 flex flex-wrap items-center gap-x-8 gap-y-2 ${over ? 'border-rose-500/40 bg-rose-500/[0.06]' : 'border-border bg-card'}`}>
+            <div><div className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Credit Limit</div>
+              <div className="font-mono font-semibold text-foreground">{limit > 0 ? inr(limit) : 'Unlimited'}</div></div>
+            <div><div className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Outstanding</div>
+              <div className={`font-mono font-semibold ${outstanding < 0 ? 'text-rose-400' : 'text-foreground'}`}>{inr(Math.abs(outstanding))}{outstanding < 0 ? ' Dr' : ''}</div></div>
+            {available != null && (
+              <div><div className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Available Credit</div>
+                <div className={`font-mono font-semibold ${available <= 0 ? 'text-rose-400' : 'text-emerald-500'}`}>{inr(available)}</div></div>
+            )}
+            {over && <div className="ml-auto text-xs font-semibold text-rose-400">This order exceeds your available credit — clear dues or contact us to proceed.</div>}
+          </div>
+        );
+      })()}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Product Catalog */}
