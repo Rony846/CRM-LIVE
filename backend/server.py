@@ -76361,9 +76361,50 @@ async def scrape_all_products_from_website(
 # ============================ PUBLIC STOREFRONT API ============================
 # Read-only, unauthenticated product feed for the self-hosted storefront (Shopify replacement).
 def _gst_rate(m: dict) -> int:
-    """India GST: solar inverters 5%, everything else 18%."""
+    """India GST: inverters 5%, everything else 18% (founder-set rule for this catalogue)."""
     t = (str(m.get("category") or "") + " " + str(m.get("name") or "")).lower()
     return 5 if "inverter" in t else 18
+
+
+# First-2-digit India PIN -> state (canonical STATE_CODES names), with 3-digit overrides where a
+# prefix straddles states. Used to stamp place-of-supply on storefront orders so the auto-invoice
+# books CGST/SGST vs IGST correctly. Critical case: Delhi 110xxx = intra-state for the Delhi-
+# registered firm (MGIPL, 07). Unknown -> "" (invoice treats as inter-state = IGST, the safe
+# default here since the selling firm is in Delhi).
+_PIN2_STATE = {
+    "11": "Delhi", "12": "Haryana", "13": "Haryana", "14": "Punjab", "15": "Punjab", "16": "Punjab",
+    "17": "Himachal Pradesh", "18": "Jammu and Kashmir", "19": "Jammu and Kashmir",
+    "20": "Uttar Pradesh", "21": "Uttar Pradesh", "22": "Uttar Pradesh", "23": "Uttar Pradesh",
+    "24": "Uttar Pradesh", "25": "Uttar Pradesh", "26": "Uttar Pradesh", "27": "Uttar Pradesh", "28": "Uttar Pradesh",
+    "30": "Rajasthan", "31": "Rajasthan", "32": "Rajasthan", "33": "Rajasthan", "34": "Rajasthan",
+    "36": "Gujarat", "37": "Gujarat", "38": "Gujarat", "39": "Gujarat",
+    "40": "Maharashtra", "41": "Maharashtra", "42": "Maharashtra", "43": "Maharashtra", "44": "Maharashtra",
+    "45": "Madhya Pradesh", "46": "Madhya Pradesh", "47": "Madhya Pradesh", "48": "Madhya Pradesh",
+    "49": "Chhattisgarh",
+    "50": "Telangana", "51": "Andhra Pradesh", "52": "Andhra Pradesh", "53": "Andhra Pradesh",
+    "56": "Karnataka", "57": "Karnataka", "58": "Karnataka", "59": "Karnataka",
+    "60": "Tamil Nadu", "61": "Tamil Nadu", "62": "Tamil Nadu", "63": "Tamil Nadu", "64": "Tamil Nadu",
+    "67": "Kerala", "68": "Kerala", "69": "Kerala",
+    "70": "West Bengal", "71": "West Bengal", "72": "West Bengal", "73": "West Bengal", "74": "West Bengal",
+    "75": "Odisha", "76": "Odisha", "77": "Odisha", "78": "Assam", "79": "Assam",
+    "80": "Bihar", "81": "Bihar", "82": "Bihar", "83": "Jharkhand", "84": "Bihar", "85": "Jharkhand",
+}
+_PIN3_STATE = {
+    "194": "Ladakh", "246": "Uttarakhand", "247": "Uttarakhand", "248": "Uttarakhand",
+    "249": "Uttarakhand", "263": "Uttarakhand", "403": "Goa", "605": "Puducherry",
+    "737": "Sikkim", "744": "Andaman and Nicobar Islands",
+    "790": "Arunachal Pradesh", "791": "Arunachal Pradesh", "792": "Arunachal Pradesh",
+    "793": "Meghalaya", "794": "Meghalaya", "795": "Manipur", "796": "Mizoram",
+    "797": "Nagaland", "798": "Nagaland", "799": "Tripura",
+}
+
+
+def _pincode_to_state(pincode) -> str:
+    """Best-effort Indian PIN -> state name (matches STATE_CODES keys). '' if not a 6-digit PIN."""
+    p = re.sub(r"\D", "", str(pincode or ""))
+    if len(p) != 6:
+        return ""
+    return _PIN3_STATE.get(p[:3]) or _PIN2_STATE.get(p[:2], "")
 
 
 def _shop_card(m: dict) -> dict:
@@ -76475,6 +76516,18 @@ async def shop_checkout_create(body: ShopCheckoutCreate):
         if not m:
             continue
         qty = max(1, int(it.qty or 1))
+        max_qty = int(os.environ.get("STOREFRONT_MAX_QTY_PER_ITEM", "25") or 25)
+        if qty > max_qty:
+            raise HTTPException(status_code=400,
+                                detail=f"Maximum {max_qty} units per item per order ({m.get('name')})")
+        # Optional per-SKU stock cap: enforced ONLY when master_skus.stock_qty is a number.
+        # Leaving stock_qty unset keeps the item unlimited (unchanged behaviour) — this is a
+        # go-live oversell valve, not a full inventory system.
+        stock = m.get("stock_qty")
+        if isinstance(stock, (int, float)) and not isinstance(stock, bool) and qty > stock:
+            avail = int(stock)
+            raise HTTPException(status_code=400, detail=(
+                f"Only {avail} left of {m.get('name')}" if avail > 0 else f"{m.get('name')} is out of stock"))
         price = float(m.get("selling_price") or 0)        # SERVER price — never trust the client
         lt = round(price * qty, 2)
         rate = _gst_rate(m)                               # prices are GST-INCLUSIVE → back out the GST
@@ -76483,7 +76536,8 @@ async def shop_checkout_create(body: ShopCheckoutCreate):
         gst_total += line_gst
         line_items.append({"master_sku_id": m["id"], "sku": m.get("sku_code"), "title": m.get("name"),
                            "price": price, "quantity": qty, "line_total": lt, "image": m.get("image_url"),
-                           "gst_rate": rate, "gst_amount": line_gst})
+                           "gst_rate": rate, "gst_amount": line_gst,
+                           "taxable_value": round(lt - line_gst, 2)})
     if not line_items:
         raise HTTPException(status_code=400, detail="No valid items in cart")
     total = round(subtotal, 2)
@@ -76493,14 +76547,16 @@ async def shop_checkout_create(body: ShopCheckoutCreate):
     oid = str(uuid.uuid4())
     onum = "MGW-" + oid.replace("-", "")[:8].upper()
     party = await db.parties.find_one({"phone": {"$regex": phone + "$"}}, {"id": 1})
+    cust_state = _pincode_to_state(body.pincode)          # place of supply -> CGST/SGST vs IGST on the invoice
     await db.marketplace_orders.insert_one({
         "id": oid, "order_number": onum, "source": "storefront", "store": store,
         "customer_name": body.name.strip(), "customer_phone": phone, "customer_email": body.email,
         "party_id": (party or {}).get("id"),
         "items": line_items, "subtotal": total, "discount": 0, "total": total,
         "gst_included": gst_total, "taxable_value": round(total - gst_total, 2), "gstin": gstin,
+        "state": cust_state,
         "shipping": {"name": body.name.strip(), "phone": phone, "address": body.address,
-                     "city": body.city, "pincode": body.pincode},
+                     "city": body.city, "pincode": body.pincode, "state": cust_state},
         "payment_method": body.payment_method, "payment_status": "pending", "status": "pending",
         "created_at": now, "updated_at": now})
     if body.payment_method == "cod":
@@ -76781,6 +76837,8 @@ async def _create_storefront_fulfillment(order: dict):
         parts = (order.get("customer_name") or "").strip().split()
         sh = order.get("shipping") or {}
         now = datetime.now(timezone.utc).isoformat()
+        # place of supply for the auto-invoice (CGST/SGST for the firm's own state, else IGST)
+        cust_state = sh.get("state") or order.get("state") or _pincode_to_state(sh.get("pincode"))
         base = {
             "type": "storefront_order", "order_source": "storefront",
             "firm_id": (firm or {}).get("id"), "firm_name": (firm or {}).get("name"),
@@ -76790,8 +76848,13 @@ async def _create_storefront_fulfillment(order: dict):
             "customer_last_name": " ".join(parts[1:]) if len(parts) > 1 else "",
             "customer_phone": order.get("customer_phone"), "phone": order.get("customer_phone"),
             "address": sh.get("address"), "city": sh.get("city"), "pincode": sh.get("pincode"),
+            "state": cust_state,
             "payment_method": order.get("payment_method"), "payment_status": order.get("payment_status"),
             "status": "ready_to_dispatch",
+            # Storefront prices are GST-INCLUSIVE and the per-line split is already computed at
+            # checkout — carry it so create_sales_invoice_from_dispatch bills the exact amount
+            # collected (not GST re-added on top → was overstating every invoice by the GST %).
+            "price_is_gst_inclusive": True, "is_marketplace_order": True,
             "notes": f"Online store order {onum} ({order.get('payment_method')})",
             "created_by": "system", "created_by_name": "Storefront", "created_at": now, "updated_at": now,
         }
@@ -76802,10 +76865,21 @@ async def _create_storefront_fulfillment(order: dict):
             docs.append({**base, "id": fid, "master_sku_id": it.get("master_sku_id"),
                          "sku": it.get("sku"), "product_name": it.get("title"),
                          "master_sku_name": it.get("title"), "quantity": it.get("quantity") or 1,
-                         "invoice_value": it.get("line_total")})
+                         "invoice_value": it.get("line_total"),
+                         "taxable_value": it.get("taxable_value"), "gst_amount": it.get("gst_amount"),
+                         "gst_rate": it.get("gst_rate")})
         if docs:
             await db.pending_fulfillment.insert_many(docs)
             await db.marketplace_orders.update_one({"id": order["id"]}, {"$set": {"fulfillment_id": first_id}})
+            # Decrement per-SKU stock ONCE per order (this fn is idempotent), only for SKUs that
+            # actually track stock (numeric stock_qty). Unlimited SKUs are untouched.
+            for it in (order.get("items") or []):
+                sid = it.get("master_sku_id")
+                q = it.get("quantity") or 1
+                if sid:
+                    await db.master_skus.update_one(
+                        {"id": sid, "stock_qty": {"$type": "number"}},
+                        {"$inc": {"stock_qty": -int(q)}})
     except Exception as e:
         logger.warning(f"storefront fulfillment create failed: {e}")
 
