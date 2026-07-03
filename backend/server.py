@@ -13201,7 +13201,7 @@ async def gate_scan(
                         _cl = []
                         for _e in ledger_entries:
                             try:
-                                _w = await calculate_wac(_e["item_type"], _e["item_id"], firm_id)
+                                _w = await calculate_wac(_e["item_id"], _e["item_type"], firm_id)
                             except Exception:
                                 _w = 0.0
                             _cl.append({"item_id": _e["item_id"], "item_type": _e["item_type"],
@@ -22661,9 +22661,17 @@ async def _book_make_to_order_unit(dispatch: dict, sku_id: str, serial_number: s
     maker_role = maker.get("role")
     maker_name = f"{maker.get('first_name','')} {maker.get('last_name','')}".strip() or maker.get("email")
 
+    # BOM/COGS dedupe: consume the SKU's materials at most `line quantity` times across the whole
+    # dispatch. For a COMBO (one line, two halves/serials) that means the BOM is consumed ONCE, not
+    # once per half; for a genuine multi-qty line each unit still consumes.
+    line_qty = sum(int(it.get("quantity") or 1) for it in (dispatch.get("items") or [])
+                   if it.get("master_sku_id") == sku_id) or 1
+    already_made = await db.finished_good_serials.count_documents({"dispatch_id": dispatch.get("id"), "master_sku_id": sku_id})
+    consume_bom = already_made < line_qty
+
     # 1. BOM raw-material consumption (best-effort, one unit) + accumulate COGS lines
     cogs_lines = []
-    for bom_item in ((sku or {}).get("bill_of_materials") or []):
+    for bom_item in (((sku or {}).get("bill_of_materials") or []) if consume_bom else []):
         try:
             rm = await db.raw_materials.find_one({"id": bom_item.get("raw_material_id")})
             consume_qty = float(bom_item.get("quantity") or 0)
@@ -22683,7 +22691,7 @@ async def _book_make_to_order_unit(dispatch: dict, sku_id: str, serial_number: s
                 "notes": f"Make-to-order dispatch {dispatch.get('dispatch_number')} (serial {serial_number})",
                 "created_by": maker.get("id"), "created_by_name": maker_name, "created_at": now})
             try:
-                w = await calculate_wac("raw_material", bom_item["raw_material_id"], firm_id)
+                w = await calculate_wac(bom_item["raw_material_id"], "raw_material", firm_id)
             except Exception:
                 w = 0.0
             if w and consume_qty:
@@ -22801,13 +22809,28 @@ async def mark_dispatch_task_ready(dispatch_id: str, body: Optional[DispatchTask
     # atomic set above guarantees only one caller wins this task.
     if units_needed:
         si_ptr = 0
+        item_serials = {}
         for si in serial_items:
             for _ in range(int(si.get("quantity") or 1)):
+                sn = serials[si_ptr]; si_ptr += 1
                 try:
-                    await _book_make_to_order_unit(d, si.get("master_sku_id"), serials[si_ptr], user)
+                    await _book_make_to_order_unit(d, si.get("master_sku_id"), sn, user)
                 except Exception as e:
                     logger.error(f"make-to-order unit booking failed (dispatch {dispatch_id}): {e}")
-                si_ptr += 1
+                item_serials.setdefault(si.get("master_sku_id"), []).append(sn)
+        # Stamp serials onto the manufactured dispatch lines so gate-scan/finalize marks them
+        # dispatched WITHOUT deducting finished-good stock or re-booking COGS (cost already booked
+        # at the make step as consumed raw materials — make-to-order units are never stocked).
+        d_items = (await db.dispatches.find_one({"id": dispatch_id}, {"items": 1}) or {}).get("items") or []
+        changed = False
+        for it in d_items:
+            pool = item_serials.get(it.get("master_sku_id"))
+            if pool and it.get("is_manufactured") and not it.get("serial_number"):
+                it["serial_number"] = pool[0]
+                it["serial_numbers"] = list(pool)
+                changed = True
+        if changed:
+            await db.dispatches.update_one({"id": dispatch_id}, {"$set": {"items": d_items}})
 
     d2 = await db.dispatches.find_one({"id": dispatch_id})
     all_ready = all(t.get("status") == "ready" for t in (d2.get("split_tasks") or []))

@@ -9,7 +9,7 @@ import os
 SPLIT_DISPATCH_ENABLED = (os.environ.get("SPLIT_DISPATCH_ENABLED", "true").lower() == "true")
 # Phase-1 make-to-order fulfilment (combo→both, serial-at-dispatch, BOM consume). OFF until the
 # whole new flow is built + the founder flips it, so production behaviour is unchanged meanwhile.
-FULFILLMENT_V2 = (os.environ.get("FULFILLMENT_V2", "false").lower() == "true")
+FULFILLMENT_V2 = (os.environ.get("FULFILLMENT_V2", "false").strip().lower() in ("1", "true", "yes", "on"))
 SPLIT_INVERTER_ROLE = "service_agent"   # technician dispatches the inverter
 SPLIT_REST_ROLE = "supervisor"          # supervisor dispatches the battery + everything else
 SPLIT_STATUS_AWAITING = "awaiting_dispatch_tasks"
