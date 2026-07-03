@@ -47,8 +47,8 @@ import AdminDataManagement from './pages/admin/AdminDataManagement';
 import SmartfloAgents from './pages/admin/SmartfloAgents';
 import FinanceDashboard from './pages/finance/FinanceDashboardIron';
 import FinanceAnalytics from './pages/finance/FinanceAnalyticsIron';
-import TDSDashboard from './pages/finance/TDSDashboard';
-import GSTHSNDashboard from './pages/finance/GSTHSNDashboard';
+import TDSDashboard from './pages/finance/TDSDashboardIron';
+import GSTHSNDashboard from './pages/finance/GSTHSNDashboardIron';
 import EcommerceReconciliation from './pages/finance/EcommerceReconciliation';
 import ImportCosting from './pages/finance/ImportCosting';
 import BankReconciliation from './pages/finance/BankReconciliationIron';
@@ -123,7 +123,7 @@ import CategoryListing from './pages/public/CategoryListing';
 import CallsDashboard from './pages/calls/CallsDashboard';
 
 // View-Only Pages (for employees)
-import ViewDispatchQueue from './pages/view/ViewDispatchQueue';
+import ViewDispatchQueue from './pages/view/ViewDispatchQueueIron';
 import ViewPendingFulfillment from './pages/view/ViewPendingFulfillment';
 
 // Quotation Pages
