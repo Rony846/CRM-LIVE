@@ -22139,7 +22139,7 @@ async def _release_reservations(reservation_ids: List[str]) -> None:
 # so they are untouched). Legacy dispatches have no split_managed flag and behave as before.
 from utils.dispatch_split import (classify_dispatch_split as _classify_dispatch_split_impl,
                                   SPLIT_DISPATCH_ENABLED, SPLIT_INVERTER_ROLE,
-                                  SPLIT_REST_ROLE, SPLIT_STATUS_AWAITING)
+                                  SPLIT_REST_ROLE, SPLIT_STATUS_AWAITING, FULFILLMENT_V2)
 
 
 def _dispatch_items_for_split(dispatch: dict) -> list:
@@ -22478,8 +22478,102 @@ async def list_dispatch_tasks(user: dict = Depends(require_roles(["service_agent
     return out
 
 
+async def _book_make_to_order_unit(dispatch: dict, sku_id: str, serial_number: str, maker: dict):
+    """Books ONE manufactured unit at make-to-order dispatch time (FULFILLMENT_V2). Mirrors the
+    production-receive bookkeeping but for a single unit that is made-and-shipped (never stocked):
+      1) consume the SKU's BOM raw materials into inventory_ledger (Option A) — best-effort, allows
+         negative and NEVER blocks a dispatch that physically already happened;
+      2) create a finished_good_serials record born 'dispatched' + linked to the dispatch;
+      3) if the maker is a supervisor (battery/Angad), create a per-serial supervisor payable +
+         party-ledger credit (keeps per-unit pay flowing; technicians are salaried → no payable).
+    Returns the serial record id."""
+    now = datetime.now(timezone.utc).isoformat()
+    sku = await db.master_skus.find_one({"id": sku_id}) if sku_id else None
+    firm_id = dispatch.get("firm_id")
+    firm_name = dispatch.get("firm_name")
+    maker_role = maker.get("role")
+    maker_name = f"{maker.get('first_name','')} {maker.get('last_name','')}".strip() or maker.get("email")
+
+    # 1. BOM raw-material consumption (best-effort, one unit)
+    for bom_item in ((sku or {}).get("bill_of_materials") or []):
+        try:
+            rm = await db.raw_materials.find_one({"id": bom_item.get("raw_material_id")})
+            consume_qty = float(bom_item.get("quantity") or 0)
+            if not rm or consume_qty <= 0:
+                continue
+            last = await db.inventory_ledger.find_one(
+                {"item_id": bom_item["raw_material_id"], "firm_id": firm_id}, sort=[("created_at", -1)])
+            bal = (last or {}).get("running_balance", 0)
+            await db.inventory_ledger.insert_one({
+                "id": str(uuid.uuid4()),
+                "entry_number": f"INV-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:4].upper()}",
+                "entry_type": "production_consume", "item_type": "raw_material",
+                "item_id": bom_item["raw_material_id"], "item_name": rm.get("name"), "item_sku": rm.get("sku_code"),
+                "firm_id": firm_id, "firm_name": firm_name,
+                "quantity": -consume_qty, "running_balance": bal - consume_qty,
+                "reference_id": dispatch.get("id"),
+                "notes": f"Make-to-order dispatch {dispatch.get('dispatch_number')} (serial {serial_number})",
+                "created_by": maker.get("id"), "created_by_name": maker_name, "created_at": now})
+        except Exception as e:
+            logger.warning(f"make-to-order BOM consume failed ({bom_item.get('raw_material_id')}): {e}")
+
+    # 2. Finished-good serial — born dispatched, linked to the dispatch
+    serial_id = str(uuid.uuid4())
+    await db.finished_good_serials.insert_one({
+        "id": serial_id, "serial_number": serial_number,
+        "master_sku_id": sku_id, "master_sku_name": (sku or {}).get("name"),
+        "master_sku_code": (sku or {}).get("sku_code"),
+        "firm_id": firm_id, "firm_name": firm_name,
+        "dispatch_id": dispatch.get("id"), "dispatch_number": dispatch.get("dispatch_number"),
+        "order_id": dispatch.get("marketplace_order_id") or dispatch.get("order_id"),
+        "manufactured_by_role": maker_role, "manufactured_by_user": maker.get("id"),
+        "manufactured_by_name": maker_name, "manufactured_at": now,
+        "status": "dispatched", "dispatch_date": now, "source": "make_to_order", "created_at": now})
+
+    # 3. Per-serial supervisor payable (supervisor-made only)
+    if maker_role == "supervisor" and sku:
+        charge = float(sku.get("production_charge_per_unit") or 0)
+        if charge > 0:
+            cp = await db.parties.find_one({"tags": "contractor", "contractor_user_id": maker.get("id")})
+            if not cp:
+                cp = {"id": str(uuid.uuid4()), "name": f"Contractor - {maker_name}",
+                      "phone": maker.get("phone"), "email": maker.get("email"),
+                      "tags": ["contractor", "supervisor"], "contractor_user_id": maker.get("id"),
+                      "opening_balance": 0, "source": "auto_production", "created_at": now, "created_by": maker.get("id")}
+                await db.parties.insert_one(cp)
+            cp_id = cp["id"]
+            pay_date = datetime.now(timezone.utc).strftime('%Y%m%d')
+            ctr = await db.counters.find_one_and_update(
+                {"_id": f"supervisor_payable:{pay_date}"}, {"$inc": {"seq": 1}}, upsert=True, return_document=True)
+            seq = int((ctr or {}).get("seq", 1))
+            await db.supervisor_payables.insert_one({
+                "id": str(uuid.uuid4()), "payable_number": f"PAY-{pay_date}-{seq:04d}",
+                "dispatch_id": dispatch.get("id"), "firm_id": firm_id, "firm_name": firm_name,
+                "master_sku_id": sku_id, "master_sku_name": sku.get("name"), "master_sku_code": sku.get("sku_code"),
+                "serial_number": serial_number, "quantity_produced": 1, "rate_per_unit": charge,
+                "total_payable": charge, "amount_paid": 0, "status": "unpaid", "payments": [],
+                "contractor_party_id": cp_id, "contractor_user_id": maker.get("id"), "contractor_name": maker_name,
+                "source": "make_to_order", "created_by": maker.get("id"), "created_by_name": maker_name,
+                "created_at": now, "updated_at": now})
+            last_l = await db.party_ledger.find_one({"party_id": cp_id}, sort=[("created_at", -1)])
+            prev = (last_l or {}).get("running_balance", 0)
+            await db.party_ledger.insert_one({
+                "id": str(uuid.uuid4()), "party_id": cp_id, "party_name": cp.get("name"),
+                "entry_type": "payable", "reference_type": "make_to_order_dispatch",
+                "reference_id": dispatch.get("id"), "reference_number": dispatch.get("dispatch_number"),
+                "description": f"Production payable: 1 x {sku.get('name')} (serial {serial_number})",
+                "debit": 0, "credit": charge, "running_balance": prev - charge,
+                "firm_id": firm_id, "firm_name": firm_name, "created_by": maker.get("id"), "created_at": now})
+    return serial_id
+
+
+class DispatchTaskReady(BaseModel):
+    serials: Optional[List[str]] = None
+
+
 @api_router.put("/dispatch-tasks/{dispatch_id}/ready")
-async def mark_dispatch_task_ready(dispatch_id: str, user: dict = Depends(require_roles(["service_agent", "supervisor", "admin"]))):
+async def mark_dispatch_task_ready(dispatch_id: str, body: Optional[DispatchTaskReady] = None,
+                                   user: dict = Depends(require_roles(["service_agent", "supervisor", "admin"]))):
     """The technician/supervisor marks THEIR product gathered & dispatched. When the last pending
     task flips, the dispatch becomes 'ready_for_dispatch' so the gate/dispatcher can finalize it."""
     role = user.get("role")
@@ -22497,6 +22591,19 @@ async def mark_dispatch_task_ready(dispatch_id: str, user: dict = Depends(requir
             break
     if not target:
         raise HTTPException(status_code=400, detail="No pending task for you on this dispatch")
+
+    # Make-to-order (V2): manufactured lines in this task need a serial captured now — the maker
+    # made the unit for this order. Traded lines (stabilizer/solar/spare) need none.
+    serial_items = target.get("serial_items") or [] if FULFILLMENT_V2 else []
+    units_needed = sum(int(si.get("quantity") or 1) for si in serial_items)
+    serials = [s.strip() for s in (body.serials if body else None) or [] if s and s.strip()]
+    if units_needed:
+        if len(serials) < units_needed:
+            raise HTTPException(status_code=400,
+                                detail=f"Enter {units_needed} serial number(s) for the manufactured item(s) before dispatching")
+        if len(set(serials[:units_needed])) < units_needed:
+            raise HTTPException(status_code=400, detail="Serial numbers must be unique")
+
     res = await db.dispatches.update_one(
         {"id": dispatch_id, "split_tasks": {"$elemMatch": {"group": target["group"], "status": "pending"}}},
         {"$set": {"split_tasks.$.status": "ready", "split_tasks.$.completed_by": user["id"],
@@ -22504,6 +22611,19 @@ async def mark_dispatch_task_ready(dispatch_id: str, user: dict = Depends(requir
                   "split_tasks.$.completed_at": now.isoformat()}})
     if res.modified_count == 0:
         raise HTTPException(status_code=409, detail="That task was just completed by someone else")
+
+    # Book each manufactured unit (BOM consume + serial + supervisor payable). Runs once — the
+    # atomic set above guarantees only one caller wins this task.
+    if units_needed:
+        si_ptr = 0
+        for si in serial_items:
+            for _ in range(int(si.get("quantity") or 1)):
+                try:
+                    await _book_make_to_order_unit(d, si.get("master_sku_id"), serials[si_ptr], user)
+                except Exception as e:
+                    logger.error(f"make-to-order unit booking failed (dispatch {dispatch_id}): {e}")
+                si_ptr += 1
+
     d2 = await db.dispatches.find_one({"id": dispatch_id})
     all_ready = all(t.get("status") == "ready" for t in (d2.get("split_tasks") or []))
     if all_ready:

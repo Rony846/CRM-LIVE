@@ -52,13 +52,30 @@ async def classify_dispatch_split(db, items: list):
             rest_idx.append(i)                             # combo falls here pre-V2 (old behaviour)
         if is_manufactured or is_combo:
             serial_set.add(i)
+
+    def _serial_items(idxs):
+        """Self-contained list of the manufactured lines in a task that need a serial at dispatch —
+        so the completion step never has to re-index back into the dispatch's items."""
+        out = []
+        for i in idxs:
+            if i not in serial_set:
+                continue
+            it = items[i]
+            out.append({"master_sku_id": it.get("master_sku_id"),
+                        "product_name": it.get("product_name") or it.get("master_sku_name") or it.get("title"),
+                        "sku": it.get("sku") or it.get("master_sku_code"),
+                        "quantity": int(it.get("quantity") or 1)})
+        return out
+
     tasks = []
     if inv_idx:
         tasks.append({"group": "inverter", "label": "Inverter", "role": SPLIT_INVERTER_ROLE,
                       "item_indexes": inv_idx, "serial_indexes": [i for i in inv_idx if i in serial_set],
+                      "serial_items": _serial_items(inv_idx),
                       "status": "pending", "completed_by": None, "completed_by_name": None, "completed_at": None})
     if rest_idx:
         tasks.append({"group": "rest", "label": "Battery & other", "role": SPLIT_REST_ROLE,
                       "item_indexes": rest_idx, "serial_indexes": [i for i in rest_idx if i in serial_set],
+                      "serial_items": _serial_items(rest_idx),
                       "status": "pending", "completed_by": None, "completed_by_name": None, "completed_at": None})
     return tasks, bool(tasks)
