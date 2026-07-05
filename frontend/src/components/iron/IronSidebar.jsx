@@ -13,6 +13,7 @@ const GROUP_ICON = {
   Sales: ShoppingCart, Inventory: Package, Operations: Factory, Folders: FolderOpen,
   Shopify: ShoppingBag, 'Browser Agents': Monitor, Finance: IndianRupee, Agents: Bot,
   'HR & Payroll': UserCog, 'Dealer Portal': Building2, System: Settings, Workspace: LayoutDashboard,
+  'Ship Desk': Package,
 };
 
 /* Reusable Iron Console dark sidebar with the COMPLETE grouped nav (nothing dropped vs the

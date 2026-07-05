@@ -15,6 +15,20 @@ SPLIT_REST_ROLE = "supervisor"          # supervisor dispatches the battery + ev
 SPLIT_STATUS_AWAITING = "awaiting_dispatch_tasks"
 
 
+def rest_label(cats):
+    """Human label for the supervisor's 'rest' task, built from the ACTUAL categories it holds
+    (e.g. 'Battery + Stabilizer', 'Stabilizer', 'Battery + Solar') so it never mis-reads as just
+    'Battery'. Unmapped / other lines show as 'Accessories'; empty falls back to an explicit
+    catch-all. The supervisor dispatches EVERYTHING that isn't the inverter."""
+    cls = [(c or "").strip().lower() for c in cats]
+    present = [disp for key, disp in (("battery", "Battery"), ("stabilizer", "Stabilizer"), ("solar", "Solar"))
+               if any(key in c for c in cls)]
+    known = ("battery", "stabilizer", "solar", "inverter")
+    if any((not c) or not any(k in c for k in known) for c in cls):
+        present.append("Accessories")
+    return " + ".join(present) if present else "Battery, Stabilizer & Rest"
+
+
 def item_class(cat, ptype):
     """Derive (is_inverter, is_combo, is_manufactured) from a SKU's category + product_type.
     Make-to-order model: inverters & batteries are manufactured (need a serial at dispatch);
@@ -87,7 +101,8 @@ async def classify_dispatch_split(db, items: list, category_override: str = None
                       "serial_items": _serial_items(inv_idx),
                       "status": "pending", "completed_by": None, "completed_by_name": None, "completed_at": None})
     if rest_idx:
-        tasks.append({"group": "rest", "label": "Battery & other", "role": SPLIT_REST_ROLE,
+        _rest_cats = [meta.get(items[i].get("master_sku_id"), ("", ""))[0] for i in rest_idx]
+        tasks.append({"group": "rest", "label": rest_label(_rest_cats), "role": SPLIT_REST_ROLE,
                       "item_indexes": rest_idx, "serial_indexes": [i for i in rest_idx if i in serial_set],
                       "serial_items": _serial_items(rest_idx),
                       "status": "pending", "completed_by": None, "completed_by_name": None, "completed_at": None})

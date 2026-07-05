@@ -826,6 +826,20 @@ async def create_indexes():
             max_instances=1,
         )
 
+        # Ship Desk queue hygiene — the 'pending' list is a LOCAL status flag not verified against
+        # Amazon/Bigship, so already-shipped orders linger as false pending. Self-heal: clear a row
+        # only on a real courier DELIVERED scan (or cancellation); Amazon 'Shipped' alone keeps it
+        # visible (founder rule) for human delivery-confirmation.
+        scheduler.add_job(
+            scheduled_shipdesk_reconcile,
+            IntervalTrigger(minutes=SHIPDESK_RECONCILE_MIN),
+            id="shipdesk_reconcile",
+            name="Ship Desk pending reconcile (courier-delivered self-heal)",
+            replace_existing=True,
+            misfire_grace_time=600,
+            max_instances=1,
+        )
+
         # Shiprocket mirror — pull recent Shiprocket orders into the CRM so PCB/part dispatches
         # (the primary stabilizer-repair fulfilment channel) stay visible and tickets reconcile.
         # No-ops until SHIPROCKET_EMAIL/PASSWORD are set.
@@ -11545,10 +11559,11 @@ async def upload_dispatch_label(
                 title="Inverter to dispatch",
                 message=f"Order {dispatch.get('order_id')}: please dispatch the INVERTER. Dispatch #{dispatch.get('dispatch_number')}",
                 notification_type="info", target_roles=[SPLIT_INVERTER_ROLE], priority="high")
-        if any(t["group"] == "rest" for t in split_tasks):
+        _rest = next((t for t in split_tasks if t["group"] == "rest"), None)
+        if _rest:
             await create_notification(
-                title="Battery & items to dispatch",
-                message=f"Order {dispatch.get('order_id')}: please dispatch the BATTERY & other items. Dispatch #{dispatch.get('dispatch_number')}",
+                title=f"{_rest['label']} to dispatch",
+                message=f"Order {dispatch.get('order_id')}: please dispatch the {_rest['label'].upper()}. Dispatch #{dispatch.get('dispatch_number')}",
                 notification_type="info", target_roles=[SPLIT_REST_ROLE], priority="high")
 
     return {"message": "Label uploaded", "label_url": label_url,
@@ -22436,10 +22451,11 @@ async def dispatch_pending_fulfillment(
                 title="Inverter to dispatch",
                 message=f"Order {entry.get('order_id')}: please dispatch the INVERTER. Dispatch #{dispatch_number}",
                 notification_type="info", target_roles=[SPLIT_INVERTER_ROLE], priority="high")
-        if any(t["group"] == "rest" for t in split_tasks):
+        _rest = next((t for t in split_tasks if t["group"] == "rest"), None)
+        if _rest:
             await create_notification(
-                title="Battery & items to dispatch",
-                message=f"Order {entry.get('order_id')}: please dispatch the BATTERY & other items. Dispatch #{dispatch_number}",
+                title=f"{_rest['label']} to dispatch",
+                message=f"Order {entry.get('order_id')}: please dispatch the {_rest['label'].upper()}. Dispatch #{dispatch_number}",
                 notification_type="info", target_roles=[SPLIT_REST_ROLE], priority="high")
     else:
         await create_notification(
@@ -22572,9 +22588,10 @@ async def ship_desk_dispatch(
             await create_notification(title="Inverter to make & dispatch",
                 message=f"Order {entry.get('order_id')}: build + dispatch the INVERTER (enter serial). Dispatch #{dispatch_number}",
                 notification_type="info", target_roles=[SPLIT_INVERTER_ROLE], priority="high")
-        if any(t["group"] == "rest" for t in split_tasks):
-            await create_notification(title="Battery & items to make & dispatch",
-                message=f"Order {entry.get('order_id')}: build + dispatch the BATTERY & other items. Dispatch #{dispatch_number}",
+        _rest = next((t for t in split_tasks if t["group"] == "rest"), None)
+        if _rest:
+            await create_notification(title=f"{_rest['label']} to make & dispatch",
+                message=f"Order {entry.get('order_id')}: build + dispatch the {_rest['label'].upper()}. Dispatch #{dispatch_number}",
                 notification_type="info", target_roles=[SPLIT_REST_ROLE], priority="high")
     else:
         await create_notification(title="New Dispatch Ready",
@@ -68191,6 +68208,107 @@ async def scheduled_notpicked_recheck():
         logger.info(f"Bigship NOT-PICKED re-check: {summary}")
     except Exception as e:
         logger.error(f"Bigship NOT-PICKED re-check failed: {e}")
+
+
+# Ship Desk's 'pending' list = pending_fulfillment rows in these LOCAL statuses. That flag is not
+# verified against Amazon/Bigship, so orders shipped via the old Excel/panel flow linger as false
+# "pending" (a one-time reconcile cleared 233 → 69). This job self-heals the queue on a schedule.
+SHIPDESK_RECONCILE_ENABLED = os.environ.get("SHIPDESK_RECONCILE_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+SHIPDESK_RECONCILE_MIN = int(os.environ.get("SHIPDESK_RECONCILE_MIN", "180") or 180)
+SHIPDESK_RECONCILE_CAP = int(os.environ.get("SHIPDESK_RECONCILE_CAP", "500") or 500)
+SHIPDESK_SHIPPABLE_STATUSES = ["ready_to_dispatch", "pending_dispatch", "ready", "pending"]
+
+
+def _pf_awb(r: dict) -> str:
+    """The AWB/tracking on a pending_fulfillment row (top-level, else newest tracking_history)."""
+    t = (r.get("tracking_id") or "").strip()
+    if t:
+        return t
+    for h in (r.get("tracking_history") or []):
+        if h.get("tracking_id"):
+            return str(h["tracking_id"]).strip()
+    return ""
+
+
+async def reconcile_shipdesk_pending() -> dict:
+    """Clear already-resolved rows from the Ship Desk 'pending' queue by cross-checking the REAL
+    carrier + marketplace state. A row flips to 'dispatched' ONLY when Bigship/Delhivery shows it
+    DELIVERED (incl. RTO delivered), and to 'cancelled' when the carrier/Amazon shows cancelled.
+
+    FOUNDER RULE: Amazon 'Shipped' WITHOUT a delivered courier scan is deliberately KEPT pending —
+    'Shipped' only means the seller uploaded a tracking id, not that the parcel physically moved, so
+    those stay visible for a human to confirm delivery. Status-field only: never creates a dispatch
+    or books COGS/sales. Every change is stamped (status_prev_reconcile / reconciled_*) so it's
+    fully auditable + reversible."""
+    now = datetime.now(timezone.utc).isoformat()
+    rows = await db.pending_fulfillment.find(
+        {"status": {"$in": SHIPDESK_SHIPPABLE_STATUSES}}, {"_id": 0}
+    ).limit(SHIPDESK_RECONCILE_CAP).to_list(SHIPDESK_RECONCILE_CAP)
+    dispatched = cancelled = easy_ship = kept = 0
+    for r in rows:
+        awb = _pf_awb(r)
+        ao_id = (r.get("amazon_order_id") or "").strip()
+        csu = dlu = aou = None
+        if awb:
+            cs = await db.courier_shipments.find_one(
+                {"$or": [{"awb_number": awb}, {"tracking_id": awb}]}, {"_id": 0, "status": 1})
+            if cs:
+                csu = (cs.get("status") or "").upper().strip()
+            dl = await db.delhivery_tracking.find_one({"awb": awb}, {"_id": 0, "status": 1, "state": 1})
+            if dl:
+                dlu = str(dl.get("status") or dl.get("state") or "").lower().strip()
+        is_easy_ship = False
+        if ao_id:
+            ao = await db.amazon_orders.find_one({"amazon_order_id": ao_id}, {"_id": 0, "order_status": 1, "is_easy_ship": 1})
+            if ao:
+                aou = (ao.get("order_status") or "").strip()
+                is_easy_ship = bool(ao.get("is_easy_ship"))
+        # Delivered wins over everything (parcel reached its terminal state); then cancellations;
+        # then Amazon Easy Ship (Amazon fulfils + delivers it — never ours to ship, so drop it).
+        new_status = evidence = None
+        if csu and "DELIVERED" in csu:
+            new_status, evidence = "dispatched", f"bigship:{csu}"
+        elif dlu and "deliver" in dlu:
+            new_status, evidence = "dispatched", f"delhivery:{dlu}"
+        elif csu and "CANCEL" in csu:
+            new_status, evidence = "cancelled", f"bigship:{csu}"
+        elif dlu and "cancel" in dlu:
+            new_status, evidence = "cancelled", f"delhivery:{dlu}"
+        elif aou in ("Canceled", "Cancelled"):
+            new_status, evidence = "cancelled", "amazon:Canceled"
+        elif is_easy_ship:
+            new_status, evidence = "amazon_fulfilled", "amazon:easy_ship"
+        if not new_status:      # amazon-shipped-not-delivered / not-picked / no-awb → keep pending
+            kept += 1
+            continue
+        await db.pending_fulfillment.update_one({"id": r["id"]}, {"$set": {
+            "status": new_status,
+            "status_prev_reconcile": r.get("status"),
+            "reconciled_at": now,
+            "reconciled_by": "shipdesk_reconcile_job",
+            "reconciled_evidence": evidence,
+            "reconciled_reason": "Auto-reconcile: resolved per courier (delivered/cancelled). Amazon-shipped-not-delivered kept visible.",
+        }})
+        if new_status == "dispatched":
+            dispatched += 1
+        elif new_status == "cancelled":
+            cancelled += 1
+        else:
+            easy_ship += 1
+    return {"scanned": len(rows), "dispatched": dispatched, "cancelled": cancelled,
+            "amazon_fulfilled": easy_ship, "kept": kept}
+
+
+async def scheduled_shipdesk_reconcile():
+    """APScheduler entrypoint — keep the Ship Desk 'pending' list honest (self-heal shipped rows)."""
+    if not SHIPDESK_RECONCILE_ENABLED:
+        return
+    try:
+        summary = await reconcile_shipdesk_pending()
+        if summary.get("dispatched") or summary.get("cancelled") or summary.get("amazon_fulfilled"):
+            logger.info(f"Ship Desk reconcile: {summary}")
+    except Exception as e:
+        logger.error(f"Ship Desk reconcile failed: {e}")
 
 
 async def _email_agent_make_lead(msg: dict, brain: dict) -> Optional[str]:

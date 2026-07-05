@@ -77,6 +77,7 @@ import IncomingInventoryQueue from './pages/accountant/IncomingInventoryQueueIro
 import ProductionRequests from './pages/accountant/ProductionRequestsIron';
 import PendingFulfillment from './pages/accountant/PendingFulfillmentIron';
 import ShipDesk from './pages/accountant/ShipDeskIron';
+import ShipDeskHome from './pages/ShipDeskHome';
 import PurchaseRegister from './pages/accountant/PurchaseRegisterIron';
 import SalesRegister from './pages/accountant/SalesRegisterIron';
 import PartyMaster from './pages/admin/PartyMasterIron';
@@ -491,6 +492,11 @@ function App() {
           <Route path="/supervisor/calendar" element={
             <ProtectedRoute allowedRoles={['supervisor', 'admin']}>
               <SupervisorCalendar />
+            </ProtectedRoute>
+          } />
+          <Route path="/ship-desk" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin', 'supervisor', 'technician', 'service_agent', 'dispatcher']}>
+              <ShipDeskHome />
             </ProtectedRoute>
           } />
           <Route path="/supervisor/dispatch-tasks" element={

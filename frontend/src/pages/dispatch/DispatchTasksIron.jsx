@@ -27,7 +27,7 @@ export default function DispatchTasks() {
     role === 'service_agent' || role === 'technician'
       ? 'Inverter Dispatch'
       : role === 'supervisor'
-      ? 'Battery & Items Dispatch'
+      ? 'Battery, Stabilizer & Rest Dispatch'
       : 'Split Dispatch';
 
   const load = useCallback(async () => {
