@@ -4244,6 +4244,42 @@ class AmazonBrowserAgent:
             result["error"] = str(e)
             return result
 
+    async def read_order_tracking(self, order_id: str, timeout_s: int = 22) -> str:
+        """DVVS helper — navigate to the order and read the Tracking ID actually shown on the
+        Amazon page via DOM, POLLING until the shipment row renders (the value appears a few
+        seconds after 'domcontentloaded'; scrape_order_pii's regex fires too early → false '').
+        Returns the tracking string, or '' if none renders in time."""
+        if not self.page:
+            return ""
+        try:
+            await self.page.goto(f"https://sellercentral.amazon.in/orders-v3/order/{order_id}",
+                                 wait_until="domcontentloaded", timeout=30000)
+        except Exception:
+            pass
+        for _ in range(max(1, timeout_s // 2)):
+            await asyncio.sleep(2)
+            try:
+                tk = await self.page.evaluate(
+                    r"""() => {
+                        for (const el of document.querySelectorAll('div,span,td,th,p')) {
+                            const t = (el.innerText || '').trim();
+                            if (t === 'Tracking ID' || t === 'Tracking ID:') {
+                                const scope = (el.parentElement || el).innerText || '';
+                                const m = scope.match(/\b([0-9]{10,}|[0-9A-Z]{10,})\b/);
+                                if (m) return m[1];
+                            }
+                        }
+                        const all = document.documentElement.innerText || '';
+                        const m2 = all.match(/Tracking ID[:\s]*([0-9A-Z]{10,})/);
+                        return m2 ? m2[1] : '';
+                    }"""
+                )
+                if tk:
+                    return str(tk).strip()
+            except Exception:
+                pass
+        return ""
+
     async def _click_text_button(self, candidate_texts: List[str]) -> bool:
         """Click the first button/link whose visible text matches any candidate.
 

@@ -80895,6 +80895,57 @@ async def browser_set_tracking(
     return res
 
 
+async def _dvvs_check(agent, order_id: str, expected_awb: str) -> dict:
+    """DVVS core — read the tracking Amazon actually shows (robust DOM poll) + full-page screenshot,
+    compare to expected_awb. Returns {verified, amazon_tracking, screenshot, result}."""
+    import re as _re, base64 as _b64
+    tracking = await agent.read_order_tracking(order_id)
+    shot_url = None
+    try:
+        shot = await agent.page.screenshot(type="jpeg", quality=60, full_page=True)
+        from utils.storage import upload_file
+        rel, _ = await upload_file(shot, "dvvs", f"dvvs_{order_id}.jpg", filename_prefix=order_id)
+        shot_url = f"/api/files/{rel}"
+    except Exception as ex:
+        logger.warning(f"DVVS screenshot failed for {order_id}: {ex}")
+    d = lambda s: _re.sub(r"\D", "", str(s or ""))
+    verified = bool(tracking) and d(tracking) == d(expected_awb)
+    return {"order_id": order_id, "expected_awb": expected_awb, "amazon_tracking": tracking,
+            "verified": verified, "screenshot": shot_url,
+            "result": "DVVS VERIFIED" if verified else "DVVS NOT VERIFIED"}
+
+
+@api_router.post("/amazon/dvvs/{order_id}")
+async def amazon_dvvs(order_id: str, expected_awb: str, user: dict = Depends(require_roles(["admin"]))):
+    """DVVS (Double Verification Via Screenshot): confirm Amazon's on-page tracking == the Bigship
+    AWB, backed by a saved screenshot. The scrape's tracking read is unreliable; this is ground truth."""
+    agent = await get_browser_agent()
+    if not agent or not agent.page:
+        raise HTTPException(status_code=400, detail="Browser agent not started")
+    return await _dvvs_check(agent, order_id, expected_awb)
+
+
+@api_router.post("/browser-agent/set-tracking-verified")
+async def browser_set_tracking_verified(data: SetTrackingRequest, user: dict = Depends(require_roles(["admin"]))):
+    """Push tracking + seller notes to Amazon, then DVVS-verify it actually stuck (retry the write
+    ONCE if not). Bakes DVVS into every tracking write so a silent no-op (e.g. the edit-without-erase
+    bug) can never slip through. Returns the write result + DVVS verdict + screenshot."""
+    agent = await get_browser_agent()
+    if agent.context is None:
+        raise HTTPException(status_code=400, detail="Browser not started")
+    last = {}
+    for attempt in (1, 2):
+        last = await agent.set_amazon_tracking_and_notes(
+            order_id=data.order_id, tracking_id=data.tracking_id,
+            courier=data.courier or "Delhivery", seller_notes=data.seller_notes)
+        dvvs = await _dvvs_check(agent, data.order_id, data.tracking_id)
+        if dvvs["verified"]:
+            break
+    return {"order_id": data.order_id, "write_action": last.get("action"),
+            "seller_notes_written": last.get("seller_notes_written"),
+            "attempts": attempt, **dvvs}
+
+
 class ClickRequest(BaseModel):
     x: int
     y: int
