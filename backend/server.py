@@ -1837,7 +1837,7 @@ class WarrantyCreate(BaseModel):
     order_id: str
 
 class WarrantyApproval(BaseModel):
-    warranty_end_date: str
+    warranty_end_date: Optional[str] = None  # blank → use the device-type standard term
     notes: Optional[str] = None
 
 class WarrantyResponse(BaseModel):
@@ -9565,6 +9565,20 @@ def _add_months_iso(date_str: str, months: int) -> str:
         return date_str
 
 
+def _default_warranty_end(invoice_date, device_type=None, product_name=None):
+    """Standard warranty end = invoice/purchase date + the device-type default term
+    (lithium/battery 5y, stabilizer 3y, inverter 2y, else 1y). Returns 'YYYY-MM-DD',
+    or None if the invoice date can't be parsed. Used as the FLOOR for approvals so a
+    warranty is never set shorter than its standard term (e.g. lithium never < 5 years)."""
+    from dateutil.relativedelta import relativedelta
+    yrs = get_default_warranty_years(product_name or "", device_type or "")
+    try:
+        d = datetime.strptime(str(invoice_date)[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+    return (d + relativedelta(years=yrs)).isoformat()
+
+
 @api_router.post("/warranties")
 async def create_warranty(
     first_name: str = Form(...),
@@ -9639,6 +9653,10 @@ async def create_warranty(
         "registered_at": now,
         "registration_bonus_months": WARRANTY_REGISTRATION_BONUS_MONTHS,
         "registration_bonus_applied": False,
+        # Standard term for this device type (lithium/battery 5y, stabilizer 3y, inverter 2y):
+        # drives the default end date at approval so short terms can't slip in.
+        "default_warranty_years": get_default_warranty_years(product_name or "", device_type),
+        "suggested_warranty_end_date": _default_warranty_end(invoice_date, device_type, product_name),
         "created_at": now,
         "updated_at": now
     }
@@ -9935,7 +9953,15 @@ async def approve_warranty(
         raise HTTPException(status_code=404, detail="Warranty not found")
     
     now = datetime.now(timezone.utc).isoformat()
-    base_end = approval.warranty_end_date
+    # Standard-term floor: never approve a warranty for LESS than its device-type default term
+    # (lithium/battery 5y, stabilizer 3y, inverter 2y), measured from the purchase/invoice date.
+    # If the admin leaves the end date blank, we use the standard term; if they enter one shorter
+    # than standard, we lift it to standard. A LONGER admin date is respected as-is.
+    default_end = _default_warranty_end(warranty.get("invoice_date"),
+                                        warranty.get("device_type"), warranty.get("product_name"))
+    base_end = approval.warranty_end_date or default_end
+    if default_end and base_end and str(base_end)[:10] < default_end[:10]:
+        base_end = default_end
     bonus = int(warranty.get("registration_bonus_months") or 0)
     set_fields = {
         "status": "approved",
@@ -11305,7 +11331,7 @@ async def create_dispatch(
         "scanned_out_at": None
     }
     
-    await db.dispatches.insert_one(dispatch_doc)
+    await _insert_dispatch(dispatch_doc)
     dispatch_doc.pop("_id", None)
     
     # Create compliance exception if there are issues
@@ -11437,7 +11463,7 @@ async def create_dispatch_from_ticket(
         "scanned_out_at": None
     }
     
-    await db.dispatches.insert_one(dispatch_doc)
+    await _insert_dispatch(dispatch_doc)
     
     # Update ticket status
     await db.tickets.update_one(
@@ -22413,7 +22439,7 @@ async def dispatch_pending_fulfillment(
         dispatch_doc["split_status"] = "pending"
         dispatch_doc["status"] = SPLIT_STATUS_AWAITING
     try:
-        await db.dispatches.insert_one(dispatch_doc)
+        await _insert_dispatch(dispatch_doc)
     except Exception:
         # Insert failed — release any serial reservations we made above so
         # they don't get stuck in `reserved` with no parent dispatch row.
@@ -22578,7 +22604,7 @@ async def ship_desk_dispatch(
         dispatch_doc["split_managed"] = True
         dispatch_doc["split_status"] = "pending"
         dispatch_doc["status"] = SPLIT_STATUS_AWAITING
-    await db.dispatches.insert_one(dispatch_doc)
+    await _insert_dispatch(dispatch_doc)
     await db.pending_fulfillment.update_one({"id": fulfillment_id}, {"$set": {
         "status": "in_dispatch_queue", "dispatch_id": dispatch_id, "dispatch_number": dispatch_number,
         "ship_desk_category": category, "updated_at": now.isoformat()}})
@@ -23148,7 +23174,7 @@ async def dispatch_pending_fulfillment_with_invoice(
         "created_at": now.isoformat()
     }
     try:
-        await db.dispatches.insert_one(dispatch_doc)
+        await _insert_dispatch(dispatch_doc)
     except Exception:
         await _release_reservations(reserved_serial_ids)
         raise
@@ -58536,7 +58562,7 @@ async def bot_fix_order(
                 "created_at": now.isoformat(),
                 "updated_at": now.isoformat()
             }
-            await db.dispatches.insert_one(dispatch_doc)
+            await _insert_dispatch(dispatch_doc)
             messages.append(f"Added to dispatcher queue: {dispatch_doc['dispatch_number']}")
     
     elif fix_type == "cleanup_duplicate":
@@ -59901,7 +59927,7 @@ async def bot_dispatch_order(
         "created_at": now.isoformat()
     }
     
-    await db.dispatches.insert_one(dispatch_doc)
+    await _insert_dispatch(dispatch_doc)
     
     # Update pending_fulfillment status to 'in_dispatch_queue'
     await db.pending_fulfillment.update_one(
@@ -61457,7 +61483,7 @@ async def bot_mark_amazon_dispatched(
         "created_at": now.isoformat()
     }
     
-    await db.dispatches.insert_one(dispatch_doc)
+    await _insert_dispatch(dispatch_doc)
     
     # Update amazon_orders status and customer details
     await db.amazon_orders.update_one(
@@ -63442,14 +63468,16 @@ async def bot_search_products_with_stock(
     return {"products": result, "count": len(result)}
 
 
-def get_default_warranty_years(product_name: str) -> int:
-    """Get default warranty years based on product type"""
-    name_lower = product_name.lower()
-    if "stabilizer" in name_lower or "stab" in name_lower:
+def get_default_warranty_years(product_name: str, device_type: str = "") -> int:
+    """Default warranty length (years) by product / device type. Matches on both the product
+    name and the device_type so e.g. device_type 'Lithium Battery' resolves correctly.
+    Batteries (incl. lithium / LiFePO4) 5y, stabilizers 3y, inverters/UPS 2y, else 1y."""
+    n = f"{product_name or ''} {device_type or ''}".lower()
+    if "stabilizer" in n or "stab" in n:
         return 3
-    elif "battery" in name_lower or "batt" in name_lower:
+    elif "lithium" in n or "lifepo" in n or "battery" in n or "batt" in n:
         return 5
-    elif "inverter" in name_lower or "ups" in name_lower:
+    elif "inverter" in n or "ups" in n:
         return 2
     return 1  # Default 1 year
 
@@ -63916,8 +63944,29 @@ async def get_bigship_token():
         # Token expires in 16 hours, we'll cache for 12 hours
         bigship_token_cache["token"] = token
         bigship_token_cache["expires_at"] = now + timedelta(hours=12)
-        
+
         return token
+
+
+async def cancel_bigship_awbs(awbs: list) -> dict:
+    """Cancel Bigship shipment(s) by AWB. IMPORTANT: Bigship's cancel is `PUT /order/cancel`
+    with the request body as a RAW JSON ARRAY of AWB strings, e.g. `["17079315622551"]` —
+    NOT an object like {"awb_numbers": [...]} and NOT `POST` (both 400/405). Discovered
+    2026-07-06 when re-booking wrong-lane self-ship orders. Returns the Bigship JSON response."""
+    awbs = [str(a) for a in (awbs or []) if a]
+    if not awbs:
+        return {"success": False, "message": "no awbs to cancel"}
+    token = await get_bigship_token()
+    async with httpx.AsyncClient(timeout=40.0) as client:
+        r = await client.request(
+            "PUT", f"{BIGSHIP_API_URL}/order/cancel",
+            content=json.dumps(awbs),
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        )
+        try:
+            return r.json()
+        except Exception:
+            return {"success": r.status_code == 200, "status_code": r.status_code, "text": r.text[:200]}
 
 
 @api_router.get("/courier/warehouses")
@@ -64197,8 +64246,9 @@ async def create_courier_shipment(
         )
         
         data = response.json()
-        
+
         if not data.get("success"):
+            logger.error(f"[bigship-create-debug] status={response.status_code} body={response.text[:1200]}")
             error_msg = data.get("message", "Failed to create shipment")
             if data.get("validationErrors"):
                 errors = [f"{e['propertyName']}: {e['errorMessage']}" for e in data["validationErrors"]]
@@ -67047,6 +67097,13 @@ async def bigship_label_for_fulfillment(
         parts = (rec.get("customer_name") or "").strip().split()
         first_name = parts[0] if parts else ""
         last_name = " ".join(parts[1:]) if len(parts) > 1 else last_name
+    # Bigship name rules: first & last required, 3–25 chars, only alphabets/dots/spaces.
+    # Sanitize + pad single-word names (very common — no surname) so the booking isn't rejected.
+    _cleannm = lambda s: re.sub(r"[^A-Za-z. ]", " ", str(s or "")).strip()
+    first_name = _cleannm(first_name) or "Customer"
+    last_name = _cleannm(last_name)
+    if len(last_name) < 3:
+        last_name = "..."
     phone = re.sub(r"\D", "", str(rec.get("customer_phone") or ""))[-10:]
     pincode = re.sub(r"\D", "", str(rec.get("pincode") or ""))
 
@@ -67108,20 +67165,44 @@ async def bigship_label_for_fulfillment(
     wh_id = int(wh.get("warehouse_id"))
     wh_pincode = re.sub(r"\D", "", str(wh.get("address_pincode") or wh.get("pincode") or wh.get("warehouse_pincode") or ""))
 
-    # --- Serviceability + Delhivery courier_id via the rate calculator ---
+    # --- Rate-shopping: pick the correct LANE by value/weight, then the CHEAPEST Delhivery slab ---
+    # Founder lane rule: B2B if invoice >= Rs.30,000 OR weight > 20 kg; else B2C. (B2B freight is far
+    # cheaper for heavy/high-value goods.) Self-ship stays Delhivery-only.
+    b2b_value = float(os.environ.get("SHIP_B2B_VALUE", "30000") or 30000)
+    b2b_weight = float(os.environ.get("SHIP_B2B_WEIGHT", "20") or 20)
+    lane = "b2b" if (invoice_amount >= b2b_value or total_weight > b2b_weight) else "b2c"
     rates_resp = await calculate_courier_rates(request={
-        "shipment_category": "B2C", "payment_type": "Prepaid",
+        "shipment_category": lane.upper(), "payment_type": "Prepaid",
         "pickup_pincode": wh_pincode, "destination_pincode": pincode,
         "invoice_amount": invoice_amount,
         "weight": total_weight, "length": length, "width": width, "height": height,
     }, current_user=user)
     rates = rates_resp.get("rates") or []
-    delhivery = next((r for r in rates if "delhivery" in str(r.get("courier_name", "")).lower()), None)
-    if not delhivery:
+    # Pick the CHEAPEST Delhivery option (the old code grabbed the first match — often a pricey slab).
+    dopts = sorted(
+        [(float(r.get("total_shipping_charges") or 0), r) for r in rates
+         if "delhivery" in str(r.get("courier_name", "")).lower() and r.get("total_shipping_charges")],
+        key=lambda t: t[0])
+    if not dopts:
         avail = ", ".join(sorted({str(r.get("courier_name")) for r in rates})) or "none"
-        raise HTTPException(status_code=422, detail=f"Delhivery not serviceable for pincode {pincode} "
-                            f"(available: {avail}). Self-ship is Delhivery-only — handle this one manually.")
+        raise HTTPException(status_code=422, detail=f"Delhivery not serviceable ({lane.upper()}) for pincode "
+                            f"{pincode} (available: {avail}). Self-ship is Delhivery-only — handle this one manually.")
+    chosen_rate, delhivery = dopts[0]
     courier_id = delhivery.get("courier_id")
+    # Rate-shop visibility: also quote Shiprocket's best Delhivery (we still BOOK via Bigship —
+    # Shiprocket booking is a separate path). Flags if Shiprocket ever undercuts Bigship on a lane.
+    sr_best = None
+    try:
+        from utils import shiprocket as _sr
+        if _sr.enabled():
+            _ccs = await _sr.serviceability(wh_pincode, pincode, total_weight, invoice_amount, length, width, height)
+            _srd = sorted([(float(c.get("rate") or 0), str(c.get("courier_name"))) for c in _ccs
+                           if "delhivery" in str(c.get("courier_name", "")).lower() and c.get("rate")])
+            if _srd:
+                sr_best = {"rate": _srd[0][0], "courier_name": _srd[0][1],
+                           "cheaper_than_bigship": _srd[0][0] < chosen_rate}
+    except Exception as _e:
+        logger.warning(f"Shiprocket rate quote skipped: {_e}")
 
     preview = {
         "order_id": order_id, "consignee": f"{first_name} {last_name}".strip(),
@@ -67129,8 +67210,10 @@ async def bigship_label_for_fulfillment(
         "weight_kg": total_weight, "dimensions": f"{length}x{width}x{height}",
         "product_name": product_name, "hsn": hsn, "invoice_amount": invoice_amount,
         "warehouse_id": wh_id, "warehouse_pincode": wh_pincode,
+        "lane": lane.upper(),
         "courier": delhivery.get("courier_name"), "courier_id": courier_id,
         "rate": delhivery.get("total_shipping_charges"),
+        "shiprocket_best": sr_best,
     }
     if dry_run:
         return {"success": True, "dry_run": True, "serviceable": True, "preview": preview,
@@ -67139,13 +67222,18 @@ async def bigship_label_for_fulfillment(
     # --- Create the shipment (skip if we are recovering an already-created one) ---
     if not system_order_id:
         created = await create_courier_shipment(request={
-            "shipment_category": "b2c", "warehouse_id": wh_id,
+            "shipment_category": lane, "warehouse_id": wh_id,
             "first_name": first_name[:25], "last_name": last_name[:25], "phone": phone,
             "address_line1": address_line1, "address_line2": address_line2,
             "city": rec.get("city") or "", "state": rec.get("state") or "", "pincode": pincode,
             "invoice_number": order_id, "invoice_amount": invoice_amount, "payment_type": "Prepaid",
             "weight": total_weight, "length": length, "width": width, "height": height,
-            "product_name": product_name, "product_category": category,
+            "product_name": product_name,
+            # Bigship product_category is a fixed enum (Electronics/Others/...). Our internal
+            # category ("Stabilizer"/"Inverter"/"Battery"/"Solar") is NOT valid → map it.
+            "product_category": ("Electronics" if any(k in (category or "").lower() for k in
+                                 ("stabilizer", "inverter", "battery", "solar", "ups", "panel", "electronic"))
+                                 else "Others"),
             "quantity": total_qty, "hsn": hsn,
         }, current_user=user)
         system_order_id = created.get("system_order_id")
@@ -67158,14 +67246,14 @@ async def bigship_label_for_fulfillment(
 
     # --- Manifest (assign Delhivery, get AWB) ---
     man = await manifest_courier_shipment(request={
-        "system_order_id": system_order_id, "courier_id": courier_id, "shipment_category": "b2c",
+        "system_order_id": system_order_id, "courier_id": courier_id, "shipment_category": lane,
     }, current_user=user)
     awb = man.get("awb_number")
 
     # --- Download + store the label ---
     label_url = None
     try:
-        lbl = await get_courier_label(system_order_id=str(system_order_id), shipment_type="b2c", current_user=user)
+        lbl = await get_courier_label(system_order_id=str(system_order_id), shipment_type=lane, current_user=user)
         if lbl.get("success") and lbl.get("content"):
             from utils.storage import upload_file
             pdf_bytes = base64.b64decode(lbl["content"])
@@ -67662,8 +67750,14 @@ async def scheduled_bigship_panel_scrape():
     Alerts admins if the scrape breaks (Bigship UI change / session expiry)."""
     if not (BIGSHIP_PANEL_SCRAPE_ENABLED and BIGSHIP_USER_ID):
         return
-    if _active_firm_id:  # an Amazon browser agent is running — don't launch a 2nd Chromium
-        logger.info("Bigship panel scrape skipped — browser agent busy (%s)", _active_firm_id)
+    # Only defer when an Amazon browser agent's context is ACTUALLY live — don't launch a 2nd
+    # Chromium concurrently. NB: _active_firm_id is sticky (set on firm-select, never reset to
+    # None), so it's a false "busy" signal — a single past Amazon session would block the scrape
+    # forever. Check real liveness the same way the status endpoint does (agent.context is not None).
+    busy_firm = next((fid for fid, a in list(_browser_agents.items())
+                      if getattr(a, "context", None) is not None), None)
+    if busy_firm:
+        logger.info("Bigship panel scrape skipped — Amazon browser agent live (%s)", busy_firm)
         return
     from utils import bigship_panel
     res = await bigship_panel.scrape_all_shipments(max_pages=BIGSHIP_PANEL_SCRAPE_PAGES)
@@ -68309,6 +68403,64 @@ async def scheduled_shipdesk_reconcile():
             logger.info(f"Ship Desk reconcile: {summary}")
     except Exception as e:
         logger.error(f"Ship Desk reconcile failed: {e}")
+
+
+def _ph_digits(x):
+    return re.sub(r"\D", "", str(x or ""))
+
+
+def _ph_good(p):
+    """A plausible real Indian mobile: 10 digits, some variety, starts 6-9 (rejects 0000/1111/'11')."""
+    d = _ph_digits(p)
+    return len(d) == 10 and len(set(d)) > 2 and d[0] in "6789"
+
+
+async def _fill_blank_dispatch_phone(doc: dict):
+    """At dispatch creation, if the phone is blank/placeholder (Amazon masks buyer phones; some CRM
+    orders miss it), backfill a real one from the shipment's own consignee record (Bigship), the
+    linked order, or the party master. NEVER applies a number already used by another customer's
+    dispatch (a staff/placeholder like the founder's), and no-ops when a good phone is already set."""
+    cur = doc.get("phone") or doc.get("customer_phone") or doc.get("consignee_phone") or ""
+    if _ph_good(cur):
+        return
+    awb = (doc.get("tracking_id") or doc.get("awb_number") or "").strip()
+    oid = (doc.get("order_id") or "").strip()
+    name = (doc.get("customer_name") or "").strip()
+    cand = None
+    if awb:
+        cs = await db.courier_shipments.find_one({"$or": [{"awb_number": awb}, {"tracking_id": awb}]}, {"_id": 0, "phone": 1})
+        if cs and _ph_good(cs.get("phone")):
+            cand = _ph_digits(cs["phone"])
+    if not cand and oid:
+        pf = await db.pending_fulfillment.find_one({"order_id": oid}, {"_id": 0, "customer_phone": 1, "phone": 1})
+        if pf:
+            for k in ("customer_phone", "phone"):
+                if _ph_good(pf.get(k)):
+                    cand = _ph_digits(pf[k]); break
+    if not cand and name:
+        ps = await db.parties.find({"name": name}, {"_id": 0, "phone": 1}).to_list(5)
+        g = set(_ph_digits(p["phone"]) for p in ps if _ph_good(p.get("phone")))
+        if len(g) == 1:
+            cand = next(iter(g))
+    if not cand:
+        return
+    # Reject a number already tied to a DIFFERENT customer's dispatch (staff/placeholder number).
+    shared = await db.dispatches.count_documents(
+        {"$or": [{"phone": cand}, {"customer_phone": cand}], "customer_name": {"$ne": name}})
+    if shared == 0:
+        doc["phone"] = cand
+        doc.setdefault("customer_phone", cand)
+        doc["phone_backfilled_from"] = "dispatch_create"
+
+
+async def _insert_dispatch(doc: dict):
+    """Single choke point for creating a dispatch row — backfills a missing customer phone first
+    (best-effort; never blocks the dispatch)."""
+    try:
+        await _fill_blank_dispatch_phone(doc)
+    except Exception as ex:
+        logger.warning(f"dispatch phone backfill skipped: {ex}")
+    return await db.dispatches.insert_one(doc)
 
 
 async def _email_agent_make_lead(msg: dict, brain: dict) -> Optional[str]:
@@ -78309,6 +78461,10 @@ async def create_ticket_from_email(
     # Create warranty if requested
     if create_warranty and final_serial and product_info and not warranty_info:
         warranty_id = str(uuid.uuid4())
+        # Device-type standard term (lithium/battery 5y, stabilizer 3y, inverter 2y) instead of a
+        # flat 1 year, unless the product carries its own configured warranty_months.
+        _wyrs = get_default_warranty_years(product_info.get("name", ""))
+        _wmonths = product_info.get("warranty_months") or _wyrs * 12
         warranty_doc = {
             "id": warranty_id,
             "serial_number": final_serial,
@@ -78318,9 +78474,9 @@ async def create_ticket_from_email(
             "customer_phone": final_phone,
             "customer_email": final_email,
             "customer_id": customer_id,
-            "warranty_months": product_info.get("warranty_months", 12),
+            "warranty_months": _wmonths,
             "warranty_start": now.isoformat(),
-            "warranty_end": (now + timedelta(days=365)).isoformat(),
+            "warranty_end": (now + timedelta(days=_wmonths * 30)).isoformat(),
             "status": "active",
             "source": "email_ticket",
             "ticket_id": ticket_id,

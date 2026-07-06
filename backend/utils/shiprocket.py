@@ -106,6 +106,19 @@ async def track_awb(awb: str) -> dict | None:
     return await _get(f"/courier/track/awb/{awb}")
 
 
+async def serviceability(pickup: str, delivery: str, weight: float, declared_value: float,
+                         length: int = 0, breadth: int = 0, height: int = 0, cod: int = 0) -> list:
+    """Rate-quote for one lane — returns Shiprocket's serviceable couriers with prices, or [].
+    Each item carries: courier_name, rate (all-in), freight_charge, estimated_delivery_days, etc.
+    Read-only; used for rate-shopping comparison (Shiprocket booking is a separate path)."""
+    params = {"pickup_postcode": str(pickup), "delivery_postcode": str(delivery),
+              "weight": weight, "cod": cod, "declared_value": declared_value}
+    if length and breadth and height:
+        params.update({"length": int(length), "breadth": int(breadth), "height": int(height)})
+    data = await _get("/courier/serviceability/", params)
+    return ((data or {}).get("data") or {}).get("available_courier_companies") or []
+
+
 async def _post(path: str, body: dict) -> dict | None:
     """Authed POST with one 401-retry. Returns {"status", "data"} or None."""
     if not enabled():
