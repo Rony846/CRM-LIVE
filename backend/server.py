@@ -80641,13 +80641,15 @@ async def stop_browser_agent(
 
 
 @api_router.get("/browser-agent/screenshot")
-async def get_browser_screenshot(user: dict = Depends(require_roles(["admin"]))):
-    """Get current browser screenshot"""
+async def get_browser_screenshot(full_page: bool = False, user: dict = Depends(require_roles(["admin"]))):
+    """Get current browser screenshot. full_page=true captures the entire scrollable page —
+    used by DVVS (Double Verification Via Screenshot) so the tracking row is captured wherever
+    it renders on the Amazon order page."""
     agent = await get_browser_agent()
     if agent.page:
         try:
             import base64
-            screenshot = await agent.page.screenshot(type="jpeg", quality=50)
+            screenshot = await agent.page.screenshot(type="jpeg", quality=60, full_page=full_page)
             screenshot_b64 = base64.b64encode(screenshot).decode('utf-8')
             return {"screenshot": screenshot_b64}
         except Exception as e:

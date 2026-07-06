@@ -4197,6 +4197,12 @@ class AmazonBrowserAgent:
                     return result
                 await self.page.mouse.click(label["x"] + 120, label["y"] + 30)
                 await asyncio.sleep(1)
+                # EDIT case: the Tracking ID field is PRE-FILLED with the old tracking. If we just
+                # type, the new AWB is appended to the old one and Amazon keeps the old value (this
+                # is why 'Edit shipment' silently failed). So ERASE the field first, then type.
+                await self.page.keyboard.press("Control+A")
+                await self.page.keyboard.press("Delete")
+                await asyncio.sleep(0.3)
                 await self.page.keyboard.type(target, delay=20)
                 await asyncio.sleep(1)
 
