@@ -70,12 +70,16 @@ export default function ShipDeskBoard() {
     finally { setBusy((b) => ({ ...b, [key]: false })); }
   };
 
-  const download = async (oid, path, filename) => {
+  const download = async (oid, path, filename, params) => {
     try {
-      const res = await axios.get(`${API}/ship-desk/order/${encodeURIComponent(oid)}/${path}`, { headers: H, responseType: 'blob' });
+      const res = await axios.get(`${API}/ship-desk/order/${encodeURIComponent(oid)}/${path}`, { headers: H, responseType: 'blob', params });
       const url = URL.createObjectURL(res.data);
       const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-    } catch (e) { toast.error('Download failed'); }
+    } catch (e) {
+      let msg = 'Download failed';
+      try { if (e?.response?.data instanceof Blob) { const t = JSON.parse(await e.response.data.text()); msg = t.detail || msg; } } catch (_) {}
+      toast.error(msg);
+    }
   };
   const sendBack = async (o) => {
     const reason = window.prompt('Send back to accountant — what needs fixing?');
@@ -181,11 +185,18 @@ export default function ShipDeskBoard() {
           )} />
           <Lane title="Ready to ship" tint="#eff6ff" items={board.ready_to_ship || []} render={(o) => (
             <Card key={o.order_id} o={o}>
+              {o.tracking_id && (
+                <div style={{ marginTop: 5, display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <span style={{ fontSize: 9.5, color: T.iron400, textTransform: 'uppercase', letterSpacing: 0.3, fontWeight: 700 }}>AWB</span>
+                  <span style={{ ...mono, fontSize: 11.5, color: T.iron800, fontWeight: 700 }}>{o.tracking_id}</span>
+                  {o.pickup_status && <span style={{ fontSize: 9.5, color: T.iron400 }}>· {o.pickup_status}</span>}
+                </div>
+              )}
               {isDispatch && (
                 <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   <button onClick={() => printPack(o)} disabled={busy[`${o.order_id}::pack`]} style={{ ...btnPrimary, display: 'inline-flex', gap: 4, alignItems: 'center', opacity: busy[`${o.order_id}::pack`] ? 0.6 : 1 }}>
                     <Printer size={13} />{busy[`${o.order_id}::pack`] ? '…' : 'Print pack'}</button>
-                  {(o.present || []).includes('label') && <button onClick={() => download(o.order_id, 'file/label', `label_${o.order_id}.pdf`)} style={ghostBtn}><Download size={12} />Label</button>}
+                  {(o.present || []).includes('label') && <button onClick={() => download(o.order_id, 'file/label', `label_${o.order_id}.pdf`, { awb: o.tracking_id })} style={ghostBtn}><Download size={12} />Label</button>}
                   <button onClick={() => download(o.order_id, 'slip.pdf', `slip_${o.order_id}.pdf`)} style={ghostBtn}><Download size={12} />Slip</button>
                   <button onClick={() => sendBack(o)} style={{ ...ghostBtn, color: '#b91c1c', borderColor: '#fecaca' }}>↩ Back</button>
                 </div>

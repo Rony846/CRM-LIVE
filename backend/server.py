@@ -24187,22 +24187,76 @@ async def ship_desk_send_back(order_id: str, payload: dict = Body(...),
     return {"success": True, "stage": back}
 
 
+async def _resolve_bigship_label(order_id: str, awb: str = None) -> Optional[bytes]:
+    """Pull an Amazon/Bigship order's shipping label on demand. These ready-lane cards come from the
+    Amazon pipeline / Bigship panel, so the label isn't stored on pending_fulfillment — it lives in
+    Bigship (fetched by system_order_id / bigship_order_id) or as a stored amazon-pipeline label_path."""
+    from utils.storage import download_file as _dl
+    awb = (awb or "").strip()
+    # 1) Amazon processing record (stored label_path, else Bigship system_order_id)
+    q = {"$or": [{"amazon_order_id": order_id}, {"order_id": order_id}]}
+    if awb:
+        q["$or"].append({"awb_number": awb})
+    aop = await db.amazon_order_processing.find_one(q, {"_id": 0, "label_path": 1, "label_url": 1, "system_order_id": 1})
+    if aop:
+        for lp in (aop.get("label_path"), aop.get("label_url")):
+            if lp:
+                try:
+                    b = await _dl(lp)
+                    if b:
+                        return b
+                except Exception:
+                    pass
+        if aop.get("system_order_id"):
+            b = await _fetch_bigship_label_pdf(str(aop["system_order_id"]))
+            if b:
+                return b
+    # 2) Courier-shipment / panel row (bigship_order_id → Bigship API, or a stored label url)
+    cq = {"$or": [{"amazon_order_id": order_id}, {"order_id": order_id},
+                  {"panel_order_ref": {"$regex": re.escape(order_id)}}]}
+    if awb:
+        cq["$or"] += [{"awb_number": awb}, {"tracking_id": awb}]
+    cs = await db.courier_shipments.find_one(cq, {"_id": 0, "bigship_panel_order_id": 1, "system_order_id": 1,
+                                                  "bigship_order_id": 1, "label_url": 1, "shipping_label_url": 1})
+    if cs:
+        url = cs.get("label_url") or cs.get("shipping_label_url")
+        if url:
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=60.0) as _c:
+                    r = await _c.get(url)
+                    if r.status_code == 200 and r.content:
+                        return r.content
+            except Exception:
+                pass
+        # Bigship's label API wants the SYSTEM order id (10-digit) = bigship_panel_order_id here;
+        # bigship_order_id is a different internal id and returns "No Record Found".
+        for soid in (cs.get("bigship_panel_order_id"), cs.get("system_order_id"), cs.get("bigship_order_id")):
+            if soid:
+                b = await _fetch_bigship_label_pdf(str(soid))
+                if b:
+                    return b
+    return None
+
+
 @api_router.get("/ship-desk/order/{order_id}/file/{kind}")
-async def ship_desk_download_file(order_id: str, kind: str,
+async def ship_desk_download_file(order_id: str, kind: str, awb: str = Query(None),
                                   user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROLES + ["dispatcher", "gate"]))):
-    """Download an attached ship-desk doc: kind = invoice | label | eway."""
+    """Download an attached ship-desk doc: kind = invoice | label | eway. For Amazon/Bigship orders the
+    label isn't stored locally — fall back to pulling it straight from Bigship by AWB/order."""
     field = {"invoice": "invoice_path", "label": "shipping_label_path", "eway": "eway_path"}.get((kind or "").lower())
     if not field:
         raise HTTPException(status_code=400, detail="kind must be invoice, label or eway")
     d = await db.pending_fulfillment.find_one({"order_id": order_id}, {"_id": 0, field: 1})
     path = (d or {}).get(field)
-    if not path:
-        raise HTTPException(status_code=404, detail=f"No {kind} attached")
     from utils.storage import download_file as _dl_sd
     from fastapi.responses import Response as _Resp
-    data = await _dl_sd(path)
+    data = await _dl_sd(path) if path else None
+    if not data and (kind or "").lower() == "label":
+        # Amazon/Bigship ready-lane card → pull the label directly from Bigship
+        data = await _resolve_bigship_label(order_id, awb)
     if not data:
-        raise HTTPException(status_code=404, detail="File missing in storage")
+        raise HTTPException(status_code=404, detail=f"No {kind} available for this order")
     return _Resp(content=data, media_type="application/pdf",
                  headers={"Content-Disposition": f'inline; filename="{kind}_{str(order_id)[-8:]}.pdf"'})
 
