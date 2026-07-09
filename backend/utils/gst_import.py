@@ -118,6 +118,27 @@ def parse_gstr2b(data: dict, firm_id: str, period_key: str) -> list:
                          "invoice_value": _num(inv.get("val")), "place_of_supply": inv.get("pos"),
                          "taxable_value": txval, "rate": _num(rt),
                          "igst": ig, "cgst": cg, "sgst": sg})
+    # Credit/debit notes REDUCE (C) or ADD (D) to available ITC — must be captured, else net ITC
+    # is overstated by the credit-note amount (e.g. Amazon fee-reversal credit notes).
+    for sup in doc.get("cdnr", []) or []:
+        ctin = sup.get("ctin")
+        for nt in sup.get("nt", []) or []:
+            items = nt.get("items") or nt.get("itms")
+            if items:
+                txval = sum(_num(it.get("txval")) for it in items)
+                ig = sum(_num(it.get("igst")) for it in items)
+                cg = sum(_num(it.get("cgst")) for it in items)
+                sg = sum(_num(it.get("sgst")) for it in items)
+                rt = (items[0] or {}).get("rt")
+            else:
+                txval, ig, cg, sg, rt = (_num(nt.get("txval")), _num(nt.get("igst")),
+                                         _num(nt.get("cgst")), _num(nt.get("sgst")), nt.get("rt"))
+            sgn = -1.0 if str(nt.get("typ", "")).strip().upper().startswith("C") else 1.0
+            rows.append({"section": "2b_itc_cdnr", "gstin": ctin, "party_name": sup.get("trdnm"),
+                         "invoice_number": nt.get("ntnum"), "note_type": str(nt.get("typ", "")).strip().upper(),
+                         "invoice_date": nt.get("dt"), "invoice_value": sgn * abs(_num(nt.get("val"))),
+                         "place_of_supply": nt.get("pos"), "taxable_value": sgn * abs(txval), "rate": _num(rt),
+                         "igst": sgn * abs(ig), "cgst": sgn * abs(cg), "sgst": sgn * abs(sg)})
     return rows
 
 
