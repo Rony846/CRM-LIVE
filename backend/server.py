@@ -23539,6 +23539,10 @@ async def dispatcher_pack_queue(user: dict = Depends(require_roles(["admin", "se
         is_np = st.upper() == "NOT PICKED"
         # two-step for EVERY pending row: drop if Delhivery shows it already moved/picked OR cancelled.
         _dstat = c.get("delhivery_status") or ""
+        # Cancelled shipments (Bigship marks bigship_order_id="Cancelled", e.g. Excel-imported dealer
+        # challans that were voided) will never be picked — drop them like any cancelled row.
+        if str(c.get("bigship_order_id") or "").strip().lower() == "cancelled":
+            continue
         if _delhivery_picked(_dstat) or _delhivery_cancelled(_dstat) or _delhivery_cancelled(st):
             continue
         base_st = "NOT PICKED" if is_np else st
