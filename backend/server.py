@@ -70721,7 +70721,7 @@ async def _intercompany_gst_flows(period_key: str, book: bool = False) -> dict:
 
     # (2) inward side — buyer 2A/2B with a group supplier
     async for r in db.gst_report_data.find(
-            {"import_return": "gstr2b", "period_key": period_key}, {"_id": 0}):
+            {"section": {"$in": ["2b_itc", "2b_itc_cdnr"]}, "period_key": period_key}, {"_id": 0}):
         g = r.get("gstin")
         bf = r.get("firm_id")
         if g in gmap and gmap[g]["id"] != bf:
@@ -70737,7 +70737,7 @@ async def _intercompany_gst_flows(period_key: str, book: bool = False) -> dict:
     booked = 0
     for (sid, bid), fl in flows.items():
         buyer_has_2b = await db.gst_report_data.count_documents(
-            {"firm_id": bid, "import_return": "gstr2b", "period_key": period_key}) > 0
+            {"firm_id": bid, "section": {"$in": ["2b_itc", "2b_itc_cdnr"]}, "period_key": period_key}) > 0
         rec = {"seller_firm_id": sid, "buyer_firm_id": bid, "seller": fl["seller"], "buyer": fl["buyer"],
                "seller_gstr1_taxable": round(fl["out_taxable"], 2), "seller_gstr1_itc": round(fl["out_itc"], 2),
                "buyer_2b_taxable": round(fl["in_taxable"], 2), "buyer_2b_itc": round(fl["in_itc"], 2),
@@ -70827,6 +70827,135 @@ async def intercompany_gst_flows(period: str, book: bool = False,
     seller's GSTR-1 against the buyer's GSTR-2A/2B. book=true books provisional purchases for buyers with
     no 2A/2B loaded."""
     return await _intercompany_gst_flows(period, book=book)
+
+
+async def _resolve_ledger_firm(invoices: list, buyer_name: str) -> str:
+    """Which group firm does a supplier ledger belong to? Primary: the firm whose 2A/2B contains the
+    most of the ledger's invoice numbers (reliable). Fallback: fuzzy match on the buyer name."""
+    nums = {_norm_inv2b(iv["number"]) for iv in invoices}
+    best, best_n = None, 0
+    async for f in db.firms.find({}, {"_id": 0, "id": 1}):
+        got = 0
+        async for r in db.gst_report_data.find(
+                {"firm_id": f["id"], "section": {"$in": ["2b_itc", "2b_itc_cdnr"]}}, {"_id": 0, "invoice_number": 1}):
+            if _norm_inv2b(r.get("invoice_number")) in nums:
+                got += 1
+        if got > best_n:
+            best, best_n = f["id"], got
+    if best:
+        return best
+    bn = re.sub(r"[^a-z0-9 ]", "", (buyer_name or "").lower())
+    async for f in db.firms.find({}, {"_id": 0, "id": 1, "name": 1}):
+        fn = re.sub(r"[^a-z0-9 ]", "", (f.get("name") or "").lower())
+        if fn and (fn in bn or bn in fn):
+            return f["id"]
+    return None
+
+
+async def _reconcile_supplier_ledger(firm_id: str, parsed: dict, file_ref: str) -> dict:
+    """Match a parsed supplier ledger's invoices against the firm's loaded GSTR-2A/2B. An invoice NOT in
+    the 2A is ITC-at-risk — but only if the 2A for THAT period is actually loaded (else it's merely
+    unverifiable). Stored in db.supplier_ledger_recon; feeds the standing ITC-at-risk list."""
+    invoices = parsed.get("invoices") or []
+    # firm's 2A: index by normalized invoice number + which periods we have
+    twoa = {}
+    loaded_periods = set()
+    async for r in db.gst_report_data.find(
+            {"firm_id": firm_id, "section": {"$in": ["2b_itc", "2b_itc_cdnr"]}}, {"_id": 0}):
+        twoa[_norm_inv2b(r.get("invoice_number"))] = r
+        if r.get("period_key"):
+            loaded_periods.add(r["period_key"])
+    supplier_gstin = None
+    matched, at_risk, unverifiable = [], [], []
+    for iv in invoices:
+        k = _norm_inv2b(iv["number"])
+        r = twoa.get(k)
+        if r:
+            supplier_gstin = supplier_gstin or r.get("gstin")
+            itc = round(float(r.get("igst") or 0) + float(r.get("cgst") or 0) + float(r.get("sgst") or 0), 2)
+            matched.append({"number": iv["number"], "value": iv["value"], "period": r.get("period_key"), "itc": itc})
+        else:
+            # invoice's own period (from its date) — is that period's 2A loaded?
+            pk = (iv.get("date") or "")[:7]
+            est_itc = round(iv["value"] - iv["value"] / 1.18, 2) if iv.get("value") else 0.0
+            row = {"number": iv["number"], "date": iv.get("date"), "value": iv["value"], "est_itc": est_itc, "period": pk}
+            if not pk or pk not in loaded_periods:
+                unverifiable.append({**row, "reason": (f"no 2A loaded for {pk}" if pk else "no date on ledger row — can't verify")})
+            else:
+                at_risk.append({**row, "reason": "2A loaded but invoice absent — supplier hasn't filed"})
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0, "name": 1}) or {}
+    now = datetime.now(timezone.utc).isoformat()
+    summary = {
+        "firm_id": firm_id, "firm_name": firm.get("name"),
+        "supplier": parsed.get("supplier"), "supplier_gstin": supplier_gstin,
+        "ledger_period": parsed.get("period"), "file_ref": file_ref,
+        "invoice_count": len(invoices), "matched": len(matched),
+        "at_risk_count": len(at_risk), "at_risk_value": round(sum(x["value"] for x in at_risk), 2),
+        "at_risk_itc": round(sum(x["est_itc"] for x in at_risk), 2), "at_risk_invoices": at_risk,
+        "unverifiable_count": len(unverifiable), "unverifiable_invoices": unverifiable,
+        "matched_itc": round(sum(x["itc"] for x in matched), 2),
+        "reconciled_at": now, "reconciled_by": "claude"}
+    await db.supplier_ledger_recon.replace_one(
+        {"firm_id": firm_id, "supplier": parsed.get("supplier"), "file_ref": file_ref}, summary, upsert=True)
+    return summary
+
+
+import glob as _glob
+
+
+@api_router.post("/admin/supplier-ledger/reconcile")
+async def supplier_ledger_reconcile(foc: int = None, firm_id: str = None, file: UploadFile = File(None),
+                                    user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Reconcile a supplier party-ledger PDF against the firm's GSTR-2A: flags invoices in the ledger
+    that are NOT in the 2A (ITC at risk — supplier hasn't filed). Pass an uploaded PDF or a FOC file
+    number (foc=). Firm is auto-detected from the ledger's invoices unless firm_id is given."""
+    from utils.ledger_parser import parse_supplier_ledger
+    path = None
+    if file is not None:
+        path = f"/tmp/claude-0/-var-www-crm/8e3bae77-2830-40dc-a44a-6335950d1f7c/scratchpad/_ledger_{uuid.uuid4().hex[:8]}.pdf"
+        with open(path, "wb") as fh:
+            fh.write(await file.read())
+        file_ref = file.filename or path
+    elif foc is not None:
+        hits = _glob.glob(f"/var/www/crm/backend/uploads/claude_files/{foc}_*")
+        if not hits:
+            raise HTTPException(status_code=404, detail=f"No FOC file #{foc}")
+        path = hits[0]; file_ref = os.path.basename(path)
+    else:
+        raise HTTPException(status_code=400, detail="Provide a PDF file or a foc= file number")
+    if not path.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Supplier ledger must be a PDF")
+    parsed = parse_supplier_ledger(path)
+    if not parsed.get("invoices"):
+        raise HTTPException(status_code=400, detail="No invoice rows found in this ledger PDF")
+    fid = firm_id or await _resolve_ledger_firm(parsed["invoices"], parsed.get("buyer"))
+    if not fid:
+        raise HTTPException(status_code=422, detail=f"Could not resolve which firm this ledger belongs to (buyer '{parsed.get('buyer')}'). Pass firm_id.")
+    scope = get_user_firm_scope(user)
+    if scope and fid != scope:
+        raise HTTPException(status_code=403, detail="Accountants can only reconcile their own firm.")
+    return await _reconcile_supplier_ledger(fid, parsed, file_ref)
+
+
+@api_router.get("/admin/itc-at-risk")
+async def itc_at_risk(firm_id: str = None, user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Standing ITC-at-risk list: across all reconciled supplier ledgers, the invoices booked/on-ledger
+    that suppliers have NOT filed into the firm's GSTR-2A (so the ITC can't be claimed until they do)."""
+    scope = get_user_firm_scope(user)
+    q = {}
+    if scope:
+        q["firm_id"] = scope
+    elif firm_id:
+        q["firm_id"] = firm_id
+    recs = [r async for r in db.supplier_ledger_recon.find(q, {"_id": 0}).sort("at_risk_itc", -1)]
+    total_itc = round(sum(r.get("at_risk_itc", 0) for r in recs), 2)
+    total_val = round(sum(r.get("at_risk_value", 0) for r in recs), 2)
+    suppliers = [{"supplier": r["supplier"], "firm_name": r.get("firm_name"), "supplier_gstin": r.get("supplier_gstin"),
+                  "at_risk_count": r.get("at_risk_count"), "at_risk_itc": r.get("at_risk_itc"),
+                  "invoices": r.get("at_risk_invoices"), "file_ref": r.get("file_ref")}
+                 for r in recs if r.get("at_risk_count")]
+    return {"total_at_risk_itc": total_itc, "total_at_risk_value": total_val,
+            "suppliers_with_risk": suppliers, "ledgers_reconciled": len(recs)}
 
 
 @api_router.get("/admin/purchases/2b-flags")
