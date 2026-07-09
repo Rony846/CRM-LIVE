@@ -70692,6 +70692,119 @@ async def reconcile_provisional_purchases_against_2b(firm_id: str, period_key: s
     return summary
 
 
+async def _intercompany_gst_flows(period_key: str, book: bool = False) -> dict:
+    """Detect intra-group sales across loaded GST returns for a period, both directions:
+      - a SELLER's GSTR-1 B2B to a group buyer's GSTIN  → the buyer's intercompany PURCHASE
+      - a BUYER's GSTR-2A/2B with a group supplier's GSTIN → same flow seen from the buyer
+    Cross-checks the two sides and (book=True) books a PROVISIONAL purchase on any buyer that has NO
+    2A/2B loaded for the period (so its purchases aren't falsely zero — e.g. an Amazon-only reseller)."""
+    gmap = {}
+    async for f in db.firms.find({}, {"_id": 0, "id": 1, "name": 1, "gstin": 1}):
+        if f.get("gstin"):
+            gmap[f["gstin"]] = {"id": f["id"], "name": f["name"]}
+    id2 = {v["id"]: v for v in gmap.values()}
+    flows = {}   # (seller_id, buyer_id) -> {..}
+
+    # (1) outward side — seller GSTR-1 B2B to a group buyer
+    async for r in db.gst_report_data.find(
+            {"source": "vyapar", "section": "b2b", "period_key": period_key}, {"_id": 0}):
+        g = r.get("gstin")
+        sf = r.get("firm_id")
+        if g in gmap and gmap[g]["id"] != sf:
+            k = (sf, gmap[g]["id"])
+            fl = flows.setdefault(k, {"seller": id2.get(sf, {}).get("name"), "buyer": gmap[g]["name"],
+                                      "out_taxable": 0.0, "out_itc": 0.0, "out_invoices": set(),
+                                      "in_taxable": 0.0, "in_itc": 0.0, "in_invoices": set()})
+            fl["out_taxable"] += float(r.get("taxable_value") or 0)
+            fl["out_itc"] += float(r.get("igst") or 0) + float(r.get("cgst") or 0) + float(r.get("sgst") or 0)
+            fl["out_invoices"].add(r.get("invoice_number"))
+
+    # (2) inward side — buyer 2A/2B with a group supplier
+    async for r in db.gst_report_data.find(
+            {"import_return": "gstr2b", "period_key": period_key}, {"_id": 0}):
+        g = r.get("gstin")
+        bf = r.get("firm_id")
+        if g in gmap and gmap[g]["id"] != bf:
+            k = (gmap[g]["id"], bf)
+            fl = flows.setdefault(k, {"seller": gmap[g]["name"], "buyer": id2.get(bf, {}).get("name"),
+                                      "out_taxable": 0.0, "out_itc": 0.0, "out_invoices": set(),
+                                      "in_taxable": 0.0, "in_itc": 0.0, "in_invoices": set()})
+            fl["in_taxable"] += float(r.get("taxable_value") or 0)
+            fl["in_itc"] += float(r.get("igst") or 0) + float(r.get("cgst") or 0) + float(r.get("sgst") or 0)
+            fl["in_invoices"].add(r.get("invoice_number"))
+
+    out = []
+    booked = 0
+    for (sid, bid), fl in flows.items():
+        buyer_has_2b = await db.gst_report_data.count_documents(
+            {"firm_id": bid, "import_return": "gstr2b", "period_key": period_key}) > 0
+        rec = {"seller_firm_id": sid, "buyer_firm_id": bid, "seller": fl["seller"], "buyer": fl["buyer"],
+               "seller_gstr1_taxable": round(fl["out_taxable"], 2), "seller_gstr1_itc": round(fl["out_itc"], 2),
+               "buyer_2b_taxable": round(fl["in_taxable"], 2), "buyer_2b_itc": round(fl["in_itc"], 2),
+               "buyer_has_2b": buyer_has_2b,
+               "sides_match": (fl["out_taxable"] and fl["in_taxable"]
+                               and abs(fl["out_taxable"] - fl["in_taxable"]) < max(1.0, 0.01 * fl["out_taxable"])),
+               "action": ""}
+        # Book a provisional purchase on the buyer only when it has NO authoritative 2A/2B and we have a
+        # seller-side GSTR-1 amount to derive it from (else the buyer's intercompany purchase is invisible).
+        if fl["out_taxable"] > 0 and not buyer_has_2b:
+            rec["action"] = "buyer has no 2A/2B — book provisional from seller GSTR-1"
+            if book:
+                booked += await _book_intercompany_provisional(sid, bid, period_key)
+        elif buyer_has_2b:
+            rec["action"] = "buyer 2A/2B present — ITC already authoritative (no provisional needed)"
+        out.append(rec)
+    return {"period": period_key, "flows": out, "provisional_booked": booked, "booked": book}
+
+
+async def _book_intercompany_provisional(seller_id: str, buyer_id: str, period_key: str) -> int:
+    """Book provisional purchases on the buyer from the seller's filed GSTR-1 B2B (one per invoice)."""
+    seller = await db.firms.find_one({"id": seller_id}, {"_id": 0, "name": 1, "gstin": 1}) or {}
+    buyer = await db.firms.find_one({"id": buyer_id}, {"_id": 0, "name": 1, "gstin": 1}) or {}
+    inv = {}
+    async for r in db.gst_report_data.find(
+            {"firm_id": seller_id, "source": "vyapar", "section": "b2b",
+             "period_key": period_key, "gstin": buyer.get("gstin")}, {"_id": 0}):
+        n = str(r.get("invoice_number") or "").strip()
+        d = inv.setdefault(n, {"tax": 0.0, "gst": 0.0, "date": r.get("invoice_date"), "val": 0.0})
+        d["tax"] += float(r.get("taxable_value") or 0)
+        d["gst"] += float(r.get("igst") or 0) + float(r.get("cgst") or 0) + float(r.get("sgst") or 0)
+        d["val"] += float(r.get("invoice_value") or 0)
+    if not inv:
+        return 0
+    now = datetime.now(timezone.utc).isoformat()
+    src = f"intercompany_{(seller.get('name') or 'grp').split()[0].lower()}_gstr1"
+    await db.purchases.delete_many({"firm_id": buyer_id, "period_key": period_key, "provisional": True, "source": src})
+    docs = []
+    for n, d in inv.items():
+        tot = round(d["tax"] + d["gst"], 2)
+        docs.append({
+            "id": str(uuid.uuid4()), "purchase_number": f"PROV-{buyer.get('gstin','')[:2]}-{n.replace('/', '-')}",
+            "firm_id": buyer_id, "firm_name": buyer.get("name"), "firm_gstin": buyer.get("gstin"),
+            "supplier_name": seller.get("name"), "supplier_gstin": seller.get("gstin"),
+            "invoice_number": n, "invoice_date": str(d["date"] or "")[:10] or f"{period_key}-28",
+            "period_key": period_key, "is_inter_state": (seller.get("gstin", "")[:2] != buyer.get("gstin", "")[:2]),
+            "total_taxable": round(d["tax"], 2), "taxable_value": round(d["tax"], 2),
+            "total_igst": round(d["gst"], 2), "igst": round(d["gst"], 2), "cgst": 0.0, "sgst": 0.0,
+            "total_gst": round(d["gst"], 2), "total_amount": tot, "grand_total": tot,
+            "category": "intercompany_goods", "itc_eligible": True, "status": "provisional",
+            "provisional": True, "awaiting_2b": True, "source": src,
+            "notes": f"Provisional — from {seller.get('name')} filed GSTR-1 invoice {n}; confirm on {buyer.get('name')} GSTR-2B.",
+            "created_at": now, "created_by_name": "Claude (intercompany provisional)"})
+    if docs:
+        await db.purchases.insert_many(docs)
+    return len(docs)
+
+
+@api_router.get("/admin/intercompany/gst-flows")
+async def intercompany_gst_flows(period: str, book: bool = False,
+                                 user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Detect (and optionally book) intra-group intercompany GST flows for a period, cross-checking each
+    seller's GSTR-1 against the buyer's GSTR-2A/2B. book=true books provisional purchases for buyers with
+    no 2A/2B loaded."""
+    return await _intercompany_gst_flows(period, book=book)
+
+
 @api_router.get("/admin/purchases/2b-flags")
 async def purchases_2b_flags(firm_id: str, period: str,
                              user: dict = Depends(require_roles(["admin", "accountant"]))):

@@ -35,6 +35,11 @@ def detect_return_type(data: dict) -> str:
     inner = data.get("data") if isinstance(data.get("data"), dict) else {}
     if inner.get("docdata") or inner.get("itcsumm") or data.get("docdata") or data.get("itcsumm"):
         return "gstr2b"
+    # GSTR-2A (inward supplies statement, no `data`/`docdata` wrapper): has b2b + inward-only markers
+    # (impg imports / cdn notes / tcs) and NO outward B2C/HSN/export sections. Must be checked BEFORE
+    # GSTR-1, else a 2A (which also has b2b + fp) is misread as outward GSTR-1 (purchases booked as sales).
+    if (keys & {"b2b", "cdn", "cdnr", "impg"}) and not (keys & {"b2cs", "b2cl", "exp", "nil", "hsn", "at", "gt", "cur_gt"}):
+        return "gstr2b"
     # GSTR-1: outward sections + a period/turnover marker
     if (keys & {"b2b", "b2cl", "b2cs", "hsn", "cdnr", "exp", "nil", "at", "txpd"}) and \
        (data.get("fp") or data.get("gt") is not None or data.get("cur_gt") is not None):
@@ -94,25 +99,41 @@ def parse_gstr1(data: dict, firm_id: str, period_key: str) -> list:
     return rows
 
 
+def _2b_tax(container: dict):
+    """Read (txval, igst, cgst, sgst, rate) from a 2B/2A invoice/note or line item, tolerant of BOTH
+    portal formats: flat `igst/cgst/sgst/txval` on the item (newer 2B) AND nested `itm_det` with
+    `iamt/camt/samt/txval` (2A + GSTR-1-style). Without this a 2A reads as ₹0 ITC."""
+    det = container.get("itm_det") if isinstance(container.get("itm_det"), dict) else container
+    tx = _num(det.get("txval"))
+    ig = _num(det.get("igst")) + _num(det.get("iamt"))
+    cg = _num(det.get("cgst")) + _num(det.get("camt"))
+    sg = _num(det.get("sgst")) + _num(det.get("samt"))
+    rt = det.get("rt") if det.get("rt") is not None else det.get("rate")
+    return tx, ig, cg, sg, rt
+
+
+def _2b_totals(parent: dict):
+    """Sum tax across a b2b invoice / cdnr note: per-line-item array if present, else invoice-level."""
+    items = parent.get("items") or parent.get("itms")
+    if items:
+        tx = ig = cg = sg = 0.0
+        rt = None
+        for it in items:
+            a, b, c, e, r = _2b_tax(it)
+            tx += a; ig += b; cg += c; sg += e
+            rt = rt if rt is not None else r
+        return tx, ig, cg, sg, rt
+    return _2b_tax(parent)
+
+
 def parse_gstr2b(data: dict, firm_id: str, period_key: str) -> list:
     rows = []
     d = data.get("data") if isinstance(data.get("data"), dict) else data
-    doc = d.get("docdata") or {}
+    doc = d.get("docdata") or d   # 2A/2B may put b2b directly under `data`, not under `docdata`
     for sup in doc.get("b2b", []) or []:
         ctin = sup.get("ctin")
         for inv in sup.get("inv", []) or []:
-            # Two portal 2B formats: older (pre ~Oct-2024) carries tax in a per-line-item `items`/`itms`
-            # array; newer carries it on the invoice. Handle both, else early months read as ₹0 ITC.
-            items = inv.get("items") or inv.get("itms")
-            if items:
-                txval = sum(_num(it.get("txval")) for it in items)
-                ig = sum(_num(it.get("igst")) for it in items)
-                cg = sum(_num(it.get("cgst")) for it in items)
-                sg = sum(_num(it.get("sgst")) for it in items)
-                rt = (items[0] or {}).get("rt")
-            else:
-                txval, ig, cg, sg, rt = (_num(inv.get("txval")), _num(inv.get("igst")),
-                                         _num(inv.get("cgst")), _num(inv.get("sgst")), inv.get("rt"))
+            txval, ig, cg, sg, rt = _2b_totals(inv)
             rows.append({"section": "2b_itc", "gstin": ctin, "party_name": sup.get("trdnm"),
                          "invoice_number": inv.get("inum"), "invoice_date": inv.get("dt") or inv.get("idt"),
                          "invoice_value": _num(inv.get("val")), "place_of_supply": inv.get("pos"),
@@ -120,19 +141,10 @@ def parse_gstr2b(data: dict, firm_id: str, period_key: str) -> list:
                          "igst": ig, "cgst": cg, "sgst": sg})
     # Credit/debit notes REDUCE (C) or ADD (D) to available ITC — must be captured, else net ITC
     # is overstated by the credit-note amount (e.g. Amazon fee-reversal credit notes).
-    for sup in doc.get("cdnr", []) or []:
+    for sup in (doc.get("cdnr") or doc.get("cdn") or []):
         ctin = sup.get("ctin")
         for nt in sup.get("nt", []) or []:
-            items = nt.get("items") or nt.get("itms")
-            if items:
-                txval = sum(_num(it.get("txval")) for it in items)
-                ig = sum(_num(it.get("igst")) for it in items)
-                cg = sum(_num(it.get("cgst")) for it in items)
-                sg = sum(_num(it.get("sgst")) for it in items)
-                rt = (items[0] or {}).get("rt")
-            else:
-                txval, ig, cg, sg, rt = (_num(nt.get("txval")), _num(nt.get("igst")),
-                                         _num(nt.get("cgst")), _num(nt.get("sgst")), nt.get("rt"))
+            txval, ig, cg, sg, rt = _2b_totals(nt)
             sgn = -1.0 if str(nt.get("typ", "")).strip().upper().startswith("C") else 1.0
             rows.append({"section": "2b_itc_cdnr", "gstin": ctin, "party_name": sup.get("trdnm"),
                          "invoice_number": nt.get("ntnum"), "note_type": str(nt.get("typ", "")).strip().upper(),
