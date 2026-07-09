@@ -37079,14 +37079,38 @@ async def upload_vyapar_gstr_report(
             return v[:2]
         return ""
 
+    def _vyapar_sheet(sheet_name: str, must_have: list):
+        """Read a Vyapar GSTR-1 sub-sheet, auto-locating the REAL header row. Vyapar stacks a
+        title + summary-label + summary-VALUE row above the header on some builds, so a fixed
+        `header=` reads the summary numbers as column names and silently drops every data row
+        (that bug dropped all B2B invoices). Scan the top rows for the one carrying the header
+        tokens, then read with that header."""
+        try:
+            raw = pd.read_excel(io.BytesIO(content), sheet_name=sheet_name, header=None)
+        except Exception:
+            return None
+        toks = [t.lower() for t in must_have]
+        hdr = None
+        for i in range(min(12, len(raw))):
+            cells = [str(c).strip().lower() for c in raw.iloc[i].tolist() if pd.notna(c)]
+            if cells and all(any(t in c for c in cells) for t in toks):
+                hdr = i
+                break
+        if hdr is None:
+            return None
+        df = pd.read_excel(io.BytesIO(content), sheet_name=sheet_name, header=hdr)
+        df.columns = df.columns.astype(str).str.strip().str.lower().str.replace(' ', '_').str.replace('/', '_')
+        return df
+
     if report_type == "gstr1":
         # Parse GSTR1 sheets
 
         # B2B Sheet
         if 'b2b,sez,de' in sheet_names:
             try:
-                df = pd.read_excel(io.BytesIO(content), sheet_name='b2b,sez,de', header=2)
-                df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('/', '_')
+                df = _vyapar_sheet('b2b,sez,de', ['invoice number', 'taxable value'])
+                if df is None:
+                    raise ValueError("B2B header row not found")
 
                 for idx, row in df.iterrows():
                     gstin = str(row.get('gstin_uin_of_recipient', '')).strip()
@@ -37168,6 +37192,13 @@ async def upload_vyapar_gstr_report(
                     except:
                         rate = 0
                     
+                    # B2CS can be intra- OR inter-state; the place-of-supply vs firm state decides
+                    # IGST vs CGST/SGST (Vyapar doesn't emit the split). Delhi firm → UP sale = IGST.
+                    pos_code = _pos_state_code(place_of_supply)
+                    is_igst = bool(firm_state_code and pos_code and firm_state_code != pos_code)
+                    igst = round(taxable_value * rate / 100, 2) if (is_igst and rate > 0) else 0.0
+                    cgst = round(taxable_value * rate / 200, 2) if (not is_igst and rate > 0) else 0.0
+                    sgst = cgst
                     record = {
                         "id": str(uuid.uuid4()),
                         "report_id": report_id,
@@ -37178,19 +37209,94 @@ async def upload_vyapar_gstr_report(
                         "place_of_supply": place_of_supply,
                         "rate": rate,
                         "taxable_value": taxable_value,
-                        "igst": 0,  # B2CS is intra-state, so CGST/SGST only
-                        "cgst": round(taxable_value * rate / 200, 2) if rate > 0 else 0,
-                        "sgst": round(taxable_value * rate / 200, 2) if rate > 0 else 0,
+                        "igst": igst,
+                        "cgst": cgst,
+                        "sgst": sgst,
                         "created_at": now
                     }
                     gst_data_records.append(record)
                     stats["b2c_invoices"] += 1
                     stats["total_taxable_value"] += taxable_value
-                    stats["total_cgst"] += record["cgst"]
-                    stats["total_sgst"] += record["sgst"]
+                    stats["total_igst"] += igst
+                    stats["total_cgst"] += cgst
+                    stats["total_sgst"] += sgst
             except Exception as e:
                 print(f"Error parsing b2cs sheet: {e}")
-        
+
+        # B2CL Sheet (B2C Large — inter-state B2C invoices > ₹2.5L, always IGST)
+        if 'b2cl' in sheet_names:
+            try:
+                df = _vyapar_sheet('b2cl', ['invoice number', 'taxable value'])
+                if df is not None:
+                    for idx, row in df.iterrows():
+                        invoice_no = str(row.get('invoice_number', '')).strip()
+                        if not invoice_no or invoice_no == 'nan':
+                            continue
+                        try:
+                            taxable_value = float(row.get('taxable_value', 0) or 0)
+                        except Exception:
+                            continue
+                        if taxable_value == 0:
+                            continue
+                        rate = float(row.get('rate', 0) or 0)
+                        place_of_supply = str(row.get('place_of_supply', '')).strip()
+                        igst = round(taxable_value * rate / 100, 2) if rate > 0 else 0.0
+                        gst_data_records.append({
+                            "id": str(uuid.uuid4()), "report_id": report_id, "firm_id": firm_id,
+                            "period_key": period_key, "source": "vyapar", "section": "b2cl",
+                            "invoice_number": invoice_no, "invoice_date": str(row.get('invoice_date', '')),
+                            "invoice_value": float(row.get('invoice_value', 0) or 0),
+                            "place_of_supply": place_of_supply, "rate": rate, "taxable_value": taxable_value,
+                            "igst": igst, "cgst": 0.0, "sgst": 0.0, "created_at": now})
+                        stats["b2c_invoices"] += 1
+                        stats["total_taxable_value"] += taxable_value
+                        stats["total_igst"] += igst
+            except Exception as e:
+                logger.warning(f"Error parsing Vyapar b2cl sheet: {e}")
+
+        # CDNR Sheet (credit/debit notes to registered — REDUCE output supply → negative)
+        if 'cdnr' in sheet_names:
+            try:
+                df = _vyapar_sheet('cdnr', ['note number', 'taxable value'])
+                if df is not None:
+                    for idx, row in df.iterrows():
+                        note_no = str(row.get('note_number', '')).strip()
+                        if not note_no or note_no == 'nan':
+                            continue
+                        try:
+                            taxable_value = float(row.get('taxable_value', 0) or 0)
+                        except Exception:
+                            continue
+                        if taxable_value == 0:
+                            continue
+                        rate = float(row.get('rate', 0) or 0)
+                        place_of_supply = str(row.get('place_of_supply', '')).strip()
+                        note_type = str(row.get('note_type', '')).strip().upper()
+                        # Credit note (C) reduces output supply → negative; Debit note (D) adds.
+                        sgn = -1.0 if note_type.startswith('C') else 1.0
+                        taxable = sgn * abs(taxable_value)
+                        pos_code = _pos_state_code(place_of_supply)
+                        is_igst = bool(firm_state_code and pos_code and firm_state_code != pos_code)
+                        igst = round(taxable * rate / 100, 2) if (is_igst and rate > 0) else 0.0
+                        cgst = round(taxable * rate / 200, 2) if (not is_igst and rate > 0) else 0.0
+                        sgst = cgst
+                        gst_data_records.append({
+                            "id": str(uuid.uuid4()), "report_id": report_id, "firm_id": firm_id,
+                            "period_key": period_key, "source": "vyapar", "section": "cdnr",
+                            "gstin": str(row.get('gstin_uin_of_recipient', '')).strip(),
+                            "receiver_name": str(row.get('receiver_name', '')).strip(),
+                            "invoice_number": note_no, "note_type": note_type,
+                            "invoice_date": str(row.get('note_date', '')),
+                            "place_of_supply": place_of_supply, "rate": rate, "taxable_value": taxable,
+                            "igst": igst, "cgst": cgst, "sgst": sgst, "created_at": now})
+                        stats["credit_notes"] += 1
+                        stats["total_taxable_value"] += taxable
+                        stats["total_igst"] += igst
+                        stats["total_cgst"] += cgst
+                        stats["total_sgst"] += sgst
+            except Exception as e:
+                logger.warning(f"Error parsing Vyapar cdnr sheet: {e}")
+
         # HSN Summary Sheet - Vyapar format
         for hsn_sheet in ['hsn(b2b)', 'hsn(b2c)']:
             if hsn_sheet in sheet_names:
