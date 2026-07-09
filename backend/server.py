@@ -70630,6 +70630,80 @@ async def ca_download_file(number: int, user: dict = Depends(require_roles(["ca"
     return FileResponse(path=str(disk_path), media_type=media_type, filename=safe_name)
 
 
+def _norm_inv2b(s) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", str(s or "")).upper()
+
+
+async def _gstr2b_to_portal_itc(firm_id: str, period_key: str, rows: list) -> float:
+    """GSTR-2B is the authoritative ITC. Record its NET available ITC (B2B minus credit notes) into
+    gst_portal_itc so the finance dashboard uses it, SUPERSEDING any provisional purchases."""
+    ig = round(sum(float(r.get("igst") or 0) for r in rows), 2)
+    cg = round(sum(float(r.get("cgst") or 0) for r in rows), 2)
+    sg = round(sum(float(r.get("sgst") or 0) for r in rows), 2)
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0, "name": 1, "gstin": 1}) or {}
+    mmyyyy = period_key.replace("-", "")
+    if len(period_key) == 7 and "-" in period_key:  # YYYY-MM -> MMYYYY
+        y, m = period_key.split("-"); mmyyyy = f"{m}{y}"
+    now = datetime.now(timezone.utc).isoformat()
+    await db.gst_portal_itc.delete_many({"firm_id": firm_id, "period": mmyyyy, "doc": "GSTR-2B"})
+    await db.gst_portal_itc.insert_one({
+        "id": str(uuid.uuid4()), "firm_id": firm_id, "firm_name": firm.get("name"), "gstin": firm.get("gstin"),
+        "period": mmyyyy, "doc": "GSTR-2B", "itc_igst": ig, "itc_cgst": cg, "itc_sgst": sg,
+        "itc_total": round(ig + cg + sg, 2), "source": "gstr2b_import",
+        "basis": "GSTR-2B net available (auto-recorded on import)", "recorded_at": now})
+    return round(ig + cg + sg, 2)
+
+
+async def reconcile_provisional_purchases_against_2b(firm_id: str, period_key: str, rows: list) -> dict:
+    """On GSTR-2B import the 2B replaces the provisional purchase set. Match each PROVISIONAL purchase
+    to a 2B invoice (supplier GSTIN + invoice number). Matched → confirmed (superseded_by_2b). Unmatched
+    provisional → FLAGGED not_in_2b (supplier hasn't filed / wrong doc — founder wants these). 2B invoices
+    with no provisional booking → 'new in 2B' to review. Result cached in purchase_2b_reconciliation."""
+    twob = {}
+    for r in rows:
+        twob[(str(r.get("gstin") or "").upper(), _norm_inv2b(r.get("invoice_number")))] = r
+    prov = [p async for p in db.purchases.find(
+        {"firm_id": firm_id, "period_key": period_key, "provisional": True}, {"_id": 0})]
+    now = datetime.now(timezone.utc).isoformat()
+    matched_keys = set(); matched = 0; flags = []
+    for p in prov:
+        key = (str(p.get("supplier_gstin") or "").upper(), _norm_inv2b(p.get("invoice_number")))
+        if key in twob:
+            matched_keys.add(key); matched += 1
+            await db.purchases.update_one({"id": p["id"]}, {"$set": {
+                "reconciled_2b": True, "superseded_by_2b": True, "not_in_2b": False, "reconciled_at": now}})
+        else:
+            await db.purchases.update_one({"id": p["id"]}, {"$set": {
+                "not_in_2b": True, "reconciled_2b": False, "flagged_at": now}})
+            flags.append({"invoice_number": p.get("invoice_number"), "supplier_gstin": p.get("supplier_gstin"),
+                          "supplier_name": p.get("supplier_name"), "taxable": p.get("taxable_value"),
+                          "itc": p.get("total_gst"), "reason": "booked provisionally but NOT in GSTR-2B"})
+    new_in_2b = []
+    for k, r in twob.items():
+        if k not in matched_keys:
+            new_in_2b.append({"invoice_number": r.get("invoice_number"), "supplier_gstin": r.get("gstin"),
+                              "supplier_name": r.get("party_name"), "taxable": r.get("taxable_value"),
+                              "itc": round(float(r.get("igst") or 0) + float(r.get("cgst") or 0) + float(r.get("sgst") or 0), 2)})
+    summary = {"firm_id": firm_id, "period_key": period_key, "provisional_total": len(prov),
+               "matched_in_2b": matched, "flagged_not_in_2b": len(flags), "flags": flags,
+               "new_in_2b_unbooked": new_in_2b, "reconciled_at": now}
+    await db.purchase_2b_reconciliation.replace_one(
+        {"firm_id": firm_id, "period_key": period_key}, summary, upsert=True)
+    return summary
+
+
+@api_router.get("/admin/purchases/2b-flags")
+async def purchases_2b_flags(firm_id: str, period: str,
+                             user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """The 'booked-but-not-in-2B' flag list + unbooked-2B-invoices for a firm/period."""
+    scope = get_user_firm_scope(user)
+    if scope and firm_id != scope:
+        raise HTTPException(status_code=403, detail="Accountants can only view their own firm.")
+    r = await db.purchase_2b_reconciliation.find_one({"firm_id": firm_id, "period_key": period}, {"_id": 0})
+    return r or {"firm_id": firm_id, "period_key": period, "flags": [], "new_in_2b_unbooked": [],
+                 "note": "No GSTR-2B reconciliation yet for this period."}
+
+
 @api_router.post("/admin/gst-audit/import")
 async def gst_audit_import(firm_id: str = Form(...), period: str = Form(None),
                            file: UploadFile = File(...),
@@ -70676,7 +70750,12 @@ async def gst_audit_import(firm_id: str = Form(...), period: str = Form(None),
         docs = [{**base, "id": str(uuid.uuid4()), "created_at": now, **r} for r in rows]
         if docs:
             await db.gst_report_data.insert_many(docs)
-        return {"success": True, "return_type": rtype, "period": period_key, "rows_imported": len(docs)}
+        resp = {"success": True, "return_type": rtype, "period": period_key, "rows_imported": len(docs)}
+        if rtype == "gstr2b":
+            # 2B is authoritative → record net ITC + reconcile/supersede provisional purchases + flag gaps.
+            resp["net_itc"] = await _gstr2b_to_portal_itc(firm_id, period_key, rows)
+            resp["reconciliation"] = await reconcile_provisional_purchases_against_2b(firm_id, period_key, rows)
+        return resp
     # gstr3b → one summary row
     await db.gst_report_data.insert_one({**base, "id": str(uuid.uuid4()), "created_at": now, **summary})
     return {"success": True, "return_type": rtype, "period": period_key, "summary": summary}
