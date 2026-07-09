@@ -103,11 +103,12 @@ export default function ShipDeskBoard() {
     try { const { data } = await axios.get(`${API}/master-skus/search-for-dispatch`, { headers: H, params: { firm_id: nf.firm_id || MGIPL, search: q, in_stock_only: false } }); setSkus((Array.isArray(data) ? data : data.skus || data.items || []).slice(0, 8)); } catch (e) { setSkus([]); }
   };
   const submitNew = async () => {
+    if (!(nf.order_id || '').trim()) { toast.error('Order ID / invoice reference is required'); return; }
     if (!(nf.customer_name || '').trim()) { toast.error('Customer name is required'); return; }
     if (!nf.master_sku_id && !(nf.product || '').trim()) { toast.error('Enter what to ship'); return; }
     setSaving(true);
     try {
-      const body = { firm_id: nf.firm_id || MGIPL, customer_name: nf.customer_name, phone: nf.phone, address: nf.address, city: nf.city, state: nf.state, pincode: nf.pincode, invoice_value: nf.invoice_value };
+      const body = { order_id: nf.order_id.trim(), firm_id: nf.firm_id || MGIPL, customer_name: nf.customer_name, phone: nf.phone, address: nf.address, city: nf.city, state: nf.state, pincode: nf.pincode, invoice_value: nf.invoice_value };
       if (nf.master_sku_id) body.items = [{ master_sku_id: nf.master_sku_id, quantity: Number(nf.quantity || 1) }];
       else body.product = nf.product;
       const { data } = await axios.post(`${API}/ship-desk/order`, body, { headers: H });
@@ -215,6 +216,9 @@ export default function ShipDeskBoard() {
             <div style={{ fontFamily: T.headline, fontWeight: 800, fontSize: 17, marginBottom: 4 }}>New order</div>
             <div style={{ fontSize: 12, color: T.iron500, marginBottom: 16 }}>Enter the basics. It then waits on the accountant for invoice + tracking + label before it can ship.</div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div style={{ gridColumn: '1 / 3' }}><L>Order ID / invoice reference *</L>
+                <input style={inputStyle} placeholder="The real order / invoice / SO / challan number" value={nf.order_id || ''} onChange={(e) => setF('order_id', e.target.value)} />
+                <div style={{ fontSize: 10.5, color: T.iron400, marginTop: 3 }}>Use the actual reference the sale is known by — not auto-generated, so invoice, dispatch &amp; tracking all match.</div></div>
               <div style={{ gridColumn: '1 / 3' }}><L>Firm *</L>
                 <select style={inputStyle} value={nf.firm_id || MGIPL} onChange={(e) => setF('firm_id', e.target.value)}>
                   {(firms.length ? firms : [{ id: MGIPL, name: 'MGIPL' }]).map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}

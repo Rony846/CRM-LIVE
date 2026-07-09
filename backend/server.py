@@ -24029,7 +24029,14 @@ async def ship_desk_create_order(payload: dict = Body(...),
     now = datetime.now(timezone.utc).isoformat()
     fid = str(uuid.uuid4())
     code = (firm.get("code") or "".join(w[0] for w in (firm.get("name") or "MG").split())[:4]).upper()
-    order_id = (payload.get("order_id") or "").strip() or f"{code}-SD-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{fid[:4].upper()}"
+    # Order ID = the REAL reference the sale is known by (invoice no / SO / challan) — supplied by whoever
+    # punches it in. We only auto-generate when it's genuinely absent (e.g. the agent-created path), and
+    # never silently reuse an existing id (that would merge two orders' docs/serials).
+    supplied_oid = (payload.get("order_id") or "").strip()
+    order_id = supplied_oid or f"{code}-SD-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{fid[:4].upper()}"
+    if await db.pending_fulfillment.find_one({"order_id": order_id}, {"_id": 1}):
+        raise HTTPException(status_code=400, detail=f"Order ID '{order_id}' already exists — use the real, unique order/invoice reference")
+    order_id_generated = not supplied_oid
     doc = {
         "id": fid, "order_id": order_id, "type": "ship_desk_order", "source": "ship_desk",
         "firm_id": firm_id, "firm_name": firm.get("name"), "stage": "awaiting_accountant",
@@ -24040,7 +24047,7 @@ async def ship_desk_create_order(payload: dict = Body(...),
         "items": items, "master_sku_id": items[0].get("master_sku_id"),
         "master_sku_name": items[0].get("master_sku_name"), "quantity": sum(i["quantity"] for i in items),
         "invoice_value": val, "created_at": now, "created_by": user.get("email") or user.get("name"),
-        "created_by_role": user.get("role")}
+        "created_by_role": user.get("role"), "order_id_generated": order_id_generated}
     await db.pending_fulfillment.insert_one(doc)
     try:
         await create_notification(
@@ -24050,7 +24057,7 @@ async def ship_desk_create_order(payload: dict = Body(...),
     except Exception:
         pass
     return {"success": True, "order_id": order_id, "stage": "awaiting_accountant",
-            "required_docs": doc["required_docs"]}
+            "order_id_generated": order_id_generated, "required_docs": doc["required_docs"]}
 
 
 @api_router.post("/ship-desk/order/{order_id}/doc")
