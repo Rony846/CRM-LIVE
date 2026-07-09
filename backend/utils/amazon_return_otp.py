@@ -160,8 +160,10 @@ async def match_inward_scan(db, tracking_id, by=None, by_name=None) -> dict | No
     tid = re.sub(r"\s", "", str(tracking_id or ""))
     if not tid:
         return None
+    # Match pending OR expired batches — a parcel that arrives a day late (past Amazon's validity date)
+    # should still complete the batch and release the OTP once every parcel is physically in hand.
     batch = await db.return_otp_batches.find_one(
-        {"status": "pending", "items": {"$elemMatch": {"tracking_id": tid, "scanned": False}}})
+        {"status": {"$in": ["pending", "expired"]}, "items": {"$elemMatch": {"tracking_id": tid, "scanned": False}}})
     if not batch:
         return None
     now = datetime.now(timezone.utc).isoformat()
@@ -176,7 +178,9 @@ async def match_inward_scan(db, tracking_id, by=None, by_name=None) -> dict | No
     completed = scanned_count >= len(items)
     sets = {"items": items, "scanned_count": scanned_count, "updated_at": now}
     if completed:
-        sets.update({"status": "complete", "otp_released": True, "released_at": now})
+        sets.update({"status": "complete", "otp_released": True, "released_at": now, "expired_flagged": False})
+    elif batch.get("status") == "expired":
+        sets.update({"status": "pending", "expired_flagged": False})   # late parcel re-opens the batch
     await db.return_otp_batches.update_one({"id": batch["id"]}, {"$set": sets})
     batch.update(sets)
     batch["just_completed"] = completed

@@ -115,14 +115,30 @@ async def _capture_token() -> tuple:
             pass
 
 
+def _product_str(pds) -> str:
+    """Join the panel's productDetails into one description, e.g. 'MG 6.2KW Inverter ×2; MG Battery'."""
+    parts = []
+    for p in pds or []:
+        nm = (p.get("productName") or "").strip()
+        if not nm:
+            continue
+        q = p.get("productQty") or 1
+        parts.append(f"{nm} ×{q}" if str(q) not in ("1", "", "None") else nm)
+    return "; ".join(parts)
+
+
 def _parse(rec: dict) -> dict:
-    od = (rec.get("shipmentDetail") or {}).get("orderDetail") or {}
+    sd = rec.get("shipmentDetail") or {}
+    od = sd.get("orderDetail") or {}
     bd = rec.get("buyerDetail") or {}
+    pds = sd.get("productDetails") or []
     phone = re.sub(r"\D", "", str(bd.get("mobile1") or ""))[-10:]
     name = " ".join(x for x in [bd.get("fname"), bd.get("lname")] if x) or (bd.get("companyName") or "")
     ref = (od.get("userOrderId") or "").strip()
     return {
         "order_ref": ref,
+        "product": _product_str(pds),
+        "products": [{"name": p.get("productName"), "qty": p.get("productQty")} for p in pds if p.get("productName")],
         "is_amazon_order": bool(_AMZ.match(ref)),
         "awb": str(od.get("awb") or od.get("lrNumber") or "").strip(),
         "lr_number": str(od.get("lrNumber") or "").strip(),

@@ -27,6 +27,7 @@ export default function ShipDesk() {
   const [sel, setSel] = useState(null);          // order being shipped
   const [form, setForm] = useState({ category: 'auto', awb: '', courier: 'Delhivery', file: null, mode: 'upload' });
   const [busy, setBusy] = useState(false);
+  const [packing, setPacking] = useState(null);   // order_id currently printing a pack set
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -41,6 +42,23 @@ export default function ShipDesk() {
   useEffect(() => { load(); }, [load]);
 
   const open = (o) => { setSel(o); setForm({ category: 'auto', awb: '', courier: 'Delhivery', file: null, mode: 'upload' }); };
+  const packSet = async (o, e) => {
+    const oid = o.order_id || o.amazon_order_id || o.order_number;
+    // Serial auto-binds server-side (serial-at-dispatch). Shift-click to scan/override manually.
+    let serial = '';
+    if (e?.shiftKey) serial = (window.prompt('Scan the unit serial to bind to this order:', '') || '').trim();
+    setPacking(oid);
+    try {
+      const { data } = await axios.post(`${API}/orders/${encodeURIComponent(oid)}/print-pack-set`, null, { headers: H, params: { serial, customer: o.customer_name || '' } });
+      const p = data.printed || {};
+      const sn = (data.serials || []).join(', ');
+      const okAll = Object.values(p).every((v) => v === true);
+      const line = 'Pack set' + (sn ? ` · serial ${sn} (${data.serial_source})` : '') + ' → ' +
+        Object.entries(p).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v === true ? '✓' : v}`).join(' · ');
+      (okAll ? toast.success : (toast.warning || toast))(line);
+    } catch (err) { toast.error(err?.response?.data?.detail || 'Pack set print failed'); }
+    finally { setPacking(null); }
+  };
 
   const ship = async () => {
     if (form.mode !== 'bigship' && !form.awb.trim() && !form.file) { toast.error('Enter the AWB or upload the label'); return; }
@@ -85,7 +103,10 @@ export default function ShipDesk() {
                 <td style={tdCell}><div style={{ fontWeight: 600, fontSize: 13 }}>{o.customer_name || '—'}</div><div style={{ ...mono, fontSize: 11, color: T.iron400 }}>{o.phone || ''}</div></td>
                 <td style={{ ...tdCell, color: T.iron500, fontSize: 12.5, maxWidth: 320 }}>{itemsText(o)}</td>
                 <td style={{ ...tdCell, color: T.iron500, fontSize: 12.5 }}>{[o.city, o.state, o.pincode].filter(Boolean).join(', ') || '—'}</td>
-                <td style={{ ...tdCell, textAlign: 'right' }}><button onClick={() => open(o)} style={btnOutline}>Ship</button></td>
+                <td style={{ ...tdCell, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  <button onClick={(e) => packSet(o, e)} disabled={packing === (o.order_id || o.amazon_order_id || o.order_number)} style={{ ...btnOutline, marginRight: 6, opacity: packing === (o.order_id || o.amazon_order_id || o.order_number) ? 0.6 : 1 }} title="Print courier label + care card + auto-bound serial label at the office. Shift-click to scan a serial manually.">{packing === (o.order_id || o.amazon_order_id || o.order_number) ? '🖨 …' : '🖨 Pack set'}</button>
+                  <button onClick={() => open(o)} style={btnOutline}>Ship</button>
+                </td>
               </tr>
             ))}
           </tbody>

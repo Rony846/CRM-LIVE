@@ -600,6 +600,17 @@ async def create_indexes():
             replace_existing=True,
             misfire_grace_time=3600,  # accept up-to-1h late firing after VPS reboot
         )
+        # Nightly label plan → dispatcher desks (dry-run report by default; books only if AUTOBOOK).
+        if NIGHTLY_LABEL_JOB_ENABLED:
+            scheduler.add_job(
+                scheduled_nightly_label_plan,
+                CronTrigger(hour=int(os.environ.get("NIGHTLY_LABEL_HOUR_UTC", "18")),
+                            minute=int(os.environ.get("NIGHTLY_LABEL_MIN_UTC", "30"))),
+                id="nightly_label_plan",
+                name="Nightly label plan → dispatcher desks (dry-run unless AUTOBOOK)",
+                replace_existing=True,
+                misfire_grace_time=3600,
+            )
         # Pratibha verifies the freshly-pulled Amazon dispatches + their Delhivery pickup status and
         # WhatsApps the main group (default 1h after each pull).
         scheduler.add_job(
@@ -618,6 +629,30 @@ async def create_indexes():
                         minute=int(os.environ.get("CRON_AMAZON_REFUND_MIN_UTC", "0"))),
             id="pratibha_amazon_refund_check",
             name="Pratibha Amazon Refund Gap Check (Delhivery-cancelled not-refunded -> group)",
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
+
+        # Nightly rebuild of the unified customer_master directory (default 21:00 UTC ~ 02:30 IST) so
+        # Customer 360 resolves newly-added phones / PIs / orders across all collections.
+        scheduler.add_job(
+            scheduled_customer_master_rebuild,
+            CronTrigger(hour=int(os.environ.get("CUSTOMER_MASTER_REBUILD_HOUR_UTC", "21")),
+                        minute=int(os.environ.get("CUSTOMER_MASTER_REBUILD_MIN_UTC", "0"))),
+            id="customer_master_rebuild",
+            name="Customer Master nightly rebuild (unified directory)",
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
+
+        # Legal Diary: daily consolidated digest to the lawyer (email) + one founder WhatsApp —
+        # due/overdue actions, hearings, notice-reply deadlines, and the limitation-period watchdog.
+        scheduler.add_job(
+            scheduled_legal_diary,
+            CronTrigger(hour=int(os.environ.get("LEGAL_DIARY_HOUR_UTC", "3")),
+                        minute=int(os.environ.get("LEGAL_DIARY_MIN_UTC", "45"))),
+            id="legal_diary",
+            name="Legal Diary daily digest + limitation watchdog",
             replace_existing=True,
             misfire_grace_time=3600,
         )
@@ -20098,6 +20133,1114 @@ async def lookup_serial_number(
     return serial
 
 
+_SERIAL_ROLES = ["admin", "accountant", "supervisor", "service_agent", "dispatcher", "gate"]
+SERIAL_VERIFY_BASE = os.environ.get("SERIAL_VERIFY_BASE", "https://newcrm.musclegrid.in/verify")
+
+
+def _he(x):
+    return str(x).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _serial_qr_datauri(text: str) -> str:
+    import qrcode, io, base64
+    img = qrcode.make(text, box_size=9, border=1)
+    buf = io.BytesIO(); img.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def _serial_barcode_datauri(code: str):
+    try:
+        import barcode, io, base64
+        from barcode.writer import ImageWriter
+        bc = barcode.get("code128", code, writer=ImageWriter())
+        buf = io.BytesIO()
+        bc.write(buf, options={"write_text": False, "module_height": 7.0, "module_width": 0.22, "quiet_zone": 1.0})
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception as e:
+        logger.warning(f"barcode render failed for {code}: {e}")
+        return None
+
+
+async def _serial_full_history(sn: str):
+    """Aggregate a serial's whole life: the record + production + dispatch/customer + warranty + repairs."""
+    s = await db.finished_good_serials.find_one({"serial_number": sn}, {"_id": 0})
+    if not s:
+        return None
+    out = {"serial": s, "production": None, "dispatch": None, "warranty": None, "repairs": []}
+    pr_id = s.get("production_request_id")
+    if pr_id and str(pr_id) != "None":
+        out["production"] = await db.production_requests.find_one(
+            {"id": pr_id}, {"_id": 0, "request_number": 1, "assigned_to_name": 1, "manufacturing_role": 1,
+                            "completed_at": 1, "created_at": 1, "firm_name": 1})
+    out["dispatch"] = await db.dispatches.find_one(
+        {"$or": [{"serial_number": sn}, {"serial_numbers": sn}, {"serials": sn}]},
+        {"_id": 0, "order_id": 1, "customer_name": 1, "dispatched_at": 1, "tracking_id": 1, "dispatch_number": 1})
+    out["warranty"] = (await db.warranty_registrations.find_one({"serial_number": sn}, {"_id": 0})
+                       or await db.warranties.find_one({"serial_number": sn}, {"_id": 0}))
+    out["repairs"] = await db.tickets.find(
+        {"$or": [{"serial_number": sn}, {"product_serial": sn}]},
+        {"_id": 0, "ticket_number": 1, "status": 1, "issue": 1, "created_at": 1}).sort("created_at", -1).to_list(20)
+    return out
+
+
+@api_router.get("/finished-good-serials/{serial_number}/history")
+async def serial_history(serial_number: str, user: dict = Depends(require_roles(_SERIAL_ROLES))):
+    """Scan → full unit history: build (who/when), dispatch (customer/AWB), warranty, and repairs."""
+    h = await _serial_full_history(serial_number)
+    if not h:
+        raise HTTPException(status_code=404, detail="Serial not found")
+    return h
+
+
+def _serial_origin_flag(s: dict) -> str:
+    """Tiny stock-origin marker on the serial label. S = a pre-generated in-stock serial (already stuck
+    on a warehouse unit); N = newly generated at dispatch. Legacy records without `origin`: a
+    generated-at-dispatch record → N, anything else → S."""
+    origin = (s or {}).get("origin")
+    if origin == "stock":
+        return "S"
+    if origin == "new":
+        return "N"
+    if (s or {}).get("generated") or (s or {}).get("source") == "generated_at_dispatch":
+        return "N"
+    return "S"
+
+
+async def _serial_label_pdf_bytes(serial_number: str, s: dict = None) -> bytes:
+    """Render the 100×50mm thermal serial label → PDF bytes (shared by the download endpoint, the
+    pack-set printer, and stock batch printing). Returns None if the serial isn't found."""
+    if s is None:
+        s = await db.finished_good_serials.find_one({"serial_number": serial_number}, {"_id": 0})
+    if not s:
+        return None
+    from weasyprint import HTML
+    qr = _serial_qr_datauri(f"{SERIAL_VERIFY_BASE}/{serial_number}")
+    bc = _serial_barcode_datauri(serial_number)
+    mfg = str(s.get("created_at") or "")[:10]
+    prod = str(s.get("master_sku_name") or "MuscleGrid Product")
+    bc_html = f'<img src="{bc}">' if bc else ""
+    flag = _serial_origin_flag(s)
+    # Thermal-optimised, professional (founder-approved 2026-07-08): white bg, black text + thin rules,
+    # NO solid-black header bar (smears on direct thermal), NO firm name. Tiny S/N stock marker bottom-right.
+    html = f"""<html><head><meta charset="utf-8"><style>
+    @page{{size:100mm 50mm;margin:0}} *{{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;color:#000}}
+    .w{{width:100mm;height:50mm;padding:8mm;display:flex;flex-direction:column}}
+    .top{{display:flex;align-items:center;justify-content:space-between;padding-bottom:1.4mm;border-bottom:1.5pt solid #000}}
+    .brand{{font-size:16pt;font-weight:800;letter-spacing:.2pt}} .brand span{{font-weight:400}}
+    .gen{{font-size:8pt;font-weight:800;border:1.4pt solid #000;border-radius:3px;padding:1px 6px;letter-spacing:.5pt}}
+    .body{{flex:1;display:flex;gap:3mm;padding-top:1.4mm;overflow:hidden}}
+    .qr{{width:21mm;text-align:center}} .qr img{{width:21mm;height:21mm}} .qr div{{font-size:6pt;margin-top:.6mm}}
+    .right{{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;overflow:hidden}}
+    .plabel{{font-size:6.5pt;letter-spacing:.5pt;text-transform:uppercase}}
+    .pname{{font-size:8pt;font-weight:700;line-height:1.15;margin:.3mm 0 1.2mm;max-height:6.7mm;overflow:hidden}}
+    .snlabel{{font-size:6.5pt;letter-spacing:.5pt;text-transform:uppercase}}
+    .serial{{font-family:'Courier New',monospace;font-size:13.5pt;font-weight:800;letter-spacing:.5pt;line-height:1}}
+    .bc{{margin-top:1.2mm}} .bc img{{width:44mm;height:6.5mm}}
+    .foot{{border-top:.75pt solid #000;padding-top:1mm;display:flex;justify-content:space-between;align-items:center;font-size:6pt}}
+    .og{{font-size:6pt;font-weight:800;border:.75pt solid #000;border-radius:2px;padding:0 1.2mm;margin-left:1.6mm}}
+    </style></head><body><div class="w">
+      <div class="top"><div class="brand">Muscle<span>Grid</span></div><div class="gen">GENUINE &#10003;</div></div>
+      <div class="body">
+        <div class="qr"><img src="{qr}"><div>Scan to verify</div></div>
+        <div class="right">
+          <div class="plabel">Product</div><div class="pname">{_he(prod[:50])}</div>
+          <div class="snlabel">Serial No.</div><div class="serial">{_he(serial_number)}</div>
+          <div class="bc">{bc_html}</div>
+        </div>
+      </div>
+      <div class="foot"><span>Verify &middot; Register warranty &middot; Support</span><span>Mfg {mfg} &middot; wa.me/919999036254<span class="og">{flag}</span></span></div>
+    </div></body></html>"""
+    return HTML(string=html).write_pdf()
+
+
+@api_router.get("/finished-good-serials/{serial_number}/label.pdf")
+async def serial_label_pdf(serial_number: str, user: dict = Depends(require_roles(_SERIAL_ROLES))):
+    """Thermal-ready (100x50mm) serial label: MuscleGrid header + product + big serial + Code128 barcode
+    + QR + tiny S/N stock marker. Print via the office bridge or download."""
+    s = await db.finished_good_serials.find_one({"serial_number": serial_number}, {"_id": 0})
+    if not s:
+        raise HTTPException(status_code=404, detail="Serial not found")
+    from fastapi.responses import Response as _Resp
+    pdf = await _serial_label_pdf_bytes(serial_number, s)
+    return _Resp(content=pdf, media_type="application/pdf",
+                 headers={"Content-Disposition": f'inline; filename="serial_{serial_number}.pdf"'})
+
+
+async def _print_serial_labels_batch(serials: list):
+    """Fire-and-forget: print each stock serial's thermal label on the TSC (one per warehouse unit).
+    Sequential (single thermal head); never raises."""
+    ok = 0
+    for sn in serials:
+        try:
+            pdf = await _serial_label_pdf_bytes(sn)
+            if pdf and await _office_print(pdf, OFFICE_LABEL_PRINTER, "fit", "serial"):
+                ok += 1
+        except Exception as ex:
+            logger.warning(f"stock serial print {sn} failed: {ex}")
+    logger.info(f"stock serial batch print: {ok}/{len(serials)} labels sent to the TSC")
+    return ok
+
+
+@api_router.post("/finished-good-serials/pre-generate")
+async def pre_generate_stock_serials(payload: dict = Body(...), background: BackgroundTasks = None,
+                                     user: dict = Depends(require_roles(["admin", "supervisor", "accountant", "dispatcher"]))):
+    """Pre-generate a BATCH of in-stock serials for a product the warehouse physically holds, and (by
+    default) print all their thermal labels so they can be stuck on the units now. At dispatch these
+    'stock' serials (marked 'S' on the label) are consumed BEFORE any new serial ('N') is minted —
+    building the warehouse serial inventory. Idempotent per call (each call = one fresh batch)."""
+    sku_id = payload.get("master_sku_id")
+    sku = await db.master_skus.find_one({"id": sku_id}, {"_id": 0, "id": 1, "name": 1, "sku_code": 1}) if sku_id else None
+    if not sku:
+        raise HTTPException(status_code=400, detail="Valid product (master_sku_id) is required")
+    qty = int(payload.get("quantity") or 0)
+    if qty < 1 or qty > 500:
+        raise HTTPException(status_code=400, detail="Quantity must be between 1 and 500")
+    firm_id = payload.get("firm_id")
+    now = datetime.now(timezone.utc).isoformat()
+    batch_id = str(uuid.uuid4())
+    serials, docs = [], []
+    for _ in range(qty):
+        sn = await _generate_serial(sku)
+        docs.append({
+            "id": str(uuid.uuid4()), "serial_number": sn, "master_sku_id": sku["id"],
+            "master_sku_name": sku.get("name"), "master_sku_code": sku.get("sku_code"),
+            "firm_id": firm_id, "status": "in_stock", "origin": "stock",
+            "source": "pre_generated_stock", "stock_batch_id": batch_id,
+            "created_at": now, "created_by": user.get("email") or user.get("name")})
+        serials.append(sn)
+    if docs:
+        await db.finished_good_serials.insert_many(docs)
+    do_print = payload.get("print", True)
+    if do_print and background is not None:
+        background.add_task(_print_serial_labels_batch, serials)
+    return {"success": True, "batch_id": batch_id, "product": sku.get("name"),
+            "count": len(serials), "printing": bool(do_print), "serials": serials}
+
+
+@api_router.get("/finished-good-serials/stock-summary")
+async def stock_serial_summary(user: dict = Depends(require_roles(["admin", "supervisor", "accountant", "dispatcher"]))):
+    """Live warehouse serial inventory — remaining pre-generated in-stock serials per product ('S' pool
+    still waiting to be consumed by an order)."""
+    pipeline = [
+        {"$match": {"status": "in_stock"}},
+        {"$group": {"_id": {"sku_id": "$master_sku_id", "name": "$master_sku_name"},
+                    "in_stock": {"$sum": 1}, "last_added": {"$max": "$created_at"}}},
+        {"$sort": {"in_stock": -1}},
+    ]
+    rows = []
+    async for r in db.finished_good_serials.aggregate(pipeline):
+        rows.append({"master_sku_id": r["_id"].get("sku_id"), "product": r["_id"].get("name"),
+                     "in_stock": r.get("in_stock"), "last_added": r.get("last_added")})
+    return {"total_in_stock": sum(r["in_stock"] for r in rows), "items": rows}
+
+
+@api_router.get("/public/verify/{serial}")
+async def public_verify_serial(serial: str):
+    """PUBLIC (no auth) — the QR target on the serial label. Returns ONLY safe fields (genuine status,
+    product, mfg date, warranty status) — never customer PII, cost, or internal notes."""
+    s = await db.finished_good_serials.find_one({"serial_number": serial.strip()}, {"_id": 0})
+    if not s:
+        return {"genuine": False, "serial": serial}
+    w = (await db.warranty_registrations.find_one({"serial_number": serial}, {"_id": 0})
+         or await db.warranties.find_one({"serial_number": serial}, {"_id": 0}))
+    warranty = {"registered": False}
+    if w:
+        end = w.get("warranty_end_date")
+        active = None
+        try:
+            if end:
+                active = datetime.fromisoformat(str(end)[:10]).date() >= _ist_today()
+        except Exception:
+            active = None
+        warranty = {"registered": True, "valid_till": str(end)[:10] if end else None, "active": active}
+    return {"genuine": True, "brand": "MuscleGrid", "serial": serial,
+            "product": s.get("master_sku_name"), "mfg_date": str(s.get("created_at") or "")[:10],
+            "warranty": warranty,
+            "support": {"whatsapp": "919999036254", "email": "service@musclegrid.in"}}
+
+
+_CARE_TIPS = {
+    "inverter": "Keep the vents clear and avoid overloading beyond the rated wattage.",
+    "lifepo4": "Charge fully before first use and avoid deep discharge — it maximises battery life.",
+    "lithium": "Charge fully before first use and avoid deep discharge — it maximises battery life.",
+    "batter": "Charge fully before first use and avoid deep discharge — it maximises battery life.",
+    "stabiliz": "Use the correct input wire gauge (6-8 sq mm) and keep within the rated load.",
+    "solar": "Keep the panels clean and check connections before the monsoon.",
+    "ups": "Test the backup monthly and replace batteries every ~3 years.",
+}
+
+
+def _care_tip(product: str) -> str:
+    p = (product or "").lower()
+    for k, t in _CARE_TIPS.items():
+        if k in p:
+            return t
+    return "Register your warranty and keep the manual handy for full protection."
+
+
+@api_router.get("/customer-card.pdf")
+async def customer_card_pdf(customer: str = None, serial: str = None, order_id: str = None,
+                            product: str = None, warranty_till: str = None, support_name: str = "Kalpana",
+                            user: dict = Depends(require_roles(_SERIAL_ROLES))):
+    """Premium PERSONALISED unboxing card ('Specially crafted for Mr. X') — pulls customer/product/serial/
+    warranty from an order or serial + an intelligent product-specific care tip. Second label type,
+    alongside the plain serial label."""
+    if serial:
+        s = await db.finished_good_serials.find_one({"serial_number": serial}, {"_id": 0, "master_sku_name": 1})
+        if s and not product:
+            product = s.get("master_sku_name")
+        if not warranty_till:
+            w = await db.warranty_registrations.find_one({"serial_number": serial}, {"_id": 0, "warranty_end_date": 1})
+            if w:
+                warranty_till = str(w.get("warranty_end_date") or "")[:10]
+    if order_id and (not customer or not product):
+        o = (await db.amazon_order_processing.find_one({"order_id": order_id}, {"_id": 0, "customer_name": 1, "product_title": 1})
+             or await db.sales_orders.find_one({"$or": [{"order_id": order_id}, {"id": order_id}]}, {"_id": 0, "party_name": 1, "customer_name": 1}))
+        if o:
+            customer = customer or o.get("customer_name") or o.get("party_name")
+            product = product or o.get("product_title")
+    cust = (customer or "Valued Customer").strip()
+    product = product or "MuscleGrid Product"
+    tip = _care_tip(product)
+    qtarget = f"{SERIAL_VERIFY_BASE}/{serial}" if serial else "https://newcrm.musclegrid.in"
+    qri = _serial_qr_datauri(qtarget)
+    wline = (f"&#9733; Warranty protected till {warranty_till}" if warranty_till else "&#9733; Register within 30 days for full warranty")
+    from weasyprint import HTML
+    from fastapi.responses import Response as _Resp
+    # Thermal-optimised premium card: white bg, black text + thin rules, NO solid-black bars.
+    html = f"""<html><head><meta charset="utf-8"><style>
+    @page{{size:100mm 50mm;margin:0}} *{{box-sizing:border-box;margin:0;padding:0}} html,body{{margin:0;padding:0}}
+    body{{width:100mm;height:50mm;font-family:Arial,sans-serif;color:#000}}
+    .w{{width:100mm;height:50mm;padding:8mm;display:flex;flex-direction:column}}
+    .h{{display:flex;align-items:center;justify-content:space-between;padding-bottom:1.2mm;border-bottom:1.5pt solid #000}}
+    .brand{{font-size:13pt;font-weight:800;letter-spacing:.3pt}} .brand span{{font-weight:400}} .pc{{font-size:6.3pt;letter-spacing:1.2pt}}
+    .b{{flex:1;display:flex;padding-top:1.3mm;gap:2.2mm;overflow:hidden}}
+    .l{{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;overflow:hidden}}
+    .for{{font-size:6.6pt;font-style:italic;color:#333}}
+    .nm{{font-family:Georgia,'Times New Roman',serif;font-size:15pt;font-weight:bold;line-height:1;margin:.3mm 0 .8mm}}
+    .pr{{font-size:6.6pt;line-height:1.22;max-height:8.2mm;overflow:hidden}} .wr{{font-size:7pt;font-weight:bold;margin-top:.9mm}}
+    .tip{{font-size:6.3pt;font-style:italic;color:#333;margin-top:.5mm}}
+    .r{{width:26mm;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}}
+    .r img{{width:22mm;height:22mm}} .r div{{font-size:5.6pt;color:#333;margin-top:.6mm;line-height:1.1}}
+    .f{{border-top:.75pt solid #000;font-size:6.3pt;text-align:center;padding-top:1mm;margin-top:.8mm}}
+    </style></head><body><div class="w">
+      <div class="h"><div class="brand">Muscle<span>Grid</span></div><div class="pc">&#10022; PREMIUM CARE</div></div>
+      <div class="b">
+        <div class="l">
+          <div class="for">Specially crafted for</div>
+          <div class="nm">{_he(cust[:26])}</div>
+          <div class="pr">Your <b>{_he(product[:34])}</b> &mdash; hand-assembled &amp; individually tested for you.</div>
+          <div class="wr">{wline}</div>
+          <div class="tip">Care tip: {_he(tip)}</div>
+        </div>
+        <div class="r"><img src="{qri}"><div>Scan to activate warranty &amp; meet your care team</div></div>
+      </div>
+      <div class="f">With care, Team MuscleGrid &nbsp;&middot;&nbsp; {_he(support_name)} &nbsp;&middot;&nbsp; wa.me/919999036254</div>
+    </div></body></html>"""
+    pdf = HTML(string=html).write_pdf()
+    return _Resp(content=pdf, media_type="application/pdf",
+                 headers={"Content-Disposition": 'inline; filename="customer_card.pdf"'})
+
+
+OFFICE_PRINT_KEY = os.environ.get("OFFICE_PRINT_KEY", "/root/.ssh/office_print.key")
+OFFICE_PRINT_HOST = os.environ.get("OFFICE_PRINT_HOST", "admin@100.88.72.108")
+# Courier label + invoice go to the Samsung ML-2160 (USB, verified). The HP M128fw is NOT verified
+# yet, so it is intentionally NOT the default — switch OFFICE_COURIER_PRINTER back to "MG M128 IP"
+# only once the HP is confirmed printing.
+OFFICE_COURIER_PRINTER = os.environ.get("OFFICE_COURIER_PRINTER", "Samsung ML-2160 Series")
+OFFICE_LABEL_PRINTER = os.environ.get("OFFICE_LABEL_PRINTER", "TSC TTP-244 Pro")
+# The TSC's driver default is 4×6; our labels are 100×50mm. Windows won't let a custom form be the
+# driver default, but PDFtoPrinter accepts a form NAME as its 3rd arg — "2 x 4" (~50×102mm) is the
+# TSC's thermal form that fits the 100×50 label. Passed only for the label printer.
+OFFICE_LABEL_PAPER = os.environ.get("OFFICE_LABEL_PAPER", "2 x 4")
+# Thermal labels (TSC) don't render via PDFtoPrinter/SumatraPDF but DO print via the .NET GDI image
+# path. So label PDFs are rasterised to PNG (at the TSC's 203 dpi) and drawn onto a 100×50mm page.
+OFFICE_LABEL_W = int(os.environ.get("OFFICE_LABEL_W", "394"))   # 100mm in 1/100 inch
+OFFICE_LABEL_H = int(os.environ.get("OFFICE_LABEL_H", "197"))   # 50mm in 1/100 inch
+OFFICE_LABEL_DPI = os.environ.get("OFFICE_LABEL_DPI", "203")
+
+
+async def _office_print_thermal(pdf_bytes: bytes, printer: str, tag: str) -> bool:
+    """Print a thermal label: rasterise the PDF → PNG (pdftoppm) → scp → draw onto a 100×50mm page via
+    .NET PrintDocument (GDI). NEVER raises. This is the path that actually reaches the TSC head."""
+    import tempfile, os as _os, uuid as _uuid, base64 as _b64
+    tmp_pdf = tmp_png = None
+    try:
+        tf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf"); tf.write(pdf_bytes); tf.close(); tmp_pdf = tf.name
+        tmp_png = tmp_pdf[:-4] + ".png"
+        r = await asyncio.create_subprocess_exec(
+            "pdftoppm", "-png", "-r", OFFICE_LABEL_DPI, "-singlefile", tmp_pdf, tmp_pdf[:-4],
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        await asyncio.wait_for(r.communicate(), timeout=30)
+        if not _os.path.exists(tmp_png):
+            return False
+        fn = f"pk_{tag}_{_uuid.uuid4().hex[:8]}.png"
+        remote_win = f"C:\\MG\\{fn}"; remote_scp = f"C:/MG/{fn}"
+        p = await asyncio.create_subprocess_exec(
+            "scp", "-i", OFFICE_PRINT_KEY, "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "ConnectTimeout=15", tmp_png, f"{OFFICE_PRINT_HOST}:{remote_scp}",
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        await asyncio.wait_for(p.communicate(), timeout=30)
+        if p.returncode != 0:
+            return False
+        w, h = OFFICE_LABEL_W, OFFICE_LABEL_H
+        ps = ("Add-Type -AssemblyName System.Drawing; "
+              f"$img=[System.Drawing.Image]::FromFile('{remote_win}'); "
+              "$pd=New-Object System.Drawing.Printing.PrintDocument; "
+              f"$pd.PrinterSettings.PrinterName='{printer}'; "
+              "$pd.DefaultPageSettings.Margins=New-Object System.Drawing.Printing.Margins(0,0,0,0); "
+              f"$pd.DefaultPageSettings.PaperSize=New-Object System.Drawing.Printing.PaperSize('Label',{w},{h}); "
+              f"$pd.add_PrintPage({{ param($s,$e) $e.Graphics.DrawImage($img,0,0,{w},{h}) }}); "
+              "$pd.Print(); $img.Dispose()")
+        b64 = _b64.b64encode(ps.encode("utf-16-le")).decode()
+        p2 = await asyncio.create_subprocess_exec(
+            "ssh", "-i", OFFICE_PRINT_KEY, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", OFFICE_PRINT_HOST,
+            f"powershell -EncodedCommand {b64}",
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        await asyncio.wait_for(p2.communicate(), timeout=45)
+        return p2.returncode == 0
+    except Exception as ex:
+        logger.warning(f"office thermal print [{tag}] failed: {ex}")
+        return False
+    finally:
+        for f in (tmp_pdf, tmp_png):
+            if f:
+                try: _os.unlink(f)
+                except Exception: pass
+
+
+async def _office_print_a4(pdf_bytes: bytes, printer: str, tag: str) -> bool:
+    """Print an A4 doc (courier label / invoice / packing slip) as rendered PNG page(s) via .NET GDI.
+    PDFtoPrinter prints our own weasyprint PDFs but SILENTLY FAILS on some PDFs (exit 0, no paper) —
+    notably the Bigship courier label (2026-07-08). The GDI image path reaches paper reliably on every
+    PDF (same proven path as the thermal labels), and handles multi-page docs. NEVER raises."""
+    import tempfile, os as _os, uuid as _uuid, base64 as _b64, glob as _glob
+    tmp_pdf = None
+    try:
+        tf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf"); tf.write(pdf_bytes); tf.close(); tmp_pdf = tf.name
+        prefix = tmp_pdf[:-4]
+        r = await asyncio.create_subprocess_exec(
+            "pdftoppm", "-png", "-r", "150", tmp_pdf, prefix,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        await asyncio.wait_for(r.communicate(), timeout=45)
+        pngs = sorted(_glob.glob(prefix + "-*.png"))
+        if not pngs:
+            return False
+        uid = _uuid.uuid4().hex[:8]; remote = []
+        for i, png in enumerate(pngs):
+            fn = f"pk_{tag}_{uid}_{i}.png"; remote_win = f"C:\\MG\\{fn}"; remote_scp = f"C:/MG/{fn}"
+            p = await asyncio.create_subprocess_exec(
+                "scp", "-i", OFFICE_PRINT_KEY, "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+                "-o", "ConnectTimeout=15", png, f"{OFFICE_PRINT_HOST}:{remote_scp}",
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            await asyncio.wait_for(p.communicate(), timeout=30)
+            if p.returncode != 0:
+                return False
+            remote.append(remote_win)
+        files_ps = ",".join("'" + rp + "'" for rp in remote)
+        ps = ("Add-Type -AssemblyName System.Drawing; "
+              "$files=@(" + files_ps + "); "
+              "$imgs=$files|ForEach-Object{[System.Drawing.Image]::FromFile($_)}; "
+              "$pd=New-Object System.Drawing.Printing.PrintDocument; "
+              f"$pd.PrinterSettings.PrinterName='{printer}'; "
+              "$script:i=0; "
+              "$pd.add_PrintPage({param($s,$e) $e.Graphics.DrawImage($imgs[$script:i],$e.MarginBounds); "
+              "$script:i++; $e.HasMorePages=($script:i -lt $imgs.Count)}); "
+              "$pd.Print(); $imgs|ForEach-Object{$_.Dispose()}")
+        b64 = _b64.b64encode(ps.encode("utf-16-le")).decode()
+        p2 = await asyncio.create_subprocess_exec(
+            "ssh", "-i", OFFICE_PRINT_KEY, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", OFFICE_PRINT_HOST,
+            f"powershell -EncodedCommand {b64}",
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        await asyncio.wait_for(p2.communicate(), timeout=60)
+        return p2.returncode == 0
+    except Exception as ex:
+        logger.warning(f"office A4 print [{tag}] failed: {ex}")
+        return False
+    finally:
+        if tmp_pdf:
+            try: _os.unlink(tmp_pdf)
+            except Exception: pass
+            for f in _glob.glob(tmp_pdf[:-4] + "-*.png"):
+                try: _os.unlink(f)
+                except Exception: pass
+
+
+async def _office_print(pdf_bytes: bytes, printer: str, settings: str = "fit", tag: str = "doc") -> bool:
+    """Fire-and-forget: print a PDF at the office. NEVER raises — a sleeping printer / offline desktop
+    must never block a pack/dispatch action. Everything goes through the .NET GDI image path (thermal
+    labels → _office_print_thermal at 100×50mm; A4 docs → _office_print_a4). PDFtoPrinter is retired: it
+    silently no-op'd on the TSC AND on the Bigship courier label PDF (exit 0, nothing on paper)."""
+    if not pdf_bytes:
+        return False
+    if printer == OFFICE_LABEL_PRINTER:
+        return await _office_print_thermal(pdf_bytes, printer, tag)
+    return await _office_print_a4(pdf_bytes, printer, tag)
+
+
+async def _generate_serial(sku: dict) -> str:
+    """Mint a fresh, unique serial number for ANY product (traded or manufactured) at dispatch.
+    Format: MG<up-to-6 SKU-code chars><YYMM><5-digit atomic seq>, e.g. MG5KVA50-2607-00042."""
+    raw = (sku.get("sku_code") or sku.get("name") or "MG")
+    prefix = re.sub(r"[^A-Za-z0-9]", "", raw)[:6].upper() or "MG"
+    yymm = datetime.now(timezone.utc).strftime("%y%m")
+    for _ in range(6):
+        c = await db.counters.find_one_and_update(
+            {"_id": "serial_seq"}, {"$inc": {"seq": 1}}, upsert=True, return_document=True)
+        seq = (c or {}).get("seq", 1)
+        serial = f"MG{prefix}{yymm}{seq:05d}"
+        if not await db.finished_good_serials.find_one({"serial_number": serial}, {"_id": 1}):
+            return serial
+    return f"MG{prefix}{yymm}{uuid.uuid4().hex[:6].upper()}"
+
+
+async def _serials_for_line(sku_id: str, qty: int, firm_id: str, order_id: str, customer: str) -> list:
+    """Produce `qty` serials for one line item. Founder rule (2026-07-08): ALWAYS consume a PRE-GENERATED
+    in-stock serial ('S' — already printed & stuck on a warehouse unit) before minting a NEW one ('N').
+    Applies to ANY product (traded or manufactured), not just manufactured. The remainder is GENERATED
+    fresh. Every item ends up with a serial; each record is tagged `origin` = stock | new."""
+    sku = await db.master_skus.find_one(
+        {"id": sku_id}, {"_id": 0, "product_type": 1, "is_manufactured": 1, "name": 1, "sku_code": 1}) or {}
+    now = datetime.now(timezone.utc).isoformat()
+    out = []
+    # 1) Consume pre-generated in-stock serials FIRST (oldest first), firm-scoped then firm-agnostic.
+    base = {"master_sku_id": sku_id, "status": "in_stock"}
+    avail = await db.finished_good_serials.find({**base, "firm_id": firm_id} if firm_id else base,
+        {"_id": 0, "id": 1, "serial_number": 1}).sort("created_at", 1).to_list(qty)
+    if len(avail) < qty:
+        seen = {a["id"] for a in avail}
+        more = await db.finished_good_serials.find(base, {"_id": 0, "id": 1, "serial_number": 1}
+            ).sort("created_at", 1).to_list(qty)
+        avail += [m for m in more if m["id"] not in seen]
+    for s in avail:
+        if len(out) >= qty:
+            break
+        u = await db.finished_good_serials.update_one({"id": s["id"], "status": "in_stock"},
+            {"$set": {"status": "dispatched", "origin": "stock", "order_id": order_id,
+                      "reserved_for_order": order_id, "customer_name": customer, "dispatched_at": now}})
+        if u.modified_count:                              # atomic guard against double-consuming
+            out.append(s["serial_number"])
+    # 2) Generate NEW serials ('N') for whatever stock didn't cover.
+    while len(out) < qty:
+        serial = await _generate_serial(sku)
+        await db.finished_good_serials.insert_one({
+            "id": str(uuid.uuid4()), "serial_number": serial, "master_sku_id": sku_id,
+            "master_sku_name": sku.get("name"), "master_sku_code": sku.get("sku_code"),
+            "firm_id": firm_id, "status": "dispatched", "origin": "new", "order_id": order_id,
+            "customer_name": customer, "source": "generated_at_dispatch", "generated": True,
+            "created_at": now, "dispatched_at": now})
+        out.append(serial)
+    return out
+
+
+async def _generate_rsn() -> str:
+    """Internal Retail Serial Number — links a sale ↔ the scanned SSN (founder: 'auto internal link only').
+    Format: RSN-<YYMM>-<5-digit atomic seq>. Not customer-facing."""
+    yymm = datetime.now(timezone.utc).strftime("%y%m")
+    c = await db.counters.find_one_and_update(
+        {"_id": "rsn_seq"}, {"$inc": {"seq": 1}}, upsert=True, return_document=True)
+    return f"RSN-{yymm}-{(c or {}).get('seq', 1):05d}"
+
+
+async def _resolve_or_bind_serials(order_id: str, explicit_serial: str = None):
+    """Serial-at-dispatch: return (serials, note). EVERY dispatch gets a serial (founder rule 2026-07-08)
+    — manufactured units reserve production stock; traded goods / no-stock get a freshly GENERATED serial.
+    Idempotent: an order already carrying bound_serials returns them (no re-mint). Records live in
+    db.finished_good_serials (the serial tracker)."""
+    if explicit_serial and explicit_serial.strip():
+        sn = explicit_serial.strip()
+        # SSN scan-at-dispatch (founder 2026-07-08): if the scanned serial is an in-stock SSN, consume it
+        # (decrement stock) and auto-link an internal RSN (sale ↔ SSN). SSN stays the customer serial.
+        rec = await db.finished_good_serials.find_one({"serial_number": sn}, {"_id": 0, "status": 1})
+        if rec and rec.get("status") == "in_stock":
+            now = datetime.now(timezone.utc).isoformat()
+            rsn = await _generate_rsn()
+            await db.finished_good_serials.update_one(
+                {"serial_number": sn, "status": "in_stock"},
+                {"$set": {"status": "dispatched", "order_id": order_id, "rsn": rsn,
+                          "scanned_at_dispatch": True, "dispatched_at": now}})
+        return [sn], "scanned"
+    oq = {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]}
+    disp = await db.dispatches.find_one(oq, {"_id": 0, "serial_number": 1, "item_serials": 1})
+    if disp:
+        ser = [disp["serial_number"]] if disp.get("serial_number") else []
+        for it in (disp.get("item_serials") or []):
+            sn = it.get("serial_number") if isinstance(it, dict) else it
+            if sn:
+                ser.append(sn)
+        if ser:
+            return list(dict.fromkeys(ser)), "from-dispatch"
+
+    # Find the order in either model and resolve its line items.
+    coll, rec = "pending_fulfillment", await db.pending_fulfillment.find_one(oq, {"_id": 0})
+    if not rec:
+        coll, rec = "amazon_order_processing", await db.amazon_order_processing.find_one(oq, {"_id": 0})
+    if not rec:
+        # Panel-booked orders (Bigship panel) live ONLY in courier_shipments — still give every unit a
+        # serial. Resolve a master SKU from the Amazon SKU mapping; if none, generate one from the product.
+        cs = await db.courier_shipments.find_one(
+            {"$or": [{"amazon_order_id": order_id}, {"panel_order_ref": order_id},
+                     {"order_id": order_id}, {"invoice_number": order_id}]}, {"_id": 0})
+        if not cs:
+            return [], "no-order-record"
+        if cs.get("bound_serials"):
+            return list(cs["bound_serials"]), "already-bound"
+        # Founder rule (2026-07-08): for NON-Amazon orders, NEVER mint a new serial if serials already
+        # exist for the same invoice number — reuse them. (order_id here == the invoice / panel ref.)
+        if not cs.get("amazon_order_id"):
+            existing = await db.finished_good_serials.find(
+                {"order_id": order_id}, {"_id": 0, "serial_number": 1}).sort("created_at", 1).to_list(200)
+            if existing:
+                sers = [e["serial_number"] for e in existing]
+                await db.courier_shipments.update_one({"id": cs.get("id")},
+                    {"$set": {"bound_serials": sers, "serial_bound_at": datetime.now(timezone.utc).isoformat()}})
+                return sers, "reused-by-invoice"
+        customer = cs.get("customer_name")
+        firm_id = cs.get("firm_id")
+        ao = None
+        amz = cs.get("amazon_order_id")
+        if amz:
+            ao = await db.amazon_orders.find_one({"amazon_order_id": amz}, {"_id": 0, "items": 1, "firm_id": 1})
+            firm_id = firm_id or (ao or {}).get("firm_id")
+        # Build the line list WITH QUANTITIES (one serial per physical unit). QUANTITY SOURCE OF TRUTH =
+        # the INVOICE (founder rule 2026-07-08) — the Bigship panel double-lists the same line and inflates
+        # the count. Order of trust: CRM sales invoice → Amazon order items (the Amazon invoice) →
+        # de-duplicated panel product list.
+        line_items = []
+        inv = await db.sales_invoices.find_one(
+            {"invoice_number": cs.get("invoice_number") or cs.get("panel_order_ref") or order_id},
+            {"_id": 0, "items": 1})
+        for it in ((inv or {}).get("items") or []):
+            try:
+                q = int(float(it.get("quantity") or it.get("qty") or 1))
+            except Exception:
+                q = 1
+            line_items.append({"sku_id": it.get("master_sku_id"), "qty": max(1, q),
+                               "name": it.get("name") or it.get("description")})
+        if not line_items:                                    # Amazon items = the Amazon invoice
+            for it in ((ao or {}).get("items") or []):
+                asku = it.get("seller_sku") or it.get("sku") or it.get("amazon_sku")
+                sid = None
+                if asku:
+                    mp = await db.amazon_sku_mappings.find_one({"amazon_sku": asku}, {"_id": 0, "master_sku_id": 1})
+                    sid = (mp or {}).get("master_sku_id")
+                line_items.append({"sku_id": sid, "qty": max(1, int(it.get("quantity") or 1)),
+                                   "name": it.get("title") or it.get("name")})
+        if not line_items:                                    # panel list — DE-DUPLICATE identical lines
+            seen = set()
+            for p in (cs.get("panel_products") or []):
+                if not p.get("name"):
+                    continue
+                key = (str(p.get("name")).strip().lower(), p.get("qty"))
+                if key in seen:                               # Bigship duplicated the same line → skip it
+                    continue
+                seen.add(key)
+                line_items.append({"sku_id": None, "qty": max(1, int(p.get("qty") or 1)), "name": p.get("name")})
+        if not line_items:
+            line_items = [{"sku_id": None, "qty": 1, "name": cs.get("product_name") or "MuscleGrid Product"}]
+        now = datetime.now(timezone.utc).isoformat()
+        bound = []
+        for li in line_items:
+            if li["sku_id"]:
+                bound += await _serials_for_line(li["sku_id"], li["qty"], firm_id, order_id, customer)
+            else:
+                for _ in range(li["qty"]):
+                    serial = await _generate_serial({"name": li["name"]})
+                    await db.finished_good_serials.insert_one({
+                        "id": str(uuid.uuid4()), "serial_number": serial, "master_sku_id": None,
+                        "master_sku_name": li["name"], "firm_id": firm_id, "status": "dispatched", "origin": "new",
+                        "order_id": order_id, "customer_name": customer, "source": "generated_at_dispatch_panel",
+                        "generated": True, "created_at": now, "dispatched_at": now})
+                    bound.append(serial)
+        if bound:
+            await db.courier_shipments.update_one({"id": cs.get("id")},
+                {"$set": {"bound_serials": bound, "serial_bound_at": now}})
+            return bound, "assigned-panel"
+        return [], "no-order-record"
+    if rec.get("bound_serials"):
+        return list(rec["bound_serials"]), "already-bound"
+    firm_id = rec.get("firm_id")
+    customer = rec.get("customer_name")
+    line_items = rec.get("items") or []
+    if not line_items and rec.get("master_sku_id"):
+        line_items = [{"master_sku_id": rec["master_sku_id"], "quantity": rec.get("quantity", 1)}]
+
+    bound = []
+    for it in line_items:
+        sku_id = it.get("master_sku_id")
+        if not sku_id:
+            amazon_sku = it.get("sku") or it.get("seller_sku") or it.get("amazon_sku")
+            if amazon_sku:
+                mp = await db.amazon_sku_mappings.find_one({"amazon_sku": amazon_sku}, {"_id": 0, "master_sku_id": 1})
+                sku_id = (mp or {}).get("master_sku_id")
+        if not sku_id:
+            continue
+        qty = int(it.get("quantity") or 1)
+        bound += await _serials_for_line(sku_id, qty, firm_id, order_id, customer)
+    if bound:
+        stamp = {"bound_serials": bound, "serial_bound_at": datetime.now(timezone.utc).isoformat()}
+        if coll == "pending_fulfillment":
+            await db.pending_fulfillment.update_one({"id": rec.get("id")}, {"$set": stamp})
+        else:
+            await db.amazon_order_processing.update_many(oq, {"$set": stamp})
+        return bound, "assigned"
+    return [], "no-mappable-items"
+
+
+async def _qc_label_pdf_bytes(order_id: str, serials: list, user: dict, customer: str = None) -> bytes:
+    """QC / box-contents thermal label (100×50mm) for the OUTSIDE of the carton: order ref, ship-to,
+    exact contents + serial(s), packed-by, QC-passed seal + verify QR. Design approved 2026-07-07."""
+    pf = await db.pending_fulfillment.find_one(
+        {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]}, {"_id": 0})
+    aop = await db.amazon_order_processing.find_one({"order_id": order_id}, {"_id": 0})
+    cs = None
+    if not pf and not aop:
+        cs = await db.courier_shipments.find_one(
+            {"$or": [{"amazon_order_id": order_id}, {"panel_order_ref": order_id},
+                     {"order_id": order_id}, {"invoice_number": order_id}]}, {"_id": 0})
+    cust = (customer or (pf or {}).get("customer_name") or (aop or {}).get("customer_name")
+            or (cs or {}).get("customer_name") or "Customer").strip()
+    city = (pf or {}).get("city") or (aop or {}).get("city") or (cs or {}).get("consignee_city") or ""
+    ship_to = cust[:26] + (f" &middot; {_he(city[:18])}" if city else "")
+    items = (pf or {}).get("items") or []
+    if not items and (pf or {}).get("master_sku_name"):
+        items = [{"master_sku_name": pf["master_sku_name"], "quantity": pf.get("quantity", 1)}]
+    if not items and aop:
+        items = [{"master_sku_name": aop.get("product_title"), "quantity": 1}]
+    if not items and cs:
+        prods = cs.get("panel_products") or []
+        nm = (prods[0].get("name") if prods and prods[0].get("name") else None) or cs.get("product_name")
+        if nm:
+            items = [{"master_sku_name": nm, "quantity": (prods[0].get("qty") if prods else 1) or 1}]
+    clines = []
+    for it in items[:2]:
+        nm = it.get("master_sku_name") or it.get("title") or it.get("product_name") or "Item"
+        clines.append(f"{it.get('quantity', 1)} &times; {_he(str(nm)[:44])}")
+    contents = "<br>".join(clines) or "&mdash;"
+    sn_html = (f'<div>S/N <span class="sn">{_he(", ".join(serials)[:36])}</span></div>' if serials else "")
+    ref = _he(str((pf or {}).get("order_id") or order_id)[:24])
+    packed_by = _he(str((user or {}).get("name") or (user or {}).get("username")
+                        or (user or {}).get("email", "").split("@")[0] or "Dispatch")[:16])
+    date = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%d %b %Y")
+    sn0 = serials[0] if serials else ""
+    qri = _serial_qr_datauri(f"{SERIAL_VERIFY_BASE}/{sn0}" if sn0 else "https://newcrm.musclegrid.in")
+    from weasyprint import HTML
+    # Thermal-optimised: white bg, black text + thin rules, NO solid-black bars, outlined QC badge.
+    html = f"""<html><head><meta charset="utf-8"><style>
+    @page{{size:100mm 50mm;margin:0}} *{{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;color:#000}}
+    .wrap{{width:100mm;height:50mm;padding:8mm;overflow:hidden;display:flex;flex-direction:column}}
+    .hdr{{display:flex;justify-content:space-between;align-items:center;padding-bottom:1.2mm;border-bottom:1.5pt solid #000}}
+    .brand{{font-size:14px;font-weight:800;letter-spacing:.3px}} .brand span{{font-weight:400}}
+    .qc{{font-size:9px;font-weight:800;border:1.4px solid #000;border-radius:4px;padding:1px 5px;letter-spacing:.3px}}
+    .body{{flex:1;display:flex;padding-top:1.6mm;gap:2mm;min-height:0}}
+    .left{{flex:1;font-size:9.5px;line-height:1.22}}
+    .k{{font-size:7.5px;text-transform:uppercase;letter-spacing:.3px;margin-top:1mm}}
+    .k:first-child{{margin-top:0}} .v{{font-weight:700}}
+    .sn{{font-family:'Courier New',monospace;font-weight:800;font-size:11px}}
+    .right{{width:20mm;text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:center}}
+    .right img{{width:18mm;height:18mm}} .scan{{font-size:6.5px;margin-top:.5mm}}
+    .ftr{{border-top:.75pt solid #000;font-size:7px;text-align:center;padding-top:1mm}}
+    </style></head><body><div class="wrap">
+      <div class="hdr"><div class="brand">Muscle<span>Grid</span></div><div class="qc">&#10003; QC PASSED &middot; SEALED</div></div>
+      <div class="body">
+        <div class="left">
+          <div class="k">Order / Ref</div><div class="v">{ref}</div>
+          <div class="k">Ship to</div><div class="v">{ship_to}</div>
+          <div class="k">Contents</div><div class="v">{contents}</div>{sn_html}
+          <div class="k">Packed by &middot; Date</div><div class="v">{packed_by} &middot; {date}</div>
+        </div>
+        <div class="right"><img src="{qri}"><div class="scan">Scan to verify</div></div>
+      </div>
+      <div class="ftr">Do not accept if seal is tampered &middot; Support wa.me/919999036254</div>
+    </div></body></html>"""
+    return HTML(string=html).write_pdf()
+
+
+def _inr_group(n) -> str:
+    """Indian digit grouping: 102990 → 1,02,990."""
+    try:
+        s = str(int(round(float(n))))
+    except (TypeError, ValueError):
+        return ""
+    if len(s) <= 3:
+        return s
+    return re.sub(r"(\d)(?=(\d\d)+\d\d\d$)", r"\1,", s[:-3]) + "," + s[-3:]
+
+
+async def _mrp_label_pdf_bytes(order_id: str) -> Optional[bytes]:
+    """MRP (Retail Price) label — prints for EVERY product EXCEPT stabilizers (founder rule 2026-07-08).
+    MRP from master_skus.mrp → selling_price → order value. Returns None to SKIP (stabilizer / no MRP)."""
+    rec = (await db.amazon_order_processing.find_one({"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]}, {"_id": 0})
+           or await db.pending_fulfillment.find_one({"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]}, {"_id": 0}))
+    if not rec:
+        return None
+    items = rec.get("items") or ([{"master_sku_id": rec.get("master_sku_id")}] if rec.get("master_sku_id") else [])
+    sku = None
+    for it in items:
+        sku_id = it.get("master_sku_id")
+        if not sku_id:
+            asku = it.get("sku") or it.get("seller_sku") or it.get("amazon_sku")
+            if asku:
+                mp = await db.amazon_sku_mappings.find_one({"amazon_sku": asku}, {"_id": 0, "master_sku_id": 1})
+                sku_id = (mp or {}).get("master_sku_id")
+        if not sku_id:
+            continue
+        s = await db.master_skus.find_one({"id": sku_id}, {"_id": 0, "name": 1, "category": 1, "mrp": 1, "selling_price": 1})
+        if not s:
+            continue
+        if "stabil" in (s.get("category") or "").lower() or "stabil" in (s.get("name") or "").lower():
+            continue                                     # skip stabilizers
+        sku = s
+        break
+    if not sku:
+        return None
+    mrp = sku.get("mrp") or sku.get("selling_price") or _pf_value(rec) or (rec.get("order_value") if not isinstance(rec.get("order_value"), dict) else 0)
+    if not mrp:
+        return None
+    product = str(sku.get("name") or rec.get("master_sku_name") or "MuscleGrid Product")
+    dt = str(rec.get("processed_at") or rec.get("created_at") or "")
+    mfg = (dt[5:7] + "/" + dt[0:4]) if len(dt) >= 7 else (datetime.now(timezone.utc)).strftime("%m/%Y")
+    from weasyprint import HTML
+    html = f"""<html><head><meta charset="utf-8"><style>
+    @page{{size:100mm 50mm;margin:0}} *{{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;color:#000}}
+    .w{{width:100mm;height:50mm;padding:8mm;display:flex;flex-direction:column}}
+    .top{{display:flex;align-items:baseline;justify-content:space-between;padding-bottom:1mm;border-bottom:1.5pt solid #000}}
+    .brand{{font-size:13pt;font-weight:800}} .brand span{{font-weight:400}} .tag{{font-size:6.5pt;letter-spacing:1pt;text-transform:uppercase}}
+    .pname{{font-size:8pt;font-weight:700;line-height:1.15;margin:1.4mm 0 1mm;max-height:6.7mm;overflow:hidden}}
+    .mrpline{{display:flex;align-items:baseline;gap:2mm}}
+    .mrpk{{font-size:9pt;font-weight:800;letter-spacing:.5pt}} .mrpv{{font-size:17pt;font-weight:800}} .incl{{font-size:6pt}}
+    .row{{display:flex;gap:4mm;font-size:6.3pt;margin-top:1mm}}
+    .foot{{margin-top:auto;border-top:.75pt solid #000;padding-top:1mm;font-size:5.8pt;line-height:1.3}}
+    </style></head><body><div class="w">
+      <div class="top"><div class="brand">Muscle<span>Grid</span></div><div class="tag">Retail Price Label</div></div>
+      <div class="pname">{_he(product[:60])}</div>
+      <div class="mrpline"><span class="mrpk">M.R.P.</span><span class="mrpv">&#8377;{_inr_group(mrp)}</span><span class="incl">(incl. of all taxes)</span></div>
+      <div class="row"><span><b>Net Qty:</b> 1 Unit</span><span><b>Mfg:</b> {mfg}</span><span><b>Origin:</b> India</span></div>
+      <div class="foot">Marketed by: <b>MuscleGrid Industries Pvt. Ltd.</b>, Neb Sarai, New Delhi &middot; Customer care: service@musclegrid.in &middot; wa.me/919999036254</div>
+    </div></body></html>"""
+    return HTML(string=html).write_pdf()
+
+
+async def _fetch_order_invoice_pdf(order_id: str) -> Optional[bytes]:
+    """Return the bytes of a REAL invoice PDF already attached to this order/dispatch, or None.
+    Never generates an invoice (GST must come from a real tax document). Looks at the sales invoice
+    and the dispatch for an attached file under UPLOAD_DIR."""
+    paths = []
+    inv = await db.sales_invoices.find_one(
+        {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]},
+        {"_id": 0, "invoice_file": 1, "invoice_url": 1, "pdf_url": 1})
+    for k in ("invoice_file", "invoice_url", "pdf_url"):
+        if inv and inv.get(k):
+            paths.append(inv[k])
+    disp = await db.dispatches.find_one(
+        {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]},
+        {"_id": 0, "invoice_file": 1, "invoice_url": 1})
+    for k in ("invoice_file", "invoice_url"):
+        if disp and disp.get(k):
+            paths.append(disp[k])
+    for p in paths:
+        try:
+            rel = str(p).split("/api/files/", 1)[-1].split("/api/uploads/", 1)[-1].lstrip("/")
+            fp = (UPLOAD_DIR / rel).resolve()
+            if str(fp).startswith(str(UPLOAD_DIR.resolve())) and fp.is_file() and fp.suffix.lower() == ".pdf":
+                return fp.read_bytes()
+        except Exception:
+            continue
+    # No pre-rendered PDF attached → render the stored (real) sales invoice record.
+    return await _render_sales_invoice_pdf(order_id)
+
+
+async def _render_sales_invoice_pdf(order_id: str) -> Optional[bytes]:
+    """Render a GST tax-invoice PDF from the stored `sales_invoices` record for this order.
+    The GST/amounts come straight from the saved document (a real tax doc) — nothing is fabricated.
+    IGST vs CGST/SGST is decided by comparing firm vs party GSTIN state codes."""
+    inv = await db.sales_invoices.find_one(
+        {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]}, {"_id": 0})
+    if not inv:
+        disp = await db.dispatches.find_one(
+            {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]}, {"_id": 0, "id": 1})
+        if disp:
+            inv = await db.sales_invoices.find_one({"dispatch_id": disp["id"]}, {"_id": 0})
+    if not inv:
+        return None
+    items = inv.get("items") or []
+    firm = await db.firms.find_one({"id": inv.get("firm_id")}, {"_id": 0, "name": 1, "address": 1, "gstin": 1}) or {}
+    f_gstin = inv.get("firm_gstin") or firm.get("gstin") or ""
+    p_gstin = inv.get("party_gstin") or ""
+    intra = bool(f_gstin and p_gstin and f_gstin[:2] == p_gstin[:2])
+    subtotal = inv.get("subtotal") or sum((i.get("amount") or 0) for i in items)
+    gst_amount = inv.get("gst_amount")
+    if gst_amount is None:
+        gst_amount = sum((i.get("amount") or 0) * (i.get("gst_rate") or 0) / 100 for i in items)
+    total = inv.get("total_amount") or (subtotal + gst_amount)
+
+    def rows():
+        h = ""
+        for n, it in enumerate(items, 1):
+            amt = it.get("amount") or (it.get("unit_price") or 0) * (it.get("quantity") or 1)
+            h += (f"<tr><td>{n}</td><td class='desc'>{_he(str(it.get('description', ''))[:90])}</td>"
+                  f"<td>{_he(str(it.get('hsn_code', '')))}</td><td class='r'>{it.get('quantity', 1)}</td>"
+                  f"<td class='r'>{(it.get('unit_price') or 0):,.2f}</td><td class='r'>{it.get('gst_rate', 0)}%</td>"
+                  f"<td class='r'>{amt:,.2f}</td></tr>")
+        return h
+
+    if intra:
+        tax_rows = (f"<tr><td>CGST</td><td class='r'>{gst_amount / 2:,.2f}</td></tr>"
+                    f"<tr><td>SGST</td><td class='r'>{gst_amount / 2:,.2f}</td></tr>")
+    else:
+        tax_rows = f"<tr><td>IGST</td><td class='r'>{gst_amount:,.2f}</td></tr>"
+    from weasyprint import HTML
+    html = f"""<html><head><meta charset="utf-8"><style>
+    @page{{size:A4;margin:12mm}} *{{box-sizing:border-box;font-family:Arial,Helvetica,sans-serif;color:#111}}
+    body{{margin:0;font-size:11px}} .hd{{display:flex;justify-content:space-between;border-bottom:2px solid #000;padding-bottom:8px}}
+    .firm{{font-size:17px;font-weight:800}} .muted{{color:#555;font-size:10px;line-height:1.4}}
+    .badge{{font-size:13px;font-weight:800;border:1.5px solid #000;padding:3px 10px;border-radius:4px}}
+    .party{{display:flex;justify-content:space-between;margin:12px 0}} .box{{width:48%}} .box .t{{font-size:9px;color:#888;text-transform:uppercase;letter-spacing:.4px}}
+    table{{width:100%;border-collapse:collapse;margin-top:6px}} th,td{{border:1px solid #ccc;padding:5px 6px;text-align:left;vertical-align:top}}
+    th{{background:#0a0a0a;color:#fff;font-size:9.5px;text-transform:uppercase;letter-spacing:.3px}}
+    td.r,th.r{{text-align:right}} .desc{{max-width:230px}}
+    .tot{{width:45%;margin-left:55%;margin-top:8px}} .tot td{{border:none;padding:2px 6px}}
+    .grand{{font-weight:800;font-size:13px;border-top:2px solid #000 !important}}
+    .ft{{margin-top:20px;font-size:9px;color:#777;border-top:1px solid #ddd;padding-top:6px}}
+    </style></head><body>
+    <div class="hd"><div><div class="firm">{_he(inv.get('firm_name') or firm.get('name') or 'MuscleGrid')}</div>
+      <div class="muted">{_he(str(firm.get('address') or '')[:120])}<br>GSTIN: {_he(f_gstin)}</div></div>
+      <div style="text-align:right"><div class="badge">TAX INVOICE</div>
+      <div class="muted" style="margin-top:6px">{_he(inv.get('invoice_number') or '')}<br>{_he(str(inv.get('invoice_date') or inv.get('created_at') or '')[:10])}</div></div></div>
+    <div class="party"><div class="box"><div class="t">Bill to</div><div><b>{_he(inv.get('party_name') or 'Customer')}</b><br>
+      <span class="muted">{_he(str(inv.get('party_address') or '')[:140])}<br>{('GSTIN: ' + _he(p_gstin)) if p_gstin else ''}</span></div></div></div>
+    <table><thead><tr><th>#</th><th>Description</th><th>HSN</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">GST</th><th class="r">Amount</th></tr></thead>
+    <tbody>{rows()}</tbody></table>
+    <table class="tot"><tr><td>Taxable value</td><td class="r">{subtotal:,.2f}</td></tr>
+    {tax_rows}<tr class="grand"><td>Grand Total (₹)</td><td class="r">{total:,.2f}</td></tr></table>
+    <div class="ft">This is a computer-generated tax invoice. {'Intra-state (CGST+SGST)' if intra else 'Inter-state (IGST)'} supply.</div>
+    </body></html>"""
+    try:
+        return HTML(string=html).write_pdf()
+    except Exception:
+        return None
+
+
+@api_router.post("/orders/{order_id:path}/print-pack-set")
+async def print_pack_set(order_id: str, serial: str = None, customer: str = None,
+                         user: dict = Depends(require_roles(["admin", "accountant", "dispatcher", "supervisor", "service_agent", "technician", "gate"]))):
+    """PACKING-STATION 'Print pack set' — prints, at the office, before the box leaves:
+      SAMSUNG (A4 laser, verified):  courier label + tax invoice
+      TSC (thermal 100×50):          serial label(s) + QC/box-contents label + personalised care card
+    Fire-and-forget: a down printer never blocks packing. HP M128 is NOT used until verified."""
+    out = {}
+    aop = await db.amazon_order_processing.find_one({"order_id": order_id}, {"_id": 0})
+    if not customer and aop:
+        customer = aop.get("customer_name")
+    # serial-at-dispatch binding: auto-resolve (or reserve) the unit serial(s) — scanned `serial` wins.
+    serials, serial_note = await _resolve_or_bind_serials(order_id, serial)
+    primary_serial = serials[0] if serials else serial
+
+    # ===== SAMSUNG (A4): courier label + invoice =====
+    soid = (aop or {}).get("system_order_id") or (aop or {}).get("bigship_order_id")
+    if not soid:
+        # Panel-booked / label_agent orders (e.g. the eBay-UP "as per shipping book" run) keep the Bigship
+        # order id on the courier_shipments record as `bigship_panel_order_id` — NOT on the aop /
+        # pending_fulfillment doc — so we look it up by the order/AWB reference to fetch the real label.
+        cs = await db.courier_shipments.find_one(
+            {"$or": [{"amazon_order_id": order_id}, {"panel_order_ref": order_id},
+                     {"order_id": order_id}, {"invoice_number": order_id}]},
+            {"_id": 0, "bigship_panel_order_id": 1, "bigship_order_id": 1, "system_order_id": 1})
+        soid = ((cs or {}).get("bigship_panel_order_id") or (cs or {}).get("bigship_order_id")
+                or (cs or {}).get("system_order_id"))
+    courier = await _fetch_bigship_label_pdf(str(soid)) if soid else None
+    if not courier:
+        # Offline / manually-booked orders have no Bigship label — print the courier-label PDF the
+        # accountant attached (downloaded from the Delhivery panel), stored on the pending_fulfillment doc.
+        pf_lbl = await db.pending_fulfillment.find_one(
+            {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]},
+            {"_id": 0, "courier_label_path": 1})
+        lbl_path = (pf_lbl or {}).get("courier_label_path")
+        if lbl_path:
+            try:
+                from utils.storage import download_file as _dl_label
+                courier = await _dl_label(lbl_path)
+            except Exception:
+                courier = None
+    out["courier_label"] = (await _office_print(courier, OFFICE_COURIER_PRINTER, "fit", "courier")) if courier else "no-label-found"
+    invoice = await _fetch_order_invoice_pdf(order_id)
+    if not invoice:
+        # accountant-uploaded invoice — on the offline order (pending_fulfillment) or Bigship shipment.
+        pf_inv = await db.pending_fulfillment.find_one(
+            {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]}, {"_id": 0, "invoice_path": 1})
+        cs_inv = await db.courier_shipments.find_one(
+            {"$or": [{"amazon_order_id": order_id}, {"panel_order_ref": order_id},
+                     {"order_id": order_id}, {"invoice_number": order_id}]},
+            {"_id": 0, "invoice_path": 1})
+        ipath = (pf_inv or {}).get("invoice_path") or (cs_inv or {}).get("invoice_path")
+        if ipath:
+            try:
+                from utils.storage import download_file as _dl_inv
+                invoice = await _dl_inv(ipath)
+            except Exception:
+                invoice = None
+    out["invoice"] = (await _office_print(invoice, OFFICE_COURIER_PRINTER, "fit", "invoice")) if invoice else "no-invoice-attached"
+    # packing slip (Amazon-format, always auto-generated) → Samsung. Goes in/on the box.
+    try:
+        from utils.packing_slip import generate_packing_slip_pdf
+        ps_doc = aop
+        if not ps_doc:
+            pf = await db.pending_fulfillment.find_one(
+                {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]}, {"_id": 0})
+            if pf:
+                ps_doc = {**pf, "customer_address": pf.get("address"), "customer_city": pf.get("city"),
+                          "customer_state": pf.get("state"), "customer_pincode": pf.get("pincode"),
+                          "customer_phone": pf.get("phone"), "order_value": pf.get("invoice_value")}
+        if not ps_doc:
+            # Panel-booked orders (Bigship, e.g. Amazon-via-panel or dealer) live only in courier_shipments
+            # — build the packing slip from that record so the slip still prints. (Product came from the
+            # panel product scrape.)
+            cs = await db.courier_shipments.find_one(
+                {"$or": [{"amazon_order_id": order_id}, {"panel_order_ref": order_id},
+                         {"order_id": order_id}, {"invoice_number": order_id}]}, {"_id": 0})
+            if cs:
+                prods = cs.get("panel_products") or []
+                title = (prods[0].get("name") if prods and prods[0].get("name") else None) or cs.get("product_name") or "MuscleGrid Product"
+                firm_id = cs.get("firm_id"); firm_name = cs.get("firm_name")
+                prod_sku = prod_asin = None
+                if cs.get("amazon_order_id"):
+                    # Amazon orders: fill SKU + ASIN + the real title from the Amazon order (founder rule).
+                    ao = await db.amazon_orders.find_one({"amazon_order_id": cs["amazon_order_id"]},
+                            {"_id": 0, "firm_id": 1, "firm_name": 1, "items": 1})
+                    firm_id = firm_id or (ao or {}).get("firm_id")
+                    firm_name = firm_name or (ao or {}).get("firm_name")
+                    aoi = (ao or {}).get("items") or []
+                    if aoi:
+                        prod_sku = aoi[0].get("seller_sku") or aoi[0].get("sku") or aoi[0].get("amazon_sku")
+                        prod_asin = aoi[0].get("asin")
+                        title = aoi[0].get("title") or aoi[0].get("name") or title
+                ps_doc = {
+                    "order_id": order_id, "amazon_order_id": cs.get("amazon_order_id"),
+                    "customer_name": cs.get("customer_name"),
+                    "customer_address": cs.get("address"), "customer_city": cs.get("consignee_city"),
+                    "customer_state": cs.get("consignee_state"), "customer_pincode": cs.get("consignee_pincode"),
+                    "customer_phone": cs.get("phone"), "order_value": cs.get("invoice_amount"),
+                    "product_title": title, "product_sku": prod_sku, "asin": prod_asin,
+                    "firm_id": firm_id, "firm_name": firm_name,
+                    "processed_at": cs.get("panel_scraped_at") or cs.get("created_at")}
+        if ps_doc:
+            ps = generate_packing_slip_pdf(ps_doc)
+            out["packing_slip"] = await _office_print(ps, OFFICE_COURIER_PRINTER, "fit", "slip")
+        else:
+            out["packing_slip"] = "no-order-record"
+    except Exception as ex:
+        out["packing_slip"] = f"err:{str(ex)[:50]}"
+
+    # ===== TSC (thermal): serial label(s) + QC/contents + care card =====
+    if serials:
+        results = []
+        for sn in serials:
+            try:
+                lbl = await serial_label_pdf(sn, user=user)
+                ok = await _office_print(lbl.body, OFFICE_LABEL_PRINTER, "landscape,fit", "serial")
+                results.append(f"{sn}:{'ok' if ok is True else ok}")
+            except Exception as ex:
+                results.append(f"{sn}:err:{str(ex)[:40]}")
+        out["serial_label"] = "; ".join(results)
+    else:
+        out["serial_label"] = f"no-serial ({serial_note})"
+    try:
+        qc = await _qc_label_pdf_bytes(order_id, serials, user, customer)
+        out["qc_label"] = await _office_print(qc, OFFICE_LABEL_PRINTER, "landscape,fit", "qc")
+    except Exception as ex:
+        out["qc_label"] = f"err:{str(ex)[:50]}"
+    # MRP (retail price) label — every product EXCEPT stabilizers
+    try:
+        mrp = await _mrp_label_pdf_bytes(order_id)
+        out["mrp_label"] = (await _office_print(mrp, OFFICE_LABEL_PRINTER, "landscape,fit", "mrp")) if mrp else "skipped (stabilizer / no MRP)"
+    except Exception as ex:
+        out["mrp_label"] = f"err:{str(ex)[:50]}"
+    try:
+        card = await customer_card_pdf(order_id=order_id, customer=customer, serial=primary_serial, user=user)
+        out["care_card"] = await _office_print(card.body, OFFICE_LABEL_PRINTER, "landscape,fit", "card")
+    except Exception as ex:
+        out["care_card"] = f"err:{str(ex)[:50]}"
+    # Packing is done → drop the order off the dispatcher desk (both models).
+    _now = datetime.now(timezone.utc).isoformat()
+    _by = user.get("email") or user.get("name")
+    try:
+        await db.pending_fulfillment.update_one(
+            {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]},
+            {"$set": {"pack_stage": "packed", "packed_at": _now, "packed_by": _by}})
+        await db.amazon_order_processing.update_many(
+            {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]},
+            {"$set": {"packed_at": _now, "packed_by": _by}})
+    except Exception:
+        pass
+    return {"success": True, "order_id": order_id, "serials": serials,
+            "serial_source": serial_note, "printed": out}
+
+
+async def _fetch_label_by_tracking(tracking: str):
+    """Resolve a shipping-label PDF from an AWB / tracking id / order id — Bigship first, then
+    Shiprocket. Returns (pdf_bytes, source) or (None, reason). Never raises. Used by the WhatsApp
+    'print this label' flow and any print-by-tracking button."""
+    t = (tracking or "").strip()
+    digits = re.sub(r"\D", "", t)
+    if len(digits) < 6 and not t:
+        return None, "no-tracking"
+    # ---- Bigship: find the shipment row, resolve a system_order_id, pull the LABEL pdf ----
+    try:
+        cs = await db.courier_shipments.find_one({"$or": [
+            {"awb_number": t}, {"awb_number": digits}, {"lr_number": t},
+            {"order_id": t}, {"amazon_order_id": t},
+            {"bigship_order_id": t}, {"bigship_panel_order_id": t}]}, {"_id": 0})
+        if cs:
+            oid = cs.get("order_id") or cs.get("amazon_order_id")
+            aop = None
+            if oid:
+                aop = await db.amazon_order_processing.find_one(
+                    {"$or": [{"order_id": oid}, {"amazon_order_id": oid}]},
+                    {"_id": 0, "system_order_id": 1, "bigship_order_id": 1})
+            soid = (aop or {}).get("system_order_id") or (aop or {}).get("bigship_order_id") or cs.get("bigship_order_id")
+            if soid:
+                pdf = await _fetch_bigship_label_pdf(str(soid))
+                if pdf:
+                    return pdf, f"bigship AWB {cs.get('awb_number') or digits}"
+    except Exception as e:
+        logger.warning(f"label-by-tracking bigship failed: {e}")
+    # ---- Shiprocket: awb → shipment_id (from stored raw) → generate label url → download ----
+    try:
+        sr = await db.shiprocket_orders.find_one(
+            {"$or": [{"awb": t}, {"awb": digits}, {"channel_order_id": t}, {"shiprocket_order_id": t}]},
+            {"_id": 0})
+        if sr:
+            raw = sr.get("raw") or {}
+            ship_id = raw.get("shipment_id") or sr.get("shipment_id")
+            if ship_id:
+                from utils import shiprocket as _sr
+                lb = await _sr._post("/courier/generate/label", {"shipment_id": [ship_id]})
+                url = ((lb or {}).get("data") or {}).get("label_url") if lb else None
+                if url:
+                    import httpx
+                    async with httpx.AsyncClient(timeout=40) as c:
+                        r = await c.get(url)
+                        if r.status_code == 200 and r.content:
+                            return r.content, f"shiprocket AWB {sr.get('awb')}"
+    except Exception as e:
+        logger.warning(f"label-by-tracking shiprocket failed: {e}")
+    return None, "not-found"
+
+
+@api_router.post("/orders/print-label-by-tracking")
+async def print_label_by_tracking(tracking: str, dry_run: bool = False,
+                                  user: dict = Depends(require_roles(["admin", "accountant", "dispatcher", "supervisor", "gate"]))):
+    """Fetch a label by AWB/tracking/order id (Bigship or Shiprocket) and print it at the office.
+    dry_run=1 fetches only (no print) — used to validate the lookup path."""
+    pdf, source = await _fetch_label_by_tracking(tracking)
+    if not pdf:
+        return {"success": False, "tracking": tracking, "reason": source}
+    if dry_run:
+        return {"success": True, "tracking": tracking, "source": source, "bytes": len(pdf), "printed": False}
+    ok = await _office_print(pdf, OFFICE_COURIER_PRINTER, "fit", "tracklabel")
+    return {"success": True, "tracking": tracking, "source": source, "printed": ok}
+
+
 @api_router.get("/finished-good-serials/available/{master_sku_id}")
 async def get_available_serials_for_dispatch(
     master_sku_id: str,
@@ -22197,8 +23340,1181 @@ async def _release_reservations(reservation_ids: List[str]) -> None:
 # existing gate-scan / finalize path books it exactly once (those paths only act on ready_for_dispatch,
 # so they are untouched). Legacy dispatches have no split_managed flag and behave as before.
 from utils.dispatch_split import (classify_dispatch_split as _classify_dispatch_split_impl,
+                                  item_class as _dispatch_item_class,
                                   SPLIT_DISPATCH_ENABLED, SPLIT_INVERTER_ROLE,
                                   SPLIT_REST_ROLE, SPLIT_STATUS_AWAITING, FULFILLMENT_V2)
+
+
+async def _order_dispatch_owners(entry: dict) -> set:
+    """Which dispatcher desk(s) an order belongs to: 'inverter' (Gaurav/technician) and/or 'rest'
+    (Angad/supervisor — battery/stabilizer/everything else). A combo shows on BOTH. Unmapped → rest."""
+    items = entry.get("items") or []
+    if not items and entry.get("master_sku_id"):
+        items = [{"master_sku_id": entry["master_sku_id"]}]
+    sku_ids = [it.get("master_sku_id") for it in items if it.get("master_sku_id")]
+    meta = {}
+    if sku_ids:
+        async for s in db.master_skus.find({"id": {"$in": sku_ids}}, {"id": 1, "category": 1, "product_type": 1}):
+            meta[s["id"]] = (s.get("category"), s.get("product_type"))
+    owners = set()
+    for it in items:
+        cat, ptype = meta.get(it.get("master_sku_id"), ("", ""))
+        is_inv, is_combo, _ = _dispatch_item_class(cat, ptype)
+        if is_combo:
+            owners.update({"inverter", "rest"})
+        elif is_inv:
+            owners.add("inverter")
+        else:
+            owners.add("rest")
+    if not owners:
+        owners.add("rest")
+    return owners
+
+
+_AMZ_OID_RE = re.compile(r"\d{3}-\d{7}-\d{7}")
+
+
+def _clean_ship_ref(*vals):
+    """Return the first non-empty order reference, stripped of the trailing '-' the Bigship panel scrape
+    tacks on (e.g. '402-2674569-9228342-' → '402-2674569-9228342', 'DC/2026-27/144' unchanged)."""
+    for v in vals:
+        if v is None:
+            continue
+        s = str(v).strip().rstrip("-").strip()
+        if s:
+            return s
+    return None
+
+
+def _ship_ref_key(*vals):
+    """A stable order key for de-duplicating sibling shipments: the Amazon order id if present
+    (strips any '-new'/'-' suffix the panel adds), else the cleaned ref."""
+    for v in vals:
+        m = _AMZ_OID_RE.search(str(v or ""))
+        if m:
+            return m.group(0)
+    return _clean_ship_ref(*vals)
+
+
+async def _orders_with_shipped_sibling(ref_keys: set) -> set:
+    """Given order-ref keys, return the subset whose order ALREADY has a courier shipment that
+    Delhivery/Bigship shows as picked/moved/delivered. Any OTHER still-pending booking for such an
+    order is a SUPERSEDED DUPLICATE — the goods went out on the sibling AWB (the 2026-07 re-book
+    pattern: order booked twice, one label delivered, the other lingers forever as 'NOT PICKED')."""
+    ref_keys = {k for k in ref_keys if k}
+    if not ref_keys:
+        return set()
+    shipped = set()
+    rx = "|".join(re.escape(k) for k in ref_keys)
+    async for sib in db.courier_shipments.find(
+            {"$or": [{"panel_order_ref": {"$regex": rx}},
+                     {"amazon_order_id": {"$in": list(ref_keys)}},
+                     {"order_id": {"$in": list(ref_keys)}}],
+             "status": {"$nin": [None, ""]}},
+            {"_id": 0, "panel_order_ref": 1, "amazon_order_id": 1, "order_id": 1,
+             "status": 1, "delhivery_status": 1}):
+        if _delhivery_picked(sib.get("status") or "") or _delhivery_picked(sib.get("delhivery_status") or ""):
+            k = _ship_ref_key(sib.get("amazon_order_id"), sib.get("order_id"), sib.get("panel_order_ref"))
+            if k:
+                shipped.add(k)
+    return shipped
+
+
+@api_router.get("/dispatcher/pack-queue")
+async def dispatcher_pack_queue(user: dict = Depends(require_roles(["admin", "service_agent", "technician", "supervisor", "dispatcher"]))):
+    """A dispatcher's own Ship Desk: the shippable orders routed to THEM by product category —
+    inverter→Gaurav (service_agent/technician), battery/stabilizer/rest→Angad (supervisor).
+    Admin/dispatcher see all, tagged by owner. Each row is packed via the Print-pack-set button."""
+    role = user.get("role")
+    want = {"service_agent": "inverter", "technician": "inverter", "supervisor": "rest"}.get(role)  # None = see all
+    # Only orders that have been BOOKED (manually by the accountant or by the night job) and not yet
+    # packed appear here — so a dispatcher's desk shows exactly what's ready to print & pack.
+    q = {"status": {"$in": ["ready_to_dispatch", "pending_dispatch", "ready", "pending"]},
+         "pack_stage": "ready_to_pack"}
+    entries = await db.pending_fulfillment.find(q, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    out = []
+    for e in entries:
+        owners = await _order_dispatch_owners(e)
+        if want and want not in owners:
+            continue
+        # light display enrichment
+        items = e.get("items") or []
+        if not e.get("master_sku_name") and items:
+            e["master_sku_name"] = items[0].get("master_sku_name") or items[0].get("title") or items[0].get("product_name")
+        e["dispatch_owners"] = sorted(owners)
+        e["owner_label"] = ("Combo → both" if owners == {"inverter", "rest"}
+                            else "Inverter → Gaurav" if owners == {"inverter"}
+                            else "Battery / Stabilizer → Angad")
+        out.append(e)
+
+    # --- Source 2: BOOKED AMAZON orders (eBay UP etc.) — these are labelled via the Amazon pipeline
+    # into amazon_order_processing (AWB + status=completed), NOT pending_fulfillment, so they need to
+    # be surfaced here too. Classified by product title (inverter→Gaurav, battery/stabilizer→Angad).
+    # Excludes do_not_ship (cancelled/buyer-cancel) and already-packed orders. ---
+    # Bound to a recent window (default 15 days) so the desk shows the live pickup queue, not the
+    # thousands of historically-shipped orders.
+    _recent = (datetime.now(timezone.utc) - timedelta(days=int(os.environ.get("PACK_DESK_RECENT_DAYS", "15")))).isoformat()
+    aq = {"status": "completed", "awb_number": {"$nin": [None, ""]},
+          "do_not_ship": {"$ne": True}, "packed_at": {"$in": [None, ""]},
+          "processed_at": {"$gte": _recent}}
+    booked_amz = await db.amazon_order_processing.find(aq, {"_id": 0}).sort("processed_at", -1).to_list(2000)
+    if booked_amz:
+        oids = [a.get("amazon_order_id") or a.get("order_id") for a in booked_amz]
+        ao_map = {}
+        async for ao in db.amazon_orders.find({"amazon_order_id": {"$in": oids}},
+                {"_id": 0, "amazon_order_id": 1, "buyer_name": 1, "customer_name_manual": 1,
+                 "phone": 1, "phone_manual": 1, "city": 1, "city_manual": 1, "state": 1, "pincode": 1, "pincode_manual": 1,
+                 "amazon_deliver_by": 1, "amazon_ship_by": 1}):
+            ao_map[ao["amazon_order_id"]] = ao
+        for a in booked_amz:
+            oid = a.get("amazon_order_id") or a.get("order_id")
+            title = a.get("product_title") or (a.get("items") or [{}])[0].get("title") or ""
+            owner = "inverter" if "inverter" in title.lower() else "rest"  # battery/stabilizer/else → Angad
+            if want and want != owner:
+                continue
+            ao = ao_map.get(oid, {})
+            out.append({
+                "id": oid, "order_id": oid, "amazon_order_id": oid,
+                "customer_name": ao.get("buyer_name") or ao.get("customer_name_manual") or "",
+                "phone": ao.get("phone") or ao.get("phone_manual") or "",
+                "city": ao.get("city") or ao.get("city_manual"), "state": ao.get("state"),
+                "pincode": ao.get("pincode") or ao.get("pincode_manual"),
+                "master_sku_name": title, "items": a.get("items") or [],
+                "tracking_id": a.get("awb_number"), "source": "amazon",
+                "amazon_deliver_by": ao.get("amazon_deliver_by"),
+                "amazon_ship_by": ao.get("amazon_ship_by"),
+                "dispatch_owners": [owner],
+                "owner_label": "Inverter → Gaurav" if owner == "inverter" else "Battery / Stabilizer → Angad",
+            })
+
+    # --- Source 3: BIGSHIP shipments PENDING PICKUP (panel/Excel booked, ALL Amazon accounts). Booked
+    # but the courier hasn't picked up yet. "NOT PICKED" is TWO-STEP verified: Bigship says NOT PICKED
+    # AND Delhivery is not showing it moved/picked (delhivery_confirmed_not_picked; a Delhivery "picked"
+    # status is excluded; aged-out `stale` rows excluded). This is what makes the desk a true pickup queue. ---
+    seen_awbs = {o.get("tracking_id") for o in out if o.get("tracking_id")}
+    PICKUP_PENDING = ["Pickup Scheduled", "PICKUP SCHEDULED", "created", "manifested", "Manifested"]
+    csq = {"awb_number": {"$nin": [None, ""]}, "do_not_ship": {"$ne": True}, "stale": {"$ne": True},
+           "is_return": {"$ne": True},
+           "$or": [{"status": {"$in": PICKUP_PENDING}},
+                   {"status": {"$regex": "^NOT PICKED$", "$options": "i"}}]}
+    cs_rows = await db.courier_shipments.find(csq, {"_id": 0}).sort("created_at", -1).to_list(4000)
+    # Resolve each panel row's real order reference + product. The panel scrape stores the order id on
+    # `panel_order_ref`/`invoice_number` (often with a trailing "-") and does NOT store the product — so
+    # the desk was showing the AWB as the order id and a blank description. Recover the order id from the
+    # cleaned ref, and the product title from the scraped Amazon order (amazon_orders) when the ref is an
+    # Amazon order id. (Dealer/challan refs — DC/…, invoice numbers — aren't Amazon; their product stays
+    # blank unless already stored.)
+    ref_by_awb = {}
+    amz_ids = set()
+    for c in cs_rows:
+        awb = (c.get("awb_number") or "").strip()
+        ref = (c.get("order_id") or c.get("amazon_order_id")
+               or _clean_ship_ref(c.get("panel_order_ref"), c.get("invoice_number")))
+        ref_by_awb[awb] = ref
+        mm = _AMZ_OID_RE.search(str(ref or ""))
+        if mm:
+            amz_ids.add(mm.group(0))
+    title_map = {}
+    dby_map = {}
+    if amz_ids:
+        async for ao in db.amazon_orders.find({"amazon_order_id": {"$in": list(amz_ids)}},
+                {"_id": 0, "amazon_order_id": 1, "amazon_deliver_by": 1, "items": 1}):
+            dby_map[ao["amazon_order_id"]] = ao.get("amazon_deliver_by")
+            it = ao.get("items") or []
+            t = (it[0].get("title") or it[0].get("name")) if it else None
+            if t:
+                title_map[ao["amazon_order_id"]] = t
+    # Suppress SUPERSEDED duplicate bookings: if this order already delivered/moved on a sibling AWB,
+    # the pending row is a dead duplicate label — never show it on the pack desk.
+    shipped_siblings = await _orders_with_shipped_sibling(
+        {_ship_ref_key(r) for r in ref_by_awb.values()})
+    for c in cs_rows:
+        awb = (c.get("awb_number") or "").strip()
+        if not awb or awb in seen_awbs:
+            continue
+        dt = c.get("created_at") or c.get("manifested_at") or c.get("panel_scraped_at")
+        if dt and str(dt) < _recent:
+            continue
+        st = (c.get("status") or "").strip()
+        is_np = st.upper() == "NOT PICKED"
+        # two-step for EVERY pending row: drop if Delhivery shows it already moved/picked OR cancelled.
+        _dstat = c.get("delhivery_status") or ""
+        if _delhivery_picked(_dstat) or _delhivery_cancelled(_dstat) or _delhivery_cancelled(st):
+            continue
+        base_st = "NOT PICKED" if is_np else st
+        if c.get("delhivery_confirmed_not_picked"):
+            pickup = f"{base_st} · Delhivery ✓ not picked"
+        else:
+            pickup = f"{base_st} · Delhivery verifying"
+        ref = ref_by_awb.get(awb)
+        mm = _AMZ_OID_RE.search(str(ref or ""))
+        amz_id = mm.group(0) if mm else c.get("amazon_order_id")
+        if _ship_ref_key(amz_id, ref, c.get("panel_order_ref")) in shipped_siblings:
+            continue  # superseded duplicate — goods already shipped on a sibling AWB
+        # Founder rule (2026-07-08): NON-Amazon orders wait in the accountant's invoice-upload queue —
+        # they only reach Gaurav/Angad once the accountant has uploaded the invoice.
+        if not amz_id and not (c.get("invoice_path") or c.get("invoice_url")):
+            continue
+        title = c.get("product_name") or (title_map.get(amz_id) if amz_id else "") or ""
+        owner = "inverter" if "inverter" in title.lower() else "rest"
+        if want and want != owner:
+            continue
+        seen_awbs.add(awb)
+        oid = ref or awb
+        out.append({
+            "id": awb, "order_id": oid, "amazon_order_id": amz_id,
+            "customer_name": c.get("customer_name") or c.get("company_name") or "",
+            "phone": c.get("phone") or "",
+            "city": c.get("consignee_city"), "state": c.get("consignee_state"), "pincode": c.get("consignee_pincode"),
+            "master_sku_name": title, "items": [],
+            "tracking_id": awb, "source": "bigship_panel",
+            "amazon_deliver_by": (dby_map.get(amz_id) if amz_id else None),
+            "pickup_status": pickup, "not_picked": is_np,
+            "dispatch_owners": [owner],
+            "owner_label": "Inverter → Gaurav" if owner == "inverter" else "Battery / Stabilizer → Angad",
+        })
+    return out
+
+
+def _pf_value(e: dict) -> float:
+    """Best monetary value for a fulfillment entry (for the >₹50k e-way-bill rule)."""
+    v = e.get("invoice_value") or e.get("total_amount") or e.get("order_total") or e.get("order_value")
+    if not v and e.get("items"):
+        v = sum((i.get("rate") or i.get("price") or i.get("unit_price") or 0) * (i.get("quantity") or 1)
+                for i in e.get("items", []))
+    if not v and e.get("rate"):
+        v = (e.get("rate") or 0) * (e.get("quantity") or 1)
+    return float(v or 0)
+
+
+@api_router.get("/accountant/manual-bookings")
+async def accountant_manual_bookings(user: dict = Depends(require_roles(["accountant", "admin"]))):
+    """The accountant's manual-booking worklist: shippable orders that still need a label. Auto-booked
+    orders (night job) skip this and land on the dispatcher desks; what stays here are the exceptions
+    (>₹50k needing an e-way bill, missing data, or anything the auto-booker didn't take). Minimal entry:
+    just a tracking id — plus e-way number + PDF when the order is above ₹50,000."""
+    q = {"status": {"$in": ["ready_to_dispatch", "pending_dispatch", "ready", "pending"]},
+         "tracking_id": {"$in": [None, ""]},
+         "pack_stage": {"$nin": ["ready_to_pack", "packed"]}}
+    entries = await db.pending_fulfillment.find(q, {"_id": 0}).sort("created_at", -1).to_list(1500)
+    out = []
+    for e in entries:
+        items = e.get("items") or []
+        if not e.get("master_sku_name") and items:
+            e["master_sku_name"] = items[0].get("master_sku_name") or items[0].get("title") or items[0].get("product_name")
+        val = _pf_value(e)
+        owners = await _order_dispatch_owners(e)
+        has_addr = bool(e.get("phone") or e.get("address") or e.get("shipping_address") or e.get("city"))
+        e["order_value"] = val
+        e["needs_eway"] = val > 50000
+        e["is_exception"] = (val > 50000) or (not has_addr)
+        e["owner_label"] = ("Combo → both" if owners == {"inverter", "rest"}
+                            else "Inverter → Gaurav" if owners == {"inverter"}
+                            else "Battery / Stabilizer → Angad")
+        out.append(e)
+
+    # --- CRITICAL AMAZON orders needing manual tracking / e-way: unshipped self-ship (MFN) orders with
+    # no AWB. These live in amazon_orders (not pending_fulfillment), so the accountant couldn't book them
+    # before. >₹50k are flagged needs_eway. Excludes Easy-Ship (Amazon-fulfilled), cancelled, do_not_ship. ---
+    seen = {o.get("order_id") for o in out if o.get("order_id")}
+    recent = (datetime.now(timezone.utc) - timedelta(days=int(os.environ.get("ACCT_AMZ_RECENT_DAYS", "20")))).strftime("%Y-%m-%dT%H:%M:%S")
+    aq = {"order_status": {"$regex": "^Unshipped$", "$options": "i"}, "fulfillment_channel": "MFN",
+          "is_easy_ship": {"$ne": True}, "bigship_awb": {"$in": [None, ""]},
+          "do_not_ship": {"$ne": True}, "purchase_date": {"$gte": recent}}
+    async for o in db.amazon_orders.find(aq, {"_id": 0}).sort("purchase_date", -1).limit(500):
+        oid = o.get("amazon_order_id")
+        if not oid or oid in seen:
+            continue
+        aop = await db.amazon_order_processing.find_one({"amazon_order_id": oid},
+                {"_id": 0, "awb_number": 1, "do_not_ship": 1})
+        if aop and (aop.get("awb_number") or aop.get("do_not_ship")):
+            continue                                   # already booked / flagged
+        ot = o.get("order_total"); val = float((ot.get("Amount") if isinstance(ot, dict) else ot) or 0)
+        items = o.get("items") or []
+        title = (items[0].get("title") or items[0].get("name") or "") if items else ""
+        owner = "inverter" if "inverter" in title.lower() else "rest"
+        out.append({
+            "id": oid, "order_id": oid, "amazon_order_id": oid, "source": "amazon",
+            "customer_name": o.get("buyer_name") or o.get("customer_name_manual") or "",
+            "phone": o.get("phone") or o.get("phone_manual") or "",
+            "city": o.get("city") or o.get("city_manual"), "state": o.get("state"),
+            "pincode": o.get("postal_code") or o.get("pincode_manual"),
+            "master_sku_name": title, "items": items, "firm_name": o.get("firm_name"),
+            "order_value": val, "needs_eway": val > 50000, "is_exception": True,
+            "owner_label": "Inverter → Gaurav" if owner == "inverter" else "Battery / Stabilizer → Angad",
+        })
+    return out
+
+
+@api_router.post("/accountant/manual-bookings/{fulfillment_id}")
+async def submit_manual_booking(fulfillment_id: str,
+                                tracking_id: str = Form(...),
+                                courier: str = Form("Delhivery"),
+                                eway_bill_number: Optional[str] = Form(None),
+                                label_file: Optional[UploadFile] = File(None),
+                                user: dict = Depends(require_roles(["accountant", "admin"]))):
+    """Record a manual booking → route the order to its dispatcher desk (Gaurav / Angad). Above ₹50k
+    the e-way bill number + a PDF are mandatory (GST rule)."""
+    e = await db.pending_fulfillment.find_one({"id": fulfillment_id})
+    if not e:
+        raise HTTPException(status_code=404, detail="Order not found")
+    tracking_id = (tracking_id or "").strip()
+    if not tracking_id:
+        raise HTTPException(status_code=400, detail="Tracking ID is required")
+    val = _pf_value(e)
+    if val > 50000:
+        if not (eway_bill_number or "").strip():
+            raise HTTPException(status_code=400, detail="E-way bill number is required for orders above ₹50,000")
+        if not label_file:
+            raise HTTPException(status_code=400, detail="Upload the e-way bill / label PDF for orders above ₹50,000")
+    label_url = None
+    if label_file:
+        content = await label_file.read()
+        try:
+            rel, _ = await storage_upload(file_data=content, folder="labels",
+                                          original_filename=label_file.filename or "label.pdf",
+                                          filename_prefix=f"manual_{fulfillment_id}")
+            label_url = f"/api/files/{rel}"
+        except Exception as ex:
+            raise HTTPException(status_code=500, detail=f"File upload failed: {ex}")
+    owners = await _order_dispatch_owners(e)
+    upd = {"tracking_id": tracking_id, "courier": (courier or "Delhivery").strip(),
+           "pack_stage": "ready_to_pack",
+           "manual_booked_at": datetime.now(timezone.utc).isoformat(),
+           "manual_booked_by": user.get("email") or user.get("name"),
+           "dispatch_owners": sorted(owners)}
+    if (eway_bill_number or "").strip():
+        upd["eway_bill_number"] = eway_bill_number.strip()
+    if label_url:
+        upd["label_url"] = label_url
+        upd["label_file"] = label_url
+    await db.pending_fulfillment.update_one({"id": fulfillment_id}, {"$set": upd})
+    dest = ("Gaurav (inverter)" if owners == {"inverter"}
+            else "both desks" if owners == {"inverter", "rest"}
+            else "Angad (battery/stabilizer)")
+    return {"success": True, "order_id": e.get("order_id") or e.get("amazon_order_id"),
+            "routed_to": dest, "tracking_id": tracking_id}
+
+
+@api_router.post("/accountant/manual-bookings/amazon/{amazon_order_id}")
+async def submit_amazon_manual_booking(amazon_order_id: str,
+                                       tracking_id: str = Form(...),
+                                       courier: str = Form("Delhivery"),
+                                       eway_bill_number: Optional[str] = Form(None),
+                                       label_file: Optional[UploadFile] = File(None),
+                                       user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Accountant books a CRITICAL Amazon order manually (tracking + e-way + PDF). Writes it into
+    amazon_order_processing (awb + status=completed) → it shows on the dispatcher desk. Above ₹50k the
+    e-way number + PDF are mandatory."""
+    ao = await db.amazon_orders.find_one({"amazon_order_id": amazon_order_id})
+    if not ao:
+        raise HTTPException(status_code=404, detail="Amazon order not found")
+    tracking_id = (tracking_id or "").strip()
+    if not tracking_id:
+        raise HTTPException(status_code=400, detail="Tracking ID is required")
+    ot = ao.get("order_total"); val = float((ot.get("Amount") if isinstance(ot, dict) else ot) or 0)
+    if val > 50000:
+        if not (eway_bill_number or "").strip():
+            raise HTTPException(status_code=400, detail="E-way bill number is required above ₹50,000")
+        if not label_file:
+            raise HTTPException(status_code=400, detail="Upload the e-way bill / label PDF above ₹50,000")
+    label_url = None
+    if label_file:
+        content = await label_file.read()
+        try:
+            rel, _ = await storage_upload(file_data=content, folder="labels",
+                                          original_filename=label_file.filename or "label.pdf",
+                                          filename_prefix=f"amz_{amazon_order_id}")
+            label_url = f"/api/files/{rel}"
+        except Exception as ex:
+            raise HTTPException(status_code=500, detail=f"File upload failed: {ex}")
+    now = datetime.now(timezone.utc).isoformat()
+    items = ao.get("items") or []
+    upd = {"amazon_order_id": amazon_order_id, "order_id": amazon_order_id, "firm_id": ao.get("firm_id"),
+           "firm_name": ao.get("firm_name"), "customer_name": ao.get("buyer_name"), "items": items,
+           "product_title": (items[0].get("title") if items else None),
+           "awb_number": tracking_id, "tracking_id": tracking_id, "courier": (courier or "Delhivery"),
+           "status": "completed", "processed_at": now, "source": "accountant_manual",
+           "manual_booked_by": user.get("email") or user.get("name")}
+    if (eway_bill_number or "").strip():
+        upd["eway_bill_number"] = eway_bill_number.strip()
+    if label_url:
+        upd["label_path"] = label_url
+        upd["label_url"] = label_url
+    await db.amazon_order_processing.update_one({"amazon_order_id": amazon_order_id}, {"$set": upd}, upsert=True)
+    await db.amazon_orders.update_one({"amazon_order_id": amazon_order_id},
+        {"$set": {"bigship_awb": tracking_id, "updated_at": now}})
+    title = (items[0].get("title") if items else "") or ""
+    routed = "Gaurav (inverter)" if "inverter" in title.lower() else "Angad (battery/stabilizer)"
+    return {"success": True, "order_id": amazon_order_id, "routed_to": routed, "tracking_id": tracking_id}
+
+
+@api_router.post("/accountant/offline-order")
+async def create_offline_order(payload: dict = Body(...),
+                               user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Accountant adds an OFFLINE order (MGIPL direct / dealer / walk-in, not from Amazon) into the
+    dispatch queue. Creates a pending_fulfillment record; if a tracking id is supplied it goes STRAIGHT
+    to the dispatcher desk (routed by product category → Gaurav/Angad); otherwise it lands on the
+    accountant's manual-booking list to add a label later."""
+    firm_id = payload.get("firm_id") or "16abb602-875d-4283-bed9-f8789e688a17"  # default MGIPL, any firm OK
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0, "name": 1, "code": 1})
+    if not firm:
+        raise HTTPException(status_code=400, detail="Invalid firm")
+    # MULTI-ITEM: accept items=[{master_sku_id, quantity}, ...]; fall back to single master_sku_id.
+    items = []
+    for it in (payload.get("items") or []):
+        sid = it.get("master_sku_id")
+        if not sid:
+            continue
+        sk = await db.master_skus.find_one({"id": sid})
+        if not sk:
+            raise HTTPException(status_code=400, detail=f"Invalid product in items: {sid}")
+        items.append({"master_sku_id": sid, "master_sku_name": sk.get("name"), "sku_code": sk.get("sku_code"),
+                      "hsn_code": sk.get("hsn_code"), "gst_rate": sk.get("gst_rate", 18),
+                      "quantity": int(it.get("quantity") or 1)})
+    if not items:
+        sku_id = payload.get("master_sku_id")
+        if not sku_id:
+            raise HTTPException(status_code=400, detail="At least one product is required")
+        sku = await db.master_skus.find_one({"id": sku_id})
+        if not sku:
+            raise HTTPException(status_code=400, detail="Invalid product")
+        items = [{"master_sku_id": sku_id, "master_sku_name": sku.get("name"), "sku_code": sku.get("sku_code"),
+                  "hsn_code": sku.get("hsn_code"), "gst_rate": sku.get("gst_rate", 18),
+                  "quantity": int(payload.get("quantity") or 1)}]
+    customer = (payload.get("customer_name") or "").strip()
+    if not customer:
+        raise HTTPException(status_code=400, detail="Customer name is required")
+    val = float(payload.get("invoice_value") or 0)
+    tracking = (payload.get("tracking_id") or "").strip()
+    eway = (payload.get("eway_bill_number") or "").strip()
+    if tracking and val > 50000 and not eway:
+        raise HTTPException(status_code=400, detail="E-way bill number is required above ₹50,000")
+    now = datetime.now(timezone.utc).isoformat()
+    fid = str(uuid.uuid4())
+    code = (firm.get("code") or "".join(w[0] for w in (firm.get("name") or "MG").split())[:4]).upper()
+    order_id = (payload.get("order_id") or "").strip() or f"{code}-OFF-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{fid[:4].upper()}"
+    doc = {
+        "id": fid, "order_id": order_id, "type": "offline_order", "source": "accountant_offline",
+        "firm_id": firm_id, "firm_name": firm.get("name"), "status": "ready_to_dispatch",
+        "customer_name": customer, "phone": re.sub(r"\D", "", str(payload.get("phone") or ""))[-10:],
+        "address": payload.get("address"), "city": payload.get("city"),
+        "state": payload.get("state"), "pincode": re.sub(r"\D", "", str(payload.get("pincode") or "")),
+        "items": items,
+        "master_sku_id": items[0]["master_sku_id"], "master_sku_name": items[0]["master_sku_name"],
+        "quantity": sum(i["quantity"] for i in items),
+        "invoice_value": val, "created_at": now, "created_by": user.get("email") or user.get("name"),
+    }
+    if tracking:
+        owners = await _order_dispatch_owners(doc)
+        doc.update({"tracking_id": tracking, "courier": payload.get("courier") or "Delhivery",
+                    "pack_stage": "ready_to_pack", "dispatch_owners": sorted(owners),
+                    "manual_booked_at": now, "manual_booked_by": user.get("email") or user.get("name")})
+        if eway:
+            doc["eway_bill_number"] = eway
+        routed = ("Gaurav (inverter)" if owners == {"inverter"}
+                  else "both desks" if owners == {"inverter", "rest"} else "Angad (battery/stabilizer)")
+        on_desk = True
+    else:
+        routed = "manual-booking list (add a tracking id to send it to a dispatcher)"
+        on_desk = False
+    await db.pending_fulfillment.insert_one(doc)
+    return {"success": True, "order_id": order_id, "routed_to": routed, "on_desk": on_desk}
+
+
+@api_router.post("/accountant/offline-order/{order_id}/label")
+async def attach_offline_order_label(order_id: str, file: UploadFile = File(...),
+                                     user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Attach a courier-label PDF (downloaded from the Delhivery / courier panel) to an offline order so
+    the pack desk's 'Print pack' prints it on the Samsung. Offline orders aren't booked through Bigship,
+    so there is no label to auto-fetch — the accountant supplies the real, scannable panel label here."""
+    pf = await db.pending_fulfillment.find_one({"order_id": order_id}, {"_id": 0, "id": 1})
+    if not pf:
+        raise HTTPException(status_code=404, detail="Offline order not found")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(data) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Label file too large (max 15MB)")
+    fn = file.filename or "label.pdf"
+    if not fn.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Label must be a PDF")
+    from utils.storage import upload_file as _up_label
+    rel_path, _st = await _up_label(data, "offline_labels", fn, filename_prefix="courier")
+    await db.pending_fulfillment.update_one(
+        {"order_id": order_id},
+        {"$set": {"courier_label_path": rel_path,
+                  "courier_label_attached_at": datetime.now(timezone.utc).isoformat(),
+                  "courier_label_attached_by": user.get("email") or user.get("name")}})
+    return {"success": True, "order_id": order_id, "label_attached": True}
+
+
+@api_router.post("/accountant/offline-order/{order_id}/attach")
+async def attach_offline_order_file(order_id: str, kind: str = Form(...), file: UploadFile = File(...),
+                                    user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Attach a PDF to an offline order — kind = invoice | eway | label. Stored + stamped on the order so
+    Print pack can print the invoice/label and the e-way bill travels with the order."""
+    field = {"invoice": "invoice_path", "eway": "eway_path", "label": "courier_label_path"}.get((kind or "").lower())
+    if not field:
+        raise HTTPException(status_code=400, detail="kind must be invoice, eway, or label")
+    pf = await db.pending_fulfillment.find_one({"order_id": order_id}, {"_id": 0, "id": 1})
+    if not pf:
+        raise HTTPException(status_code=404, detail="Offline order not found")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(data) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large (max 15MB)")
+    fn = file.filename or f"{kind}.pdf"
+    if not fn.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="File must be a PDF")
+    from utils.storage import upload_file as _up_off
+    rel_path, _st = await _up_off(data, "offline_docs", fn, filename_prefix=kind.lower())
+    await db.pending_fulfillment.update_one({"order_id": order_id},
+        {"$set": {field: rel_path, f"{kind.lower()}_attached_at": datetime.now(timezone.utc).isoformat(),
+                  f"{kind.lower()}_attached_by": user.get("email") or user.get("name")}})
+    return {"success": True, "order_id": order_id, "kind": kind, "attached": True}
+
+
+@api_router.get("/accountant/offline-labels")
+async def accountant_offline_labels(user: dict = Depends(require_roles(["accountant", "admin"]))):
+    """Offline orders already on a dispatcher desk (they have a courier AWB) but with NO courier-label PDF
+    attached yet — so 'Print pack' can't print their shipping label. The accountant uploads the real panel
+    label via POST /accountant/offline-order/{order_id}/label. Last 30 days."""
+    cut = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    q = {"source": "accountant_offline", "tracking_id": {"$nin": [None, ""]},
+         "courier_label_path": {"$in": [None, ""]}, "created_at": {"$gte": cut}}
+    rows = await db.pending_fulfillment.find(
+        q, {"_id": 0, "order_id": 1, "customer_name": 1, "master_sku_name": 1, "tracking_id": 1,
+            "courier": 1, "invoice_value": 1, "created_at": 1, "pack_stage": 1}
+    ).sort("created_at", -1).to_list(300)
+    return rows
+
+
+@api_router.get("/accountant/pending-invoices")
+async def accountant_pending_invoices(user: dict = Depends(require_roles(["accountant", "admin"]))):
+    """NON-Amazon Bigship shipments (dealer/offline) waiting for the accountant to UPLOAD the invoice
+    before they move to Gaurav/Angad's Ship Desk (founder rule 2026-07-08). Confirmed not-picked, last
+    15 days, no invoice yet."""
+    recent = (datetime.now(timezone.utc) - timedelta(days=15)).isoformat()
+    PP = ["Pickup Scheduled", "PICKUP SCHEDULED", "created", "manifested", "Manifested", "NOT PICKED"]
+    q = {"awb_number": {"$nin": [None, ""]}, "do_not_ship": {"$ne": True}, "stale": {"$ne": True},
+         "amazon_order_id": {"$in": [None, ""]}, "status": {"$in": PP}, "created_at": {"$gte": recent},
+         "invoice_path": {"$in": [None, ""]}, "invoice_url": {"$in": [None, ""]},
+         "is_return": {"$ne": True}}
+    rows = await db.courier_shipments.find(q, {"_id": 0}).sort("created_at", -1).to_list(600)
+    out = []
+    for c in rows:
+        if _delhivery_picked(c.get("delhivery_status") or "") or _delhivery_cancelled(c.get("delhivery_status") or ""):
+            continue
+        ref = str(c.get("panel_order_ref") or c.get("invoice_number") or c.get("awb_number") or "").rstrip("-").strip()
+        if _AMZ_OID_RE.search(ref):       # Amazon-format ref = an Amazon order → not gated / not here
+            continue
+        prods = c.get("panel_products") or []
+        prod = "; ".join(f"{p.get('name')} ×{p.get('qty')}" for p in prods if p.get("name")) or c.get("product_name")
+        out.append({"awb": c.get("awb_number"), "order_ref": ref, "customer_name": c.get("customer_name"),
+                    "product": prod, "value": c.get("invoice_amount"), "courier": c.get("courier_name"),
+                    "phone": c.get("phone"),
+                    "city": c.get("consignee_city"), "state": c.get("consignee_state"), "created_at": c.get("created_at")})
+    return out
+
+
+@api_router.post("/accountant/shipment-invoice/{awb}")
+async def attach_shipment_invoice(awb: str, file: UploadFile = File(...),
+                                  user: dict = Depends(require_roles(["accountant", "admin"]))):
+    """Upload the invoice PDF for a NON-Amazon Bigship shipment. Once attached, the order moves onto
+    Gaurav/Angad's Ship Desk (and Print pack prints this invoice)."""
+    cs = await db.courier_shipments.find_one({"awb_number": awb}, {"_id": 0, "id": 1})
+    if not cs:
+        raise HTTPException(status_code=404, detail="Shipment not found")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(data) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Invoice file too large (max 15MB)")
+    fn = file.filename or "invoice.pdf"
+    if not fn.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Invoice must be a PDF")
+    from utils.storage import upload_file as _up_inv
+    rel, _st = await _up_inv(data, "shipment_invoices", fn, filename_prefix="inv")
+    await db.courier_shipments.update_one({"awb_number": awb},
+        {"$set": {"invoice_path": rel, "invoice_uploaded_at": datetime.now(timezone.utc).isoformat(),
+                  "invoice_uploaded_by": user.get("email") or user.get("name")}})
+    return {"success": True, "awb": awb, "invoice_attached": True}
+
+
+# ===================== SHIP DESK 2.0 — one order pipeline, role-gated stages =====================
+# Stages: entered → awaiting_accountant → ready_to_ship (Gaurav/Angad) → shipped.
+# Rule (founder 2026-07-09): EVERY order needs invoice + tracking + label (+ e-way > 50k) before it
+# can ship. Entry roles: call_support/admin/accountant/supervisor/service_agent (+ the agent).
+SHIP_DESK_ENTRY_ROLES = ["call_support", "admin", "accountant", "supervisor", "service_agent"]
+_MGIPL_FIRM = "16abb602-875d-4283-bed9-f8789e688a17"
+
+
+def _ship_desk_required(value: float) -> list:
+    req = ["invoice", "tracking", "label"]
+    if float(value or 0) > 50000:
+        req.append("eway")
+    return req
+
+
+def _ship_desk_present(doc: dict) -> list:
+    got = []
+    if doc.get("invoice_path"): got.append("invoice")
+    if (doc.get("tracking_id") or "").strip(): got.append("tracking")
+    if doc.get("shipping_label_path") or doc.get("courier_label_path"): got.append("label")
+    if doc.get("eway_path") or (doc.get("eway_bill_number") or "").strip(): got.append("eway")
+    return got
+
+
+async def _ship_desk_maybe_advance(order_id: str):
+    """If every required doc is present, advance the order to Gaurav/Angad (ready_to_ship)."""
+    d = await db.pending_fulfillment.find_one({"order_id": order_id}, {"_id": 0})
+    if not d or d.get("stage") not in ("awaiting_accountant", None):
+        return d
+    required = d.get("required_docs") or _ship_desk_required(d.get("invoice_value"))
+    present = _ship_desk_present(d)
+    if not all(r in present for r in required):
+        return d
+    owners = await _order_dispatch_owners(d)
+    now = datetime.now(timezone.utc).isoformat()
+    await db.pending_fulfillment.update_one({"order_id": order_id}, {"$set": {
+        "stage": "ready_to_ship", "status": "ready_to_dispatch", "pack_stage": "ready_to_pack",
+        "dispatch_owners": sorted(owners), "docs_completed_at": now,
+        "courier": d.get("courier") or "Delhivery"}})
+    d["stage"] = "ready_to_ship"
+    # handoff ping to the routed dispatcher (Gaurav=service_agent / Angad=supervisor)
+    targets = (["service_agent"] if "inverter" in owners else []) + (["supervisor"] if "rest" in owners else [])
+    try:
+        await create_notification(
+            title="📦 Order ready to ship",
+            message=f"{d.get('customer_name')} — {d.get('master_sku_name') or ''}. Docs complete → print pack & ship.",
+            notification_type="ship_desk", link="/ship-desk", target_roles=list(set(targets + ["admin", "dispatcher"])),
+            priority="normal")
+    except Exception:
+        pass
+    return d
+
+
+@api_router.post("/ship-desk/order")
+async def ship_desk_create_order(payload: dict = Body(...),
+                                 user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROLES))):
+    """Punch in a new order (anyone in entry roles, or the agent). Basic details only — it then waits on
+    the accountant for invoice + tracking + label before it can ship."""
+    firm_id = payload.get("firm_id") or _MGIPL_FIRM
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0, "name": 1, "code": 1})
+    if not firm:
+        raise HTTPException(status_code=400, detail="Invalid firm")
+    items = []
+    for it in (payload.get("items") or []):
+        sk = await db.master_skus.find_one({"id": it.get("master_sku_id")}) if it.get("master_sku_id") else None
+        if not sk:
+            continue
+        items.append({"master_sku_id": sk["id"], "master_sku_name": sk.get("name"), "sku_code": sk.get("sku_code"),
+                      "hsn_code": sk.get("hsn_code"), "gst_rate": sk.get("gst_rate", 18), "quantity": int(it.get("quantity") or 1)})
+    if not items:
+        # allow a free-text product (e.g. "PCB C35") when no catalogue SKU is picked
+        name = (payload.get("product") or payload.get("master_sku_name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="At least one product is required")
+        items = [{"master_sku_id": None, "master_sku_name": name, "quantity": int(payload.get("quantity") or 1)}]
+    customer = (payload.get("customer_name") or "").strip()
+    if not customer:
+        raise HTTPException(status_code=400, detail="Customer name is required")
+    val = float(payload.get("invoice_value") or 0)
+    now = datetime.now(timezone.utc).isoformat()
+    fid = str(uuid.uuid4())
+    code = (firm.get("code") or "".join(w[0] for w in (firm.get("name") or "MG").split())[:4]).upper()
+    order_id = (payload.get("order_id") or "").strip() or f"{code}-SD-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{fid[:4].upper()}"
+    doc = {
+        "id": fid, "order_id": order_id, "type": "ship_desk_order", "source": "ship_desk",
+        "firm_id": firm_id, "firm_name": firm.get("name"), "stage": "awaiting_accountant",
+        "status": "awaiting_accountant", "required_docs": _ship_desk_required(val),
+        "customer_name": customer, "phone": re.sub(r"\D", "", str(payload.get("phone") or ""))[-10:],
+        "address": payload.get("address"), "city": payload.get("city"), "state": payload.get("state"),
+        "pincode": re.sub(r"\D", "", str(payload.get("pincode") or "")),
+        "items": items, "master_sku_id": items[0].get("master_sku_id"),
+        "master_sku_name": items[0].get("master_sku_name"), "quantity": sum(i["quantity"] for i in items),
+        "invoice_value": val, "created_at": now, "created_by": user.get("email") or user.get("name"),
+        "created_by_role": user.get("role")}
+    await db.pending_fulfillment.insert_one(doc)
+    try:
+        await create_notification(
+            title="🆕 New order — needs invoice/tracking/label",
+            message=f"{customer} — {items[0].get('master_sku_name')} ({firm.get('name')}). Attach the 3 docs to release it.",
+            notification_type="ship_desk", link="/ship-desk", target_roles=["accountant", "admin"], priority="normal")
+    except Exception:
+        pass
+    return {"success": True, "order_id": order_id, "stage": "awaiting_accountant",
+            "required_docs": doc["required_docs"]}
+
+
+@api_router.post("/ship-desk/order/{order_id}/doc")
+async def ship_desk_attach_doc(order_id: str, kind: str = Form(...),
+                               tracking_id: str = Form(None), courier: str = Form(None),
+                               eway_bill_number: str = Form(None), file: UploadFile = File(None),
+                               user: dict = Depends(require_roles(["accountant", "admin"]))):
+    """Accountant (or admin/agent) attaches a required doc: kind = invoice | label | eway | tracking.
+    When all required docs are in, the order auto-advances to Gaurav/Angad."""
+    d = await db.pending_fulfillment.find_one({"order_id": order_id}, {"_id": 0, "id": 1})
+    if not d:
+        raise HTTPException(status_code=404, detail="Order not found")
+    now = datetime.now(timezone.utc).isoformat()
+    sets = {}
+    kind = (kind or "").lower()
+    if kind == "tracking":
+        if not (tracking_id or "").strip():
+            raise HTTPException(status_code=400, detail="tracking_id required")
+        sets["tracking_id"] = tracking_id.strip()
+        if courier:
+            sets["courier"] = courier
+    elif kind in ("invoice", "label", "eway"):
+        if not file:
+            raise HTTPException(status_code=400, detail="file required")
+        data = await file.read()
+        if not data:
+            raise HTTPException(status_code=400, detail="Empty file")
+        if len(data) > 15 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="File too large (max 15MB)")
+        fn = file.filename or f"{kind}.pdf"
+        if not fn.lower().endswith(".pdf"):
+            raise HTTPException(status_code=400, detail="Must be a PDF")
+        from utils.storage import upload_file as _up_sd
+        rel, _st = await _up_sd(data, "ship_desk_docs", fn, filename_prefix=kind)
+        field = {"invoice": "invoice_path", "label": "shipping_label_path", "eway": "eway_path"}[kind]
+        sets[field] = rel
+        if kind == "eway" and eway_bill_number:
+            sets["eway_bill_number"] = eway_bill_number.strip()
+    else:
+        raise HTTPException(status_code=400, detail="kind must be invoice, label, eway or tracking")
+    sets[f"{kind}_attached_at"] = now
+    sets[f"{kind}_attached_by"] = user.get("email") or user.get("name")
+    await db.pending_fulfillment.update_one({"order_id": order_id}, {"$set": sets})
+    advanced = await _ship_desk_maybe_advance(order_id)
+    return {"success": True, "order_id": order_id, "stage": (advanced or {}).get("stage", "awaiting_accountant")}
+
+
+@api_router.get("/ship-desk/board")
+async def ship_desk_board(user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROLES + ["dispatcher", "gate"]))):
+    """The Ship Desk board — orders grouped by stage, scoped to the viewer's role."""
+    role = user.get("role")
+    want = {"service_agent": "inverter", "technician": "inverter", "supervisor": "rest"}.get(role)
+    def card(d):
+        req = d.get("required_docs") or _ship_desk_required(d.get("invoice_value"))
+        present = _ship_desk_present(d)
+        return {"order_id": d.get("order_id"), "customer_name": d.get("customer_name"),
+                "product": d.get("master_sku_name") or (d.get("items") or [{}])[0].get("master_sku_name"),
+                "firm_name": d.get("firm_name"), "value": d.get("invoice_value"), "stage": d.get("stage"),
+                "required": req, "present": present, "missing": [r for r in req if r not in present],
+                "owner_label": d.get("owner_label"), "created_by": d.get("created_by"),
+                "created_at": d.get("created_at"), "tracking_id": d.get("tracking_id"),
+                "sent_back_reason": d.get("sent_back_reason")}
+    awaiting = [card(d) async for d in db.pending_fulfillment.find(
+        {"source": "ship_desk", "stage": "awaiting_accountant"}, {"_id": 0}).sort("created_at", -1)]
+    ready_q = {"source": "ship_desk", "stage": "ready_to_ship", "pack_stage": {"$ne": "packed"}}
+    ready = []
+    async for d in db.pending_fulfillment.find(ready_q, {"_id": 0}).sort("created_at", -1):
+        owners = await _order_dispatch_owners(d)
+        if want and want not in owners:
+            continue
+        c = card(d)
+        c["owner_label"] = ("Combo → both" if owners == {"inverter", "rest"}
+                            else "Inverter → Gaurav" if owners == {"inverter"} else "Battery/Stabilizer → Angad")
+        ready.append(c)
+    recent = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    shipped = [card(d) async for d in db.pending_fulfillment.find(
+        {"source": "ship_desk", "pack_stage": "packed", "created_at": {"$gte": recent}}, {"_id": 0}
+    ).sort("created_at", -1).limit(100)]
+
+    # UNION the EXISTING pipeline into the board so it's one true queue (not just new orders):
+    #  - the whole dispatcher desk (all sources, already role-scoped) → Ready-to-ship lane
+    #  - the accountant's pending-invoice worklist → Awaiting-accountant lane
+    seen_r = {c["order_id"] for c in ready}
+    seen_a = {c["order_id"] for c in awaiting}
+    try:
+        for r in await dispatcher_pack_queue(user):
+            oid = r.get("order_id")
+            if not oid or oid in seen_r:
+                continue
+            seen_r.add(oid)
+            ready.append({"order_id": oid, "customer_name": r.get("customer_name"),
+                          "phone": r.get("phone"),
+                          "product": r.get("master_sku_name"), "firm_name": r.get("firm_name"),
+                          "value": r.get("order_value") or r.get("invoice_value"), "stage": "ready_to_ship",
+                          "required": ["invoice", "tracking", "label"], "present": ["invoice", "tracking", "label"],
+                          "missing": [], "owner_label": r.get("owner_label"), "tracking_id": r.get("tracking_id"),
+                          "source": r.get("source") or "existing", "pickup_status": r.get("pickup_status")})
+    except Exception:
+        pass
+    try:
+        for p in await accountant_pending_invoices(user):
+            oid = p.get("order_ref")
+            if not oid or oid in seen_a:
+                continue
+            seen_a.add(oid)
+            awaiting.append({"order_id": oid, "awb": p.get("awb"), "customer_name": p.get("customer_name"),
+                             "phone": p.get("phone"),
+                             "product": p.get("product"), "firm_name": p.get("firm"), "value": p.get("value"),
+                             "stage": "awaiting_accountant", "required": ["invoice"], "present": ["tracking", "label"],
+                             "missing": ["invoice"], "source": "pending_invoice"})
+    except Exception:
+        pass
+    return {"awaiting_accountant": awaiting, "ready_to_ship": ready, "shipped": shipped,
+            "counts": {"awaiting_accountant": len(awaiting), "ready_to_ship": len(ready), "shipped": len(shipped)}}
+
+
+@api_router.post("/ship-desk/order/{order_id}/send-back")
+async def ship_desk_send_back(order_id: str, payload: dict = Body(...),
+                              user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROLES + ["dispatcher"]))):
+    """Bounce an order back a stage with a reason (e.g. dispatcher spots a wrong label → back to accountant)."""
+    d = await db.pending_fulfillment.find_one({"order_id": order_id}, {"_id": 0, "stage": 1})
+    if not d:
+        raise HTTPException(status_code=404, detail="Order not found")
+    reason = (payload.get("reason") or "").strip()
+    back = {"ready_to_ship": "awaiting_accountant"}.get(d.get("stage"))
+    if not back:
+        raise HTTPException(status_code=400, detail="Can only send back an order that's ready to ship")
+    now = datetime.now(timezone.utc).isoformat()
+    await db.pending_fulfillment.update_one({"order_id": order_id}, {"$set": {
+        "stage": back, "status": "awaiting_accountant", "pack_stage": None,
+        "sent_back_reason": reason, "sent_back_by": user.get("email") or user.get("name"), "sent_back_at": now}})
+    try:
+        await create_notification(title="↩️ Order sent back to accountant",
+            message=f"{order_id}: {reason or 'needs a fix'}", notification_type="ship_desk",
+            link="/ship-desk", target_roles=["accountant", "admin"], priority="high")
+    except Exception:
+        pass
+    return {"success": True, "stage": back}
+
+
+@api_router.get("/ship-desk/order/{order_id}/file/{kind}")
+async def ship_desk_download_file(order_id: str, kind: str,
+                                  user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROLES + ["dispatcher", "gate"]))):
+    """Download an attached ship-desk doc: kind = invoice | label | eway."""
+    field = {"invoice": "invoice_path", "label": "shipping_label_path", "eway": "eway_path"}.get((kind or "").lower())
+    if not field:
+        raise HTTPException(status_code=400, detail="kind must be invoice, label or eway")
+    d = await db.pending_fulfillment.find_one({"order_id": order_id}, {"_id": 0, field: 1})
+    path = (d or {}).get(field)
+    if not path:
+        raise HTTPException(status_code=404, detail=f"No {kind} attached")
+    from utils.storage import download_file as _dl_sd
+    from fastapi.responses import Response as _Resp
+    data = await _dl_sd(path)
+    if not data:
+        raise HTTPException(status_code=404, detail="File missing in storage")
+    return _Resp(content=data, media_type="application/pdf",
+                 headers={"Content-Disposition": f'inline; filename="{kind}_{str(order_id)[-8:]}.pdf"'})
+
+
+@api_router.get("/ship-desk/order/{order_id}/slip.pdf")
+async def ship_desk_slip(order_id: str,
+                         user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROLES + ["dispatcher", "gate"]))):
+    """Generate the Amazon-format packing slip for a ship-desk order."""
+    d = await db.pending_fulfillment.find_one({"order_id": order_id}, {"_id": 0})
+    if not d:
+        raise HTTPException(status_code=404, detail="Order not found")
+    from utils.packing_slip import generate_packing_slip_pdf
+    from fastapi.responses import Response as _Resp
+    ps_doc = {**d, "customer_address": d.get("address"), "customer_city": d.get("city"),
+              "customer_state": d.get("state"), "customer_pincode": d.get("pincode"),
+              "customer_phone": d.get("phone"), "order_value": d.get("invoice_value"),
+              "product_title": d.get("master_sku_name")}
+    pdf = generate_packing_slip_pdf(ps_doc)
+    return _Resp(content=pdf, media_type="application/pdf",
+                 headers={"Content-Disposition": f'inline; filename="slip_{str(order_id)[-8:]}.pdf"'})
+
+
+# ===================== RETURN DESK — reverse-pickup pipeline =====================
+# Inbound (item comes FROM the customer). Stages: requested → awaiting_label → pickup_scheduled →
+# in_transit → received. Accountant uploads the reverse-pickup label → it's WhatsApp'd + emailed to the
+# customer and shown in their web portal ("My Pickups"). Entry roles same as Ship Desk.
+RETURN_DESK_ENTRY_ROLES = ["call_support", "admin", "accountant", "supervisor", "service_agent"]
+
+
+async def _return_desk_deliver(rp: dict, label_bytes: bytes):
+    """Send the reverse-pickup label to the customer: WhatsApp (PDF) + email (secure link). Best-effort."""
+    import base64 as _b64
+    pid = rp.get("pickup_id")
+    cust = rp.get("customer_name") or "Customer"
+    phone = re.sub(r"\D", "", str(rp.get("phone") or ""))[-10:]
+    sets = {}
+    # WhatsApp the PDF via the bridge
+    if phone and label_bytes:
+        try:
+            cap = (f"Namaste {cust} 🙏\n\nYour *MuscleGrid reverse-pickup label* is attached (ref {pid}).\n"
+                   f"Please print it, tape it on the box, and hand it to the courier at pickup.\n\nTeam MuscleGrid")
+            att = {"filename": f"MuscleGrid_Pickup_{pid}.pdf",
+                   "content": _b64.b64encode(label_bytes).decode(), "media_type": "application/pdf"}
+            r = await send_whatsapp_media(f"91{phone}", cap, att)
+            if r and r.get("success"):
+                sets["whatsapp_sent_at"] = datetime.now(timezone.utc).isoformat()
+        except Exception as ex:
+            logger.warning(f"return-desk whatsapp {pid} failed: {ex}")
+    # Email a secure download link (no attachment support in send_email_background)
+    email = (rp.get("email") or "").strip()
+    if email:
+        try:
+            link = f"{PUBLIC_BASE_URL}/customer/pickups" if 'PUBLIC_BASE_URL' in globals() else "https://newcrm.musclegrid.in/customer/pickups"
+            html = (f"<p>Namaste {_he(cust)},</p><p>Your MuscleGrid reverse-pickup has been arranged "
+                    f"(ref <b>{_he(pid)}</b>). Download your pickup label and keep it ready for the courier:</p>"
+                    f"<p><a href='{link}'>View my pickups &amp; download the label</a></p>"
+                    f"<p>We've also sent it to you on WhatsApp. — Team MuscleGrid</p>")
+            await send_email_background(email, f"Your MuscleGrid pickup label — {pid}", html, email_type="return_pickup", reference_id=pid)
+            sets["emailed_at"] = datetime.now(timezone.utc).isoformat()
+        except Exception as ex:
+            logger.warning(f"return-desk email {pid} failed: {ex}")
+    if sets:
+        await db.return_pickups.update_one({"pickup_id": pid}, {"$set": sets})
+
+
+@api_router.post("/return-desk/pickup")
+async def return_desk_create(payload: dict = Body(...),
+                             user: dict = Depends(require_roles(RETURN_DESK_ENTRY_ROLES))):
+    """Arrange a reverse pickup — enter the basics; it then waits on the accountant for the RVP label."""
+    customer = (payload.get("customer_name") or "").strip()
+    if not customer:
+        raise HTTPException(status_code=400, detail="Customer name is required")
+    product = (payload.get("product") or payload.get("master_sku_name") or "").strip()
+    if not product:
+        raise HTTPException(status_code=400, detail="What to pick up is required")
+    now = datetime.now(timezone.utc).isoformat()
+    fid = str(uuid.uuid4())
+    pickup_id = f"RVP-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{fid[:4].upper()}"
+    doc = {"id": fid, "pickup_id": pickup_id, "source": "return_desk", "is_return": True,
+           "stage": "awaiting_label", "status": "awaiting_label",
+           "customer_name": customer, "phone": re.sub(r"\D", "", str(payload.get("phone") or ""))[-10:],
+           "email": (payload.get("email") or "").strip(),
+           "address": payload.get("address"), "city": payload.get("city"), "state": payload.get("state"),
+           "pincode": re.sub(r"\D", "", str(payload.get("pincode") or "")),
+           "product": product, "reason": payload.get("reason"), "original_ref": payload.get("original_ref"),
+           "firm_id": payload.get("firm_id") or _MGIPL_FIRM,
+           "created_at": now, "created_by": user.get("email") or user.get("name"), "created_by_role": user.get("role")}
+    await db.return_pickups.insert_one(doc)
+    try:
+        await create_notification(title="↩️ New pickup — needs a reverse-pickup label",
+            message=f"{customer} — {product}. Upload the RVP label to arrange collection.",
+            notification_type="return_desk", link="/return-desk", target_roles=["accountant", "admin"], priority="normal")
+    except Exception:
+        pass
+    return {"success": True, "pickup_id": pickup_id, "stage": "awaiting_label"}
+
+
+@api_router.post("/return-desk/pickup/{pickup_id}/label")
+async def return_desk_upload_label(pickup_id: str, tracking_id: str = Form(None), courier: str = Form(None),
+                                   file: UploadFile = File(...),
+                                   user: dict = Depends(require_roles(["accountant", "admin"]))):
+    """Accountant uploads the reverse-pickup label → WhatsApp + email it to the customer + portal, and
+    move the pickup to 'scheduled'."""
+    # dual-source: manual pickup (return_pickups) OR an existing panel reverse pickup (courier_shipments)
+    rp = await db.return_pickups.find_one({"pickup_id": pickup_id}, {"_id": 0})
+    coll = "return_pickups"; sel = {"pickup_id": pickup_id}
+    if not rp:
+        cs = await db.courier_shipments.find_one(
+            {"is_return": True, "$or": [{"awb_number": pickup_id}, {"panel_order_ref": pickup_id}]}, {"_id": 0})
+        if not cs:
+            raise HTTPException(status_code=404, detail="Pickup not found")
+        coll = "courier_shipments"; sel = {"id": cs.get("id")}
+        rp = {"pickup_id": pickup_id, "customer_name": cs.get("customer_name"), "phone": cs.get("phone"),
+              "email": cs.get("email"), "product": cs.get("product_name")}
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(data) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large (max 15MB)")
+    fn = file.filename or "rvp_label.pdf"
+    if not fn.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Label must be a PDF")
+    from utils.storage import upload_file as _up_rvp
+    rel, _st = await _up_rvp(data, "return_labels", fn, filename_prefix="rvp")
+    now = datetime.now(timezone.utc).isoformat()
+    sets = {"rvp_label_path": rel, "stage": "pickup_scheduled", "return_stage": "pickup_scheduled",
+            "label_at": now, "label_by": user.get("email") or user.get("name")}
+    if (tracking_id or "").strip():
+        sets["tracking_id"] = tracking_id.strip()
+        sets["courier"] = courier or "Delhivery"
+    await db[coll].update_one(sel, {"$set": sets})
+    rp.update(sets)
+    await _return_desk_deliver(rp, data)
+    fresh = await db.return_pickups.find_one({"pickup_id": pickup_id}, {"_id": 0, "whatsapp_sent_at": 1, "emailed_at": 1}) or {}
+    return {"success": True, "pickup_id": pickup_id, "stage": "pickup_scheduled",
+            "whatsapp_sent": bool(fresh.get("whatsapp_sent_at")), "emailed": bool(fresh.get("emailed_at"))}
+
+
+@api_router.get("/return-desk/pickup/{pickup_id}/label.pdf")
+async def return_desk_label_pdf(pickup_id: str,
+                                user: dict = Depends(require_roles(RETURN_DESK_ENTRY_ROLES + ["dispatcher", "gate"]))):
+    rp = await db.return_pickups.find_one({"pickup_id": pickup_id}, {"_id": 0, "rvp_label_path": 1})
+    path = (rp or {}).get("rvp_label_path")
+    if not path:
+        cs = await db.courier_shipments.find_one(
+            {"is_return": True, "$or": [{"awb_number": pickup_id}, {"panel_order_ref": pickup_id}]}, {"_id": 0, "rvp_label_path": 1})
+        path = (cs or {}).get("rvp_label_path")
+    if not path:
+        raise HTTPException(status_code=404, detail="No label uploaded yet")
+    from utils.storage import download_file as _dl_rvp
+    from fastapi.responses import Response as _Resp
+    d = await _dl_rvp(path)
+    if not d:
+        raise HTTPException(status_code=404, detail="File missing")
+    return _Resp(content=d, media_type="application/pdf",
+                 headers={"Content-Disposition": f'inline; filename="pickup_{pickup_id}.pdf"'})
+
+
+@api_router.get("/return-desk/board")
+async def return_desk_board(user: dict = Depends(require_roles(RETURN_DESK_ENTRY_ROLES + ["dispatcher", "gate"]))):
+    """Return Desk board — reverse pickups grouped by stage. Unions manual pickups (return_pickups) with
+    the existing panel reverse-pickup shipments (courier_shipments is_return)."""
+    def card(d):
+        return {"pickup_id": d.get("pickup_id") or d.get("panel_order_ref") or d.get("awb_number"),
+                "customer_name": d.get("customer_name"), "product": d.get("product") or d.get("product_name"),
+                "reason": d.get("reason"), "phone": d.get("phone"), "city": d.get("city") or d.get("consignee_city"),
+                "stage": d.get("stage"), "tracking_id": d.get("tracking_id") or d.get("awb_number"),
+                "has_label": bool(d.get("rvp_label_path")), "source": d.get("source") or "panel",
+                "whatsapp_sent": bool(d.get("whatsapp_sent_at")), "emailed": bool(d.get("emailed_at")),
+                "created_at": d.get("created_at")}
+    lanes = {"awaiting_label": [], "pickup_scheduled": [], "in_transit": [], "received": []}
+    async for d in db.return_pickups.find({}, {"_id": 0}).sort("created_at", -1).limit(500):
+        lane = d.get("stage") if d.get("stage") in lanes else "awaiting_label"
+        lanes[lane].append(card(d))
+    # existing panel reverse pickups still needing a label (recent + active only) → awaiting_label lane
+    _rr = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    async for c in db.courier_shipments.find(
+            {"is_return": True, "rvp_label_path": {"$in": [None, ""]}, "stale": {"$ne": True},
+             "created_at": {"$gte": _rr}},
+            {"_id": 0}).sort("created_at", -1).limit(500):
+        lanes["awaiting_label"].append(card(c))
+    return {**lanes, "counts": {k: len(v) for k, v in lanes.items()}}
+
+
+@api_router.get("/customer/pickups")
+async def customer_pickups(user: dict = Depends(require_roles(["customer", "admin"]))):
+    """The logged-in customer's reverse pickups (web portal 'My Pickups') — with the label to download."""
+    phone = re.sub(r"\D", "", str(user.get("phone") or ""))[-10:]
+    if not phone:
+        return []
+    out = []
+    async for d in db.return_pickups.find({"phone": phone}, {"_id": 0}).sort("created_at", -1).to_list(100):
+        out.append({"pickup_id": d.get("pickup_id"), "product": d.get("product"), "reason": d.get("reason"),
+                    "stage": d.get("stage"), "tracking_id": d.get("tracking_id"),
+                    "has_label": bool(d.get("rvp_label_path")), "created_at": d.get("created_at")})
+    return out
+
+
+@api_router.get("/customer/pickup/{pickup_id}/label.pdf")
+async def customer_pickup_label(pickup_id: str, user: dict = Depends(require_roles(["customer", "admin"]))):
+    """The customer's own pickup label (portal download) — scoped to their phone."""
+    phone = re.sub(r"\D", "", str(user.get("phone") or ""))[-10:]
+    q = {"pickup_id": pickup_id} if user.get("role") == "admin" else {"pickup_id": pickup_id, "phone": phone}
+    rp = await db.return_pickups.find_one(q, {"_id": 0, "rvp_label_path": 1})
+    path = (rp or {}).get("rvp_label_path")
+    if not path:
+        raise HTTPException(status_code=404, detail="No label available")
+    from utils.storage import download_file as _dl_cp
+    from fastapi.responses import Response as _Resp
+    d = await _dl_cp(path)
+    if not d:
+        raise HTTPException(status_code=404, detail="File missing")
+    return _Resp(content=d, media_type="application/pdf",
+                 headers={"Content-Disposition": f'inline; filename="pickup_{pickup_id}.pdf"'})
+
+
+# ===================== Nightly label plan (routes to dispatcher desks) =====================
+# Founder books labels at night; Aman handles only morning exceptions. This job scans eligible
+# UNSHIPPED orders per the shipping book and routes them to the dispatcher desks. It is DRY-RUN by
+# default (reports the plan on WhatsApp, books nothing) — actual auto-booking is a DELIBERATE second
+# flag (NIGHTLY_LABEL_AUTOBOOK), off until the founder reviews dry-runs, because auto-booking is
+# exactly what caused the ₹6L duplicate-shipment incident. Both flags default OFF.
+NIGHTLY_LABEL_JOB_ENABLED = os.environ.get("NIGHTLY_LABEL_JOB_ENABLED", "") in ("1", "true", "True")
+NIGHTLY_LABEL_AUTOBOOK = os.environ.get("NIGHTLY_LABEL_AUTOBOOK", "") in ("1", "true", "True")
+
+
+async def scheduled_nightly_label_plan():
+    """Nightly scan → dispatcher-desk routing plan → WhatsApp the founder. DRY-RUN unless AUTOBOOK."""
+    try:
+        q = {"status": {"$in": ["ready_to_dispatch", "pending_dispatch", "ready", "pending"]}}
+        entries = await db.pending_fulfillment.find(q, {"_id": 0}).to_list(3000)
+        gaurav = angad = combo = 0
+        exc_val = exc_addr = already = 0
+        candidates = []
+        for e in entries:
+            if e.get("tracking_id") or e.get("dispatch_id") or e.get("pack_stage") in ("ready_to_pack", "packed"):
+                already += 1
+                continue
+            val = _pf_value(e)
+            # EXCEPTIONS — scraped but NOT auto-booked; they go to the accountant's manual-booking page.
+            if val and val > 50000:                      # >₹50k needs an e-way bill → manual
+                exc_val += 1
+                continue
+            if not (e.get("phone") or e.get("address") or e.get("shipping_address") or e.get("city")):
+                exc_addr += 1
+                continue
+            owners = await _order_dispatch_owners(e)
+            if owners == {"inverter"}:
+                gaurav += 1
+            elif owners == {"rest"}:
+                angad += 1
+            else:
+                combo += 1
+            candidates.append((e, owners))
+        auto = len(candidates)
+        exceptions = exc_val + exc_addr
+
+        # --- AUTO-BOOK the non-exceptions. Reuses bigship_label_for_fulfillment, which carries the full
+        # dedup stack from the ₹6L incident (Dispatch-Guard + already-booked idempotency + active
+        # courier_shipment dedup + created-but-not-manifested recovery). An atomic claim stops a re-run
+        # from re-entering the same order; a per-run cap bounds the blast radius. Booking failures (missing
+        # data / guard / unserviceable lane) fall back to the accountant's manual page. ---
+        booked = book_fail = 0
+        bk = {"inverter": 0, "rest": 0, "combo": 0}
+        if NIGHTLY_LABEL_AUTOBOOK:
+            cap = int(os.environ.get("NIGHTLY_LABEL_MAX", "50"))
+            now_iso = datetime.now(timezone.utc).isoformat()
+            for e, owners in candidates:
+                if booked >= cap:
+                    break
+                claim = await db.pending_fulfillment.find_one_and_update(
+                    {"id": e["id"], "tracking_id": {"$in": [None, ""]},
+                     "pack_stage": {"$nin": ["ready_to_pack", "packed"]}},
+                    {"$set": {"pack_stage": "booking", "autobook_at": now_iso}})
+                if not claim:
+                    continue
+                try:
+                    r = await bigship_label_for_fulfillment(e["id"], dry_run=False, warehouse_id=None,
+                                                            force=False, user=_PRATIBHA_AGENT_USER)
+                    if r and (r.get("awb_number") or r.get("success")):
+                        await db.pending_fulfillment.update_one({"id": e["id"]},
+                            {"$set": {"pack_stage": "ready_to_pack", "dispatch_owners": sorted(owners),
+                                      "autobooked_at": now_iso}})
+                        booked += 1
+                        bk["combo" if owners == {"inverter", "rest"} else ("inverter" if owners == {"inverter"} else "rest")] += 1
+                    else:
+                        await db.pending_fulfillment.update_one({"id": e["id"]}, {"$unset": {"pack_stage": ""}})
+                        book_fail += 1
+                except Exception as ex:
+                    await db.pending_fulfillment.update_one({"id": e["id"]}, {"$unset": {"pack_stage": ""}})
+                    book_fail += 1
+                    logger.info(f"nightly autobook skip {e.get('order_id')}: {str(ex)[:140]}")
+
+        if NIGHTLY_LABEL_AUTOBOOK:
+            head = (f"🌙 *Nightly labels* — AUTO-BOOK ✅\n"
+                    f"Booked → dispatcher desks: *{booked}*  (Gaurav {bk['inverter']} · Angad {bk['rest']} · combo {bk['combo']})\n"
+                    f"Couldn't auto-book → manual page: {book_fail}\n")
+        else:
+            head = (f"🌙 *Nightly label plan* — DRY-RUN (nothing booked)\n"
+                    f"Would auto-book: *{auto}*  (Gaurav {gaurav} · Angad {angad} · combo {combo})\n")
+        msg = (head +
+               f"⚠️ Exceptions for Aman (manual): *{exceptions}* (>₹50k {exc_val} · missing data {exc_addr})\n"
+               f"Already booked/packed: {already}.\n"
+               + ("Dispatchers can Print pack in the morning; exceptions are on the accountant's manual page."
+                  if NIGHTLY_LABEL_AUTOBOOK else
+                  "Preview only. Set NIGHTLY_LABEL_AUTOBOOK=1 to book the non-exceptions."))
+        await send_whatsapp_message(os.environ.get("CLAUDE_WA_RELAY_NUMBER", "9560377363"), msg, force=True)
+        logger.info(f"nightly label plan: cand={auto} booked={booked} fail={book_fail} "
+                    f"g={bk['inverter']} a={bk['rest']} c={bk['combo']} exc={exceptions} already={already} "
+                    f"autobook={NIGHTLY_LABEL_AUTOBOOK}")
+    except Exception as e:
+        logger.error(f"nightly label plan failed: {e}")
 
 
 def _dispatch_items_for_split(dispatch: dict) -> list:
@@ -37056,6 +39372,11 @@ async def _save_scraped_pii(amazon_order_id: str, firm_id: str, scraped: dict, u
         "details_captured_via": "browser_scrape",
         "updated_at": now,
     })
+    # Amazon SLA dates for the Ship Desk (latest delivery date + seller ship-by deadline)
+    if scraped.get("deliver_by"):
+        update_doc["amazon_deliver_by"] = scraped["deliver_by"]
+    if scraped.get("ship_by"):
+        update_doc["amazon_ship_by"] = scraped["ship_by"]
     # crm_status transition rules:
     #   - If Amazon's page already shows tracking, treat this as fully shipped
     #     and skip the "Awaiting tracking" parking lot. (Caller for the
@@ -39624,6 +41945,181 @@ async def update_legal_case(case_id: str, body: LegalCaseBody, user: dict = Depe
     if not res.matched_count:
         raise HTTPException(status_code=404, detail="Case not found")
     return {"success": True, "case_id": case_id}
+
+
+# ===== Legal diary: per-case next-action, calendar, reminders, limitation watchdog =====
+LEGAL_LIMITATION_YEARS = int(os.environ.get("LEGAL_LIMITATION_YEARS", "3"))   # India recovery suit = 3y
+_LEGAL_CLOSED = {"closed", "resolved", "recovered", "written_off", "withdrawn", "settled"}
+
+
+def _ld_date(s):
+    """Parse 'YYYY-MM-DD' (or ISO) → date; None if blank/invalid/'None'."""
+    s = str(s or "").strip()
+    if not s or s.lower() == "none":
+        return None
+    try:
+        return datetime.fromisoformat(s[:10]).date()
+    except Exception:
+        return None
+
+
+def _ist_today():
+    return (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).date()
+
+
+async def _legal_open_cases(scope=None):
+    q = {"status": {"$nin": list(_LEGAL_CLOSED)}}
+    if scope:
+        q["firm_id"] = scope
+    return await db.legal_cases.find(q, {"_id": 0}).to_list(5000)
+
+
+def _legal_events_for_case(c):
+    ev = []
+    base = {"case_id": c.get("id"), "serial": c.get("serial"), "party": c.get("party_name"), "order_id": c.get("order_id")}
+    def add(dt, typ, title, urgency):
+        if _ld_date(dt):
+            ev.append({**base, "date": _ld_date(dt).isoformat(), "type": typ, "title": title, "urgency": urgency})
+    add(c.get("next_action_date"), "action", c.get("next_action") or "Next action", "normal")
+    add(c.get("hearing_date"), "hearing", "Court hearing", "high")
+    add(c.get("notice_deadline"), "notice_deadline", "Notice reply deadline", "high")
+    add(c.get("limitation_date"), "limitation", "⏳ Limitation expires", "critical")
+    return ev
+
+
+def _legal_diary_buckets(cases, today):
+    due_today, overdue, upcoming, hearings, notice_lapsed, limitation, dark = [], [], [], [], [], [], []
+    def it(c, extra):
+        return {"case_id": c.get("id"), "serial": c.get("serial"), "party": c.get("party_name"),
+                "order_id": c.get("order_id"), "status": c.get("status"), **extra}
+    for c in cases:
+        na = _ld_date(c.get("next_action_date"))
+        if na:
+            if na == today: due_today.append(it(c, {"action": c.get("next_action"), "date": na.isoformat()}))
+            elif na < today: overdue.append(it(c, {"action": c.get("next_action"), "date": na.isoformat(), "days_late": (today - na).days}))
+            elif na <= today + timedelta(days=7): upcoming.append(it(c, {"action": c.get("next_action"), "date": na.isoformat(), "in_days": (na - today).days}))
+        else:
+            dark.append(it(c, {}))
+        hd = _ld_date(c.get("hearing_date"))
+        if hd and today <= hd <= today + timedelta(days=7):
+            hearings.append(it(c, {"date": hd.isoformat(), "in_days": (hd - today).days}))
+        nd = _ld_date(c.get("notice_deadline"))
+        if nd and nd < today:
+            notice_lapsed.append(it(c, {"date": nd.isoformat(), "days_late": (today - nd).days}))
+        lim = _ld_date(c.get("limitation_date"))
+        if lim and lim <= today + timedelta(days=90):
+            limitation.append(it(c, {"date": lim.isoformat(), "in_days": (lim - today).days, "expired": lim < today}))
+    limitation.sort(key=lambda x: x["in_days"])
+    return {"due_today": due_today, "overdue": overdue, "upcoming_7d": upcoming, "hearings_7d": hearings,
+            "notice_deadline_lapsed": notice_lapsed, "limitation_watch": limitation, "dark_cases": dark}
+
+
+class LegalScheduleBody(BaseModel):
+    next_action_date: Optional[str] = None
+    next_action: Optional[str] = None
+    hearing_date: Optional[str] = None
+    notice_deadline: Optional[str] = None
+    cause_of_action_date: Optional[str] = None
+    clear: Optional[bool] = False
+
+
+@api_router.post("/admin/legal-cases/{case_id}/schedule")
+async def schedule_legal_case(case_id: str, body: LegalScheduleBody, user: dict = Depends(require_roles(_LEGAL_ROLES))):
+    """Set a case's next actionable date + what, hearing/notice deadlines, and cause-of-action
+    (auto-computes limitation-period expiry). Powers the calendar, reminders & watchdog."""
+    sets = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    unsets = {}
+    if body.clear:
+        unsets = {"next_action_date": "", "next_action": ""}
+    else:
+        if body.next_action_date is not None:
+            d = _ld_date(body.next_action_date)
+            if body.next_action_date.strip() and not d:
+                raise HTTPException(status_code=400, detail="next_action_date must be YYYY-MM-DD")
+            sets["next_action_date"] = d.isoformat() if d else None
+            sets["reminders_sent"] = []
+        if body.next_action is not None:
+            sets["next_action"] = body.next_action.strip()
+    for fld, val in (("hearing_date", body.hearing_date), ("notice_deadline", body.notice_deadline)):
+        if val is not None:
+            d = _ld_date(val); sets[fld] = d.isoformat() if d else None
+    if body.cause_of_action_date is not None:
+        d = _ld_date(body.cause_of_action_date)
+        sets["cause_of_action_date"] = d.isoformat() if d else None
+        if d:
+            try:
+                sets["limitation_date"] = d.replace(year=d.year + LEGAL_LIMITATION_YEARS).isoformat()
+            except Exception:
+                sets["limitation_date"] = (d + timedelta(days=365 * LEGAL_LIMITATION_YEARS)).isoformat()
+    op = {"$set": sets}
+    if unsets:
+        op["$unset"] = unsets
+    res = await db.legal_cases.update_one({"id": case_id}, op)
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return {"success": True, "case_id": case_id}
+
+
+@api_router.get("/admin/legal-cases/calendar")
+async def legal_calendar(from_: str = Query(None, alias="from"), to: str = None,
+                         user: dict = Depends(require_roles(_LEGAL_ROLES))):
+    """All dated events (actions, hearings, notice deadlines, limitation expiries) for open cases."""
+    scope = get_user_firm_scope(user)
+    d_from, d_to = _ld_date(from_), _ld_date(to)
+    events = []
+    for c in await _legal_open_cases(scope):
+        for ev in _legal_events_for_case(c):
+            ed = _ld_date(ev["date"])
+            if (d_from and ed < d_from) or (d_to and ed > d_to):
+                continue
+            events.append(ev)
+    events.sort(key=lambda x: x["date"])
+    return {"success": True, "events": events}
+
+
+@api_router.get("/admin/legal-cases/my-day")
+async def legal_my_day(user: dict = Depends(require_roles(_LEGAL_ROLES))):
+    """Everything actionable today + overdue + the watchdog buckets."""
+    scope = get_user_firm_scope(user)
+    today = _ist_today()
+    return {"success": True, "date": today.isoformat(), **_legal_diary_buckets(await _legal_open_cases(scope), today)}
+
+
+async def scheduled_legal_diary():
+    """Daily consolidated legal diary → email to the lawyer + ONE founder WhatsApp digest. Deliberately
+    one message/day (never per-case) to avoid the notification-spam failure mode."""
+    today = _ist_today()
+    b = _legal_diary_buckets(await _legal_open_cases(), today)
+    if not any([b["due_today"], b["overdue"], b["hearings_7d"], b["notice_deadline_lapsed"], b["limitation_watch"], b["dark_cases"]]):
+        return
+    def lst(items, fmt, cap=15):
+        return "\n".join(fmt(x) for x in items[:cap]) or "  —"
+    P = [f"⚖️ *Legal Diary — {today.isoformat()}*"]
+    if b["limitation_watch"]:
+        P.append("\n⏳ *LIMITATION — act now:*\n" + lst(b["limitation_watch"],
+            lambda x: f"  • {x['serial']} {x['party']} — " + (f"EXPIRED {-x['in_days']}d ago" if x['expired'] else f"in {x['in_days']}d") + f" ({x['date']})"))
+    if b["hearings_7d"]:
+        P.append("\n👨‍⚖️ *Hearings (7d):*\n" + lst(b["hearings_7d"], lambda x: f"  • {x['serial']} {x['party']} — in {x['in_days']}d ({x['date']})"))
+    if b["due_today"]:
+        P.append("\n📌 *Due today:*\n" + lst(b["due_today"], lambda x: f"  • {x['serial']} {x['party']} — {x.get('action') or 'action'}"))
+    if b["overdue"]:
+        P.append("\n🔴 *Overdue:*\n" + lst(b["overdue"], lambda x: f"  • {x['serial']} {x['party']} — {x.get('action') or 'action'} ({x['days_late']}d late)"))
+    if b["notice_deadline_lapsed"]:
+        P.append("\n⏰ *Notice reply lapsed → escalate:*\n" + lst(b["notice_deadline_lapsed"], lambda x: f"  • {x['serial']} {x['party']} ({x['days_late']}d)"))
+    if b["dark_cases"]:
+        P.append(f"\n⚫ *{len(b['dark_cases'])} open case(s) with NO next action set* — schedule them so nothing slips.")
+    msg = "\n".join(P)
+    try:
+        html = "<pre style='font-family:monospace;font-size:13px'>" + msg.replace("*", "") + "</pre>"
+        await send_email_background(os.environ.get("LEGAL_DIARY_EMAIL", "legal@musclegrid.in"),
+                                    f"Legal Diary — {today.isoformat()}", html, "legal_diary")
+    except Exception as ex:
+        logger.warning(f"legal diary email failed: {ex}")
+    if os.environ.get("LEGAL_DIARY_WA", "true").lower() == "true":
+        try:
+            await _alert_founder_free(msg[:3500], "legal_diary")
+        except Exception as ex:
+            logger.warning(f"legal diary WA failed: {ex}")
 
 
 class LegalCommentBody(BaseModel):
@@ -53570,6 +56066,93 @@ async def screen_pop_context(
     }
 
 
+_CUSTOMER_MASTER_SOURCES = [
+    ("parties", "phone", ["name", "company_name"], ["email"], ["city"]),
+    ("users", "phone", ["name", "full_name"], ["email"], ["city"]),
+    ("quotations", "customer_phone", ["customer_name"], ["customer_email"], ["customer_city"]),
+    ("tickets", "customer_phone", ["customer_name"], ["customer_email"], ["customer_city"]),
+    ("warranties", "phone", ["customer_name"], [], []),
+    ("dispatches", "customer_phone", ["customer_name"], [], []),
+    ("pending_fulfillment", "customer_phone", ["customer_name"], [], ["city"]),
+    ("pending_fulfillment", "phone", ["customer_name"], [], ["city"]),
+    ("sales_orders", "phone", ["customer_name", "party_name"], [], []),
+    ("amazon_orders", "phone_manual", ["buyer_name", "customer_name_manual"], [], ["city_manual"]),
+    ("courier_shipments", "phone", ["customer_name", "company_name"], [], ["consignee_city"]),
+    ("leads", "phone", ["name", "customer_name"], ["email"], ["city"]),
+    ("appointments", "customer_phone", ["customer_name"], [], []),
+    ("shopify_orders", "phone", ["customer_name"], ["email"], []),
+    ("finished_good_serials", "phone", ["customer_name"], [], []),
+    ("zoho_tickets", "phone", ["customer_name"], ["email"], []),
+]
+
+
+async def _rebuild_customer_master() -> dict:
+    """Unite every phone number the CRM holds into ONE directory (db.customer_master), keyed by 10-digit
+    phone. Scans the identity/transaction collections, merging names/emails/cities + per-source counts.
+    Customer 360 resolves identity from this, so ANY customer (even PI-only) is found."""
+    from pymongo import UpdateOne
+    try:
+        await db.customer_master.create_index("phone", unique=True)
+    except Exception:
+        pass
+    master = {}
+    for coll, pf, name_fields, email_fields, city_fields in _CUSTOMER_MASTER_SOURCES:
+        proj = {"_id": 0, pf: 1}
+        for f in name_fields + email_fields + city_fields:
+            proj[f] = 1
+        try:
+            async for d in db[coll].find({pf: {"$exists": True, "$nin": [None, ""]}}, proj):
+                ph = re.sub(r"\D", "", str(d.get(pf) or ""))[-10:]
+                if len(ph) != 10 or ph[0] not in "6789":
+                    continue
+                e = master.setdefault(ph, {"names": set(), "emails": set(), "cities": set(), "sources": {}})
+                for f in name_fields:
+                    v = d.get(f)
+                    if isinstance(v, str) and v.strip():
+                        e["names"].add(v.strip()[:80])
+                for f in email_fields:
+                    v = d.get(f)
+                    if isinstance(v, str) and "@" in v:
+                        e["emails"].add(v.strip().lower()[:80])
+                for f in city_fields:
+                    v = d.get(f)
+                    if isinstance(v, str) and v.strip():
+                        e["cities"].add(v.strip()[:40])
+                e["sources"][coll] = e["sources"].get(coll, 0) + 1
+        except Exception as ex:
+            logger.warning(f"customer_master scan {coll} failed: {ex}")
+    now = datetime.now(timezone.utc).isoformat()
+    ops = []
+    for ph, e in master.items():
+        names = sorted(e["names"], key=lambda s: (-len(s), s))
+        ops.append(UpdateOne({"phone": ph}, {"$set": {
+            "phone": ph, "primary_name": names[0] if names else None, "names": names[:12],
+            "emails": sorted(e["emails"])[:5], "cities": sorted(e["cities"])[:6],
+            "sources": e["sources"], "total_records": sum(e["sources"].values()), "updated_at": now}},
+            upsert=True))
+    written = 0
+    for i in range(0, len(ops), 1000):
+        r = await db.customer_master.bulk_write(ops[i:i + 1000], ordered=False)
+        written += (r.upserted_count + r.modified_count)
+    return {"customers": len(master), "written": written}
+
+
+@api_router.post("/admin/customer-master/rebuild")
+async def customer_master_rebuild(user: dict = Depends(require_roles(["admin"]))):
+    """Rebuild the unified customer directory from every phone-bearing collection."""
+    return await _rebuild_customer_master()
+
+
+async def scheduled_customer_master_rebuild():
+    """APScheduler entrypoint — nightly rebuild of the unified customer_master directory so new
+    phones/PIs/orders across all collections stay resolvable in Customer 360."""
+    try:
+        summary = await _rebuild_customer_master()
+        logger.info(f"customer_master nightly rebuild: {summary}")
+    except Exception as e:
+        logger.error(f"customer_master nightly rebuild failed: {e}")
+
+
 @api_router.get("/customer-360")
 async def customer_360(
     phone: str = Query(..., min_length=4),
@@ -53608,15 +56191,41 @@ async def customer_360(
          "product_name": 1, "sku": 1, "created_at": 1}
     ).sort("created_at", -1).limit(10).to_list(10)
 
+    # Quotations / PIs (was missing — a PI-only customer was invisible)
+    quotations = await db.quotations.find(
+        {"customer_phone": rx},
+        {"_id": 0, "id": 1, "quotation_number": 1, "status": 1, "grand_total": 1, "total_amount": 1,
+         "items": 1, "created_at": 1, "validity_date": 1, "customer_name": 1, "customer_email": 1,
+         "customer_city": 1, "firm_name": 1}
+    ).sort("created_at", -1).limit(20).to_list(20)
+
+    # Orders (offline + ship-desk + fulfilment)
+    orders = await db.pending_fulfillment.find(
+        {"$or": [{"customer_phone": rx}, {"phone": rx}]},
+        {"_id": 0, "order_id": 1, "master_sku_name": 1, "invoice_value": 1, "stage": 1, "status": 1,
+         "created_at": 1, "customer_name": 1, "firm_name": 1}
+    ).sort("created_at", -1).limit(20).to_list(20)
+
+    # Canonical identity from the master customer directory (unites every phone the CRM has)
+    cm = await db.customer_master.find_one({"phone": p10}, {"_id": 0}) if p10 else None
+
     latest = tickets[0] if tickets else None
-    name = ((customer or {}).get("name") or (latest or {}).get("customer_name")
+    name = ((customer or {}).get("name") or (cm or {}).get("primary_name")
+            or (latest or {}).get("customer_name")
+            or (quotations[0].get("customer_name") if quotations else None)
+            or (orders[0].get("customer_name") if orders else None)
             or (warranties[0].get("customer_name") if warranties else None))
     name = (name or "").strip() or None
     dealer = next((t.get("dealer_name") for t in tickets if t.get("dealer_name")), None)
-    if not customer and (name or latest):
+    if not customer and name:
         lt = latest or {}
-        customer = {"name": name, "phone": p10, "email": lt.get("customer_email"),
-                    "city": lt.get("customer_city"), "state": None, "from_ticket": True}
+        q0 = quotations[0] if quotations else {}
+        cm_email = ((cm or {}).get("emails") or [None])[0]
+        cm_city = ((cm or {}).get("cities") or [None])[0]
+        customer = {"name": name, "phone": p10,
+                    "email": lt.get("customer_email") or cm_email or q0.get("customer_email"),
+                    "city": lt.get("customer_city") or cm_city or q0.get("customer_city"),
+                    "state": None, "from_master": bool(cm)}
     if customer and dealer:
         customer["dealer_name"] = dealer
 
@@ -53640,14 +56249,19 @@ async def customer_360(
         end = w.get("warranty_end_date")
         return bool(end) and str(end)[:10] >= today
 
+    open_pi = sum(1 for q in quotations if str(q.get("status") or "").lower() not in ("converted", "rejected", "cancelled", "expired"))
     stats = {
         "total_tickets": len(tickets),
         "open_tickets": sum(1 for t in tickets if (t.get("status") or "") not in terminal),
         "products": len(warranties),
         "in_warranty": sum(1 for w in warranties if _in_warranty(w)),
+        "quotations": len(quotations),
+        "open_pis": open_pi,
+        "orders": len(orders),
     }
     return {"phone": p10, "customer": customer, "products": warranties, "tickets": tickets,
-            "dispatches": dispatches, "activity": activity, "stats": stats}
+            "dispatches": dispatches, "quotations": quotations, "orders": orders,
+            "activity": activity, "stats": stats}
 
 
 # =============================================================================
@@ -55748,7 +58362,7 @@ async def get_my_smartflo_calls(
     limit: int = 50,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
-    user: dict = Depends(get_current_user)
+    user: dict = Depends(require_roles(["admin", "call_support", "supervisor"]))
 ):
     """Get calls for the current logged-in agent"""
     # Find smartflo agent by user email
@@ -56485,7 +59099,7 @@ class CallTaskUpdate(BaseModel):
 @api_router.post("/smartflo/tasks")
 async def create_call_task(
     data: CallTaskCreate,
-    user: dict = Depends(get_current_user)
+    user: dict = Depends(require_roles(["admin", "call_support", "supervisor"]))
 ):
     """Create a task against a call - assign to another agent"""
     import uuid
@@ -56549,7 +59163,7 @@ async def create_call_task(
 async def get_call_tasks(
     status: Optional[str] = None,
     assigned_to_me: bool = False,
-    user: dict = Depends(get_current_user)
+    user: dict = Depends(require_roles(["admin", "call_support", "supervisor"]))
 ):
     """Get call tasks - agents see their own, admin/supervisor see all"""
     query = {}
@@ -56586,7 +59200,7 @@ async def get_call_tasks(
 async def update_call_task(
     task_id: str,
     data: CallTaskUpdate,
-    user: dict = Depends(get_current_user)
+    user: dict = Depends(require_roles(["admin", "call_support", "supervisor"]))
 ):
     """Update a task"""
     task = await db.call_tasks.find_one({"id": task_id})
@@ -56611,7 +59225,7 @@ async def complete_call_task(
     task_id: str,
     notes: Optional[str] = None,
     callback_call_id: Optional[str] = None,
-    user: dict = Depends(get_current_user)
+    user: dict = Depends(require_roles(["admin", "call_support", "supervisor"]))
 ):
     """Complete a task - typically when callback is made"""
     task = await db.call_tasks.find_one({"id": task_id})
@@ -57133,7 +59747,7 @@ async def update_call_outcome(
     call_id: str,
     outcome: str = Query(...),
     notes: Optional[str] = None,
-    user: dict = Depends(get_current_user)
+    user: dict = Depends(require_roles(["admin", "call_support", "supervisor"]))
 ):
     """Update call outcome and notes"""
     from bson import ObjectId
@@ -57585,7 +60199,7 @@ Respond ONLY with valid JSON."""
 @api_router.get("/smartflo/calls/{call_id}/customer-suggestion")
 async def get_customer_name_suggestion(
     call_id: str,
-    user: dict = Depends(get_current_user)
+    user: dict = Depends(require_roles(["admin", "call_support", "supervisor"]))
 ):
     """Get AI-detected customer name suggestion for a call"""
     call = await db.smartflo_calls.find_one({"$or": [{"id": call_id}, {"uuid": call_id}]})
@@ -57611,7 +60225,7 @@ async def link_call_to_customer(
     customer_id: Optional[str] = None,
     customer_name: Optional[str] = None,
     create_new: bool = False,
-    user: dict = Depends(get_current_user)
+    user: dict = Depends(require_roles(["admin", "call_support", "supervisor"]))
 ):
     """Link a call to an existing customer or create a new customer record"""
     call = await db.smartflo_calls.find_one({"$or": [{"id": call_id}, {"uuid": call_id}]})
@@ -57696,7 +60310,7 @@ async def link_call_to_customer(
 @api_router.get("/smartflo/customer-call-history/{phone}")
 async def get_customer_call_history(
     phone: str,
-    user: dict = Depends(get_current_user)
+    user: dict = Depends(require_roles(["admin", "call_support", "supervisor"]))
 ):
     """Get call history for a phone number"""
     clean_phone = phone.replace("+91", "").replace("-", "").replace(" ", "").strip()
@@ -64415,28 +67029,19 @@ async def get_courier_label(
     token = await get_bigship_token()
     
     async with httpx.AsyncClient(timeout=60.0) as client:
-        # For B2B/heavy shipments, use different endpoint
-        if shipment_type.lower() == "b2b":
-            # Try heavy shipment label endpoint
-            response = await client.post(
-                f"{BIGSHIP_API_URL}/shipment/data",
-                params={"shipment_data_id": 3, "system_order_id": system_order_id},  # 3 might be for B2B labels
-                json={},
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {token}"
-                }
-            )
-        else:
-            response = await client.post(
-                f"{BIGSHIP_API_URL}/shipment/data",
-                params={"shipment_data_id": 2, "system_order_id": system_order_id},
-                json={},
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {token}"
-                }
-            )
+        # Bigship /shipment/data is explicit: shipment_data_id 1=AWB, 2=LABEL, 3=MANIFEST — for
+        # BOTH B2C and B2B. (An earlier guess used id=3 for B2B, which filed the pickup MANIFEST
+        # instead of the stick-on shipping label — the manifest has FE-signature fields, not the
+        # consignee block. Always use id=2 for the label.)
+        response = await client.post(
+            f"{BIGSHIP_API_URL}/shipment/data",
+            params={"shipment_data_id": 2, "system_order_id": system_order_id},
+            json={},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}"
+            }
+        )
         
         data = response.json()
         
@@ -65361,7 +67966,7 @@ async def _scrape_amazon_reviews(asin: str, max_pages: int = 1) -> list:
 def _review_reply_draft(r: dict) -> str:
     return (f"Hi {r.get('reviewer') or 'there'}, we're really sorry your MuscleGrid product didn't meet "
             f"expectations. We'd like to make this right immediately — free repair/replacement under "
-            f"warranty. Please reach us at service@musclegrid.in or WhatsApp 8282820846 with your order id "
+            f"warranty. Please reach us at service@musclegrid.in or WhatsApp 9999036254 with your order id "
             f"and we'll resolve it on priority.")
 
 
@@ -65428,6 +68033,371 @@ async def _review_rescue_run(digest: bool = False, sample_to_wa: str = "", limit
         else:
             await _alert_founder_free(body, "review_rescue")
     return {"asins_checked": len(asins), "reviews_seen": scraped, "new_low_reviews": len(fresh)}
+
+
+# ===================== Review → Customer matcher =====================
+# Given an ASIN: pull recent 1-2* reviews and match each ANONYMOUS reviewer to the most likely
+# CRM customer (buyer of that ASIN and/or a complainant for that product) so the team can call to
+# RESOLVE the issue. Amazon anonymises reviews, so matches are RANKED PROBABILITIES with a stated
+# reason — never a guaranteed 1:1. Account-safety: outreach must be about fixing the problem, NOT
+# asking to remove/change the review (that is Amazon review-manipulation → suspension risk).
+import difflib as _rm_difflib
+
+_RM_STATES = ["uttar pradesh","bihar","west bengal","tamil nadu","rajasthan","madhya pradesh",
+  "maharashtra","karnataka","gujarat","punjab","haryana","odisha","assam","kerala","telangana",
+  "andhra pradesh","jharkhand","chhattisgarh","uttarakhand","himachal pradesh","delhi","goa","tripura"]
+
+
+def _rm_norm(s):
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z ]", " ", str(s or "").lower())).strip()
+
+
+# Extremely common Indian name tokens + Amazon's anonymised placeholder word ("X Customer") —
+# these must NOT drive a match on their own (else every "… Kumar" collides with every other).
+_RM_STOP = {"kumar", "singh", "customer", "amazon", "sri", "shri", "mr", "mrs", "ms", "dr", "md",
+            "mohd", "mohammed", "prasad", "devi", "kumari", "raj", "the", "and", "yadav", "sharma"}
+
+
+def _rm_tokens(s):
+    return [t for t in _rm_norm(s).split() if t not in _RM_STOP and len(t) > 2]
+
+
+def _rm_name_sim(a, b):
+    """Name similarity that REQUIRES a distinctive (non-stopword) given-name token to align well —
+    so 'Ramesh Kumar' does NOT match 'Ayush Kumar', and 'Amazon Customer' matches nobody."""
+    na, nb = _rm_norm(a), _rm_norm(b)
+    if not na or not nb or na in ("amazon customer", "customer", "amazon user"):
+        return 0.0
+    ta, tb = _rm_tokens(a), _rm_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    best = max((_rm_difflib.SequenceMatcher(None, x, y).ratio() for x in ta for y in tb), default=0.0)
+    if best < 0.8:
+        return 0.0   # no distinctive given-name match → not the same person
+    overlap = len(set(ta) & set(tb)) / max(1, len(set(ta) | set(tb)))
+    return round(min(1.0, best * 0.7 + overlap * 0.3), 3)
+
+
+_RM_MONTHS = {m: i for i, m in enumerate(
+    ["january","february","march","april","may","june","july","august","september","october","november","december"], 1)}
+
+
+def _rm_parse_review_date(s):
+    """'Reviewed in India on 22 April 2026' -> date(2026,4,22); None if unparseable."""
+    m = re.search(r"on (\d{1,2}) (\w+) (\d{4})", str(s or ""))
+    if not m:
+        return None
+    mon = _RM_MONTHS.get(m.group(2).lower())
+    if not mon:
+        return None
+    try:
+        return datetime(int(m.group(3)), mon, int(m.group(1))).date()
+    except Exception:
+        return None
+
+
+async def _rm_scrape_reviews_via_agent(asin):
+    """Scrape 1-2* reviews using the LIVE browser agent (already authenticated to amazon.in via the
+    seller/business account) — no separate cookie export needed. Returns list, [{'_blocked'}] if it
+    hits a login wall, or None if the agent isn't running (caller then falls back to the cookie path)."""
+    try:
+        agent = await get_browser_agent()
+    except Exception:
+        agent = None
+    # Ensure a browser is actually running — if not, start one (any Amazon seller firm
+    # authenticates amazon.in). This makes the /admin/review-matcher button work cold, without
+    # someone pre-starting the agent. If one is already running for another firm, we reuse it.
+    if agent is None or getattr(agent, "context", None) is None or getattr(agent, "page", None) is None:
+        try:
+            agent = await switch_browser_agent("a9b65de0-ef07-47d7-b778-2a9f63ef52ab")  # EBAY UP
+            await asyncio.sleep(10)   # let the session restore / login settle
+        except Exception as e:
+            logger.warning(f"review matcher: could not start browser agent: {e}")
+            return None
+    if not getattr(agent, "page", None):
+        return None
+    js = ("() => { const out=[]; for (const b of document.querySelectorAll(\"[data-hook='review']\")) {"
+          " const t=(s)=>{const el=b.querySelector(s); return el?el.innerText.trim():'';};"
+          " out.push({reviewer:t('.a-profile-name'), title:t(\"[data-hook='review-title']\"),"
+          " date:t(\"[data-hook='review-date']\"), body:t(\"[data-hook='review-body']\").slice(0,600)}); }"
+          " return out; }")
+    out = []
+    try:
+        for star, sc in (("one_star", 1), ("two_star", 2)):
+            await agent.navigate(f"https://www.amazon.in/product-reviews/{asin}/?filterByStar={star}&sortBy=recent")
+            await asyncio.sleep(4)
+            if "/ap/signin" in (agent.page.url or "") or "validateCaptcha" in (agent.page.url or ""):
+                return [{"_blocked": "login_required"}]
+            revs = await agent.page.evaluate(js)
+            for r in (revs or []):
+                r["stars"] = sc; r["asin"] = asin
+                r["review_date"] = r.get("date", "")   # normalise to the cookie-scraper's key
+                out.append(r)
+    except Exception as e:
+        logger.warning(f"agent review scrape failed {asin}: {e}")
+        return None
+    return out
+
+
+async def _rm_pool_for_asin(asin):
+    """Enriched buyer pool for an ASIN across ALL seller accounts (name/phone pulled from the
+    dispatch records where we scraped PII)."""
+    pool = []; product = None; firms = {}
+    async for o in db.amazon_orders.find({"items.asin": asin}, {"_id": 0}):
+        it = next((i for i in (o.get("items") or []) if i.get("asin") == asin), {})
+        if not product:
+            product = it.get("title")
+        oid = o.get("amazon_order_id")
+        cs = await db.courier_shipments.find_one({"$or": [{"invoice_number": oid}, {"amazon_order_id": oid}]},
+                                                 {"_id": 0, "customer_name": 1, "phone": 1})
+        ap = await db.amazon_order_processing.find_one({"order_id": oid}, {"_id": 0, "customer_name": 1, "customer_phone": 1})
+        fid = o.get("firm_id")
+        if fid not in firms:
+            firms[fid] = (await db.firms.find_one({"id": fid}, {"_id": 0, "name": 1}) or {}).get("name") or fid
+        pool.append({"order_id": oid,
+                     "name": (cs or {}).get("customer_name") or (ap or {}).get("customer_name"),
+                     "phone": (cs or {}).get("phone") or (ap or {}).get("customer_phone"),
+                     "city": o.get("city"), "state": o.get("state"),
+                     "date": str(o.get("purchase_date") or "")[:10],
+                     "account": firms[fid], "status": o.get("order_status")})
+    return product, pool
+
+
+async def _rm_complaints_for_product(product):
+    """Known unhappy customers for a product (email complaints + returns) — the STRONGEST match
+    source because these channels carry the real name/email/phone."""
+    kw = next((k for k in ("stabilizer","inverter","battery","solar","ups") if product and k in product.lower()), None)
+    comps = []; seen = set()
+    if kw:
+        async for m in db.email_agent_inbox.find(
+            {"body": re.compile(kw, re.I),
+             "subject": re.compile("not work|faulty|dead|refund|return|complaint|defective|problem|damaged|replace|missing|burn|spark", re.I)},
+            {"_id": 0, "from_addr": 1, "from_name": 1, "subject": 1, "received_date": 1, "body": 1}).limit(300):
+            fa = str(m.get("from_addr") or "")
+            fal = fa.lower()
+            if (fa.endswith("@musclegrid.in") or fa in seen or "amazonpay" in fal or "grievance" in fal
+                    or fal.endswith("@amazon.com") or fal.endswith("@amazon.in")):
+                continue   # skip our own staff + Amazon-internal/grievance addresses (not customers)
+            seen.add(fa)
+            ph = re.search(r"[6-9]\d{9}", str(m.get("body") or ""))
+            comps.append({"name": m.get("from_name"), "email": fa, "phone": ph.group(0) if ph else "",
+                          "subject": m.get("subject"), "date": str(m.get("received_date") or "")[:16], "channel": "email"})
+    async for r in db.expected_returns.find(
+        {"product": re.compile((kw or re.escape((product or "x")[:10])), re.I)},
+        {"_id": 0, "customer_name": 1, "customer_phone": 1, "product": 1, "refund_date": 1}).limit(150):
+        comps.append({"name": r.get("customer_name"), "email": "", "phone": r.get("customer_phone"),
+                      "subject": "Return: " + str(r.get("product", ""))[:30], "date": r.get("refund_date"), "channel": "return"})
+    return comps
+
+
+def _rm_match_review(rev, pool, comps, accounts=None):
+    """Rank the likely customers behind one anonymous review, each with a confidence + reason."""
+    reviewer = rev.get("reviewer") or ""
+    rtext = (str(rev.get("title", "")) + " " + str(rev.get("body", ""))).lower()
+    rev_state = next((s for s in _RM_STATES if s in rtext), None)
+    rev_dt = _rm_parse_review_date(rev.get("review_date") or rev.get("date"))
+    out = []
+    # PRECISE key: match the reviewer against the ACCOUNT names collected for this ASIN — the name
+    # Amazon actually shows on reviews. Highest confidence; outranks shipping-name / complaint matches.
+    for a in (accounts or []):
+        sim = _rm_name_sim(reviewer, a.get("name"))
+        if sim >= 0.6:
+            extra = f" (+{a.get('orders', 1) - 1} more orders)" if a.get("orders", 1) > 1 else ""
+            out.append({"name": a.get("name"), "phone": a.get("phone"), "email": "",
+                        "account": a.get("firm"), "order_id": a.get("order_id"), "date": "",
+                        "confidence": "HIGH",
+                        "why": [f"matches collected ACCOUNT name '{a.get('name')}' (sim {sim}){extra} — "
+                                f"the name Amazon puts on reviews"],
+                        "_score": 90 + int(sim * 10)})
+    # complaint-channel matches (strongest): a reviewer name that matches a known complainant
+    for cp in comps:
+        sim = _rm_name_sim(reviewer, cp.get("name"))
+        if sim >= 0.5:
+            out.append({"name": cp.get("name"), "phone": cp.get("phone"), "email": cp.get("email"),
+                        "account": "-", "order_id": "-", "date": cp.get("date"),
+                        "confidence": "HIGH" if sim >= 0.6 else "MEDIUM",
+                        "why": [f"name≈complainant (sim {sim})",
+                                f"filed a {cp.get('channel')} complaint: '{str(cp.get('subject',''))[:44]}'"],
+                        "_score": 60 + int(sim * 30)})
+    # buyer-pool matches — a NAME match is REQUIRED (state/timing only refine confidence)
+    for b in pool:
+        sim = _rm_name_sim(reviewer, b.get("name"))
+        if not (b.get("name") and sim >= 0.5):
+            continue
+        b_dt = None
+        if b.get("date"):
+            try: b_dt = datetime.fromisoformat(b["date"]).date()
+            except Exception: b_dt = None
+        if rev_dt and b_dt and b_dt > rev_dt:
+            continue  # can't review before buying → a different person with the same name
+        why = [f"name≈buyer '{b.get('name')}' (sim {sim})"]; score = 40 + int(sim * 20)
+        if rev_state and b.get("state") and rev_state in str(b.get("state")).lower():
+            score += 20; why.append(f"review mentions {rev_state} = buyer's state")
+        if rev_dt and b_dt and 0 <= (rev_dt - b_dt).days <= 120:
+            score += 15; why.append(f"bought {(rev_dt - b_dt).days}d before the review")
+        out.append({"name": b.get("name"), "phone": b.get("phone"), "email": "",
+                    "account": b.get("account"), "order_id": b.get("order_id"), "date": b.get("date"),
+                    "confidence": "HIGH" if score >= 60 else ("MEDIUM" if score >= 45 else "LOW"),
+                    "why": why, "_score": score})
+    _rank = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+    out.sort(key=lambda x: (_rank.get(x["confidence"], 3), -x["_score"]))
+    return out[:5]
+
+
+@api_router.get("/admin/review-matcher")
+async def review_matcher(asin: str, user: dict = Depends(require_roles(["admin"]))):
+    """Given an ASIN → scrape recent 1-2* reviews and match each anonymous reviewer to the most
+    likely CRM customer (buyer/complainant) with confidence + reason. If the review scrape is
+    blocked (stale amazon.in cookies), returns a complaint-first list of the product's likely
+    unhappy customers instead. NOTE: contact customers to RESOLVE their issue, never to solicit
+    review removal (Amazon ToS / seller-account safety)."""
+    product, pool = await _rm_pool_for_asin(asin)
+    if not pool:
+        raise HTTPException(status_code=404, detail=f"No CRM orders found for ASIN {asin}")
+    comps = await _rm_complaints_for_product(product)
+    # Collected ACCOUNT names for this ASIN (the precise review key). Group by name, enrich a phone
+    # from our dispatch records where we have one.
+    acct_by_name = {}
+    async for a in db.asin_buyer_accounts.find({"asin": asin}, {"_id": 0, "order_id": 1, "buyer_account_name": 1, "firm": 1}):
+        nm = (a.get("buyer_account_name") or "").strip()
+        if not nm:
+            continue
+        oid = a.get("order_id"); k = nm.lower()
+        rec = acct_by_name.get(k)
+        if not rec:
+            rec = acct_by_name[k] = {"name": nm, "firm": a.get("firm"), "order_id": oid, "orders": 0, "phone": None}
+        rec["orders"] += 1
+        if not rec.get("phone"):
+            cs = await db.courier_shipments.find_one({"$or": [{"invoice_number": oid}, {"amazon_order_id": oid}]}, {"_id": 0, "phone": 1})
+            ap = await db.amazon_order_processing.find_one({"order_id": oid}, {"_id": 0, "customer_phone": 1})
+            ph = (cs or {}).get("phone") or (ap or {}).get("customer_phone")
+            if ph:
+                rec["phone"] = ph; rec["order_id"] = oid
+    accounts = list(acct_by_name.values())
+    # Prefer the LIVE agent (authenticated to amazon.in via the seller/business account); fall back
+    # to the cookie-file scraper if the agent isn't running.
+    revs = await _rm_scrape_reviews_via_agent(asin)
+    if revs is None:
+        revs = await _scrape_amazon_reviews(asin)
+    revs = revs or []
+    blocked = bool(revs and revs[0].get("_blocked"))
+    real = [r for r in revs if not r.get("_blocked")]
+    matches = [{"review": {k: r.get(k) for k in ("stars", "reviewer", "review_date", "title", "body")},
+                "candidates": _rm_match_review(r, pool, comps, accounts)} for r in real]
+    resp = {"asin": asin, "product": product, "orders_in_crm": len(pool),
+            "complaints_found": len(comps), "accounts_collected": len(accounts), "reviews_scraped": len(real),
+            "scrape_blocked": blocked, "matches": matches}
+    if blocked or not real:
+        resp["complaint_first"] = [{"name": cp.get("name"), "phone": cp.get("phone"), "email": cp.get("email"),
+                                    "channel": cp.get("channel"), "subject": cp.get("subject"), "date": cp.get("date")}
+                                   for cp in comps[:30]]
+        resp["note"] = ("Review scrape blocked or empty — showing the product's likely unhappy customers from "
+                        "complaints/returns (real name/phone/email). Refresh amazon.in cookies to match live reviews.")
+    return resp
+
+
+@api_router.post("/admin/collect-asin-buyers")
+async def collect_asin_buyers(asin: str, firm_id: str = "a9b65de0-ef07-47d7-b778-2a9f63ef52ab",
+                              days: int = 730, pages_max: int = 60, user: dict = Depends(require_roles(["admin"]))):
+    """Scrape the Manage Orders LIST (search by ASIN) on the given seller account and collect every
+    buyer ACCOUNT name + order id from the row view — NO per-order clicking. Builds a per-ASIN buyer
+    memory in db.asin_buyer_accounts so we can later match anonymous review display-names to real
+    account names. The account name shown in the list row is the one Amazon puts on reviews."""
+    import re as _re
+    asin = (asin or "").strip().upper()
+    if not _re.match(r"^[A-Z0-9]{10}$", asin):
+        raise HTTPException(status_code=400, detail="ASIN must be 10 alphanumerics")
+    agent = await switch_browser_agent(firm_id)
+    firm_name = agent.firm_name or firm_id
+    # A fresh account switch spins up a new browser; wait (up to ~24s) for its page to be ready.
+    page = None
+    for _ in range(12):
+        page = getattr(agent, "page", None)
+        if page:
+            break
+        await asyncio.sleep(2)
+    if not page:
+        raise HTTPException(status_code=400, detail=f"Browser for {firm_name} did not come up in time")
+
+    async def _select_with_option(label):
+        """Set the native <select> that offers `label` (e.g. 'ASIN' or '100')."""
+        for s in await page.query_selector_all("select"):
+            try:
+                opts = await s.eval_on_selector_all("option", "els => els.map(e => e.textContent.trim())")
+            except Exception:
+                opts = []
+            if label in opts:
+                try:
+                    await s.select_option(label=label); return True
+                except Exception:
+                    pass
+        return False
+
+    # Go straight to the orders search for this ASIN with the 365-day range baked into the URL
+    # (more reliable than driving the date-range select, esp. right after an account switch).
+    await page.goto(f"https://sellercentral.amazon.in/orders-v3/search?q={asin}&qt=asin&date-range=last-{days}&page=1",
+                    wait_until="domcontentloaded", timeout=45000)
+    await asyncio.sleep(6)
+    if "/ap/signin" in (page.url or ""):
+        raise HTTPException(status_code=401, detail=f"{firm_name} not logged in to Seller Central")
+    if "/myinventory/" in (page.url or ""):
+        raise HTTPException(status_code=502, detail="Search redirected to Inventory — ASIN order search unavailable")
+    # fallback: if the URL param didn't take, set the date-range select; then 100 rows/page
+    if f"last-{days}" not in (page.url or ""):
+        await _select_with_option("Last 365 days"); await asyncio.sleep(5)
+    await _select_with_option("100")
+    await asyncio.sleep(4)
+
+    _dbg = {}
+    try:
+        _t = await page.evaluate("() => document.body.innerText")
+        _dbg = {"url": page.url, "text_len": len(_t or ""), "buyer_name_hits": (_t or "").count("Buyer name"),
+                "orderid_hits": len(re.findall(r"\d{3}-\d{7}-\d{7}", _t or "")),
+                "date_range": ("Last 7 days" in (_t or "") and "shows Last 7 days"),
+                "text_head": (_t or "")[:500]}
+        _shot = await page.screenshot(type="jpeg", quality=55)
+        from utils.storage import upload_file as _uf
+        _rel, _ = await _uf(_shot, "dvvs", f"asinsearch_{asin}.jpg", filename_prefix=asin)
+        _dbg["screenshot"] = f"/api/files/{_rel}"
+    except Exception as _e:
+        _dbg = {"debug_err": str(_e)[:100]}
+
+    # 4) walk pages, extract (order_id, buyer name) from the list innerText
+    seen = {}; pages = 0
+    row_rx = _re.compile(r"(\d{3}-\d{7}-\d{7})[\s\S]{0,140}?Buyer name:\s*([^\n]+)")
+    while pages < pages_max:
+        pages += 1
+        try:
+            txt = await page.evaluate("() => document.body.innerText")
+        except Exception:
+            break
+        before = len(seen)
+        for m in row_rx.finditer(txt or ""):
+            oid, nm = m.group(1), m.group(2).strip()
+            if oid not in seen:
+                seen[oid] = nm
+        # next page
+        moved = False
+        for nsel in ["li.a-last:not(.a-disabled) a", "a[aria-label='Go to next page']",
+                     "button[aria-label='Next']", "li.a-last a"]:
+            try:
+                nb = page.locator(nsel).first
+                if await nb.count() and await nb.is_enabled():
+                    await nb.click(timeout=4000); await asyncio.sleep(4); moved = True; break
+            except Exception:
+                continue
+        if not moved or (len(seen) == before and pages > 1):
+            break
+
+    now = datetime.now(timezone.utc).isoformat()
+    for oid, nm in seen.items():
+        await db.asin_buyer_accounts.update_one(
+            {"asin": asin, "order_id": oid},
+            {"$set": {"asin": asin, "order_id": oid, "buyer_account_name": nm,
+                      "firm": firm_name, "firm_id": firm_id, "collected_at": now}}, upsert=True)
+    total_for_asin = await db.asin_buyer_accounts.count_documents({"asin": asin})
+    return {"asin": asin, "firm": firm_name, "collected_this_run": len(seen), "pages_walked": pages,
+            "total_stored_for_asin": total_for_asin, "sample": dict(list(seen.items())[:15]), "debug": _dbg}
 
 
 # ===================== Receivables (dealer dues) chaser =====================
@@ -66454,6 +69424,13 @@ def _delhivery_picked(status: str) -> bool:
     return bool(re.search(r"transit|out for|delivered|picked|dispatched|rto", s))
 
 
+def _delhivery_cancelled(status: str) -> bool:
+    """Delhivery status that means the shipment was CANCELLED — it will never be picked, so it must
+    leave the pickup queue (NOT be stamped 'confirmed not picked')."""
+    s = (status or "").lower()
+    return bool(re.search(r"cancel|closed|lost|destroy", s))
+
+
 async def _unshipped_audit(window_h: int = None):
     """Returns the dispatch-truth report: new MFN orders, how many have a Bigship label, how many
     of those Delhivery actually picked up, and the per-order problem list (label-missing + not-picked).
@@ -67102,6 +70079,8 @@ async def bigship_label_for_fulfillment(
     _cleannm = lambda s: re.sub(r"[^A-Za-z. ]", " ", str(s or "")).strip()
     first_name = _cleannm(first_name) or "Customer"
     last_name = _cleannm(last_name)
+    if len(first_name) < 3:
+        first_name = (first_name + "..")[:3]   # Bigship needs first_name 3-25 chars ("Md" -> "Md.")
     if len(last_name) < 3:
         last_name = "..."
     phone = re.sub(r"\D", "", str(rec.get("customer_phone") or ""))[-10:]
@@ -67788,6 +70767,10 @@ async def scheduled_bigship_panel_scrape():
             "bigship_panel_order_id": s.get("bigship_order_id"),
             "panel_scraped_at": now, "updated_at": now,
         }
+        # product/description from the panel's productDetails — fills the dealer/offline rows Amazon can't.
+        if s.get("product"):
+            set_doc["product_name"] = s.get("product")
+            set_doc["panel_products"] = s.get("products")
         # Amazon match: the panel's full userOrderId IS the Amazon order id when entered.
         if s.get("is_amazon_order") or _AMZ_ORDER_RE.match(ref):
             set_doc["amazon_order_id"] = ref
@@ -68279,10 +71262,15 @@ async def recheck_stale_notpicked_shipments() -> dict:
         if real and real.upper() != "NOT PICKED":
             await db.courier_shipments.update_one(sel, {"$set": {
                 "status": real, "prev_status": "NOT PICKED", "cleaned_at": now,
-                "cleaned_by": "notpicked_recheck", "clean_reason": "delhivery re-check"}})
+                "cleaned_by": "notpicked_recheck", "clean_reason": "delhivery re-check",
+                "delhivery_status": real, "delhivery_verified_at": now}})
             corrected += 1
         elif real and real.upper() == "NOT PICKED":
-            still_not_picked += 1  # Delhivery confirms genuinely not picked → real, leave it
+            # Two-step CONFIRMED: Bigship says NOT PICKED AND Delhivery says NOT PICKED → genuine.
+            await db.courier_shipments.update_one(sel, {"$set": {
+                "delhivery_status": "NOT PICKED", "delhivery_verified_at": now,
+                "delhivery_confirmed_not_picked": True}})
+            still_not_picked += 1
         else:
             age = _cs_age_days(c)
             if age is not None and age >= 14:
@@ -68295,6 +71283,79 @@ async def recheck_stale_notpicked_shipments() -> dict:
             "stale_flagged": stale_flagged, "still_not_picked": still_not_picked}
 
 
+async def verify_pending_pickup_shipments(cap: int = 300, days: int = 15) -> dict:
+    """Two-step check for the WHOLE Ship-Desk pickup queue (not just NOT PICKED): every Bigship
+    shipment showing a pending-pickup status (Pickup Scheduled / manifested / created / NOT PICKED)
+    is cross-checked against LIVE Delhivery. If Delhivery shows it actually MOVED (picked/in-transit/
+    delivered/RTO) the row's status is corrected → it leaves the desk (was stale). If Delhivery still
+    shows it un-moved, it's stamped Delhivery-confirmed and stays. Paced for the Delhivery rate limit."""
+    now = datetime.now(timezone.utc).isoformat()
+    cut = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    PENDING = ["Pickup Scheduled", "PICKUP SCHEDULED", "created", "manifested", "Manifested", "NOT PICKED"]
+    rows = await db.courier_shipments.find(
+        {"status": {"$in": PENDING}, "stale": {"$ne": True}, "awb_number": {"$nin": [None, ""]}},
+        {"_id": 0}).sort("created_at", -1).limit(cap).to_list(cap)
+    # Superseded-duplicate sweep: any pending row whose order already delivered/moved on a SIBLING AWB
+    # is a dead duplicate label (the 2026-07 re-book pattern) — flag it stale so it leaves every queue
+    # permanently, without wasting a Delhivery lookup on a label that will never be picked.
+    shipped_siblings = await _orders_with_shipped_sibling(
+        {_ship_ref_key(c.get("amazon_order_id"), c.get("order_id"), c.get("panel_order_ref")) for c in rows})
+    moved = confirmed = unresolved = cancelled = superseded = 0
+    for c in rows:
+        dt = c.get("created_at") or c.get("manifested_at") or c.get("panel_scraped_at")
+        if dt and str(dt) < cut:
+            continue
+        awb = (c.get("awb_number") or "").strip()
+        sel = {"awb_number": awb} if awb else {"id": c.get("id")}
+        if _ship_ref_key(c.get("amazon_order_id"), c.get("order_id"), c.get("panel_order_ref")) in shipped_siblings \
+                and not _delhivery_picked(c.get("status") or "") and not _delhivery_picked(c.get("delhivery_status") or ""):
+            await db.courier_shipments.update_one(sel, {"$set": {"stale": True, "prev_status": c.get("status"),
+                "cleaned_at": now, "cleaned_by": "pickup_verify", "clean_reason": "superseded duplicate (order shipped on sibling AWB)"}})
+            superseded += 1
+            continue
+        if str(c.get("bigship_order_id") or c.get("order_id") or "").lower() == "cancelled":
+            await db.courier_shipments.update_one(sel, {"$set": {"status": "CANCELLED", "prev_status": c.get("status"),
+                "cleaned_at": now, "cleaned_by": "pickup_verify", "clean_reason": "order cancelled"}})
+            cancelled += 1
+            continue
+        if not awb:
+            continue
+        real = None
+        try:
+            t = await fetch_delhivery_tracking(awb)
+            real = (t.get("status_label") or t.get("status") or "").strip()
+        except Exception:
+            real = None
+        if real and _delhivery_picked(real):
+            await db.courier_shipments.update_one(sel, {"$set": {"status": real, "prev_status": c.get("status"),
+                "delhivery_status": real, "delhivery_verified_at": now,
+                "cleaned_at": now, "cleaned_by": "pickup_verify", "clean_reason": "delhivery: already moved"}})
+            moved += 1
+        elif real and _delhivery_cancelled(real):
+            # Delhivery cancelled it → it will never be picked. Leave the desk (do NOT stamp not-picked).
+            await db.courier_shipments.update_one(sel, {"$set": {"status": "CANCELLED", "prev_status": c.get("status"),
+                "delhivery_status": real, "delhivery_verified_at": now, "delhivery_confirmed_not_picked": False,
+                "cleaned_at": now, "cleaned_by": "pickup_verify", "clean_reason": "delhivery: cancelled"}})
+            cancelled += 1
+        elif real:
+            await db.courier_shipments.update_one(sel, {"$set": {"delhivery_status": real,
+                "delhivery_verified_at": now, "delhivery_confirmed_not_picked": True}})
+            confirmed += 1
+        else:
+            unresolved += 1
+        await asyncio.sleep(BIGSHIP_NOTPICKED_RECHECK_DELAY)
+    return {"scanned": len(rows), "moved_off_desk": moved, "confirmed_not_picked": confirmed,
+            "unresolved_on_delhivery": unresolved, "cancelled": cancelled, "superseded_duplicates": superseded}
+
+
+@api_router.post("/dispatcher/verify-pending-pickup")
+async def verify_pending_pickup_now(cap: int = 300, days: int = 15,
+                                    user: dict = Depends(require_roles(["admin", "dispatcher"]))):
+    """Verify EVERYTHING on the Ship Desk against live Delhivery: confirm each is genuinely not picked,
+    and drop the ones Delhivery shows as already moved. Returns the summary."""
+    return await verify_pending_pickup_shipments(cap=cap, days=days)
+
+
 async def scheduled_notpicked_recheck():
     """APScheduler entrypoint — auto-correct stale Bigship NOT-PICKED rows via Delhivery."""
     try:
@@ -68302,6 +71363,14 @@ async def scheduled_notpicked_recheck():
         logger.info(f"Bigship NOT-PICKED re-check: {summary}")
     except Exception as e:
         logger.error(f"Bigship NOT-PICKED re-check failed: {e}")
+
+
+@api_router.post("/dispatcher/verify-notpicked")
+async def verify_notpicked_now(user: dict = Depends(require_roles(["admin", "dispatcher"]))):
+    """Run the TWO-STEP NOT-PICKED verification now: cross-check every Bigship 'NOT PICKED' against
+    live Delhivery — correct the ones Delhivery shows as moved/picked, confirm the genuine ones,
+    stale-flag the old unresolvable ones. Same logic as the 6-hourly job, on demand."""
+    return await recheck_stale_notpicked_shipments()
 
 
 # Ship Desk's 'pending' list = pending_fulfillment rows in these LOCAL statuses. That flag is not
@@ -85119,7 +88188,7 @@ async def _active_shipments_for_order(order_id: str, scope_firm: Optional[str] =
 async def order_folders_label(
     order_id: str,
     override: bool = False,
-    user: dict = Depends(require_roles(["admin", "accountant"])),
+    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher", "supervisor", "service_agent", "technician", "gate"])),
 ):
     """Stream the Bigship shipping label for `order_id`. Re-fetched from
     Bigship on demand via the stored system_order_id — bypasses storage so
@@ -85263,7 +88332,7 @@ async def order_folders_mark_printed(
 @api_router.get("/order-folders/order/{order_id}/packing-slip.pdf")
 async def order_folders_packing_slip(
     order_id: str,
-    user: dict = Depends(require_roles(["admin", "accountant"])),
+    user: dict = Depends(require_roles(["admin", "accountant", "dispatcher", "supervisor", "service_agent", "technician", "gate"])),
 ):
     """Stream an auto-generated Amazon-format packing slip for `order_id`."""
     from utils.packing_slip import generate_packing_slip_pdf
@@ -86228,6 +89297,33 @@ async def _jasmine_dispatch(message):
     if is_conf:
         return await _jasmine_confirm_and_book(message, code)
 
+    # --- "print this label" — print a forwarded label PDF, or fetch+print by tracking id/AWB ---
+    if waked and re.search(r"\b(print|chh?ap(o|do)?|chaap|nikal(o|do)?)\b", text, re.I):
+        if not _jasmine_confirm_allowed(message.from_number, author):
+            return "Jasmine: only dispatch leads can print a label."
+        # 1) an attached PDF → print directly (works even for panel-booked labels, the reliable path)
+        raw = getattr(message, "media_data", None)
+        mime = (getattr(message, "media_type", "") or getattr(message, "media_mimetype", "") or "").lower()
+        if raw and ("pdf" in mime or "document" in mime or "octet" in mime):
+            try:
+                pdf = raw if isinstance(raw, (bytes, bytearray)) else base64.b64decode(raw)
+            except Exception:
+                pdf = None
+            if pdf and bytes(pdf[:4]) == b"%PDF":
+                ok = await _office_print(pdf, OFFICE_COURIER_PRINTER, "fit", "jasmine-fwd")
+                return "Jasmine: 🖨 printed the forwarded label at the office." if ok is True else f"Jasmine: couldn't print it ({ok})."
+        # 2) a tracking id / AWB / order id in the text → fetch from Bigship/Shiprocket + print
+        _mtrk = re.search(r"\b(\d{9,20})\b", re.sub(r"[\s\-]", "", text)) or _AMZ_OID_RE.search(text)
+        if _mtrk:
+            trk = _mtrk.group(1) if (_mtrk.re.groups and _mtrk.lastindex) else _mtrk.group(0)
+            pdf, src = await _fetch_label_by_tracking(trk)
+            if pdf:
+                ok = await _office_print(pdf, OFFICE_COURIER_PRINTER, "fit", "jasmine-trk")
+                return f"Jasmine: 🖨 printed {src}." if ok is True else f"Jasmine: found {src} but the printer didn't take it ({ok})."
+            return (f"Jasmine: couldn't pull a label for {trk} (likely booked in the Bigship panel). "
+                    "Forward the label PDF here with 'print' and I'll print it.")
+        return "Jasmine: forward the label PDF (or send a tracking id) with the word *print* and I'll print it at the office."
+
     # --- non-wake replies that answer a pending Jasmine question (customer / model / payment) ---
     if not waked:
         recent = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
@@ -86491,7 +89587,24 @@ async def _jasmine_confirm_and_book(message, code):
         return f"Jasmine: {courier} gave no AWB (check the panel). Nothing confirmed — do not re-tag until checked."
     await db.jasmine_pending.update_one({"_id": pend["_id"]},
         {"$set": {"status": "booked", "awb": awb, "courier_used": courier, "booked_at": datetime.now(timezone.utc).isoformat()}})
-    msg = f"Jasmine: booked ✅ *{awb}* ({courier_name}) for {pend['fields']['first_name']}."
+    # Auto-print the freshly-booked label at the office (fire-and-forget; never blocks the booking).
+    print_note = ""
+    if os.environ.get("JASMINE_AUTO_PRINT", "1") in ("1", "true", "True"):
+        try:
+            pdf = None
+            if label and str(label).startswith("http"):
+                import httpx
+                async with httpx.AsyncClient(timeout=40) as _c:
+                    _r = await _c.get(label)
+                    if _r.status_code == 200 and _r.content[:4] == b"%PDF":
+                        pdf = _r.content
+            if not pdf:
+                pdf, _ = await _fetch_label_by_tracking(awb)
+            if pdf and (await _office_print(pdf, OFFICE_COURIER_PRINTER, "fit", "jasmine-book")) is True:
+                print_note = " 🖨 printed at office."
+        except Exception as e:
+            logger.warning(f"jasmine auto-print failed: {e}")
+    msg = f"Jasmine: booked ✅ *{awb}* ({courier_name}) for {pend['fields']['first_name']}.{print_note}"
     return msg + (f"\nLabel: {label}" if label else "")
 
 

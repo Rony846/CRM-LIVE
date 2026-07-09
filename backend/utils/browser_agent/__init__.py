@@ -1186,10 +1186,13 @@ class AmazonBrowserAgent:
                 phone_found_in: 'none',
                 seller_notes: '',
                 cancelled_on_amazon: false,
+                buyer_requested_cancel: false,
                 tracking_id: '',
                 carrier: '',
                 shipped_on_amazon: false,
                 shipped_at: '',
+                ship_by: '',
+                deliver_by: '',
               };
 
               // Cancelled orders show this canonical sentence on the order page; bail early so we don't
@@ -1197,6 +1200,12 @@ class AmazonBrowserAgent:
               if (/shipping address is not displayed if an order is canceled/i.test(text)) {
                 result.cancelled_on_amazon = true;
                 return result;
+              }
+
+              // Buyer-requested cancellation (amber banner). The order is NOT yet cancelled and the
+              // address IS still shown, so DON'T bail — just flag it; the caller must NOT ship it.
+              if (/buyer requested cancel|buyer has requested that this order|please cancel the order and avoid handover/i.test(text)) {
+                result.buyer_requested_cancel = true;
               }
 
               // ---- Tracking + carrier + shipped status ----
@@ -1246,6 +1255,14 @@ class AmazonBrowserAgent:
               if (shipDateMatch && shipDateMatch[1]) {
                 result.shipped_at = shipDateMatch[1].trim().slice(0, 60);
               }
+
+              // ---- Amazon SLA dates: "Ship by" (seller deadline) + "Deliver by" (latest delivery date) ----
+              // Rendered on the order page as e.g. "Deliver by: Fri, 24 Jul 2026 IST". Anchor on a weekday
+              // and end at the year so we don't swallow the next label.
+              const shipByM = text.match(/Ship\\s*by\\s*[:#]?\\s*([A-Za-z]{3},?\\s*\\d{1,2}\\s*[A-Za-z]{3},?\\s*\\d{4})/i);
+              if (shipByM && shipByM[1]) result.ship_by = shipByM[1].replace(/\\s+/g, ' ').trim();
+              const delByM = text.match(/Deliver\\s*by\\s*[:#]?\\s*([A-Za-z]{3},?\\s*\\d{1,2}\\s*[A-Za-z]{3},?\\s*\\d{4})/i);
+              if (delByM && delByM[1]) result.deliver_by = delByM[1].replace(/\\s+/g, ' ').trim();
 
               // ---- Shipping Address block ----
               // Seller Central renders the buyer address in a card; the heading is one of
@@ -1502,10 +1519,13 @@ class AmazonBrowserAgent:
             "seller_notes": (scraped.get("seller_notes") or "").strip(),
             "raw_ship_to": (scraped.get("raw_ship_to") or "").strip(),
             "cancelled_on_amazon": bool(scraped.get("cancelled_on_amazon")),
+            "buyer_requested_cancel": bool(scraped.get("buyer_requested_cancel")),
             "tracking_id": (scraped.get("tracking_id") or "").strip(),
             "carrier": (scraped.get("carrier") or "").strip(),
             "shipped_on_amazon": bool(scraped.get("shipped_on_amazon")),
             "shipped_at": (scraped.get("shipped_at") or "").strip(),
+            "ship_by": (scraped.get("ship_by") or "").strip(),
+            "deliver_by": (scraped.get("deliver_by") or "").strip(),
             # Product fields — used to render Amazon-format packing slips.
             "product_title": (scraped.get("product_title") or "").strip(),
             "product_sku": (scraped.get("product_sku") or "").strip(),

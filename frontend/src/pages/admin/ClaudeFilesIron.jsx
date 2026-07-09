@@ -45,6 +45,7 @@ export default function ClaudeFiles() {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [pickedFile, setPickedFile] = useState(null);
+  const [previewUrl, setPreviewUrl] = useState(null);
   const [note, setNote] = useState('');
   const fileInputRef = useRef(null);
 
@@ -65,16 +66,43 @@ export default function ClaudeFiles() {
 
   useEffect(() => { fetchFiles(); }, [fetchFiles]);
 
+  const setPicked = (f) => {
+    if (!f) return;
+    if (f.size > MAX_FILE_BYTES) { toast.error('File exceeds 50 MB limit'); return; }
+    setPickedFile(f);
+    setPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return (f.type || '').startsWith('image/') ? URL.createObjectURL(f) : null; });
+  };
+
   const handlePick = (e) => {
     const f = e.target.files?.[0];
     if (!f) return;
-    if (f.size > MAX_FILE_BYTES) {
-      toast.error('File exceeds 50 MB limit');
-      e.target.value = '';
-      return;
-    }
-    setPickedFile(f);
+    if (f.size > MAX_FILE_BYTES) { toast.error('File exceeds 50 MB limit'); e.target.value = ''; return; }
+    setPicked(f);
   };
+
+  // Paste a screenshot from the clipboard (Ctrl/Cmd+V anywhere on this page)
+  useEffect(() => {
+    const onPaste = (e) => {
+      if (e.target && ['INPUT', 'TEXTAREA'].includes(e.target.tagName) && e.target.type !== 'file') {
+        // still allow image paste even while typing a note
+      }
+      const items = e.clipboardData?.items || [];
+      for (const it of items) {
+        if (it.type && it.type.startsWith('image/')) {
+          const blob = it.getAsFile();
+          if (blob) {
+            const ext = (blob.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+            setPicked(new File([blob], `screenshot-${Date.now()}.${ext}`, { type: blob.type }));
+            toast.success('Screenshot pasted — click Upload');
+            e.preventDefault();
+            return;
+          }
+        }
+      }
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleUpload = async () => {
     if (!pickedFile) {
@@ -89,6 +117,7 @@ export default function ClaudeFiles() {
       const res = await axios.post(`${API}/claude-files`, fd, { headers });
       toast.success(`Uploaded as file #${res.data.number}`);
       setPickedFile(null);
+      setPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
       setNote('');
       if (fileInputRef.current) fileInputRef.current.value = '';
       fetchFiles();
@@ -171,10 +200,14 @@ export default function ClaudeFiles() {
           <div>
             <Caps size={9} color={T.iron400} style={{ display: 'block', marginBottom: 6 }}>File (max 50 MB)</Caps>
             <input ref={fileInputRef} type="file" onChange={handlePick} style={{ ...inputStyle, padding: '6px 8px', cursor: 'pointer' }} />
+            <div style={{ marginTop: 8, padding: '10px 12px', border: `1px dashed ${T.iron300}`, borderRadius: 8, background: T.iron50, textAlign: 'center', fontSize: 12, color: T.iron500 }}>
+              📋 <b>Paste a screenshot</b> from your clipboard — just press <b>Ctrl / Cmd + V</b> anywhere on this page.
+            </div>
             {pickedFile && (
-              <p style={{ ...mono, fontSize: 11, color: T.iron500, marginTop: 6 }}>
-                {pickedFile.name} — {formatBytes(pickedFile.size)}
-              </p>
+              <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10 }}>
+                {previewUrl && <img src={previewUrl} alt="preview" style={{ maxHeight: 72, maxWidth: 120, borderRadius: 6, border: `1px solid ${T.iron200}` }} />}
+                <p style={{ ...mono, fontSize: 11, color: T.iron500, margin: 0 }}>{pickedFile.name} — {formatBytes(pickedFile.size)}</p>
+              </div>
             )}
           </div>
           <div>

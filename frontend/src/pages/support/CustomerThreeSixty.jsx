@@ -142,6 +142,25 @@ export default function CustomerThreeSixty() {
     </Section>
   );
 
+  const QuotationsCard = () => (
+    <Section icon={Package} title="Quotations / PIs" count={(data.quotations || []).length}>
+      {(data.quotations || []).length === 0 ? <div style={{ padding: 24, textAlign: 'center', color: T.iron400, fontSize: 12.5 }}>No quotations / PIs.</div> : (
+        <div>{data.quotations.map((qn, i) => (
+          <div key={qn.id || i} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '11px 16px', borderBottom: i < data.quotations.length - 1 ? `1px solid ${T.iron200}` : 'none' }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ ...mono, fontWeight: 700, fontSize: 12, color: T.iron900 }}>{qn.quotation_number}</div>
+              <div style={{ fontSize: 11, color: T.iron500, marginTop: 2 }}>{(qn.items?.[0]?.name || qn.firm_name || 'Quotation').slice(0, 44)}</div>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ ...mono, fontSize: 12, fontWeight: 700, color: T.iron900 }}>₹{Math.round(qn.grand_total || qn.total_amount || 0).toLocaleString('en-IN')}</div>
+              <span style={badgeStyle(String(qn.status).toLowerCase() === 'approved' ? 'ok' : 'info')}>{qn.status || '—'}</span>
+            </div>
+          </div>
+        ))}</div>
+      )}
+    </Section>
+  );
+
   const ActivityCard = () => (
     <Section icon={Activity} title="Activity">
       {(data.activity || []).length === 0 ? <div style={{ padding: 24, textAlign: 'center', color: T.iron400, fontSize: 12.5 }}>No recent activity.</div> : (
@@ -198,7 +217,7 @@ export default function CustomerThreeSixty() {
 
             {/* Tabs */}
             <div style={{ display: 'flex', gap: 4, borderBottom: `1px solid ${T.iron200}`, marginBottom: 16 }}>
-              {[['overview', 'Overview'], ['tickets', `Tickets (${s.total_tickets})`], ['dispatches', `Dispatches (${(data.dispatches || []).length})`]].map(([id, label]) => (
+              {[['overview', 'Overview'], ['tickets', `Tickets (${s.total_tickets})`], ['pis', `PIs (${(data.quotations || []).length})`], ['dispatches', `Dispatches (${(data.dispatches || []).length})`]].map(([id, label]) => (
                 <button key={id} onClick={() => setTab(id)} style={{ border: 'none', background: 'none', cursor: 'pointer', padding: '8px 12px', fontFamily: T.headline, fontWeight: 700, fontSize: 12.5,
                   color: tab === id ? T.iron900 : T.iron400, borderBottom: `2px solid ${tab === id ? T.orange : 'transparent'}`, marginBottom: -1 }}>{label}</button>
               ))}
@@ -207,9 +226,9 @@ export default function CustomerThreeSixty() {
             {tab === 'overview' ? (
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'start' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}><ProductsCard /><TicketsCard limit={6} /></div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}><DispatchesCard /><ActivityCard /></div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}><QuotationsCard /><DispatchesCard /><ActivityCard /></div>
               </div>
-            ) : tab === 'tickets' ? <TicketsCard /> : <DispatchesCard />}
+            ) : tab === 'tickets' ? <TicketsCard /> : tab === 'pis' ? <QuotationsCard /> : <DispatchesCard />}
           </>
         )}
     </IronShell>

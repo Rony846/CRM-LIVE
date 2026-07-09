@@ -116,6 +116,8 @@ export default function SupervisorDashboard1a() {
 
   const [ticketSearch, setTicketSearch] = useState('');
   const [searchingTicket, setSearchingTicket] = useState(false);
+  const [qSearch, setQSearch] = useState('');   // in-queue filter (client-side)
+  const [page, setPage] = useState(1);           // queue pagination
 
   const fetchData = useCallback(async () => {
     try {
@@ -208,7 +210,17 @@ export default function SupervisorDashboard1a() {
 
   const counts = queue.reduce((a, t) => { const c = catFor(t.status); a[c] = (a[c] || 0) + 1; a.All++; return a; }, { All: 0 });
   const FILTERS = ['All', 'New', 'Assigned', 'Escalated', 'In Repair', 'Dispatch', 'Resolved'];
-  const visible = (filter === 'All' ? queue : queue.filter((t) => catFor(t.status) === filter)).slice(0, 14);
+  const PAGE_SIZE = 14;
+  const filtered = (filter === 'All' ? queue : queue.filter((t) => catFor(t.status) === filter))
+    .filter((t) => {
+      const q = qSearch.trim().toLowerCase();
+      if (!q) return true;
+      return [t.ticket_number, t.customer_name, t.customer_city, t.product_name, t.serial_number, t.issue_description, t.status]
+        .some((v) => (v || '').toString().toLowerCase().includes(q));
+    });
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const curPage = Math.min(page, totalPages);
+  const visible = filtered.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE);
 
   const KPIS = [
     { label: 'OPEN IN QUEUE', value: queue.length, sub: 'ALL SUPERVISOR TICKETS', accent: T.orange },
@@ -263,11 +275,17 @@ export default function SupervisorDashboard1a() {
                 <div style={{ background: T.white, border: `1px solid ${T.iron200}`, borderRadius: 8, boxShadow: '0 1px 2px rgba(15,15,15,.06)', overflow: 'hidden' }}>
                   <div style={{ display: 'flex', alignItems: 'center', padding: '13px 16px 10px', gap: 6, flexWrap: 'wrap' }}>
                     <Caps size={11} color={T.iron900} ls=".1em">Supervisor Ticket Queue</Caps>
+                    <div style={{ position: 'relative', marginLeft: 10 }}>
+                      <Search size={13} strokeWidth={1.75} style={{ position: 'absolute', left: 8, top: 8, color: T.iron400 }} />
+                      <input value={qSearch} onChange={(e) => { setQSearch(e.target.value); setPage(1); }}
+                        placeholder="Search this queue…"
+                        style={{ width: 200, height: 29, border: `1px solid ${T.iron200}`, borderRadius: 6, padding: '0 8px 0 26px', fontSize: 12, color: T.iron900, background: T.white, outline: 'none', fontFamily: T.body }} />
+                    </div>
                     <div style={{ flex: 1 }} />
                     {FILTERS.map((f) => {
                       const on = filter === f;
                       return (
-                        <button key={f} onClick={() => setFilter(f)} style={{ border: `1px solid ${on ? T.iron900 : T.iron200}`, background: on ? T.iron900 : T.white,
+                        <button key={f} onClick={() => { setFilter(f); setPage(1); }} style={{ border: `1px solid ${on ? T.iron900 : T.iron200}`, background: on ? T.iron900 : T.white,
                           color: on ? '#fff' : T.iron700, borderRadius: 999, padding: '4px 10px', cursor: 'pointer', fontFamily: T.headline, fontWeight: 600, fontSize: 11 }}>
                           {f} <span style={{ fontFamily: T.mono, opacity: .7 }}>{counts[f] || 0}</span>
                         </button>
@@ -326,8 +344,36 @@ export default function SupervisorDashboard1a() {
                       )}
                     </tbody>
                   </table>
-                  <div style={{ padding: '9px 16px', borderTop: `1px solid ${T.iron200}` }}>
-                    <Caps size={9} color={T.iron400}>Showing {visible.length} of {queue.length}</Caps>
+                  <div style={{ padding: '9px 16px', borderTop: `1px solid ${T.iron200}`, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                    <Caps size={9} color={T.iron400}>
+                      Showing {filtered.length ? (curPage - 1) * PAGE_SIZE + 1 : 0}–{Math.min(curPage * PAGE_SIZE, filtered.length)} of {filtered.length}{qSearch || filter !== 'All' ? ` (filtered from ${queue.length})` : ''}
+                    </Caps>
+                    <div style={{ flex: 1 }} />
+                    {totalPages > 1 && (() => {
+                      const pageBtn = (p, label, dis) => (
+                        <button key={label ?? p} disabled={dis} onClick={() => setPage(p)}
+                          style={{ minWidth: 28, height: 26, padding: '0 7px', border: `1px solid ${p === curPage && !label ? T.iron900 : T.iron200}`,
+                            background: p === curPage && !label ? T.iron900 : T.white, color: p === curPage && !label ? '#fff' : (dis ? T.iron300 : T.iron700),
+                            borderRadius: 6, cursor: dis ? 'default' : 'pointer', fontFamily: T.mono, fontSize: 11, fontWeight: 700 }}>
+                          {label ?? p}
+                        </button>
+                      );
+                      const nums = [];
+                      const start = Math.max(1, Math.min(curPage - 2, totalPages - 4));
+                      const end = Math.min(totalPages, start + 4);
+                      for (let p = start; p <= end; p++) nums.push(pageBtn(p));
+                      return (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                          {pageBtn(1, '«', curPage === 1)}
+                          {pageBtn(Math.max(1, curPage - 1), '‹', curPage === 1)}
+                          {start > 1 && <span style={{ color: T.iron400, fontSize: 11 }}>…</span>}
+                          {nums}
+                          {end < totalPages && <span style={{ color: T.iron400, fontSize: 11 }}>…</span>}
+                          {pageBtn(Math.min(totalPages, curPage + 1), '›', curPage === totalPages)}
+                          {pageBtn(totalPages, '»', curPage === totalPages)}
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
 

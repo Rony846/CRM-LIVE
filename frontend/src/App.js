@@ -78,6 +78,11 @@ import ProductionRequests from './pages/accountant/ProductionRequestsIron';
 import PendingFulfillment from './pages/accountant/PendingFulfillmentIron';
 import ShipDesk from './pages/accountant/ShipDeskIron';
 import ShipDeskHome from './pages/ShipDeskHome';
+import ShipDeskBoard from './pages/ShipDeskBoard';
+import ReturnDeskBoard from './pages/ReturnDeskBoard';
+import MyPickups from './pages/customer/MyPickups';
+import DispatcherShipDesk from './pages/dispatcher/DispatcherShipDesk';
+import ManualBooking from './pages/accountant/ManualBooking';
 import PurchaseRegister from './pages/accountant/PurchaseRegisterIron';
 import SalesRegister from './pages/accountant/SalesRegisterIron';
 import PartyMaster from './pages/admin/PartyMasterIron';
@@ -113,6 +118,7 @@ import FileRepositoryPage from './pages/admin/browser-agent/FileRepositoryPageIr
 import OrdersFoldersPage from './pages/admin/OrdersFoldersPageIron';
 import WhatsAppAgentPage from './pages/admin/whatsapp/WhatsAppAgentPageIron';
 import PublicDatasheetView from './pages/public/PublicDatasheetView';
+import VerifySerial from './pages/public/VerifySerial';
 import StoreFront from './pages/store/StoreFront';
 import CatalogueHome from './pages/public/CatalogueHome';
 import BatteryShowcase from './pages/public/BatteryShowcase';
@@ -187,8 +193,10 @@ import AmazonRefundLosses from './pages/admin/AmazonRefundLossesIron';
 import AdminOnlineOrders from './pages/admin/AdminOnlineOrdersIron';
 import RedesignPreview from './pages/admin/RedesignPreview';
 import LegalCases from './pages/admin/LegalCasesIron';
+import LegalDiary from './pages/admin/LegalDiary';
 import AZClaims from './pages/admin/AZClaimsIron';
 import AdminReviewRescue from './pages/admin/AdminReviewRescueIron';
+import ReviewMatcher from './pages/admin/ReviewMatcher';
 import AdminWhatsAppAgent from './pages/admin/AdminWhatsAppAgentIron';
 
 // Leads Pages
@@ -294,10 +302,10 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
       supervisor: '/supervisor',
       service_agent: '/technician',
       technician: '/technician',
-      accountant: '/accountant',
+      accountant: '/accountant/manual-bookings',
       dispatcher: '/dispatcher',
       gate: '/gate',
-      admin: '/admin',
+      admin: '/accountant/manual-bookings',
       dealer: '/dealer',
       ca: '/ca',
       importer: '/importer',
@@ -331,10 +339,10 @@ const RoleRedirect = () => {
     supervisor: '/supervisor',
     service_agent: '/technician',
     technician: '/technician',
-    accountant: '/accountant',
+    accountant: '/accountant/manual-bookings',
     dispatcher: '/dispatcher',
     gate: '/gate',
-    admin: '/admin',
+    admin: '/accountant/manual-bookings',
     dealer: '/dealer',
     ca: '/ca',
     importer: '/importer',
@@ -352,16 +360,17 @@ function App() {
   // Initialize theme from localStorage — Obsidian Elite is the default.
   useEffect(() => {
     if (isStoreHost) return;
-    // One-time migration: roll everyone onto Obsidian Elite as the new default.
-    if (!localStorage.getItem('mg-theme-v2')) {
-      localStorage.setItem('mg-theme', 'obsidian');
-      localStorage.setItem('mg-theme-v2', '1');
+    // One-time migration: Platinum is now the CRM default so text stays dark/legible on the light Iron
+    // UI. (Bumped to v5 — the old Obsidian dark default left users with WHITE text on the new theme.)
+    if (!localStorage.getItem('mg-theme-v5')) {
+      localStorage.setItem('mg-theme', 'hud-platinum');
+      localStorage.setItem('mg-theme-v5', '1');
     }
-    const savedTheme = localStorage.getItem('mg-theme') || 'obsidian';
+    const savedTheme = localStorage.getItem('mg-theme') || 'hud-platinum';
     document.documentElement.setAttribute('data-theme', savedTheme);
 
     // Handle dark/light mode class
-    const darkThemes = ['obsidian', 'pro-dark', 'mono-dark'];
+    const darkThemes = ['obsidian', 'pro-dark', 'mono-dark', 'hud-dark'];
     if (darkThemes.includes(savedTheme)) {
       document.documentElement.classList.add('dark');
     } else {
@@ -397,6 +406,7 @@ function App() {
           
           {/* Public Datasheet View - shareable link for customers */}
           <Route path="/datasheet/:id" element={<PublicDatasheetView />} />
+          <Route path="/verify/:serial" element={<VerifySerial />} />
           
           {/* Interactive Showcase Pages */}
           <Route path="/showcase/battery/:id" element={<BatteryShowcase />} />
@@ -495,6 +505,26 @@ function App() {
             </ProtectedRoute>
           } />
           <Route path="/ship-desk" element={
+            <ProtectedRoute allowedRoles={['call_support', 'accountant', 'admin', 'supervisor', 'technician', 'service_agent', 'dispatcher', 'gate']}>
+              <ShipDeskBoard />
+            </ProtectedRoute>
+          } />
+          <Route path="/ship-desk/board" element={
+            <ProtectedRoute allowedRoles={['call_support', 'accountant', 'admin', 'supervisor', 'technician', 'service_agent', 'dispatcher', 'gate']}>
+              <ShipDeskBoard />
+            </ProtectedRoute>
+          } />
+          <Route path="/return-desk" element={
+            <ProtectedRoute allowedRoles={['call_support', 'accountant', 'admin', 'supervisor', 'technician', 'service_agent', 'dispatcher', 'gate']}>
+              <ReturnDeskBoard />
+            </ProtectedRoute>
+          } />
+          <Route path="/customer/pickups" element={
+            <ProtectedRoute allowedRoles={['customer', 'admin']}>
+              <MyPickups />
+            </ProtectedRoute>
+          } />
+          <Route path="/ship-desk/legacy" element={
             <ProtectedRoute allowedRoles={['accountant', 'admin', 'supervisor', 'technician', 'service_agent', 'dispatcher']}>
               <ShipDeskHome />
             </ProtectedRoute>
@@ -858,6 +888,20 @@ function App() {
           <Route path="/accountant/ship-desk" element={
             <ProtectedRoute allowedRoles={['accountant', 'admin']}>
               <ShipDesk />
+            </ProtectedRoute>
+          } />
+
+          {/* Dispatcher's own Ship Desk — routed by category (inverter→Gaurav, battery/stabilizer→Angad) */}
+          <Route path="/dispatcher/ship-desk" element={
+            <ProtectedRoute allowedRoles={['service_agent', 'supervisor', 'dispatcher', 'admin']}>
+              <DispatcherShipDesk />
+            </ProtectedRoute>
+          } />
+
+          {/* Accountant manual-booking worklist (accountant/admin landing page) */}
+          <Route path="/accountant/manual-bookings" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin']}>
+              <ManualBooking />
             </ProtectedRoute>
           } />
           
@@ -1246,6 +1290,11 @@ function App() {
               <RedesignPreview />
             </ProtectedRoute>
           } />
+          <Route path="/admin/legal-diary" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant', 'lawyer']}>
+              <LegalDiary />
+            </ProtectedRoute>
+          } />
           <Route path="/admin/legal-cases" element={
             <ProtectedRoute allowedRoles={['admin', 'accountant', 'lawyer']}>
               <LegalCases />
@@ -1259,6 +1308,11 @@ function App() {
           <Route path="/admin/review-rescue" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <AdminReviewRescue />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/review-matcher" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <ReviewMatcher />
             </ProtectedRoute>
           } />
           <Route path="/admin/whatsapp-agent" element={
