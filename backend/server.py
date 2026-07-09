@@ -70757,6 +70757,29 @@ async def _intercompany_gst_flows(period_key: str, book: bool = False) -> dict:
     return {"period": period_key, "flows": out, "provisional_booked": booked, "booked": book}
 
 
+_MON3 = {"jan": "01", "feb": "02", "mar": "03", "apr": "04", "may": "05", "jun": "06",
+         "jul": "07", "aug": "08", "sep": "09", "oct": "10", "nov": "11", "dec": "12"}
+
+
+def _to_iso_date(s) -> str:
+    """Normalize a date to ISO YYYY-MM-DD. Handles ISO, Vyapar 'DD-Mon-YYYY' (e.g. 30-Jun-2026),
+    and DD-MM-YYYY. Returns '' if unparseable. (A prior str(s)[:10] truncated 'DD-Mon-YYYY' to a
+    garbage 'DD-Mon-202' that no ISO month filter matched — hiding those rows from the dashboard.)"""
+    s = str(s or "").strip()
+    if not s:
+        return ""
+    m = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", s)
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    m = re.match(r"(\d{1,2})[-/\s]([A-Za-z]{3})[A-Za-z]*[-/\s](\d{4})", s)
+    if m:
+        return f"{m.group(3)}-{_MON3.get(m.group(2).lower(), '01')}-{int(m.group(1)):02d}"
+    m = re.match(r"(\d{1,2})[-/](\d{1,2})[-/](\d{4})", s)
+    if m:
+        return f"{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
+    return ""
+
+
 async def _book_intercompany_provisional(seller_id: str, buyer_id: str, period_key: str) -> int:
     """Book provisional purchases on the buyer from the seller's filed GSTR-1 B2B (one per invoice)."""
     seller = await db.firms.find_one({"id": seller_id}, {"_id": 0, "name": 1, "gstin": 1}) or {}
@@ -70782,7 +70805,8 @@ async def _book_intercompany_provisional(seller_id: str, buyer_id: str, period_k
             "id": str(uuid.uuid4()), "purchase_number": f"PROV-{buyer.get('gstin','')[:2]}-{n.replace('/', '-')}",
             "firm_id": buyer_id, "firm_name": buyer.get("name"), "firm_gstin": buyer.get("gstin"),
             "supplier_name": seller.get("name"), "supplier_gstin": seller.get("gstin"),
-            "invoice_number": n, "invoice_date": str(d["date"] or "")[:10] or f"{period_key}-28",
+            "invoice_number": n, "invoice_date": _to_iso_date(d["date"]) or f"{period_key}-28",
+            "invoice_month": period_key,
             "period_key": period_key, "is_inter_state": (seller.get("gstin", "")[:2] != buyer.get("gstin", "")[:2]),
             "total_taxable": round(d["tax"], 2), "taxable_value": round(d["tax"], 2),
             "total_igst": round(d["gst"], 2), "igst": round(d["gst"], 2), "cgst": 0.0, "sgst": 0.0,
