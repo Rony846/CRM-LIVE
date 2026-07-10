@@ -447,7 +447,7 @@ export default function QuotationList() {
                               <button onClick={() => handleOpenConvertDialog(q)} data-testid="convert-btn" style={rowPrimaryStyle}><ArrowRight size={13} /> Convert</button>
                             )}
 
-                            {q.status === 'approved' && !q.ship_desk_order_id && !q.converted_at && canShipDesk && (
+                            {['approved', 'sent', 'viewed'].includes(q.status) && !q.ship_desk_order_id && !q.converted_at && canShipDesk && (
                               <>
                                 <button onClick={() => navigate(`/quotations/edit/${q.id}`)} title="Edit the PI before sending" style={rowOutlineOrange}>Edit PI</button>
                                 <button onClick={() => openShipDlg(q)} title="Attach payment proof & send to Ship Desk" style={rowPrimaryStyle}><Truck size={13} /> To Ship Desk</button>
