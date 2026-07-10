@@ -21022,14 +21022,31 @@ async def _render_sales_invoice_pdf(order_id: str) -> Optional[bytes]:
 
 
 @api_router.post("/orders/{order_id:path}/print-pack-set")
-async def print_pack_set(order_id: str, serial: str = None, customer: str = None,
+async def print_pack_set(order_id: str, serial: str = None, customer: str = None, reprint: bool = False,
                          user: dict = Depends(require_roles(["admin", "accountant", "dispatcher", "supervisor", "service_agent", "technician", "gate"]))):
     """PACKING-STATION 'Print pack set' — prints, at the office, before the box leaves:
       SAMSUNG (A4 laser, verified):  courier label + tax invoice
       TSC (thermal 100×50):          serial label(s) + QC/box-contents label + personalised care card
-    Fire-and-forget: a down printer never blocks packing. HP M128 is NOT used until verified."""
+    Fire-and-forget: a down printer never blocks packing. HP M128 is NOT used until verified.
+    NON-REPEATING GUARD: an order that was already packed/printed will NOT re-fire the whole print set on a
+    second click (that reprints every label). Refuses with already_packed unless reprint=true is passed."""
     out = {}
-    aop = await db.amazon_order_processing.find_one({"order_id": order_id}, {"_id": 0})
+    aop = await db.amazon_order_processing.find_one(
+        {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]}, {"_id": 0})
+    # Guard against a duplicate print of an order that's already packed (double-click, or a card that
+    # lingered on the board because the lane didn't refresh). Serials are idempotent, but the LABELS
+    # would print a second time — this is the "non-repeating" protection.
+    if not reprint:
+        pf = await db.pending_fulfillment.find_one(
+            {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]},
+            {"_id": 0, "pack_stage": 1, "packed_at": 1, "packed_by": 1})
+        packed_at = (pf or {}).get("packed_at") or (aop or {}).get("packed_at")
+        if packed_at or (pf or {}).get("pack_stage") == "packed":
+            when = str(packed_at or "")[:19].replace("T", " ")
+            by = (pf or {}).get("packed_by") or (aop or {}).get("packed_by")
+            return {"success": False, "already_packed": True, "order_id": order_id,
+                    "message": f"Already printed/packed{(' on ' + when) if when else ''}"
+                               f"{(' by ' + by) if by else ''}. Use Reprint to print it again."}
     if not customer and aop:
         customer = aop.get("customer_name")
     # serial-at-dispatch binding: auto-resolve (or reserve) the unit serial(s) — scanned `serial` wins.
@@ -70940,7 +70957,7 @@ _CA_FIRM_NAMES = {
     "07BLDPR5944R3Z5": "Electronics Bay (Delhi)",
     "09BPRPR2164D1ZK": "SPV",
 }
-_FP_LABEL = {"052026": "May 2026"}
+_FP_LABEL = {"052026": "May 2026", "062026": "June 2026"}
 
 
 def _ca_firm_summary(j: dict) -> dict:
@@ -85394,6 +85411,57 @@ async def kommo_chat_thread(phone: str, user: dict = Depends(require_roles(["adm
     digits = re.sub(r"\D", "", phone)[-10:]
     msgs = await db.kommo_messages.find({"phone": digits}, {"_id": 0}).sort("ts", 1).to_list(1000)
     return {"phone": digits, "count": len(msgs), "messages": msgs}
+
+
+_KOMMO_STATUS_NAMES = {
+    59084023: "Incoming leads", 59084027: "Initial contact", 59084031: "Discussions",
+    59084035: "Decision making", 59084039: "Contract discussion", 142: "Closed – won",
+    143: "Closed – lost", 63347739: "Incoming (shop)", 63347743: "Interest expressed",
+    63347747: "Product added", 63347751: "Order created",
+}
+
+
+@api_router.get("/admin/kommo-backup")
+async def kommo_backup_browse(search: str = "", source: str = "all", limit: int = 50, skip: int = 0,
+                              user: dict = Depends(require_roles(["admin"]))):
+    """Browse the local Kommo backup (db.kommo_leads pipeline + db.kommo_unsorted_leads chat leads).
+    Search by phone / name; filter by source. Read-only view of the safety-net copy."""
+    search = (search or "").strip()
+    digits = re.sub(r"\D", "", search)[-10:] if search else ""
+    rx = {"$regex": re.escape(search), "$options": "i"}
+    rows = []
+    if source in ("all", "unsorted"):
+        q = {}
+        if search:
+            ors = [{"contact_name": rx}, {"from_name": rx}]
+            if len(digits) >= 5:
+                ors.append({"phone": {"$regex": digits + "$"}})
+            q["$or"] = ors
+        async for u in db.kommo_unsorted_leads.find(
+                q, {"_id": 0, "uid": 1, "phone": 1, "contact_name": 1, "from_name": 1,
+                    "created_at": 1, "service": 1, "lead_id": 1}).sort("created_at", -1).limit(500):
+            rows.append({"source": "unsorted", "id": u.get("uid"), "lead_id": u.get("lead_id"),
+                         "name": u.get("contact_name") or u.get("from_name"), "phone": u.get("phone"),
+                         "created_at": u.get("created_at"), "channel": u.get("service") or "chat",
+                         "status": "Unsorted (chat)"})
+    if source in ("all", "pipeline"):
+        q = {}
+        if search:
+            q["name"] = rx
+        async for L in db.kommo_leads.find(
+                q, {"_id": 0, "id": 1, "name": 1, "created_at": 1, "status_id": 1, "price": 1}
+        ).sort("created_at", -1).limit(500):
+            rows.append({"source": "pipeline", "id": L.get("id"), "lead_id": L.get("id"),
+                         "name": L.get("name"), "phone": None, "created_at": L.get("created_at"),
+                         "channel": "pipeline", "price": L.get("price"),
+                         "status": _KOMMO_STATUS_NAMES.get(L.get("status_id"), str(L.get("status_id") or ""))})
+    rows.sort(key=lambda r: (r.get("created_at") or 0), reverse=True)
+    total = len(rows)
+    page = rows[skip:skip + max(1, min(limit, 200))]
+    return {"total": total, "count": len(page), "rows": page,
+            "totals": {"pipeline": await db.kommo_leads.count_documents({}),
+                       "unsorted": await db.kommo_unsorted_leads.count_documents({}),
+                       "contacts": await db.kommo_contacts.count_documents({})}}
 
 
 # Pratibha auto-reply on WhatsApp Cloud inbound. Real Claude reply (not preset),
