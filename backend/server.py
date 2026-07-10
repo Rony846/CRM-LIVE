@@ -56687,6 +56687,22 @@ async def customer_360(
          "created_at": 1, "customer_name": 1, "firm_name": 1}
     ).sort("created_at", -1).limit(20).to_list(20)
 
+    # Amazon self-ship orders (browser-agent / API booked) live in amazon_order_processing, keyed by the
+    # scraped consignee phone — NOT in pending_fulfillment, dispatches, or the customers directory. Without
+    # this an Amazon buyer's 360 came back empty (customer:false) even though we hold their order + AWB, so
+    # the popup looked like it "didn't open". Fold them into the orders list + use as an identity fallback.
+    amz_rows = await db.amazon_order_processing.find(
+        {"customer_phone": rx},
+        {"_id": 0, "order_id": 1, "amazon_order_id": 1, "product_title": 1, "order_value": 1,
+         "status": 1, "processed_at": 1, "customer_name": 1, "firm_name": 1, "awb_number": 1}
+    ).sort("processed_at", -1).limit(20).to_list(20)
+    for a in amz_rows:
+        orders.append({"order_id": a.get("order_id") or a.get("amazon_order_id"),
+                       "master_sku_name": a.get("product_title"), "invoice_value": a.get("order_value"),
+                       "stage": "shipped" if a.get("awb_number") else None, "status": a.get("status"),
+                       "created_at": a.get("processed_at"), "customer_name": a.get("customer_name"),
+                       "firm_name": a.get("firm_name"), "tracking_id": a.get("awb_number"), "channel": "amazon"})
+
     # Replacements / repairs / spare parts SENT to this customer (ship-desk ticket-linked dispatches)
     service_dispatches = await db.pending_fulfillment.find(
         {"source": "ship_desk", "dispatch_type": {"$in": list(_TICKET_DISPATCH)},
@@ -56704,7 +56720,8 @@ async def customer_360(
             or (latest or {}).get("customer_name")
             or (quotations[0].get("customer_name") if quotations else None)
             or (orders[0].get("customer_name") if orders else None)
-            or (warranties[0].get("customer_name") if warranties else None))
+            or (warranties[0].get("customer_name") if warranties else None)
+            or (amz_rows[0].get("customer_name") if amz_rows else None))
     name = (name or "").strip() or None
     dealer = next((t.get("dealer_name") for t in tickets if t.get("dealer_name")), None)
     if not customer and name:
