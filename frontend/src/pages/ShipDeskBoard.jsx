@@ -155,7 +155,6 @@ export default function ShipDeskBoard() {
       const lbl = (DISPATCH_TYPES.find((x) => x.key === dt) || {}).label || 'Dispatch';
       toast.success(`${lbl} ${data.order_id} created → awaiting accountant`);
       setShowNew(false); setNf({ firm_id: MGIPL, dispatch_type: 'new_order', payment_mode: 'prepaid' }); setSkus([]); setTicketInfo(null); load();
-      if (tourStep >= 0) setTourStep(8);   // guided-training booking completed
     } catch (e) { toast.error(e?.response?.data?.detail || 'Could not create the dispatch'); }
     finally { setSaving(false); }
   };
@@ -336,12 +335,11 @@ export default function ShipDeskBoard() {
           0: { title: 'Ship Desk training', body: "Let's do a quick practice booking together — under a minute. Follow the orange highlights.", nextLabel: "Let's go", onNext: () => setTourStep(1), onSkip: () => finishTour(false), skipLabel: 'Skip for now', step: 1 },
           1: { targetRef: tourRefs.start, title: 'Start a dispatch', body: 'Every shipment starts here.', hint: "Click '+ New dispatch'", nextLabel: 'Open it', onNext: () => openNew(), step: 1 },
           2: { targetRef: tourRefs.type, title: 'What are you dispatching?', body: "A New order (a sale), or a spare part / replacement / repaired item against a ticket. Keep 'New order' for now.", onNext: () => setTourStep(3), step: 2 },
-          3: { targetRef: tourRefs.orderId, title: 'Order ID / invoice number', body: 'Type the real invoice or order number so everything ties together. For this practice, type TRAIN-001.', onNext: () => setTourStep(4), step: 3 },
-          4: { targetRef: tourRefs.product, title: 'What to ship', body: 'Type a product name (e.g. PCB C35) or search the catalogue and pick one.', onNext: () => setTourStep(5), step: 4 },
-          5: { targetRef: tourRefs.customer, title: 'Customer', body: "Enter the customer's name (and phone / address if you have them).", onNext: () => setTourStep(6), step: 5 },
-          6: { targetRef: tourRefs.pay, title: 'Prepaid or COD', body: 'Choose Prepaid, or COD and enter the amount the courier must collect.', onNext: () => setTourStep(7), step: 6 },
-          7: { targetRef: tourRefs.create, title: 'Create it', body: "Now click 'Create dispatch'. It moves to 'Awaiting accountant', where the invoice, tracking & label get attached.", hint: "Click 'Create dispatch'", step: 7 },
-          8: { title: '🎉 You booked a dispatch!', body: "It's now in 'Awaiting accountant' — that's the full flow. You're ready to use the Ship Desk.", nextLabel: 'Finish', onNext: () => finishTour(true), step: 7 },
+          3: { targetRef: tourRefs.orderId, title: 'Order ID / invoice number', body: 'This is where the real invoice / order number goes, so the invoice, dispatch & tracking all match.', onNext: () => setTourStep(4), step: 3 },
+          4: { targetRef: tourRefs.product, title: 'What to ship', body: 'Here you type a product name (e.g. PCB C35) or search the catalogue and pick one.', onNext: () => setTourStep(5), step: 4 },
+          5: { targetRef: tourRefs.customer, title: 'Customer', body: "The customer's name, phone and address go here.", onNext: () => setTourStep(6), step: 5 },
+          6: { targetRef: tourRefs.pay, title: 'Prepaid or COD', body: 'Finally, choose Prepaid — or COD and the amount the courier must collect.', onNext: () => setTourStep(7), step: 6 },
+          7: { targetRef: tourRefs.create, title: "That's the whole flow!", body: "This 'Create dispatch' button books it — the order moves to 'Awaiting accountant', where the invoice, tracking & label get attached. (No need to click it now — this was just practice.)", nextLabel: 'Finish training ✓', onNext: () => finishTour(true), step: 7 },
         }[tourStep];
         return S ? <Coachmark total={7} {...S} /> : null;
       })()}
