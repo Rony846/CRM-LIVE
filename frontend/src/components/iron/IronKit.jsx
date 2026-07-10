@@ -119,6 +119,7 @@ export const IRON_SUPERVISOR_NAV = [
 // Call-support menu (mirrors the legacy DashboardLayout call_support menu) + Customer 360.
 export const IRON_SUPPORT_NAV = [
   ['Workspace', [
+    ['Ship Desk', '/ship-desk'],
     ['Dashboard', '/support'],
     ['Customer 360', '/customer-360'],
     ['My Calls', '/calls'],
@@ -146,7 +147,7 @@ export const IRON_ACCOUNTANT_NAV = [
 
 export const IRON_TECHNICIAN_NAV = [['Workspace', [['Ship Desk', '/ship-desk'], ['Dashboard', '/technician'], ['Repair Queue', '/technician/queue'], ['My Repairs', '/technician/my-repairs'], ['Dispatch Queue', '/view/dispatch-queue'], ['My Attendance', '/my-attendance']]]];
 export const IRON_DISPATCHER_NAV = [['Workspace', [['Ship Desk', '/ship-desk'], ['Dashboard', '/dispatcher'], ['Dispatch Queue', '/dispatcher/queue'], ['Courier Shipping', '/operations/courier-shipping'], ['Courier Tracking', '/operations/courier-tracking'], ['TV Mode', '/dispatcher/tv'], ['My Attendance', '/my-attendance']]]];
-export const IRON_GATE_NAV = [['Workspace', [['Dashboard', '/gate'], ['Scan Parcel', '/gate/scan'], ['Gate Logs', '/gate/logs'], ['Scheduled', '/gate/scheduled'], ['Dispatch Queue', '/view/dispatch-queue'], ['My Attendance', '/my-attendance']]]];
+export const IRON_GATE_NAV = [['Workspace', [['Ship Desk', '/ship-desk'], ['Dashboard', '/gate'], ['Scan Parcel', '/gate/scan'], ['Gate Logs', '/gate/logs'], ['Scheduled', '/gate/scheduled'], ['Dispatch Queue', '/view/dispatch-queue'], ['My Attendance', '/my-attendance']]]];
 export const IRON_CUSTOMER_NAV = [['Workspace', [['Dashboard', '/customer'], ['My Quotations', '/customer/quotations'], ['My Tickets', '/customer/tickets'], ['Create Ticket', '/customer/tickets/new'], ['Book Appointment', '/customer/appointments'], ['Register Warranty', '/customer/warranty/register'], ['My Warranties', '/customer/warranties']]]];
 export const IRON_DEALER_NAV = [['Workspace', [['Dashboard', '/dealer'], ['Customer Book', '/dealer/customers'], ['Product Catalogue', '/dealer/catalogue'], ['Place Order', '/dealer/orders/new'], ['My Orders', '/dealer/orders'], ['Track Dispatches', '/dealer/dispatches'], ['Reorder Suggestions', '/dealer/reorder-suggestions'], ['Sales Targets', '/dealer/targets'], ['Warranty Registration', '/dealer/warranty'], ['Warranty Claims', '/dealer/warranty-claims'], ['Spare Parts', '/dealer/spare-parts'], ['Spare Orders', '/dealer/spare-orders'], ['Announcements', '/dealer/announcements'], ['Ledger', '/dealer/ledger'], ['Performance', '/dealer/performance'], ['Certificate', '/dealer/certificate'], ['Downloads', '/dealer/documents'], ['My Profile', '/dealer/profile'], ['Deposit Status', '/dealer/deposit'], ['Support Tickets', '/dealer/tickets'], ['Promotions', '/dealer/promotions'], ['Dealer Agreement', '/dealer/terms']]]];
 
