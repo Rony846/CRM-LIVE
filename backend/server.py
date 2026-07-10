@@ -21023,7 +21023,7 @@ async def _render_sales_invoice_pdf(order_id: str) -> Optional[bytes]:
 
 @api_router.post("/orders/{order_id:path}/print-pack-set")
 async def print_pack_set(order_id: str, serial: str = None, customer: str = None, reprint: bool = False,
-                         user: dict = Depends(require_roles(["admin", "accountant", "dispatcher", "supervisor", "service_agent", "technician", "gate"]))):
+                         user: dict = Depends(require_roles(["admin", "accountant", "dispatcher", "supervisor", "service_agent", "technician", "gate", "call_support"]))):
     """PACKING-STATION 'Print pack set' — prints, at the office, before the box leaves:
       SAMSUNG (A4 laser, verified):  courier label + tax invoice
       TSC (thermal 100×50):          serial label(s) + QC/box-contents label + personalised care card
