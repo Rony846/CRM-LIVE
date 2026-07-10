@@ -28097,6 +28097,31 @@ async def get_firm_financial_summary(
     # Net GST Payable
     net_gst = max(0, output_gst - itc_balance["total"])
     
+    # LIVE / PROVISIONAL sales for the CURRENT (incomplete) month. Marketplace GST invoices are booked
+    # only when the monthly MTR is imported (in arrears), so the current month would otherwise read ~₹0
+    # even while orders flow. Add real-time firm-tagged Amazon orders (not cancelled) as a provisional
+    # figure — unless the month's Amazon MTR is already booked (then those sales_invoices cover it).
+    is_current_month = (target_month == datetime.now(timezone.utc).strftime("%Y-%m"))
+    provisional = False
+    booked_value = round(sales_value, 2)
+    live_value = 0.0
+    live_count = 0
+    if is_current_month:
+        amz_booked = any(str(inv.get("source") or "").startswith("amazon") or inv.get("channel") == "amazon"
+                         for inv in sales_invoices)
+        if not amz_booked:
+            async for ao in db.amazon_orders.find(
+                    {"firm_id": firm_id, "purchase_date": {"$regex": f"^{target_month}"},
+                     "order_status": {"$nin": ["Cancelled", "cancelled", "Canceled", "Pending"]}},
+                    {"_id": 0, "order_total": 1, "item_price": 1}):
+                live_value += float(ao.get("order_total") or ao.get("item_price") or 0)
+                live_count += 1
+            if live_count:
+                provisional = True
+                sales_value += live_value
+                sales_taxable += round(live_value / 1.18, 2)
+                sales_count += live_count
+
     return {
         "firm": {
             "id": firm_id,
@@ -28108,6 +28133,10 @@ async def get_firm_financial_summary(
             "count": sales_count,
             "total_value": round(sales_value, 2),
             "taxable_value": round(sales_taxable, 2),
+            "provisional": provisional,
+            "booked_value": booked_value,
+            "live_value": round(live_value, 2),
+            "live_count": live_count,
             "gst_by_rate": {str(k): {"taxable": round(v["taxable"], 2), "gst": round(v["gst"], 2), "count": v["count"]} for k, v in gst_by_rate.items()}
         },
         "returns": {

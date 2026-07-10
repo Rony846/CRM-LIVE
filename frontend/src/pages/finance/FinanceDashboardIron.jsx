@@ -526,9 +526,17 @@ export default function FinanceDashboard() {
                     {/* Sales & Purchases */}
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                       <div style={{ padding: 14, background: T.greenTint, borderRadius: 8, border: '1px solid #CBE5D6' }}>
-                        <Caps size={9} color={T.green}>Sales</Caps>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <Caps size={9} color={T.green}>Sales</Caps>
+                          {firmSummary.sales.provisional && (
+                            <span style={{ fontSize: 8.5, fontWeight: 800, color: '#92400e', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 4, padding: '1px 5px', letterSpacing: 0.3 }}>LIVE · PROVISIONAL</span>
+                          )}
+                        </div>
                         <div style={{ ...mono, fontSize: 22, fontWeight: 700, color: T.green, marginTop: 4 }}>{formatCurrency(firmSummary.sales.total_value)}</div>
-                        <Caps size={8} color={T.iron400} style={{ display: 'block', marginTop: 4 }}>{firmSummary.sales.count} dispatches</Caps>
+                        <Caps size={8} color={T.iron400} style={{ display: 'block', marginTop: 4 }}>{firmSummary.sales.count} {firmSummary.sales.provisional ? 'live orders' : 'dispatches'}</Caps>
+                        {firmSummary.sales.provisional && (
+                          <div style={{ fontSize: 9, color: '#92400e', marginTop: 3 }}>Live marketplace orders — finalizes when this month's MTR is imported.</div>
+                        )}
                       </div>
                       <div style={{ padding: 14, background: '#FDEEE6', borderRadius: 8, border: '1px solid #F6D8BA' }}>
                         <Caps size={9} color={T.orangeDeep}>Purchases</Caps>
