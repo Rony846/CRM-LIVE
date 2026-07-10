@@ -83399,6 +83399,167 @@ async def _omni_maybe_queue_outreach(digits, name, product, issue, urgency, sent
     return oid
 
 
+# Omnidim routes every call over a shared telephony TRUNK (from_number) into our DID/IVR (to_number) —
+# both are the SAME on every call and are NOT the customer. The real callback number is the one the AI
+# agent collected during the call (extracted_variables.contact_number). Keep the trunk/DID out of the
+# customer phone field so staff never dial our own IVR back. Overridable via env.
+_OMNI_TRUNK = {re.sub(r"\D", "", x)[-10:] for x in
+               (os.environ.get("OMNIDIM_TRUNK_NUMBERS", "8064523982,8048799836")).split(",") if x.strip()}
+
+
+def _omni_norm10(v) -> str:
+    """A usable Indian callback number: 10 digits, mobile-range, and NOT one of our trunk/IVR numbers."""
+    d = re.sub(r"\D", "", str(v or ""))[-10:]
+    return d if (len(d) == 10 and d[0] in "6789" and d not in _OMNI_TRUNK) else ""
+
+
+def _omni_customer_number(payload, ev: dict) -> str:
+    """The customer's real callback number. Priority: agent-collected contact_number → direction-based
+    from/to (trunk-filtered) → any explicit customer-phone field → first non-trunk mobile in the payload."""
+    # 1) what the agent actually collected on the call
+    for k in ("contact_number", "callback_number", "customer_number", "customer_phone"):
+        n = _omni_norm10((ev or {}).get(k))
+        if n:
+            return n
+    n = _omni_norm10(_omni_find(payload, ["contact_number", "callback_number"]))
+    if n:
+        return n
+    # 2) direction-based (both trunk-filtered, so this only helps if a real number sits there)
+    direction = str(_omni_find(payload, ["call_direction", "direction"]) or "").lower()
+    n = _omni_norm10(_omni_find(payload, ["to_number"]) if "out" in direction else _omni_find(payload, ["from_number"]))
+    if n:
+        return n
+    # 3) explicit customer-phone-ish fields
+    n = _omni_norm10(_omni_find(payload, ["phone_number", "phone", "mobile", "caller", "callee"]))
+    if n:
+        return n
+    # No reliable customer number. We do NOT scan the whole payload for "any mobile" — the trunk appears
+    # CC-prefixed (918064523982) and a naive scan slices out a bogus 9180645239, i.e. dialling our own IVR.
+    # Blank is correct: the inbound caller ID is masked to the trunk, so unless the agent collected a
+    # contact_number we genuinely don't have their number.
+    return ""
+
+
+def _omni_is_real(v) -> bool:
+    """True when a collected variable holds a real value (not blank / 'Not provided' placeholder)."""
+    s = str(v or "").strip().lower()
+    return bool(s) and s not in ("not provided", "none", "n/a", "na", "no", "-", "null", "unknown")
+
+
+def _omni_intent(issue, product, summary, transcript) -> str:
+    """Classify an Omnidim call as 'support' or 'sales' (or '' = neither). Support wins when there's a real
+    technical issue or service language; sales only when there's buying intent and no support signal."""
+    blob = " ".join(str(x or "") for x in (issue, product, summary, transcript)).lower()
+    support_kw = ("not working", "not giving", "stopped", "fault", "repair", "complaint", "issue", "problem",
+                  "order status", "warranty", "service", "dead", "burnt", "tripping", "trip", "error", "damaged",
+                  "replace", "return", "not turning", "beep", "overload", "defective")
+    if _omni_is_real(issue) or any(k in blob for k in support_kw):
+        return "support"
+    sales_kw = ("buy", "purchase", "price", "quotation", "quote", "interested in", "want a", "want to take",
+                "new order", "cost", "rate", "dealer", "bulk", "enquiry", "inquiry about")
+    if _omni_is_real(product) or any(k in blob for k in sales_kw):
+        return "sales"
+    return ""
+
+
+async def _omnidim_autocreate(call_doc: dict, linked_ticket, summary, transcript):
+    """From a post-call: auto-create a SUPPORT ticket (technical calls) or a SALES lead (buying calls) so
+    nothing falls through. Needs a real customer number. Deduped: skip a ticket if an open one already
+    exists for the phone; enrich an existing open lead instead of duplicating. Returns {ticket?, lead?}."""
+    digits = call_doc.get("phone")
+    if not digits or len(digits) != 10:
+        return {}
+    name = call_doc.get("customer_name") if _omni_is_real(call_doc.get("customer_name")) else None
+    product = call_doc.get("product") if _omni_is_real(call_doc.get("product")) else None
+    issue = call_doc.get("technical_issue") if _omni_is_real(call_doc.get("technical_issue")) else None
+    urgency = call_doc.get("urgency")
+    intent = _omni_intent(issue, product, summary, transcript)
+    now = datetime.now(timezone.utc)
+    out = {}
+
+    if intent == "support":
+        # Skip if there's already an OPEN omnidim/support ticket for this phone (avoid one-per-call spam).
+        terminal = ["closed", "closed_by_agent", "resolved_on_call", "resolved", "delivered", "cancelled"]
+        existing = await db.tickets.find_one(
+            {"customer_phone": {"$regex": re.escape(digits) + "$"}, "status": {"$nin": terminal}},
+            {"_id": 0, "ticket_number": 1})
+        if existing:
+            out["ticket"] = existing.get("ticket_number") + " (existing)"
+        else:
+            subject = (issue or product or "Support request via voice call")[:120]
+            desc_parts = [p for p in [f"Product: {product}" if product else None,
+                                      f"Issue: {issue}" if issue else None,
+                                      f"Urgency: {urgency}" if _omni_is_real(urgency) else None,
+                                      f"Call summary: {summary}" if summary else None] if p]
+            tnum = await generate_ticket_number()
+            tid = str(uuid.uuid4())
+            await db.tickets.insert_one({
+                "id": tid, "ticket_number": tnum, "customer_id": None,
+                "customer_name": name or f"Caller: {digits}", "customer_phone": digits,
+                "product_name": product, "issue_description": "\n".join(desc_parts) or subject,
+                "support_type": "phone", "status": "new_request", "source": "omnidim_voice_agent",
+                "priority": ("high" if ("high" in str(urgency or "").lower() or "urgent" in str(urgency or "").lower()) else "normal"),
+                "sla_due": (now + timedelta(hours=48)).isoformat(), "sla_breached": False,
+                "created_by": "omnidim_agent", "created_at": now.isoformat(), "updated_at": now.isoformat(),
+                "last_call_summary": (summary or "")[:1000], "last_call_recording": call_doc.get("recording_url"),
+                "last_call_at": now.isoformat(),
+                "history": [{"action": "Ticket auto-created from Omnidim voice call", "by": "Omnidim Voice Agent",
+                             "by_id": "omnidim_agent", "by_role": "system", "timestamp": now.isoformat(),
+                             "details": {"status": "new_request", "subject": subject, "phone": digits}}]})
+            await db.omnidim_calls.update_one({"id": call_doc["id"]},
+                {"$set": {"auto_ticket": tnum, "intent": "support"}})
+            try:
+                await create_notification(
+                    title="New support ticket (voice)",
+                    message=f"{name or digits}: {subject}", notification_type="ticket_created",
+                    target_roles=["admin", "call_support"], link=f"/tickets")
+            except Exception:
+                pass
+            out["ticket"] = tnum
+
+    elif intent == "sales":
+        interaction = {"id": str(uuid.uuid4()), "type": "voice_call", "channel": "omnidim",
+                       "note": f"Sales inquiry: {product or 'MuscleGrid products'}", "at": now.isoformat(),
+                       "by": "omnidim_agent"}
+        lead = await db.leads.find_one({"phone": {"$regex": re.escape(digits) + "$"}}, {"_id": 0})
+        note = (f"Omnidim call {now.isoformat()[:10]}: interested in {product or 'MuscleGrid products'}."
+                + (f" {summary}" if summary else ""))
+        assignee = None if (lead and lead.get("assigned_to_name")) else await _next_sales_assignee()
+        if lead:
+            setf = {"product_interest": product or lead.get("product_interest"),
+                    "status": lead.get("status") if lead.get("status") in ("converted", "won", "lost") else "new",
+                    "updated_at": now.isoformat(),
+                    "notes": ((lead.get("notes") or "") + ("\n\n" if lead.get("notes") else "") + note).strip()}
+            if assignee:
+                setf.update({"assigned_to": assignee.get("user_id"), "assigned_to_name": assignee.get("name"),
+                             "assigned_phone": assignee.get("phone"), "assigned_at": now.isoformat()})
+            await db.leads.update_one({"id": lead["id"]}, {"$set": setf, "$push": {"interactions": interaction}})
+            out["lead"] = lead["id"] + " (updated)"
+            lead_id = lead["id"]
+        else:
+            lead_id = str(uuid.uuid4())
+            await db.leads.insert_one({
+                "id": lead_id, "phone": digits, "name": name or f"Lead-{digits[-4:]}", "email": None,
+                "product_interest": product, "source": "omnidim_voice_agent", "status": "new", "notes": note,
+                "assigned_to": (assignee or {}).get("user_id"), "assigned_to_name": (assignee or {}).get("name"),
+                "assigned_phone": (assignee or {}).get("phone"),
+                "assigned_at": now.isoformat() if assignee else None,
+                "follow_up_date": None, "interactions": [interaction],
+                "created_by": "omnidim_agent", "created_at": now.isoformat(), "updated_at": now.isoformat()})
+            out["lead"] = lead_id
+        await db.omnidim_calls.update_one({"id": call_doc["id"]},
+            {"$set": {"auto_lead": lead_id, "intent": "sales"}})
+        try:
+            await create_notification(
+                title="New sales lead (voice)",
+                message=f"{name or digits}" + (f" — {product}" if product else "")
+                        + (f" · {assignee.get('name')}" if assignee else ""),
+                notification_type="lead_created", target_roles=["admin", "call_support"], link="/leads")
+        except Exception:
+            pass
+    return out
+
+
 @api_router.post("/omnidim/post-call")
 async def omnidim_post_call(request: Request):
     """Omnidim 'post-call delivery' webhook: receives the full call JSON after EVERY call.
@@ -83416,22 +83577,7 @@ async def omnidim_post_call(request: Request):
     except Exception:
         payload = {"_raw_text": (await request.body()).decode("utf-8", "replace")[:20000]}
 
-    # Customer number by call direction (outbound→to_number, inbound→from_number).
     direction = str(_omni_find(payload, ["call_direction", "direction"]) or "").lower()
-    cust_num = (_omni_find(payload, ["to_number"]) if "out" in direction else _omni_find(payload, ["from_number"]))
-    phone_raw = cust_num or _omni_find(payload, ["customer_phone", "phone_number", "phone", "caller",
-                                                 "from_number", "to_number", "mobile", "callee"])
-    digits = re.sub(r"\D", "", str(phone_raw or ""))[-10:]
-    if len(digits) != 10:  # fallback: first India-style 10-digit number anywhere in the payload
-        m = re.search(r"[6-9]\d{9}", json.dumps(payload, default=str))
-        digits = m.group(0) if m else ""
-    summary = _omni_find(payload, ["summary", "call_summary", "summary_text", "conversation_summary"])
-    transcript = _omni_transcript_text(_omni_find(
-        payload, ["full_conversation", "transcript", "conversation", "messages", "dialog", "interactions"]))
-    outcome = _omni_find(payload, ["disposition", "outcome", "call_status", "result", "call_outcome"])
-    sentiment = _omni_find(payload, ["sentiment", "customer_sentiment", "mood"])
-    recording = _omni_find(payload, ["recording_url", "recording", "audio_url", "call_recording_url"])
-    duration = _omni_find(payload, ["duration", "call_duration", "duration_seconds", "talk_time"])
     extracted = _omni_find(payload, ["extracted_variables", "variables", "extracted_data", "custom_data", "collected_data"])
 
     # Pull the structured fields Omnidim collected (ignore the demo "Test value for…" placeholders).
@@ -83442,6 +83588,18 @@ async def omnidim_post_call(request: Request):
             if str(k).lower() in names and v and not str(v).lower().startswith("test value"):
                 return v
         return None
+
+    # Customer callback number = the number the AGENT collected (contact_number). from_number/to_number
+    # are Omnidim's shared trunk + our DID (identical on every call) — never store those, or staff end up
+    # dialling our own IVR. Blank when the customer never shared a number.
+    digits = _omni_customer_number(payload, ev)
+    summary = _omni_find(payload, ["summary", "call_summary", "summary_text", "conversation_summary"])
+    transcript = _omni_transcript_text(_omni_find(
+        payload, ["full_conversation", "transcript", "conversation", "messages", "dialog", "interactions"]))
+    outcome = _omni_find(payload, ["disposition", "outcome", "call_status", "result", "call_outcome"])
+    sentiment = _omni_find(payload, ["sentiment", "customer_sentiment", "mood"])
+    recording = _omni_find(payload, ["recording_url", "recording", "audio_url", "call_recording_url"])
+    duration = _omni_find(payload, ["duration", "call_duration", "duration_seconds", "talk_time"])
     issue = _ev("technical_issue", "issue", "problem", "complaint")
     urgency = _ev("urgency_level", "urgency", "priority")
     product = _ev("product_interest", "product", "product_name", "model")
@@ -83472,16 +83630,24 @@ async def omnidim_post_call(request: Request):
                                          REPAIR_LOOP_AGENT, {"action_type": "omnidim_call", "recording": recording})
             except Exception as e:
                 logger.warning(f"omnidim call history attach failed: {e}")
+    # Auto-create a SUPPORT ticket (technical calls) or a SALES lead (buying calls) so no voice call is lost.
+    auto = {}
+    try:
+        auto = await _omnidim_autocreate(call_doc, linked, summary, transcript)
+    except Exception as e:
+        logger.warning(f"omnidim autocreate failed: {e}")
     # If the caller raised a real issue, queue a review-gated WhatsApp follow-up (urgent ones ping the founder).
     queued = None
     try:
-        queued = await _omni_maybe_queue_outreach(digits, cust_name, product, issue, urgency, sentiment, linked)
+        queued = await _omni_maybe_queue_outreach(digits, cust_name, product, issue, urgency, sentiment,
+                                                  linked or auto.get("ticket"))
     except Exception as e:
         logger.warning(f"omnidim outreach queue from call failed: {e}")
     logger.info(f"Omnidim post-call stored: phone={digits or '?'} issue={bool(issue)} urgency={urgency} "
-                f"linked_ticket={linked} queued_outreach={bool(queued)}")
+                f"linked_ticket={linked} auto={auto} queued_outreach={bool(queued)}")
     return {"success": True, "call_id": call_doc["id"], "phone": digits, "linked_ticket": linked,
-            "issue": issue, "urgency": urgency, "queued_outreach": bool(queued)}
+            "issue": issue, "urgency": urgency, "auto_ticket": auto.get("ticket"),
+            "auto_lead": auto.get("lead"), "queued_outreach": bool(queued)}
 
 
 @api_router.get("/admin/omnidim-calls")
