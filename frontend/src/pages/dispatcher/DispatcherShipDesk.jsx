@@ -44,13 +44,24 @@ export default function DispatcherShipDesk() {
     if (e?.shiftKey) serial = (window.prompt('Scan the unit serial to bind to this order:', '') || '').trim();
     setPacking(oid);
     try {
-      const { data } = await axios.post(`${API}/orders/${encodeURIComponent(oid)}/print-pack-set`, null, { headers: H, params: { serial, customer: o.customer_name || '' } });
-      const p = data.printed || {};
-      const sn = (data.serials || []).join(', ');
-      const okAll = Object.values(p).every((v) => v === true);
-      const line = 'Pack set' + (sn ? ` · serial ${sn} (${data.serial_source})` : '') + ' → ' +
-        Object.entries(p).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v === true ? '✓' : v}`).join(' · ');
-      (okAll ? toast.success : (toast.warning || toast))(line);
+      const { data } = await axios.post(`${API}/orders/${encodeURIComponent(oid)}/print-pack-set`, null, { headers: H, params: { serial, customer: o.customer_name || '', reprint: e?.altKey || false } });
+      if (data?.already_packed) {
+        // Server refused a duplicate print. Offer an explicit reprint.
+        if (window.confirm(`${data.message}\n\nReprint anyway?`)) {
+          const r = await axios.post(`${API}/orders/${encodeURIComponent(oid)}/print-pack-set`, null, { headers: H, params: { serial, customer: o.customer_name || '', reprint: true } });
+          const p2 = r.data.printed || {}; const ok2 = Object.values(p2).every((v) => v === true);
+          (ok2 ? toast.success : (toast.warning || toast))('Reprinted');
+          load();
+        }
+      } else {
+        const p = data.printed || {};
+        const sn = (data.serials || []).join(', ');
+        const okAll = Object.values(p).every((v) => v === true);
+        const line = 'Pack set' + (sn ? ` · serial ${sn} (${data.serial_source})` : '') + ' → ' +
+          Object.entries(p).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v === true ? '✓' : v}`).join(' · ');
+        (okAll ? toast.success : (toast.warning || toast))(line);
+        load();  // refresh so the packed order drops off the desk (can't be re-clicked)
+      }
     } catch (err) { toast.error(err?.response?.data?.detail || 'Pack set print failed'); }
     finally { setPacking(null); }
   };

@@ -121,12 +121,18 @@ export default function ShipDeskBoard() {
     finally { setBusy((b) => ({ ...b, [key]: false })); }
   };
 
-  const printPack = async (o) => {
+  const printPack = async (o, reprint = false) => {
     const key = `${o.order_id}::pack`;
     setBusy((b) => ({ ...b, [key]: true }));
     try {
-      await axios.post(`${API}/orders/${encodeURIComponent(o.order_id)}/print-pack-set`, null, { headers: H, params: { serial: '', customer: o.customer_name || '' } });
-      toast.success('Print pack sent — check the printer');
+      const { data } = await axios.post(`${API}/orders/${encodeURIComponent(o.order_id)}/print-pack-set`, null, { headers: H, params: { serial: '', customer: o.customer_name || '', reprint } });
+      if (data?.already_packed) {
+        // Server refused a duplicate print. Offer an explicit reprint.
+        if (window.confirm(`${data.message}\n\nReprint anyway?`)) { await printPack(o, true); return; }
+      } else {
+        toast.success('Print pack sent — check the printer');
+        load();  // refresh so the packed order drops off the lane (can't be re-clicked)
+      }
     } catch (e) { toast.error(e?.response?.data?.detail || 'Print pack failed'); }
     finally { setBusy((b) => ({ ...b, [key]: false })); }
   };
