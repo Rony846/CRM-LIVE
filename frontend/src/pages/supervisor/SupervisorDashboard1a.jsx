@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { API, useAuth } from '@/App';
 import SupervisorTeam from './SupervisorTeam';
 import TrainingBanner from '@/components/TrainingBanner';
+import { CustomerName } from '@/components/Customer360';
 import IronSidebar from '@/components/iron/IronSidebar';
 import { IRON_SUPERVISOR_NAV } from '@/components/iron/IronKit';
 import StatusBadge from '@/components/ui/StatusBadge';
@@ -314,7 +315,7 @@ export default function SupervisorDashboard1a() {
                               </span>
                             </td>
                             <td style={{ padding: '9px 12px', maxWidth: 150 }}>
-                              <div style={{ fontFamily: T.headline, fontWeight: 600, fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.customer_name || '—'}</div>
+                              <div style={{ fontFamily: T.headline, fontWeight: 600, fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}><CustomerName name={t.customer_name} phone={t.customer_phone || t.phone} /></div>
                               <Caps size={8.5} color={T.iron400} ls=".06em">{t.customer_city || t.device_type || ''}</Caps>
                             </td>
                             <td style={{ padding: '9px 12px', maxWidth: 170 }}>
@@ -442,7 +443,7 @@ export default function SupervisorDashboard1a() {
                 <div className="grid grid-cols-2 gap-4">
                   <div><p className="text-sm text-muted-foreground">Status</p><StatusBadge status={selectedTicket.status} /></div>
                   <div><p className="text-sm text-muted-foreground">Device</p><p className="font-medium text-foreground">{selectedTicket.device_type}</p></div>
-                  <div><p className="text-sm text-muted-foreground">Customer</p><p className="font-medium text-foreground">{selectedTicket.customer_name}</p></div>
+                  <div><p className="text-sm text-muted-foreground">Customer</p><p className="font-medium text-foreground"><CustomerName name={selectedTicket.customer_name} phone={selectedTicket.customer_phone || selectedTicket.phone} /></p></div>
                   <div><p className="text-sm text-muted-foreground">Phone</p><p className="font-mono text-foreground">{selectedTicket.customer_phone}</p></div>
                   <div><p className="text-sm text-muted-foreground">Email</p><p className="font-mono text-sm text-foreground">{selectedTicket.customer_email}</p></div>
                   <div><p className="text-sm text-muted-foreground">City</p><p className="font-medium text-foreground">{selectedTicket.customer_city || '-'}</p></div>
@@ -544,7 +545,7 @@ export default function SupervisorDashboard1a() {
           <DialogHeader><DialogTitle>Take Action — {selectedTicket?.ticket_number}</DialogTitle></DialogHeader>
           <div className="space-y-4">
             <div className="rounded-lg border border-border bg-muted/40 p-3">
-              <p className="text-sm text-muted-foreground">Customer: {selectedTicket?.customer_name}</p>
+              <p className="text-sm text-muted-foreground">Customer: <CustomerName name={selectedTicket?.customer_name} phone={selectedTicket?.customer_phone || selectedTicket?.phone} /></p>
               <p className="mt-1 text-sm font-medium text-foreground">{selectedTicket?.issue_description}</p>
             </div>
             {selectedTicket?.escalation_notes && (

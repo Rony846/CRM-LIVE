@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import IronShell from '@/components/iron/IronShell';
 import { T, Caps, IronCard, mono, thCell, tdCell, badgeStyle } from '@/components/iron/IronKit';
+import { CustomerName } from '@/components/Customer360';
 
 const inputStyle = { border: `1px solid ${T.iron200}`, borderRadius: 6, padding: '7px 10px', fontSize: 12.5, color: T.iron900, background: T.white, fontFamily: T.body, outline: 'none' };
 
@@ -493,7 +494,7 @@ export default function IncomingInventoryQueue() {
                             )}
                           </div>
                         </td>
-                        <td style={{ ...tdCell, color: T.iron900 }}>{entry.customer_name || '-'}</td>
+                        <td style={{ ...tdCell, color: T.iron900 }}><CustomerName name={entry.customer_name} phone={entry.customer_phone} /></td>
                         <td style={tdCell}>
                           {entry.media_attached || entry.images_count > 0 ? (
                             <button onClick={() => openMediaViewer(entry)} style={mediaBtnStyle}>
@@ -609,7 +610,7 @@ export default function IncomingInventoryQueue() {
                     <div><span className="text-slate-500">Linked Dispatch: </span><span className="text-violet-600">{selectedEntry.linked_dispatch_number}</span></div>
                   )}
                   {selectedEntry.customer_name && (
-                    <div><span className="text-slate-500">Customer: </span><span className="text-slate-900">{selectedEntry.customer_name}</span></div>
+                    <div><span className="text-slate-500">Customer: </span><span className="text-slate-900"><CustomerName name={selectedEntry.customer_name} phone={selectedEntry.customer_phone} /></span></div>
                   )}
                 </div>
               </div>
@@ -754,7 +755,7 @@ export default function IncomingInventoryQueue() {
                             </div>
                             <div className="flex justify-between">
                               <span className="text-slate-500">Customer:</span>
-                              <span className="text-slate-900">{selectedTicket.customer_name}</span>
+                              <span className="text-slate-900"><CustomerName name={selectedTicket.customer_name} phone={selectedTicket.customer_phone} /></span>
                             </div>
                             <div className="flex justify-between">
                               <span className="text-slate-500">Phone:</span>

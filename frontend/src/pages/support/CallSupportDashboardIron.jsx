@@ -23,6 +23,7 @@ import ClickToCallButton from '@/components/calls/ClickToCallButton';
 import IronShell from '@/components/iron/IronShell';
 import TrainingBanner from '@/components/TrainingBanner';
 import { T, Caps, IronCard, mono, thCell, tdCell, badgeStyle, ticketPill } from '@/components/iron/IronKit';
+import { CustomerName } from '@/components/Customer360';
 
 const DEVICE_TYPES = ['Inverter', 'Battery', 'Stabilizer', 'Others'];
 
@@ -699,7 +700,7 @@ export default function CallSupportDashboard() {
                     {sortBySla(openTickets).map((ticket) => (
                       <tr key={ticket.id} className="iron-row" style={bodyRow}>
                         <td style={{ ...tdCell, ...mono, fontWeight: 700, color: T.orangeDeep }}>{ticket.ticket_number}</td>
-                        <td style={tdCell}>{ticket.customer_name}</td>
+                        <td style={tdCell}><CustomerName name={ticket.customer_name} phone={ticket.customer_phone} /></td>
                         <td style={tdCell}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                             <span style={mono}>{ticket.customer_phone}</span>
@@ -736,7 +737,7 @@ export default function CallSupportDashboard() {
                     {sortBySla(inProgressTickets).map((ticket) => (
                       <tr key={ticket.id} className="iron-row" style={bodyRow}>
                         <td style={{ ...tdCell, ...mono, fontWeight: 700, color: T.orangeDeep }}>{ticket.ticket_number}</td>
-                        <td style={tdCell}>{ticket.customer_name}</td>
+                        <td style={tdCell}><CustomerName name={ticket.customer_name} phone={ticket.customer_phone} /></td>
                         <td style={tdCell}>{ticket.device_type}</td>
                         <td style={tdCell}><StatusPill status={ticket.status} /></td>
                         <td style={tdCell}><SLABadge ticket={ticket} /></td>
@@ -797,7 +798,7 @@ export default function CallSupportDashboard() {
                       {allTickets.map((ticket) => (
                         <tr key={ticket.id} className="iron-row" style={bodyRow}>
                           <td style={{ ...tdCell, ...mono, fontWeight: 700, color: T.orangeDeep }}>{ticket.ticket_number}</td>
-                          <td style={tdCell}>{ticket.customer_name}</td>
+                          <td style={tdCell}><CustomerName name={ticket.customer_name} phone={ticket.customer_phone} /></td>
                           <td style={tdCell}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                               <span style={mono}>{ticket.customer_phone}</span>
@@ -887,7 +888,7 @@ export default function CallSupportDashboard() {
                             {searchResults.tickets.map((ticket) => (
                               <tr key={ticket.id} className="iron-row" style={bodyRow}>
                                 <td style={{ ...tdCell, ...mono, fontWeight: 700, color: T.orangeDeep }}>{ticket.ticket_number}</td>
-                                <td style={tdCell}>{ticket.customer_name}</td>
+                                <td style={tdCell}><CustomerName name={ticket.customer_name} phone={ticket.customer_phone} /></td>
                                 <td style={{ ...tdCell, ...mono }}>{ticket.customer_phone}</td>
                                 <td style={tdCell}>{ticket.device_type}</td>
                                 <td style={tdCell}><StatusPill status={ticket.status} /></td>
@@ -915,7 +916,7 @@ export default function CallSupportDashboard() {
                             {searchResults.warranties.map((warranty) => (
                               <tr key={warranty.id} className="iron-row" style={bodyRow}>
                                 <td style={{ ...tdCell, ...mono, fontWeight: 700, color: T.orangeDeep }}>{warranty.warranty_number}</td>
-                                <td style={tdCell}>{warranty.customer_name}</td>
+                                <td style={tdCell}><CustomerName name={warranty.customer_name} phone={warranty.customer_phone || warranty.phone} /></td>
                                 <td style={tdCell}>{warranty.device_type}</td>
                                 <td style={tdCell}>{warranty.order_id || '-'}</td>
                                 <td style={tdCell}><span style={badgeStyle(warranty.status === 'approved' ? 'ok' : 'slate')}>{warranty.status}</span></td>
@@ -980,7 +981,7 @@ export default function CallSupportDashboard() {
                       {pendingFeedback.map((call) => (
                         <tr key={call.id} className="iron-row" style={bodyRow}>
                           <td style={{ ...tdCell, ...mono, fontWeight: 700, color: T.orangeDeep }}>{call.order_id || call.dispatch_number}</td>
-                          <td style={tdCell}>{call.customer_name}</td>
+                          <td style={tdCell}><CustomerName name={call.customer_name} phone={call.phone} /></td>
                           <td style={tdCell}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                               <span style={mono}>{call.phone}</span>
@@ -1033,7 +1034,7 @@ export default function CallSupportDashboard() {
                               <ClickToCallButton phone={mc.phone} customerName={mc.customer_name} showLabel={false} size="sm" />
                             </div>
                           </td>
-                          <td style={tdCell}>{mc.customer_name || <span style={{ color: T.iron400, fontStyle: 'italic', fontSize: 11 }}>unknown</span>}</td>
+                          <td style={tdCell}>{mc.customer_name ? <CustomerName name={mc.customer_name} phone={mc.phone} /> : <span style={{ color: T.iron400, fontStyle: 'italic', fontSize: 11 }}>unknown</span>}</td>
                           <td style={{ ...tdCell, color: T.iron500 }}>{mc.dept_name || '-'}</td>
                           <td style={{ ...tdCell, color: T.iron500 }}>{mc.missed_agent || '-'}</td>
                           <td style={{ ...tdCell, textAlign: 'right' }}>
@@ -1075,7 +1076,7 @@ export default function CallSupportDashboard() {
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
                   <div><Caps size={9}>Status</Caps><div style={{ marginTop: 4 }}><StatusPill status={selectedTicket.status} /></div></div>
                   <div><Caps size={9}>Device</Caps><div style={{ fontWeight: 600, marginTop: 4 }}>{selectedTicket.device_type}</div></div>
-                  <div><Caps size={9}>Customer</Caps><div style={{ fontWeight: 600, marginTop: 4 }}>{selectedTicket.customer_name}</div></div>
+                  <div><Caps size={9}>Customer</Caps><div style={{ fontWeight: 600, marginTop: 4 }}><CustomerName name={selectedTicket.customer_name} phone={selectedTicket.customer_phone} /></div></div>
                   <div><Caps size={9}>Phone</Caps><div style={{ ...mono, marginTop: 4 }}>{selectedTicket.customer_phone}</div></div>
                 </div>
                 <div>
@@ -1185,7 +1186,7 @@ export default function CallSupportDashboard() {
                 ) : customerHistory ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                     <div style={{ background: '#EEE9F7', border: `1px solid #DDD3EF`, padding: 12, borderRadius: 8, fontSize: 13 }}>
-                      <p style={{ margin: 0, fontWeight: 600 }}>{customerHistory.customer_name}</p>
+                      <p style={{ margin: 0, fontWeight: 600 }}><CustomerName name={customerHistory.customer_name} phone={customerHistory.customer_phone} /></p>
                       <p style={{ margin: 0, color: T.iron500 }}>{customerHistory.customer_phone}</p>
                       {customerHistory.customer_email && <p style={{ margin: 0, color: T.iron500 }}>{customerHistory.customer_email}</p>}
                     </div>
@@ -1321,7 +1322,7 @@ export default function CallSupportDashboard() {
           </DialogHeader>
           <div className="space-y-4">
             <div style={{ background: T.iron50, border: `1px solid ${T.iron200}`, padding: 12, borderRadius: 8 }}>
-              <p style={{ margin: 0, fontSize: 13, color: T.iron500 }}>Customer: {selectedTicket?.customer_name}</p>
+              <p style={{ margin: 0, fontSize: 13, color: T.iron500 }}>Customer: <CustomerName name={selectedTicket?.customer_name} phone={selectedTicket?.customer_phone} /></p>
               <p style={{ margin: '4px 0 0', fontSize: 13 }}>{selectedTicket?.issue_description}</p>
             </div>
 
@@ -1423,7 +1424,7 @@ export default function CallSupportDashboard() {
             <div className="space-y-4">
               <div style={{ background: T.iron50, border: `1px solid ${T.iron200}`, padding: 16, borderRadius: 8 }}>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13, color: T.iron500 }}>
-                  <p style={{ margin: 0 }}><strong style={{ color: T.iron900 }}>Customer:</strong> {selectedCall.customer_name}</p>
+                  <p style={{ margin: 0 }}><strong style={{ color: T.iron900 }}>Customer:</strong> <CustomerName name={selectedCall.customer_name} phone={selectedCall.phone} /></p>
                   <p style={{ margin: 0 }}><strong style={{ color: T.iron900 }}>Phone:</strong> <span style={mono}>{selectedCall.phone}</span></p>
                   <p style={{ margin: 0 }}><strong style={{ color: T.iron900 }}>Order:</strong> {selectedCall.order_id || selectedCall.dispatch_number}</p>
                   <p style={{ margin: 0 }}><strong style={{ color: T.iron900 }}>Product:</strong> {selectedCall.sku || 'N/A'}</p>

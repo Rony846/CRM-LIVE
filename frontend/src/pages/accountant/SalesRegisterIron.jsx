@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import IronShell from '@/components/iron/IronShell';
 import { T, Caps, IronCard, mono, thCell, tdCell, badgeStyle } from '@/components/iron/IronKit';
+import { CustomerName } from '@/components/Customer360';
 
 const inputStyle = { border: `1px solid ${T.iron200}`, borderRadius: 6, padding: '7px 10px', fontSize: 12.5, color: T.iron900, background: T.white, fontFamily: T.body, outline: 'none' };
 
@@ -726,7 +727,7 @@ export default function SalesRegister() {
                       {dispatchesMissingData.slice(0, 10).map(d => (
                         <tr key={d.id} className="iron-row" style={{ borderBottom: `1px solid ${T.iron200}` }}>
                           <td style={{ ...tdCell, ...mono, color: T.iron900 }}>{d.dispatch_number || d.id?.slice(0, 8)}</td>
-                          <td style={tdCell}>{d.customer_name || '-'}</td>
+                          <td style={tdCell}><CustomerName name={d.customer_name} phone={d.phone || d.customer_phone} /></td>
                           <td style={tdCell}>{d.sku_name || d.sku || '-'}</td>
                           <td style={tdCell}>
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
@@ -783,7 +784,7 @@ export default function SalesRegister() {
                           <td style={{ ...tdCell, ...mono, fontWeight: 700, color: T.orangeDeep }}>{inv.invoice_number}</td>
                           <td style={{ ...tdCell, ...mono, fontSize: 11.5, color: T.iron500 }}>{new Date(inv.invoice_date).toLocaleDateString('en-IN')}</td>
                           <td style={{ ...tdCell, color: T.iron900 }}>{inv.firm_name}</td>
-                          <td style={{ ...tdCell, color: T.iron900 }}>{inv.party_name}</td>
+                          <td style={{ ...tdCell, color: T.iron900 }}><CustomerName name={inv.party_name} phone={inv.party_phone || inv.customer_phone} /></td>
                           <td style={{ ...tdCell, ...mono, fontSize: 11.5, color: T.iron500 }}>{inv.dispatch_number}</td>
                           <td style={{ ...tdCell, ...mono, textAlign: 'right', color: T.iron900 }}>{fmtINR(inv.taxable_value || inv.subtotal || 0)}</td>
                           <td style={{ ...tdCell, ...mono, textAlign: 'right', color: '#6D4AB0' }}>{fmtINR(inv.total_gst || inv.gst_amount || 0)}</td>
@@ -886,7 +887,7 @@ export default function SalesRegister() {
               <div className="p-3 bg-primary/[0.08] border border-primary/25 rounded-lg">
                 <p className="text-primary text-sm font-mono">
                   <strong>Dispatch:</strong> {selectedDispatch.dispatch_number} |{' '}
-                  <strong>Customer:</strong> {selectedDispatch.customer_name} |{' '}
+                  <strong>Customer:</strong> <CustomerName name={selectedDispatch.customer_name} phone={selectedDispatch.phone} /> |{' '}
                   <strong>Phone:</strong> {selectedDispatch.phone}
                 </p>
               </div>
@@ -1133,7 +1134,7 @@ export default function SalesRegister() {
                 </div>
                 <div>
                   <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Party</p>
-                  <p className="text-foreground">{selectedInvoice.party_name}</p>
+                  <p className="text-foreground"><CustomerName name={selectedInvoice.party_name} phone={selectedInvoice.party_phone || selectedInvoice.customer_phone} /></p>
                   {selectedInvoice.party_gstin && (
                     <p className="text-muted-foreground text-sm font-mono tabular-nums">{selectedInvoice.party_gstin}</p>
                   )}
@@ -1238,7 +1239,7 @@ export default function SalesRegister() {
               <div className="flex justify-between items-start p-3 bg-muted/40 border border-border rounded-lg">
                 <div>
                   <p className="text-primary font-mono tabular-nums text-lg">{selectedInvoice.invoice_number}</p>
-                  <p className="text-sm text-muted-foreground">{selectedInvoice.party_name}</p>
+                  <p className="text-sm text-muted-foreground"><CustomerName name={selectedInvoice.party_name} phone={selectedInvoice.party_phone || selectedInvoice.customer_phone} /></p>
                   <p className="text-sm text-muted-foreground">{selectedInvoice.firm_name}</p>
                 </div>
                 <div className="text-right text-sm font-mono tabular-nums">

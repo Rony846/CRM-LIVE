@@ -26,6 +26,7 @@ import {
 import ClickToCallButton from '@/components/calls/ClickToCallButton';
 import IronShell from '@/components/iron/IronShell';
 import { T, Caps, mono, ticketPill } from '@/components/iron/IronKit';
+import { CustomerName } from '@/components/Customer360';
 
 // =========================================================================
 // Inline Iron style helpers
@@ -207,7 +208,7 @@ function QueuePane({ tickets, selectedId, onSelect, filter, setFilter, query, se
                           <span style={{ ...mono, marginLeft: 'auto', fontSize: 10, color: T.iron400 }}>{fmtTime(t.created_at)}</span>
                         </div>
                         <p style={{ margin: '2px 0 0', fontSize: 12.5, fontFamily: T.headline, fontWeight: 600, color: T.iron900, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {t.customer_name || t.customer_phone || '—'}
+                          {t.customer_name ? <CustomerName name={t.customer_name} phone={t.customer_phone} /> : (t.customer_phone || '—')}
                         </p>
                         <p style={{ margin: 0, fontSize: 11, color: T.iron500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {t.device_type ? `${t.device_type} · ` : ''}{t.issue_description || ''}
@@ -360,7 +361,7 @@ function DetailPane({ ticket, onUpdate, onOpenMessage, onReload, onResolved }) {
             </div>
             <div style={{ minWidth: 0, flex: 1 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <p style={{ margin: 0, fontFamily: T.headline, fontWeight: 700, fontSize: 15, color: T.iron900 }}>{ticket.customer_name || '—'}</p>
+                <p style={{ margin: 0, fontFamily: T.headline, fontWeight: 700, fontSize: 15, color: T.iron900 }}><CustomerName name={ticket.customer_name} phone={ticket.customer_phone} /></p>
                 <CustomerHistoryBadge phone={ticket.customer_phone} variant="badge" />
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: T.iron500, marginTop: 2 }}>
@@ -535,7 +536,7 @@ function ContextPane({ ticket, customerHistory, kbSuggestions, aiSuggestion, aiL
           <div>
             <Caps size={9} color={T.iron400} style={{ display: 'block', marginBottom: 6 }}>Customer</Caps>
             <div style={{ ...sectionCard, fontSize: 12 }}>
-              <p style={{ margin: 0, fontWeight: 600, color: T.iron900 }}>{customerHistory.customer_name}</p>
+              <p style={{ margin: 0, fontWeight: 600, color: T.iron900 }}><CustomerName name={customerHistory.customer_name} phone={customerHistory.customer_phone} /></p>
               <p style={{ margin: 0, color: T.iron500 }}>{customerHistory.customer_phone}</p>
               {customerHistory.customer_email && (
                 <p style={{ margin: 0, color: T.iron500, overflow: 'hidden', textOverflow: 'ellipsis' }}>{customerHistory.customer_email}</p>

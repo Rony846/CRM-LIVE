@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import IronShell from '@/components/iron/IronShell';
 import { T, Caps, IronCard, mono, thCell, tdCell, badgeStyle } from '@/components/iron/IronKit';
+import { CustomerName } from '@/components/Customer360';
 
 /* Dispatcher Console — Iron Console redesign. Drop-in replacement for the legacy
    DispatcherDashboard: every axios endpoint, action, modal, filter and export preserved. */
@@ -365,7 +366,7 @@ export default function DispatcherDashboard() {
               <div key={s.awb || idx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 16px', borderBottom: `1px solid ${T.iron200}`, fontSize: 13 }}>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontFamily: T.headline, fontWeight: 600, color: T.iron900, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {s.customer || '—'} <span style={{ color: T.iron400 }}>· {s.courier || 'courier ?'}</span>
+                    <CustomerName name={s.customer} phone={s.phone} /> <span style={{ color: T.iron400 }}>· {s.courier || 'courier ?'}</span>
                   </div>
                   <div style={{ ...mono, fontSize: 10.5, color: T.iron400, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     AWB {s.awb || '—'}{s.order_id ? ` · ${s.order_id}` : ''}{s.city ? ` · ${s.city}` : ''}
@@ -412,7 +413,7 @@ export default function DispatcherDashboard() {
                   return (
                     <tr key={s.id} className="iron-row" style={{ borderBottom: `1px solid ${T.iron200}`, background: rowBg, boxShadow: `inset 2px 0 0 ${rowBorder}` }}>
                       <td style={{ ...tdCell, ...mono, fontSize: 11 }}>{s.bigship_order_id || s.order_id || '-'}</td>
-                      <td style={{ ...tdCell, fontSize: 12.5 }}>{s.customer_name || '-'}</td>
+                      <td style={{ ...tdCell, fontSize: 12.5 }}><CustomerName name={s.customer_name} phone={s.customer_phone || s.phone} /></td>
                       <td style={{ ...tdCell, ...mono, fontSize: 11 }}>{s.awb_number || '-'}</td>
                       <td style={{ ...tdCell, color: T.iron500 }}>{s.courier_name || '-'}</td>
                       <td style={tdCell}>
@@ -492,7 +493,7 @@ export default function DispatcherDashboard() {
                     <td style={{ ...tdCell, color: T.iron500, textTransform: 'capitalize' }}>
                       {dispatch.dispatch_type?.replace('_', ' ')}
                     </td>
-                    <td style={{ ...tdCell, color: T.iron900, fontSize: 12.5 }}>{dispatch.customer_name}</td>
+                    <td style={{ ...tdCell, color: T.iron900, fontSize: 12.5 }}><CustomerName name={dispatch.customer_name} phone={dispatch.phone} /></td>
                     <td style={{ ...tdCell, ...mono, fontSize: 11.5, color: T.iron500 }}>{dispatch.phone}</td>
                     <td style={{ ...tdCell, color: T.iron500 }}>{dispatch.sku || '-'}</td>
                     <td style={tdCell}>
@@ -642,7 +643,7 @@ export default function DispatcherDashboard() {
                   return (
                     <tr key={dispatch.id} className="iron-row" style={{ borderBottom: `1px solid ${T.iron200}` }}>
                       <td style={{ ...tdCell, ...mono, fontSize: 12, color: T.iron900 }}>{dispatch.dispatch_number}</td>
-                      <td style={{ ...tdCell, color: T.iron900 }}>{dispatch.customer_name}</td>
+                      <td style={{ ...tdCell, color: T.iron900 }}><CustomerName name={dispatch.customer_name} phone={dispatch.phone} /></td>
                       <td style={tdCell}>
                         {dispatch.serial_number ? (
                           <IronBadge tone="violet">{dispatch.serial_number}</IronBadge>
@@ -693,7 +694,7 @@ export default function DispatcherDashboard() {
                          dispatch.dispatch_type?.replace(/_/g, ' ')}
                       </IronBadge>
                     </td>
-                    <td style={{ ...tdCell, color: T.iron900 }}>{dispatch.customer_name}</td>
+                    <td style={{ ...tdCell, color: T.iron900 }}><CustomerName name={dispatch.customer_name} phone={dispatch.phone} /></td>
                     <td style={tdCell}>
                       {dispatch.serial_number ? (
                         <IronBadge tone="violet">{dispatch.serial_number}</IronBadge>
@@ -736,7 +737,7 @@ export default function DispatcherDashboard() {
                 Dispatch #: <span className="font-mono font-semibold text-foreground">{selectedItem?.dispatch_number}</span>
               </p>
               <p className="text-muted-foreground">
-                Customer: <span className="text-foreground">{selectedItem?.customer_name}</span>
+                Customer: <span className="text-foreground"><CustomerName name={selectedItem?.customer_name} phone={selectedItem?.phone} /></span>
               </p>
               <p className="text-muted-foreground">
                 Courier: <span className="text-foreground">{selectedItem?.courier}</span>
@@ -779,7 +780,7 @@ export default function DispatcherDashboard() {
               </p>
               <p className="text-sm text-foreground mt-0.5">
                 <span className="text-muted-foreground">Customer: </span>
-                {selectedItem?.customer_name}
+                <CustomerName name={selectedItem?.customer_name} phone={selectedItem?.phone} />
               </p>
               {selectedItem?.courier && (
                 <div className="mt-2 p-2 bg-amber-400/10 border border-amber-400/25 rounded">
@@ -860,7 +861,7 @@ export default function DispatcherDashboard() {
               </p>
               <p className="text-sm text-foreground mt-0.5">
                 <span className="text-muted-foreground">Customer: </span>
-                {selectedItem?.customer_name}
+                <CustomerName name={selectedItem?.customer_name} phone={selectedItem?.phone} />
               </p>
               {selectedItem?.serial_number && (
                 <p className="text-sm text-foreground mt-0.5">
@@ -916,7 +917,7 @@ export default function DispatcherDashboard() {
               </p>
               <p className="text-sm text-foreground mt-0.5">
                 <span className="text-muted-foreground">Customer: </span>
-                {selectedItem?.customer_name}
+                <CustomerName name={selectedItem?.customer_name} phone={selectedItem?.phone} />
               </p>
               <p className="font-mono text-[11px] text-violet-400 mt-2 uppercase tracking-wide">
                 Confirms the customer collected the repaired unit over the counter.

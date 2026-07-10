@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import IronShell from '@/components/iron/IronShell';
 import { T, Caps, IronCard, mono, thCell, tdCell, badgeStyle, fmtDateTime } from '@/components/iron/IronKit';
+import { CustomerName } from '@/components/Customer360';
 
 const DEVICE_TYPES = ['Inverter', 'Battery', 'Stabilizer', 'Others'];
 
@@ -264,7 +265,7 @@ export default function TechnicianDashboard() {
                           </div>
                         </td>
                         <td style={tdCell}>
-                          <div style={{ fontFamily: T.headline, fontWeight: 600, fontSize: 12.5, color: T.iron900 }}>{ticket.customer_name}</div>
+                          <div style={{ fontFamily: T.headline, fontWeight: 600, fontSize: 12.5, color: T.iron900 }}><CustomerName name={ticket.customer_name} phone={ticket.customer_phone} /></div>
                           <div style={{ ...mono, fontSize: 10.5, color: T.iron500, marginTop: 2 }}>{ticket.customer_phone}</div>
                         </td>
                         <td style={tdCell}>
@@ -387,7 +388,7 @@ export default function TechnicianDashboard() {
                   Customer Information
                 </h4>
                 <div className="grid grid-cols-2 gap-2 text-sm">
-                  <p className="text-muted-foreground"><span className="text-foreground font-medium">Name:</span> {selectedTicket.customer_name}</p>
+                  <p className="text-muted-foreground"><span className="text-foreground font-medium">Name:</span> <CustomerName name={selectedTicket.customer_name} phone={selectedTicket.customer_phone} /></p>
                   <p className="text-muted-foreground"><span className="text-foreground font-medium">Phone:</span> {selectedTicket.customer_phone}</p>
                   <p className="text-muted-foreground"><span className="text-foreground font-medium">Device:</span> {selectedTicket.device_type}</p>
                   <p className="text-muted-foreground"><span className="text-foreground font-medium">Serial:</span> {selectedTicket.serial_number || '—'}</p>

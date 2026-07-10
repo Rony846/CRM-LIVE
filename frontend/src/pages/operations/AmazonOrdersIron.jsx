@@ -23,6 +23,7 @@ import { Calendar as CalendarComponent } from '@/components/ui/calendar';
 import { format } from 'date-fns';
 import IronShell from '@/components/iron/IronShell';
 import { T, Caps, IronCard, mono, thCell, tdCell, badgeStyle } from '@/components/iron/IronKit';
+import { CustomerName } from '@/components/Customer360';
 
 const CARRIERS = [
   { value: 'bluedart', label: 'Blue Dart' },
@@ -1187,7 +1188,7 @@ export default function AmazonOrders() {
                       </td>
                       <td style={{ ...tdCell, maxWidth: 200 }}>
                         <div style={{ fontFamily: T.headline, fontWeight: 600, fontSize: 12.5, color: T.iron900 }}>
-                          {order.customer_name_manual || order.buyer_name || '—'}
+                          <CustomerName name={order.customer_name_manual || order.buyer_name} phone={order.phone_manual || order.buyer_phone || order.phone} />
                         </div>
                         <div style={{ fontSize: 10.5, color: T.iron500, marginTop: 2, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
                           <MapPin size={10} />
@@ -1450,7 +1451,7 @@ export default function AmazonOrders() {
                 {selectedOrder.buyer_name && (
                   <p className="text-sm">
                     <span className="font-medium">Amazon Buyer:</span>{' '}
-                    {selectedOrder.buyer_name}
+                    <CustomerName name={selectedOrder.buyer_name} phone={selectedOrder.phone_manual || selectedOrder.buyer_phone || selectedOrder.phone} />
                   </p>
                 )}
                 {selectedOrder.city && (
@@ -1494,7 +1495,7 @@ export default function AmazonOrders() {
                     <UserPlus className="w-4 h-4" /> Customer details already saved
                   </p>
                   <div className="bg-cyan-50 p-3 rounded-lg text-sm space-y-1">
-                    <p><span className="font-medium">Name:</span> {selectedOrder.customer_name_manual}</p>
+                    <p><span className="font-medium">Name:</span> <CustomerName name={selectedOrder.customer_name_manual} phone={selectedOrder.phone_manual} /></p>
                     <p><span className="font-medium">Phone:</span> {selectedOrder.phone_manual}</p>
                     <p><span className="font-medium">Address:</span> {selectedOrder.address_manual || '—'}</p>
                     <p>

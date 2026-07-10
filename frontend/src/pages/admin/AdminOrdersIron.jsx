@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import IronShell from '@/components/iron/IronShell';
 import { T, Caps, IronCard, mono, thCell, tdCell, badgeStyle } from '@/components/iron/IronKit';
+import { CustomerName } from '@/components/Customer360';
 
 const inputStyle = { border: `1px solid ${T.iron200}`, borderRadius: 6, padding: '7px 10px', fontSize: 12.5, color: T.iron900, background: T.white, fontFamily: T.body, outline: 'none' };
 
@@ -345,7 +346,7 @@ export default function AdminOrders() {
                           {order.order_id && <div style={{ ...mono, fontSize: 10, color: T.iron400, marginTop: 2 }}>{order.order_id}</div>}
                         </td>
                         <td style={{ ...tdCell, maxWidth: 180 }}>
-                          <div style={{ fontFamily: T.headline, fontWeight: 600, fontSize: 12.5, color: T.iron900 }}>{order.customer_name || '-'}</div>
+                          <div style={{ fontFamily: T.headline, fontWeight: 600, fontSize: 12.5, color: T.iron900 }}><CustomerName name={order.customer_name} phone={order.phone} /></div>
                           <div style={{ ...mono, fontSize: 10.5, color: T.iron500, marginTop: 2, display: 'inline-flex', alignItems: 'center', gap: 3 }}><Phone size={10} />{order.phone || '-'}</div>
                         </td>
                         <td style={{ ...tdCell, maxWidth: 200 }}>
@@ -426,7 +427,7 @@ export default function AdminOrders() {
                   <Phone className="w-4 h-4" /> Customer
                 </h4>
                 <div className="bg-slate-50 p-3 rounded-lg text-sm">
-                  <p><strong>Name:</strong> {selectedOrder.customer_name || '-'}</p>
+                  <p><strong>Name:</strong> <CustomerName name={selectedOrder.customer_name} phone={selectedOrder.phone} /></p>
                   <p><strong>Phone:</strong> {selectedOrder.phone || '-'}</p>
                   <p><strong>Address:</strong> {selectedOrder.address || '-'}</p>
                 </div>

@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import IronShell from '@/components/iron/IronShell';
 import { T, Caps, IronCard, mono, thCell, tdCell, badgeStyle } from '@/components/iron/IronKit';
+import { CustomerName } from '@/components/Customer360';
 
 const inputStyle = { border: `1px solid ${T.iron200}`, borderRadius: 6, padding: '7px 10px', fontSize: 12.5, color: T.iron900, background: T.white, fontFamily: T.body, outline: 'none', width: '100%' };
 const selectStyle = { ...inputStyle, cursor: 'pointer' };
@@ -406,7 +407,7 @@ export default function SerialNumbersManagement() {
                     <td style={{ ...tdCell, maxWidth: 150 }}>
                       <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                         <User size={12} color={T.iron400} />
-                        <span style={{ fontSize: 12, color: T.iron900, maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{serial.dispatch_info?.customer_name || serial.customer_name || '-'}</span>
+                        <span style={{ fontSize: 12, color: T.iron900, maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}><CustomerName name={serial.dispatch_info?.customer_name || serial.customer_name} phone={serial.dispatch_info?.phone || serial.phone} /></span>
                       </div>
                     </td>
                     <td style={{ ...tdCell, ...mono, fontSize: 11.5, color: T.iron700 }}>
@@ -587,7 +588,7 @@ export default function SerialNumbersManagement() {
             <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg mb-4">
               <p className="text-xs text-blue-700 mb-1">Serial 1:</p>
               <p className="font-mono font-bold">{swapSerial1?.serial_number}</p>
-              <p className="text-sm text-slate-600">{swapSerial1?.dispatch_info?.customer_name || swapSerial1?.customer_name}</p>
+              <p className="text-sm text-slate-600"><CustomerName name={swapSerial1?.dispatch_info?.customer_name || swapSerial1?.customer_name} phone={swapSerial1?.dispatch_info?.phone || swapSerial1?.phone} /></p>
             </div>
             <div className="text-center mb-4">
               <ArrowLeftRight className="w-6 h-6 text-blue-500 mx-auto" />

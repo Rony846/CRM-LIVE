@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import IronShell from '@/components/iron/IronShell';
 import { T, Caps, IronCard, mono, thCell, tdCell, LIGHT_VARS } from '@/components/iron/IronKit';
+import { CustomerName } from '@/components/Customer360';
 
 // Helper to extract error message from API responses
 const getErrorMessage = (error, defaultMsg) => {
@@ -1127,7 +1128,7 @@ export default function AccountantDashboard() {
                                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 12 }}>
                                   <div>
                                     <Caps size={8.5} color={T.iron400} style={{ display: 'block' }}>Customer</Caps>
-                                    <div style={{ fontFamily: T.headline, fontWeight: 600, fontSize: 13, color: T.iron900 }}>{ticket.customer_name}</div>
+                                    <div style={{ fontFamily: T.headline, fontWeight: 600, fontSize: 13, color: T.iron900 }}><CustomerName name={ticket.customer_name} phone={ticket.customer_phone} /></div>
                                   </div>
                                   <div>
                                     <Caps size={8.5} color={T.iron400} style={{ display: 'block' }}>Phone</Caps>
@@ -1270,7 +1271,7 @@ export default function AccountantDashboard() {
                                 </div>
                               </td>
                               <td style={tdCell}>
-                                <div style={{ fontFamily: T.headline, fontWeight: 600, fontSize: 12.5, color: T.iron900 }}>{ticket.customer_name}</div>
+                                <div style={{ fontFamily: T.headline, fontWeight: 600, fontSize: 12.5, color: T.iron900 }}><CustomerName name={ticket.customer_name} phone={ticket.customer_phone} /></div>
                                 <div style={{ ...mono, fontSize: 10.5, color: T.iron500 }}>{ticket.customer_phone}</div>
                               </td>
                               <td style={tdCell}>{ticket.device_type}</td>
@@ -1348,7 +1349,7 @@ export default function AccountantDashboard() {
                                   {dispatch.dispatch_type?.replace('_', ' ')}
                                 </span>
                               </td>
-                              <td style={tdCell}>{dispatch.customer_name}</td>
+                              <td style={tdCell}><CustomerName name={dispatch.customer_name} phone={dispatch.phone || dispatch.customer_phone} /></td>
                               <td style={{ ...tdCell, ...mono }}>{dispatch.sku || '-'}</td>
                               <td style={{ ...tdCell, ...mono }}>{dispatch.ticket_number || '-'}</td>
                               <td style={{ ...tdCell, textAlign: 'right' }}>
@@ -2362,7 +2363,7 @@ export default function AccountantDashboard() {
           </DialogHeader>
           <form onSubmit={handleUploadLabel} className="space-y-4">
             <div className="bg-muted border border-border p-3 rounded-lg space-y-1">
-              <p className="font-mono text-[11px] text-foreground"><span className="text-muted-foreground">Customer:</span> {selectedItem?.customer_name}</p>
+              <p className="font-mono text-[11px] text-foreground"><span className="text-muted-foreground">Customer:</span> <CustomerName name={selectedItem?.customer_name} phone={selectedItem?.phone || selectedItem?.customer_phone} /></p>
               <p className="font-mono text-[11px] text-foreground"><span className="text-muted-foreground">SKU:</span> {selectedItem?.sku || 'N/A'}</p>
               <p className="font-mono text-[11px] text-foreground"><span className="text-muted-foreground">Type:</span> {selectedItem?.dispatch_type}</p>
             </div>
@@ -2417,7 +2418,7 @@ export default function AccountantDashboard() {
           <form onSubmit={handleUploadPickupLabel} className="space-y-4">
             <div className="bg-amber-400/[0.07] border border-amber-400/25 p-3 rounded-lg space-y-1">
               <p className="font-mono text-[11px] text-foreground"><span className="text-amber-400">Ticket:</span> {selectedItem?.ticket_number}</p>
-              <p className="font-mono text-[11px] text-foreground"><span className="text-amber-400">Customer:</span> {selectedItem?.customer_name}</p>
+              <p className="font-mono text-[11px] text-foreground"><span className="text-amber-400">Customer:</span> <CustomerName name={selectedItem?.customer_name} phone={selectedItem?.customer_phone || selectedItem?.phone} /></p>
               {selectedItem?.pickup_label ? (
                 <div className="mt-2 p-2 bg-amber-400/10 border border-amber-400/30 rounded">
                   <p className="font-mono text-[11px] text-amber-400">
@@ -2503,7 +2504,7 @@ export default function AccountantDashboard() {
           <form onSubmit={handleCreateSpareDispatch} className="space-y-4">
             <div className="bg-primary/[0.07] border border-primary/25 p-3 rounded-lg space-y-1">
               <p className="font-mono text-[11px] text-foreground"><span className="text-primary">Ticket:</span> {selectedItem?.ticket_number}</p>
-              <p className="font-mono text-[11px] text-foreground"><span className="text-primary">Customer:</span> {selectedItem?.customer_name}</p>
+              <p className="font-mono text-[11px] text-foreground"><span className="text-primary">Customer:</span> <CustomerName name={selectedItem?.customer_name} phone={selectedItem?.customer_phone || selectedItem?.phone} /></p>
               <p className="font-mono text-[11px] text-foreground"><span className="text-primary">Address:</span> {selectedItem?.customer_address}, {selectedItem?.customer_city}</p>
               {selectedItem?.supervisor_sku && (
                 <p className="font-mono text-[11px] text-primary mt-1">
@@ -2600,7 +2601,7 @@ export default function AccountantDashboard() {
               <div className="bg-amber-400/[0.07] border border-amber-400/25 p-4 rounded-lg">
                 <p className="font-mono text-[11px] font-bold text-amber-400 mb-2">Ticket: {selectedItem.ticket_number}</p>
                 <div className="grid grid-cols-2 gap-2 font-mono text-[11px]">
-                  <p><span className="text-amber-400">Customer:</span> <span className="text-foreground">{selectedItem.customer_name}</span></p>
+                  <p><span className="text-amber-400">Customer:</span> <span className="text-foreground"><CustomerName name={selectedItem.customer_name} phone={selectedItem.customer_phone || selectedItem.phone} /></span></p>
                   <p><span className="text-amber-400">Phone:</span> <span className="text-foreground tabular-nums">{selectedItem.customer_phone}</span></p>
                   <p><span className="text-amber-400">Device:</span> <span className="text-foreground">{selectedItem.device_type}</span></p>
                   <p><span className="text-amber-400">City:</span> <span className="text-foreground">{selectedItem.customer_city || '-'}</span></p>
