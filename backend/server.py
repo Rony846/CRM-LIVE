@@ -23423,6 +23423,25 @@ async def _orders_with_shipped_sibling(ref_keys: set) -> set:
     return shipped
 
 
+# Amazon renders the locality as "City,\xa0STATE\xa0PINCODE" (nbsp/tab separated). Our PII scrape stores
+# the STATE in customer_city and leaves customer_state blank, so the real CITY has to be recovered from
+# the full "Ship to" address block. Matches the single line that ends in a 6-digit pincode.
+_SHIP_CITY_RE = re.compile(r"([A-Za-z][A-Za-z .'\-]*?)\s*,\s*([A-Za-z][A-Za-z .&'\-]+?)\s+(\d{6})\b")
+
+
+def _parse_amazon_ship_city(raw: str):
+    """Extract (city, state, pincode) from an Amazon 'Ship to' address block, or ('','','') if
+    unparseable. Used to fill the real city on pack-desk cards + the packing slip for orders booked
+    via the browser agent (which leaves customer_city = the STATE)."""
+    if not raw:
+        return "", "", ""
+    txt = str(raw).replace("\xa0", " ").replace("\t", " ")
+    m = _SHIP_CITY_RE.search(txt)
+    if not m:
+        return "", "", ""
+    return m.group(1).strip(" ,."), m.group(2).strip(" ,."), m.group(3)
+
+
 @api_router.get("/dispatcher/pack-queue")
 async def dispatcher_pack_queue(user: dict = Depends(require_roles(["admin", "service_agent", "technician", "supervisor", "dispatcher"]))):
     """A dispatcher's own Ship Desk: the shippable orders routed to THEM by product category —
@@ -23514,13 +23533,16 @@ async def dispatcher_pack_queue(user: dict = Depends(require_roles(["admin", "se
             # booking (customer_name/customer_phone/…). For API-booked orders (browser agent → Bigship
             # API) there is NO courier_shipments panel row, so cs is empty — `a` is then the only place
             # the real name lives (amazon_orders stays masked). Read it BEFORE the cs fallback.
+            # The scrape mis-files the STATE into customer_city, so recover the real city from the
+            # full address block.
+            p_city, p_state, p_pin = _parse_amazon_ship_city(a.get("customer_address"))
             out.append({
                 "id": oid, "order_id": oid, "amazon_order_id": oid,
                 "customer_name": ao.get("buyer_name") or ao.get("customer_name_manual") or a.get("customer_name") or cs.get("customer_name") or cs.get("company_name") or "",
                 "phone": ao.get("phone") or ao.get("phone_manual") or a.get("customer_phone") or cs.get("phone") or "",
-                "city": ao.get("city") or ao.get("city_manual") or a.get("customer_city") or cs.get("consignee_city"),
-                "state": ao.get("state") or a.get("customer_state") or cs.get("consignee_state"),
-                "pincode": ao.get("pincode") or ao.get("pincode_manual") or a.get("customer_pincode") or cs.get("consignee_pincode"),
+                "city": ao.get("city") or ao.get("city_manual") or p_city or cs.get("consignee_city"),
+                "state": ao.get("state") or p_state or a.get("customer_state") or cs.get("consignee_state"),
+                "pincode": ao.get("pincode") or ao.get("pincode_manual") or a.get("customer_pincode") or p_pin or cs.get("consignee_pincode"),
                 "master_sku_name": title, "items": a.get("items") or [],
                 "tracking_id": a.get("awb_number"), "source": "amazon",
                 "amazon_deliver_by": ao.get("amazon_deliver_by"),
@@ -24284,7 +24306,8 @@ async def ship_desk_board(user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROL
                 continue
             seen_r.add(oid)
             ready.append({"order_id": oid, "customer_name": r.get("customer_name"),
-                          "phone": r.get("phone"),
+                          "phone": r.get("phone"), "city": r.get("city"), "state": r.get("state"),
+                          "pincode": r.get("pincode"),
                           "product": r.get("master_sku_name"), "firm_name": r.get("firm_name"),
                           "value": r.get("order_value") or r.get("invoice_value"), "stage": "ready_to_ship",
                           "required": ["invoice", "tracking", "label"], "present": ["invoice", "tracking", "label"],
@@ -24411,16 +24434,45 @@ async def ship_desk_download_file(order_id: str, kind: str, awb: str = Query(Non
 @api_router.get("/ship-desk/order/{order_id}/slip.pdf")
 async def ship_desk_slip(order_id: str,
                          user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROLES + ["dispatcher", "gate"]))):
-    """Generate the Amazon-format packing slip for a ship-desk order."""
-    d = await db.pending_fulfillment.find_one({"order_id": order_id}, {"_id": 0})
-    if not d:
-        raise HTTPException(status_code=404, detail="Order not found")
+    """Generate the Amazon-format packing slip for a ship-desk order. Resolves the order from ALL three
+    models the pack desk unions — pending_fulfillment (ship-desk/offline), amazon_order_processing
+    (browser-agent / API-booked Amazon), then courier_shipments (panel-booked) — so the Slip button never
+    404s on an Amazon card. (The pending_fulfillment-only lookup 404'd every API-booked eBay-UP order.)"""
     from utils.packing_slip import generate_packing_slip_pdf
     from fastapi.responses import Response as _Resp
-    ps_doc = {**d, "customer_address": d.get("address"), "customer_city": d.get("city"),
-              "customer_state": d.get("state"), "customer_pincode": d.get("pincode"),
-              "customer_phone": d.get("phone"), "order_value": d.get("invoice_value"),
-              "product_title": d.get("master_sku_name")}
+    ps_doc = None
+    d = await db.pending_fulfillment.find_one(
+        {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]}, {"_id": 0})
+    if d:
+        ps_doc = {**d, "customer_address": d.get("address"), "customer_city": d.get("city"),
+                  "customer_state": d.get("state"), "customer_pincode": d.get("pincode"),
+                  "customer_phone": d.get("phone"), "order_value": d.get("invoice_value"),
+                  "product_title": d.get("master_sku_name")}
+    if not ps_doc:
+        aop = await db.amazon_order_processing.find_one(
+            {"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]}, {"_id": 0})
+        if aop:
+            # customer_address matches the packing-slip schema already; only fix the mis-filed city/state
+            # (scrape puts the STATE in customer_city) so the location line renders correctly.
+            p_city, p_state, p_pin = _parse_amazon_ship_city(aop.get("customer_address"))
+            ps_doc = {**aop,
+                      "customer_city": p_city or aop.get("customer_city"),
+                      "customer_state": p_state or aop.get("customer_state"),
+                      "customer_pincode": aop.get("customer_pincode") or p_pin}
+    if not ps_doc:
+        cs = await db.courier_shipments.find_one(
+            {"$or": [{"amazon_order_id": order_id}, {"panel_order_ref": order_id},
+                     {"order_id": order_id}, {"invoice_number": order_id}]}, {"_id": 0})
+        if cs:
+            ps_doc = {"order_id": order_id, "amazon_order_id": cs.get("amazon_order_id"),
+                      "customer_name": cs.get("customer_name"), "customer_address": cs.get("address"),
+                      "customer_city": cs.get("consignee_city"), "customer_state": cs.get("consignee_state"),
+                      "customer_pincode": cs.get("consignee_pincode"), "customer_phone": cs.get("phone"),
+                      "order_value": cs.get("invoice_amount"), "product_title": cs.get("product_name"),
+                      "firm_id": cs.get("firm_id"), "firm_name": cs.get("firm_name"),
+                      "processed_at": cs.get("panel_scraped_at") or cs.get("created_at")}
+    if not ps_doc:
+        raise HTTPException(status_code=404, detail="Order not found")
     pdf = generate_packing_slip_pdf(ps_doc)
     return _Resp(content=pdf, media_type="application/pdf",
                  headers={"Content-Disposition": f'inline; filename="slip_{str(order_id)[-8:]}.pdf"'})
