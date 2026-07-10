@@ -66,9 +66,27 @@ def parse_boe(pdf_bytes: bytes) -> dict:
                          if y < wy <= y + 14 and _num(wt) is not None]
                 if cands:
                     out[fld] = min(cands, key=lambda z: z[0])[1]
+    # Air-waybill numbers: 6.MAWB NO (master/consolidator) + 8.HAWB NO (house = the courier airbill,
+    # e.g. the FedEx/DHL tracking number). HAWB is what links a BoE to its FedEx shipment.
+    out['mawb'] = _awb_near(words, '6.MAWB')
+    out['hawb'] = _awb_near(words, '8.HAWB')
+    out['tracking_id'] = out.get('hawb') or out.get('mawb')
     bcd, sws, igst, td = (out.get(k) or 0 for k in ('bcd', 'sws', 'igst', 'total_duty'))
     out['verified'] = bool(igst and td and abs((bcd + sws + igst) - td) < 2)
     return out
+
+
+def _awb_near(words, prefix: str):
+    """Nearest AWB-like token (digits, optional dashes) in the row just below a label like '8.HAWB'."""
+    lab = [(x, y) for x, y, t in words if t.replace(' ', '').upper().startswith(prefix)]
+    if not lab:
+        return None
+    lx, ly = lab[0]
+    cands = [(abs(wx - lx), wy - ly, wt) for wx, wy, wt in words
+             if ly < wy <= ly + 18 and re.fullmatch(r'[0-9][0-9\-]{8,15}', wt.strip())]
+    if cands:
+        return min(cands, key=lambda z: (z[1], z[0]))[2].replace('-', '')
+    return None
 
 
 def parse_boe_items(pdf_bytes: bytes) -> list:
@@ -182,6 +200,7 @@ async def ingest(db, write: bool = False, store_pdf: bool = True, limit: int = 5
             'id': str(uuid.uuid4()), 'shipment_number': bno, 'firm_id': firm_id, 'firm_name': firm_name,
             'boe_number': bno, 'boe_date': r.get('boe_date'),
             'period_key': (r.get('boe_date') or '')[:7] or None,
+            'tracking_id': r.get('tracking_id'), 'mawb': r.get('mawb'), 'hawb': r.get('hawb'),
             'supplier_name': 'Import (China)' if (r.get('country') or '').lower().startswith('chin') else 'Import',
             'supplier_country': r.get('country') or 'China',
             'items': [], 'expenses': [],
