@@ -44,8 +44,7 @@ export default function ClaudeFiles() {
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
-  const [pickedFile, setPickedFile] = useState(null);
-  const [previewUrl, setPreviewUrl] = useState(null);
+  const [pickedFiles, setPickedFiles] = useState([]); // [{ file, url }]
   const [note, setNote] = useState('');
   const fileInputRef = useRef(null);
 
@@ -66,19 +65,24 @@ export default function ClaudeFiles() {
 
   useEffect(() => { fetchFiles(); }, [fetchFiles]);
 
-  const setPicked = (f) => {
-    if (!f) return;
-    if (f.size > MAX_FILE_BYTES) { toast.error('File exceeds 50 MB limit'); return; }
-    setPickedFile(f);
-    setPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return (f.type || '').startsWith('image/') ? URL.createObjectURL(f) : null; });
+  const addFiles = (fileList) => {
+    const arr = Array.from(fileList || []);
+    const valid = [];
+    for (const f of arr) {
+      if (f.size > MAX_FILE_BYTES) { toast.error(`${f.name} exceeds 50 MB — skipped`); continue; }
+      valid.push({ file: f, url: (f.type || '').startsWith('image/') ? URL.createObjectURL(f) : null });
+    }
+    if (valid.length) setPickedFiles((prev) => [...prev, ...valid]);
   };
 
-  const handlePick = (e) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    if (f.size > MAX_FILE_BYTES) { toast.error('File exceeds 50 MB limit'); e.target.value = ''; return; }
-    setPicked(f);
-  };
+  const removePicked = (idx) => setPickedFiles((prev) => {
+    const it = prev[idx]; if (it?.url) URL.revokeObjectURL(it.url);
+    return prev.filter((_, i) => i !== idx);
+  });
+
+  const clearPicked = () => setPickedFiles((prev) => { prev.forEach((it) => it.url && URL.revokeObjectURL(it.url)); return []; });
+
+  const handlePick = (e) => { addFiles(e.target.files); e.target.value = ''; };
 
   // Paste a screenshot from the clipboard (Ctrl/Cmd+V anywhere on this page)
   useEffect(() => {
@@ -92,7 +96,7 @@ export default function ClaudeFiles() {
           const blob = it.getAsFile();
           if (blob) {
             const ext = (blob.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
-            setPicked(new File([blob], `screenshot-${Date.now()}.${ext}`, { type: blob.type }));
+            addFiles([new File([blob], `screenshot-${Date.now()}.${ext}`, { type: blob.type })]);
             toast.success('Screenshot pasted — click Upload');
             e.preventDefault();
             return;
@@ -105,27 +109,33 @@ export default function ClaudeFiles() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleUpload = async () => {
-    if (!pickedFile) {
-      toast.error('Pick a file first');
+    if (!pickedFiles.length) {
+      toast.error('Pick at least one file');
       return;
     }
     setUploading(true);
-    try {
-      const fd = new FormData();
-      fd.append('file', pickedFile);
-      if (note.trim()) fd.append('note', note.trim());
-      const res = await axios.post(`${API}/claude-files`, fd, { headers });
-      toast.success(`Uploaded as file #${res.data.number}`);
-      setPickedFile(null);
-      setPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
-      setNote('');
-      if (fileInputRef.current) fileInputRef.current.value = '';
-      fetchFiles();
-    } catch (e) {
-      toast.error(e.response?.data?.detail || 'Upload failed');
-    } finally {
-      setUploading(false);
+    const nums = [];
+    const remaining = []; // items that failed — keep them queued for retry
+    // Upload sequentially so the file numbers stay in order.
+    for (const it of pickedFiles) {
+      try {
+        const fd = new FormData();
+        fd.append('file', it.file);
+        if (note.trim()) fd.append('note', note.trim());
+        const res = await axios.post(`${API}/claude-files`, fd, { headers });
+        nums.push(res.data.number);
+        if (it.url) URL.revokeObjectURL(it.url);
+      } catch (e) {
+        remaining.push(it);
+        toast.error(`${it.file.name}: ${e.response?.data?.detail || 'upload failed'}`);
+      }
     }
+    if (nums.length === 1) toast.success(`Uploaded as file #${nums[0]}`);
+    else if (nums.length > 1) toast.success(`Uploaded ${nums.length} files: #${nums[0]}–#${nums[nums.length - 1]}`);
+    setPickedFiles(remaining);
+    if (!remaining.length) { setNote(''); if (fileInputRef.current) fileInputRef.current.value = ''; }
+    setUploading(false);
+    fetchFiles();
   };
 
   const handleDownload = async (record) => {
@@ -198,15 +208,24 @@ export default function ClaudeFiles() {
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
-            <Caps size={9} color={T.iron400} style={{ display: 'block', marginBottom: 6 }}>File (max 50 MB)</Caps>
-            <input ref={fileInputRef} type="file" onChange={handlePick} style={{ ...inputStyle, padding: '6px 8px', cursor: 'pointer' }} />
+            <Caps size={9} color={T.iron400} style={{ display: 'block', marginBottom: 6 }}>Files (max 50 MB each) — pick several at once</Caps>
+            <input ref={fileInputRef} type="file" multiple onChange={handlePick} style={{ ...inputStyle, padding: '6px 8px', cursor: 'pointer' }} />
             <div style={{ marginTop: 8, padding: '10px 12px', border: `1px dashed ${T.iron300}`, borderRadius: 8, background: T.iron50, textAlign: 'center', fontSize: 12, color: T.iron500 }}>
-              📋 <b>Paste a screenshot</b> from your clipboard — just press <b>Ctrl / Cmd + V</b> anywhere on this page.
+              📋 <b>Paste a screenshot</b> from your clipboard — just press <b>Ctrl / Cmd + V</b> anywhere on this page. You can add more before uploading.
             </div>
-            {pickedFile && (
-              <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10 }}>
-                {previewUrl && <img src={previewUrl} alt="preview" style={{ maxHeight: 72, maxWidth: 120, borderRadius: 6, border: `1px solid ${T.iron200}` }} />}
-                <p style={{ ...mono, fontSize: 11, color: T.iron500, margin: 0 }}>{pickedFile.name} — {formatBytes(pickedFile.size)}</p>
+            {pickedFiles.length > 0 && (
+              <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Caps size={9} color={T.iron500}>{pickedFiles.length} file{pickedFiles.length > 1 ? 's' : ''} queued</Caps>
+                  <button onClick={clearPicked} style={{ border: 'none', background: 'none', color: T.iron500, fontSize: 11, cursor: 'pointer', textDecoration: 'underline' }}>Clear all</button>
+                </div>
+                {pickedFiles.map((it, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '5px 8px', border: `1px solid ${T.iron200}`, borderRadius: 6, background: T.white }}>
+                    {it.url && <img src={it.url} alt="preview" style={{ height: 36, width: 48, objectFit: 'cover', borderRadius: 4, border: `1px solid ${T.iron200}` }} />}
+                    <span style={{ ...mono, fontSize: 11, color: T.iron600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.file.name} — {formatBytes(it.file.size)}</span>
+                    <button onClick={() => removePicked(i)} disabled={uploading} title="Remove" style={{ border: 'none', background: 'none', color: T.iron400, cursor: 'pointer', fontSize: 15, lineHeight: 1 }}>✕</button>
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -223,9 +242,9 @@ export default function ClaudeFiles() {
             />
           </div>
           <div>
-            <button onClick={handleUpload} disabled={!pickedFile || uploading} style={{ ...btnPrimary, opacity: (!pickedFile || uploading) ? 0.55 : 1, cursor: (!pickedFile || uploading) ? 'not-allowed' : 'pointer' }}>
+            <button onClick={handleUpload} disabled={!pickedFiles.length || uploading} style={{ ...btnPrimary, opacity: (!pickedFiles.length || uploading) ? 0.55 : 1, cursor: (!pickedFiles.length || uploading) ? 'not-allowed' : 'pointer' }}>
               {uploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
-              Upload
+              {uploading ? 'Uploading…' : `Upload${pickedFiles.length > 1 ? ` ${pickedFiles.length} files` : ''}`}
             </button>
           </div>
         </div>
