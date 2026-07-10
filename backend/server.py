@@ -56431,7 +56431,8 @@ async def scheduled_customer_master_rebuild():
 @api_router.get("/customer-360")
 async def customer_360(
     phone: str = Query(..., min_length=4),
-    user: dict = Depends(require_roles(["call_support", "supervisor", "admin", "service_agent", "technician"]))
+    user: dict = Depends(require_roles(["call_support", "supervisor", "admin", "service_agent", "technician",
+                                        "accountant", "dispatcher", "gate"]))
 ):
     """Full 360° customer view — profile, registered products (warranties), all tickets, replacement
     dispatches, and an activity timeline. Identity is derived from tickets when there is no standalone
