@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 
 /* A lightweight guided-tour spotlight. Point it at an element (via a ref) and it dims everything else,
    highlights the target with a pulsing ring, and shows a coaching card ("click here"). If targetRef has
@@ -6,11 +6,6 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 export function Coachmark({ targetRef, title, body, step, total, onNext, nextLabel = 'Next',
                            onSkip, skipLabel, hint }) {
   const [rect, setRect] = useState(null);
-  const cardRef = useRef(null);
-  const [cardH, setCardH] = useState(190);
-  useEffect(() => {
-    if (cardRef.current) { const h = cardRef.current.offsetHeight; if (h && Math.abs(h - cardH) > 2) setCardH(h); }
-  });
 
   const measure = useCallback(() => {
     const el = targetRef && targetRef.current;
@@ -33,19 +28,13 @@ export function Coachmark({ targetRef, title, body, step, total, onNext, nextLab
 
   const pad = 6;
   const box = rect ? { top: rect.top - pad, left: rect.left - pad, width: rect.width + pad * 2, height: rect.height + pad * 2 } : null;
-  const vw = window.innerWidth, vh = window.innerHeight;
-  const CARD_W = 330, GAP = 14, M = 12;
-  let tipTop, tipLeft;
-  if (box) {
-    // place on whichever side of the target actually has room: right → left → below → above
-    if (vw - (box.left + box.width) >= CARD_W + GAP) { tipLeft = box.left + box.width + GAP; tipTop = box.top; }
-    else if (box.left >= CARD_W + GAP) { tipLeft = box.left - CARD_W - GAP; tipTop = box.top; }
-    else if (vh - (box.top + box.height) >= cardH + GAP) { tipTop = box.top + box.height + GAP; tipLeft = box.left; }
-    else { tipTop = box.top - cardH - GAP; tipLeft = box.left; }
-  } else { tipTop = vh / 2 - cardH / 2; tipLeft = vw / 2 - CARD_W / 2; }
-  // always keep the card fully inside the viewport
-  tipLeft = Math.max(M, Math.min(tipLeft, vw - CARD_W - M));
-  tipTop = Math.max(M, Math.min(tipTop, vh - cardH - M));
+  const vh = window.innerHeight;
+  // The card lives at a FIXED, always-on-screen spot (bottom-centre), flipping to the top when the
+  // highlighted element is in the lower half — so it can never drift off-page. The ring points at the target.
+  const targetLow = box ? (box.top + box.height / 2) > vh * 0.5 : false;
+  const cardPos = box
+    ? { position: 'fixed', left: '50%', transform: 'translateX(-50%)', [targetLow ? 'top' : 'bottom']: 26 }
+    : { position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)' };
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 10000, pointerEvents: 'none' }}>
@@ -62,9 +51,9 @@ export function Coachmark({ targetRef, title, body, step, total, onNext, nextLab
         <div style={{ position: 'absolute', top: box.top, left: box.left, width: box.width, height: box.height,
           border: '2.5px solid #f97316', borderRadius: 9, animation: 'tourPulse 1.4s infinite' }} />
       )}
-      <div ref={cardRef} style={{ position: 'absolute', top: tipTop, left: tipLeft, width: CARD_W, background: '#fff',
+      <div style={{ ...cardPos, width: 'min(360px, 92vw)', background: '#fff',
         borderRadius: 12, boxShadow: '0 24px 70px rgba(0,0,0,.45)', padding: 16, pointerEvents: 'auto',
-        border: '1px solid #fde68a' }}>
+        border: '1px solid #fde68a', zIndex: 2 }}>
         <div style={{ fontSize: 10.5, fontWeight: 800, color: '#f97316', letterSpacing: 0.4 }}>STEP {step} OF {total}</div>
         <div style={{ fontFamily: 'Barlow, system-ui, sans-serif', fontWeight: 800, fontSize: 17, marginTop: 2 }}>{title}</div>
         <div style={{ fontSize: 13, color: '#3f3f46', marginTop: 6, lineHeight: 1.45 }}>{body}</div>
