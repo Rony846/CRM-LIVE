@@ -584,6 +584,18 @@ async def create_indexes():
             replace_existing=True
         )
 
+        # Ready-lane reconcile - hourly. Marks booked-but-not-packed Amazon orders that the courier shows
+        # already moved/delivered as packed (drops them off the pack desk), and flags the genuinely-stuck
+        # (label made, never picked up) so the desk shows a true worklist, not 86% already-shipped noise.
+        scheduler.add_job(
+            reconcile_ready_lane,
+            IntervalTrigger(hours=int(os.environ.get("READY_RECONCILE_INTERVAL_HOURS", "1"))),
+            id="ready_lane_reconcile",
+            name="Ready-lane reconcile (drop shipped, flag stuck)",
+            replace_existing=True,
+            misfire_grace_time=1800,
+        )
+
         # Nightly Amazon sync — pulls fresh orders + refunds + A-Z claims for every
         # firm with active Amazon credentials. Default 02:00 IST (20:30 UTC); can be
         # overridden via CRON_AMAZON_HOUR_UTC / CRON_AMAZON_MIN_UTC env vars.
@@ -70031,6 +70043,109 @@ def _delhivery_cancelled(status: str) -> bool:
     leave the pickup queue (NOT be stamped 'confirmed not picked')."""
     s = (status or "").lower()
     return bool(re.search(r"cancel|closed|lost|destroy", s))
+
+
+def _iso_age_days(s) -> Optional[int]:
+    """Whole days since an ISO timestamp (tz-tolerant), or None if unparseable."""
+    try:
+        d = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - d).days
+    except Exception:
+        return None
+
+
+async def reconcile_ready_lane(dry_run: bool = False) -> dict:
+    """Ready-lane hygiene: reconcile booked-but-not-packed Amazon orders (amazon_order_processing with an
+    AWB but no packed_at) against the courier's live status.
+      • MOVED on courier (in-transit / delivered / picked / dispatched / RTO) → mark packed
+        (packed_by=auto_reconcile, reconciled_shipped) so it DROPS OFF the pack desk instead of ageing
+        there forever after a panel shipment never got marked.
+      • CANCELLED on courier → mark do_not_ship + packed (dead label, drop it).
+      • No movement AND aged > READY_STUCK_DAYS (default 3) → set pickup_stuck so the genuinely-stuck ones
+        surface as a real 'chase pickup' worklist. Cleared automatically once they move or get re-checked.
+    packed_at is only read by the pack-queue filter + the print-pack guard (NO COGS/finance side-effect),
+    so stamping it for a genuinely-shipped order is safe."""
+    STUCK_DAYS = int(os.environ.get("READY_STUCK_DAYS", "3"))
+    now_iso = datetime.now(timezone.utc).isoformat()
+    q = {"status": "completed", "awb_number": {"$nin": [None, ""]}, "packed_at": {"$in": [None, ""]}}
+    rows = await db.amazon_order_processing.find(
+        q, {"_id": 0, "order_id": 1, "amazon_order_id": 1, "awb_number": 1, "processed_at": 1,
+            "pickup_stuck": 1}).to_list(5000)
+    moved = cancelled = stuck = cleared = 0
+    stuck_list = []
+    for r in rows:
+        awb = r.get("awb_number")
+        oid = r.get("order_id") or r.get("amazon_order_id")
+        oq = {"$or": [{"order_id": oid}, {"amazon_order_id": oid}]}
+        cs = await db.courier_shipments.find_one(
+            {"awb_number": awb}, {"_id": 0, "status": 1, "delhivery_status": 1})
+        st = ((cs or {}).get("delhivery_status") or "") + " " + ((cs or {}).get("status") or "")
+        if not _delhivery_picked(st):   # second opinion from the tracking board
+            dt = await db.delhivery_tracking.find_one(
+                {"$or": [{"awb": awb}, {"waybill": awb}, {"tracking_id": awb}]},
+                {"_id": 0, "status": 1, "latest_status": 1})
+            if dt:
+                st += " " + (dt.get("latest_status") or dt.get("status") or "")
+        st = st.strip()
+        if _delhivery_cancelled(st):
+            cancelled += 1
+            if not dry_run:
+                await db.amazon_order_processing.update_many(oq, {"$set": {
+                    "packed_at": now_iso, "packed_by": "auto_reconcile", "reconciled_shipped": False,
+                    "do_not_ship": True, "reconcile_note": f"courier cancelled: {st}"[:120],
+                    "pickup_stuck": False}})
+            continue
+        if _delhivery_picked(st):
+            moved += 1
+            if not dry_run:
+                await db.amazon_order_processing.update_many(oq, {"$set": {
+                    "packed_at": now_iso, "packed_by": "auto_reconcile", "reconciled_shipped": True,
+                    "courier_status": st[:60], "pickup_stuck": False}})
+            continue
+        age = _iso_age_days(r.get("processed_at"))
+        if age is not None and age > STUCK_DAYS:
+            stuck += 1
+            stuck_list.append({"order_id": oid, "awb": awb, "age_days": age, "status": st or "no courier update"})
+            if not dry_run:
+                await db.amazon_order_processing.update_many(oq, {"$set": {
+                    "pickup_stuck": True, "stuck_since": now_iso, "stuck_age_days": age,
+                    "stuck_status": (st or "no courier update")}})
+        elif r.get("pickup_stuck"):
+            cleared += 1
+            if not dry_run:
+                await db.amazon_order_processing.update_many(oq, {"$set": {"pickup_stuck": False}})
+    res = {"dry_run": dry_run, "scanned": len(rows), "marked_shipped": moved,
+           "cancelled_dropped": cancelled, "flagged_stuck": stuck, "cleared_stuck": cleared,
+           "at": now_iso}
+    if not dry_run:
+        try:
+            await db.ready_lane_reconcile_runs.insert_one({**res, "stuck": stuck_list})
+        except Exception:
+            pass
+    res["stuck"] = stuck_list[:50]
+    return res
+
+
+@api_router.post("/admin/ready-lane-reconcile")
+async def admin_ready_lane_reconcile(dry_run: bool = False,
+                                     user: dict = Depends(require_roles(["admin"]))):
+    """Run the ready-lane reconcile on demand (dry_run=true just reports what WOULD change)."""
+    return await reconcile_ready_lane(dry_run=dry_run)
+
+
+@api_router.get("/admin/ready-lane-stuck")
+async def admin_ready_lane_stuck(
+    user: dict = Depends(require_roles(["admin", "dispatcher", "supervisor", "service_agent", "gate"]))):
+    """The genuinely-stuck orders: booked a label but the courier never picked up (flagged by the reconcile
+    job). This is the real 'chase pickup' worklist, no longer buried under already-shipped orders."""
+    rows = await db.amazon_order_processing.find(
+        {"pickup_stuck": True, "packed_at": {"$in": [None, ""]}},
+        {"_id": 0, "order_id": 1, "amazon_order_id": 1, "awb_number": 1, "product_title": 1,
+         "customer_name": 1, "firm_name": 1, "stuck_age_days": 1, "stuck_status": 1, "stuck_since": 1}
+    ).sort("stuck_age_days", -1).to_list(500)
+    return {"count": len(rows), "orders": rows}
 
 
 async def _unshipped_audit(window_h: int = None):
