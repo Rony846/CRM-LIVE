@@ -97,6 +97,7 @@ export function Customer360Modal({ name, phone, onClose }) {
               <Stat label="Products" val={st.products} />
               <Stat label="PIs" val={st.quotations} />
               <Stat label="Orders" val={st.orders} />
+              <Stat label="Repl/Repair" val={st.service_dispatches} />
             </div>
             <Section title="Quotations / PIs" items={data.quotations || []} render={(q) => (<>
               <div style={{ flex: 1 }}>{(q.items?.[0]?.name || q.firm_name || 'Quotation').slice(0, 46)}<div style={{ ...mono, fontSize: 10, color: T.iron400 }}>{q.quotation_number}</div></div>
@@ -105,6 +106,10 @@ export function Customer360Modal({ name, phone, onClose }) {
             <Section title="Orders" items={data.orders || []} render={(o) => (<>
               <div style={{ flex: 1 }}>{(o.master_sku_name || '—').slice(0, 46)}<div style={{ ...mono, fontSize: 10, color: T.iron400 }}>{o.order_id}</div></div>
               <div style={{ textAlign: 'right', fontSize: 11, color: T.iron500 }}>{o.value ? '₹' + Math.round(o.invoice_value || 0).toLocaleString('en-IN') : ''}<div style={{ fontSize: 10, color: T.iron400 }}>{o.stage || o.status}</div></div>
+            </>)} />
+            <Section title="Replacements / repairs / spares sent" items={data.service_dispatches || []} render={(d) => (<>
+              <div style={{ flex: 1 }}>{({ replacement: '🔁 Replacement', repaired: '🛠 Repaired', spare_part: '🔩 Spare part' }[d.dispatch_type] || d.dispatch_type)} — {(d.master_sku_name || '—').slice(0, 34)}<div style={{ ...mono, fontSize: 10, color: T.iron400 }}>{d.ticket_number}{d.tracking_id ? ` · ${d.tracking_id}` : ''}</div></div>
+              <div style={{ textAlign: 'right', fontSize: 11, color: T.iron500 }}>{d.payment_mode === 'cod' ? `COD ₹${Math.round(d.cod_amount || 0).toLocaleString('en-IN')}` : 'Prepaid'}<div style={{ fontSize: 10, color: T.iron400 }}>{d.stage || d.status} · {dt(d.created_at)}</div></div>
             </>)} />
             <Section title="Tickets" items={data.tickets || []} render={(t) => (<>
               <div style={{ flex: 1 }}>{(t.product_name || t.device_type || t.issue_description || '—').slice(0, 48)}<div style={{ ...mono, fontSize: 10, color: T.iron400 }}>{t.ticket_number}{t.serial_number ? ` · ${t.serial_number}` : ''}</div></div>

@@ -24000,15 +24000,38 @@ async def _ship_desk_maybe_advance(order_id: str):
     return d
 
 
+_DISPATCH_TYPES = {"new_order", "spare_part", "replacement", "repaired"}
+_TICKET_DISPATCH = {"spare_part", "replacement", "repaired"}
+_DISPATCH_LABEL = {"new_order": "New order", "spare_part": "Spare part",
+                   "replacement": "Replacement", "repaired": "Repaired item"}
+_DISPATCH_CODE = {"new_order": "SO", "spare_part": "SP", "replacement": "RPL", "repaired": "RPR"}
+
+
 @api_router.post("/ship-desk/order")
 async def ship_desk_create_order(payload: dict = Body(...),
                                  user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROLES))):
-    """Punch in a new order (anyone in entry roles, or the agent). Basic details only — it then waits on
-    the accountant for invoice + tracking + label before it can ship."""
+    """Punch in a new dispatch. Four kinds: new_order (asks order id/invoice), or a ticket-linked
+    spare_part / replacement / repaired (asks a ticket number — customer + product come from the ticket).
+    Replacements & repairs sent to a customer are recorded against the ticket so Customer 360 shows them.
+    Ends with prepaid / COD (+ COD amount)."""
+    dispatch_type = (payload.get("dispatch_type") or "new_order").strip().lower()
+    if dispatch_type not in _DISPATCH_TYPES:
+        raise HTTPException(status_code=400, detail=f"dispatch_type must be one of {sorted(_DISPATCH_TYPES)}")
     firm_id = payload.get("firm_id") or _MGIPL_FIRM
     firm = await db.firms.find_one({"id": firm_id}, {"_id": 0, "name": 1, "code": 1})
     if not firm:
         raise HTTPException(status_code=400, detail="Invalid firm")
+
+    # Ticket-linked dispatches resolve the customer + product from the ticket.
+    ticket = None
+    ticket_number = (payload.get("ticket_number") or "").strip()
+    if dispatch_type in _TICKET_DISPATCH:
+        if not ticket_number:
+            raise HTTPException(status_code=400, detail=f"A ticket number is required for a {_DISPATCH_LABEL[dispatch_type].lower()} dispatch")
+        ticket = await db.tickets.find_one({"ticket_number": ticket_number}, {"_id": 0})
+        if not ticket:
+            raise HTTPException(status_code=404, detail=f"Ticket {ticket_number} not found")
+
     items = []
     for it in (payload.get("items") or []):
         sk = await db.master_skus.find_one({"id": it.get("master_sku_id")}) if it.get("master_sku_id") else None
@@ -24017,47 +24040,81 @@ async def ship_desk_create_order(payload: dict = Body(...),
         items.append({"master_sku_id": sk["id"], "master_sku_name": sk.get("name"), "sku_code": sk.get("sku_code"),
                       "hsn_code": sk.get("hsn_code"), "gst_rate": sk.get("gst_rate", 18), "quantity": int(it.get("quantity") or 1)})
     if not items:
-        # allow a free-text product (e.g. "PCB C35") when no catalogue SKU is picked
         name = (payload.get("product") or payload.get("master_sku_name") or "").strip()
+        # a replacement/repair defaults to the ticket's product; a spare part is typed in
+        if not name and ticket:
+            name = ticket.get("product_name") or ticket.get("device_type") or ""
         if not name:
-            raise HTTPException(status_code=400, detail="At least one product is required")
+            raise HTTPException(status_code=400, detail="What are you dispatching? A product is required")
         items = [{"master_sku_id": None, "master_sku_name": name, "quantity": int(payload.get("quantity") or 1)}]
-    customer = (payload.get("customer_name") or "").strip()
+
+    customer = (payload.get("customer_name") or "").strip() or (ticket.get("customer_name") if ticket else "")
     if not customer:
         raise HTTPException(status_code=400, detail="Customer name is required")
+    phone = re.sub(r"\D", "", str(payload.get("phone") or (ticket.get("customer_phone") if ticket else "")))[-10:]
+    address = payload.get("address") or (ticket.get("customer_address") if ticket else None)
+    city = payload.get("city") or (ticket.get("customer_city") if ticket else None)
+
+    # Payment: prepaid or COD (+ amount)
+    payment_mode = (payload.get("payment_mode") or "prepaid").strip().lower()
+    if payment_mode not in ("prepaid", "cod"):
+        payment_mode = "prepaid"
+    cod_amount = float(payload.get("cod_amount") or 0) if payment_mode == "cod" else 0.0
+    if payment_mode == "cod" and cod_amount <= 0:
+        raise HTTPException(status_code=400, detail="Enter the COD amount to collect")
+
     val = float(payload.get("invoice_value") or 0)
     now = datetime.now(timezone.utc).isoformat()
     fid = str(uuid.uuid4())
     code = (firm.get("code") or "".join(w[0] for w in (firm.get("name") or "MG").split())[:4]).upper()
-    # Order ID = the REAL reference the sale is known by (invoice no / SO / challan) — supplied by whoever
-    # punches it in. We only auto-generate when it's genuinely absent (e.g. the agent-created path), and
-    # never silently reuse an existing id (that would merge two orders' docs/serials).
     supplied_oid = (payload.get("order_id") or "").strip()
-    order_id = supplied_oid or f"{code}-SD-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{fid[:4].upper()}"
+    if dispatch_type in _TICKET_DISPATCH:
+        # keyed off the ticket; unique so multiple dispatches on one ticket don't collide
+        order_id = supplied_oid or f"{ticket_number}-{_DISPATCH_CODE[dispatch_type]}-{fid[:4].upper()}"
+    else:
+        order_id = supplied_oid or f"{code}-SD-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{fid[:4].upper()}"
     if await db.pending_fulfillment.find_one({"order_id": order_id}, {"_id": 1}):
-        raise HTTPException(status_code=400, detail=f"Order ID '{order_id}' already exists — use the real, unique order/invoice reference")
+        raise HTTPException(status_code=400, detail=f"Order ID '{order_id}' already exists — use the real, unique reference")
     order_id_generated = not supplied_oid
+
+    # Warranty spares/replacements/repairs ship on a delivery challan (no tax invoice) → don't gate on invoice.
+    required = ["tracking", "label"] if dispatch_type in _TICKET_DISPATCH else _ship_desk_required(val)
     doc = {
         "id": fid, "order_id": order_id, "type": "ship_desk_order", "source": "ship_desk",
+        "dispatch_type": dispatch_type, "ticket_number": ticket_number or None,
         "firm_id": firm_id, "firm_name": firm.get("name"), "stage": "awaiting_accountant",
-        "status": "awaiting_accountant", "required_docs": _ship_desk_required(val),
-        "customer_name": customer, "phone": re.sub(r"\D", "", str(payload.get("phone") or ""))[-10:],
-        "address": payload.get("address"), "city": payload.get("city"), "state": payload.get("state"),
+        "status": "awaiting_accountant", "required_docs": required,
+        "customer_name": customer, "phone": phone,
+        "address": address, "city": city, "state": payload.get("state"),
         "pincode": re.sub(r"\D", "", str(payload.get("pincode") or "")),
         "items": items, "master_sku_id": items[0].get("master_sku_id"),
         "master_sku_name": items[0].get("master_sku_name"), "quantity": sum(i["quantity"] for i in items),
-        "invoice_value": val, "created_at": now, "created_by": user.get("email") or user.get("name"),
+        "invoice_value": val, "payment_mode": payment_mode, "cod_amount": cod_amount,
+        "serial_number": (ticket.get("serial_number") if ticket else None),
+        "created_at": now, "created_by": user.get("email") or user.get("name"),
         "created_by_role": user.get("role"), "order_id_generated": order_id_generated}
     await db.pending_fulfillment.insert_one(doc)
+
+    # Record replacements / repairs / spares against the ticket so Customer 360 surfaces them.
+    if ticket:
+        await db.tickets.update_one({"ticket_number": ticket_number}, {"$push": {"history": {
+            "action": f"{_DISPATCH_LABEL[dispatch_type]} dispatched",
+            "notes": f"{items[0].get('master_sku_name')} · {payment_mode.upper()}"
+                     + (f" ₹{cod_amount:,.0f}" if payment_mode == "cod" else "") + f" · {order_id}",
+            "by": user.get("email") or user.get("name"), "timestamp": now}},
+            "$set": {"last_dispatch_type": dispatch_type, "last_dispatch_at": now}})
+
     try:
+        who = f" (ticket {ticket_number})" if ticket_number else ""
         await create_notification(
-            title="🆕 New order — needs invoice/tracking/label",
-            message=f"{customer} — {items[0].get('master_sku_name')} ({firm.get('name')}). Attach the 3 docs to release it.",
+            title=f"🆕 {_DISPATCH_LABEL[dispatch_type]} — needs {'tracking + label' if dispatch_type in _TICKET_DISPATCH else 'invoice/tracking/label'}",
+            message=f"{customer} — {items[0].get('master_sku_name')} ({firm.get('name')}){who}."
+                    + (f" COD ₹{cod_amount:,.0f}." if payment_mode == 'cod' else " Prepaid."),
             notification_type="ship_desk", link="/ship-desk", target_roles=["accountant", "admin"], priority="normal")
     except Exception:
         pass
-    return {"success": True, "order_id": order_id, "stage": "awaiting_accountant",
-            "order_id_generated": order_id_generated, "required_docs": doc["required_docs"]}
+    return {"success": True, "order_id": order_id, "dispatch_type": dispatch_type, "stage": "awaiting_accountant",
+            "order_id_generated": order_id_generated, "required_docs": required}
 
 
 @api_router.post("/ship-desk/order/{order_id}/doc")
@@ -56377,6 +56434,15 @@ async def customer_360(
          "created_at": 1, "customer_name": 1, "firm_name": 1}
     ).sort("created_at", -1).limit(20).to_list(20)
 
+    # Replacements / repairs / spare parts SENT to this customer (ship-desk ticket-linked dispatches)
+    service_dispatches = await db.pending_fulfillment.find(
+        {"source": "ship_desk", "dispatch_type": {"$in": list(_TICKET_DISPATCH)},
+         "$or": [{"phone": rx}, {"customer_phone": rx}]},
+        {"_id": 0, "order_id": 1, "dispatch_type": 1, "ticket_number": 1, "master_sku_name": 1,
+         "stage": 1, "status": 1, "pack_stage": 1, "tracking_id": 1, "payment_mode": 1, "cod_amount": 1,
+         "serial_number": 1, "created_at": 1}
+    ).sort("created_at", -1).limit(30).to_list(30)
+
     # Canonical identity from the master customer directory (unites every phone the CRM has)
     cm = await db.customer_master.find_one({"phone": p10}, {"_id": 0}) if p10 else None
 
@@ -56429,9 +56495,11 @@ async def customer_360(
         "quotations": len(quotations),
         "open_pis": open_pi,
         "orders": len(orders),
+        "service_dispatches": len(service_dispatches),
     }
     return {"phone": p10, "customer": customer, "products": warranties, "tickets": tickets,
             "dispatches": dispatches, "quotations": quotations, "orders": orders,
+            "service_dispatches": service_dispatches,
             "activity": activity, "stats": stats}
 
 

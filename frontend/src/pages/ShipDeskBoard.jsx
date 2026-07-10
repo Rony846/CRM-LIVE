@@ -89,32 +89,60 @@ export default function ShipDeskBoard() {
   };
   const ghostBtn = { border: '1px solid ' + T.iron200, background: T.white, color: T.iron700, borderRadius: 6, padding: '6px 9px', fontSize: 11, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', gap: 4, alignItems: 'center' };
 
-  // ---- New order modal ----
+  // ---- New dispatch modal ----
+  const DISPATCH_TYPES = [
+    { key: 'new_order', label: 'New order', sub: 'A sale — order ID / invoice' },
+    { key: 'spare_part', label: 'Spare part', sub: 'Against a ticket' },
+    { key: 'replacement', label: 'Replacement', sub: 'Against a ticket' },
+    { key: 'repaired', label: 'Repaired item', sub: 'Against a ticket' },
+  ];
+  const isTicketType = (dt) => ['spare_part', 'replacement', 'repaired'].includes(dt);
   const [showNew, setShowNew] = useState(false);
   const [firms, setFirms] = useState([]);
-  const [nf, setNf] = useState({ firm_id: MGIPL });
+  const [nf, setNf] = useState({ firm_id: MGIPL, dispatch_type: 'new_order', payment_mode: 'prepaid' });
   const [skus, setSkus] = useState([]);
+  const [ticketInfo, setTicketInfo] = useState(null);
   const [saving, setSaving] = useState(false);
   const setF = (k, v) => setNf((o) => ({ ...o, [k]: v }));
-  const openNew = async () => { setShowNew(true); if (!firms.length) { try { const { data } = await axios.get(`${API}/firms`, { headers: H }); setFirms(Array.isArray(data) ? data : []); } catch (e) {} } };
+  const openNew = async () => { setNf({ firm_id: MGIPL, dispatch_type: 'new_order', payment_mode: 'prepaid' }); setTicketInfo(null); setSkus([]); setShowNew(true); if (!firms.length) { try { const { data } = await axios.get(`${API}/firms`, { headers: H }); setFirms(Array.isArray(data) ? data : []); } catch (e) {} } };
   const searchSku = async (q) => {
     setF('_skuq', q); setF('master_sku_id', undefined); setF('product', q);
     if (!q || q.length < 2) { setSkus([]); return; }
     try { const { data } = await axios.get(`${API}/master-skus/search-for-dispatch`, { headers: H, params: { firm_id: nf.firm_id || MGIPL, search: q, in_stock_only: false } }); setSkus((Array.isArray(data) ? data : data.skus || data.items || []).slice(0, 8)); } catch (e) { setSkus([]); }
   };
+  const lookupTicket = async (tn) => {
+    setF('ticket_number', tn); setTicketInfo(null);
+    if (!tn || tn.trim().length < 6) return;
+    try {
+      const { data } = await axios.get(`${API}/tickets`, { headers: H, params: { search: tn.trim(), limit: 3 } });
+      const list = Array.isArray(data) ? data : (data.tickets || data.items || []);
+      const t = list.find((x) => (x.ticket_number || '') === tn.trim()) || list[0];
+      if (t) { setTicketInfo(t); if (!nf.customer_name) setF('customer_name', t.customer_name || ''); }
+    } catch (e) { /* ignore */ }
+  };
   const submitNew = async () => {
-    if (!(nf.order_id || '').trim()) { toast.error('Order ID / invoice reference is required'); return; }
-    if (!(nf.customer_name || '').trim()) { toast.error('Customer name is required'); return; }
-    if (!nf.master_sku_id && !(nf.product || '').trim()) { toast.error('Enter what to ship'); return; }
+    const dt = nf.dispatch_type || 'new_order';
+    if (isTicketType(dt)) {
+      if (!(nf.ticket_number || '').trim()) { toast.error('Ticket number is required'); return; }
+    } else {
+      if (!(nf.order_id || '').trim()) { toast.error('Order ID / invoice reference is required'); return; }
+      if (!(nf.customer_name || '').trim()) { toast.error('Customer name is required'); return; }
+    }
+    // product required for new_order & spare_part; replacement/repaired default from the ticket
+    if (!nf.master_sku_id && !(nf.product || '').trim() && !['replacement', 'repaired'].includes(dt)) { toast.error('Enter what you are dispatching'); return; }
+    if ((nf.payment_mode || 'prepaid') === 'cod' && !(Number(nf.cod_amount) > 0)) { toast.error('Enter the COD amount to collect'); return; }
     setSaving(true);
     try {
-      const body = { order_id: nf.order_id.trim(), firm_id: nf.firm_id || MGIPL, customer_name: nf.customer_name, phone: nf.phone, address: nf.address, city: nf.city, state: nf.state, pincode: nf.pincode, invoice_value: nf.invoice_value };
+      const body = { dispatch_type: dt, firm_id: nf.firm_id || MGIPL, phone: nf.phone, address: nf.address, city: nf.city, state: nf.state, pincode: nf.pincode, invoice_value: nf.invoice_value, payment_mode: nf.payment_mode || 'prepaid', cod_amount: nf.cod_amount };
+      if (isTicketType(dt)) body.ticket_number = nf.ticket_number.trim(); else body.order_id = nf.order_id.trim();
+      if (nf.customer_name) body.customer_name = nf.customer_name;
       if (nf.master_sku_id) body.items = [{ master_sku_id: nf.master_sku_id, quantity: Number(nf.quantity || 1) }];
-      else body.product = nf.product;
+      else if (nf.product) body.product = nf.product;
       const { data } = await axios.post(`${API}/ship-desk/order`, body, { headers: H });
-      toast.success(`Order ${data.order_id} created → awaiting accountant`);
-      setShowNew(false); setNf({ firm_id: MGIPL }); setSkus([]); load();
-    } catch (e) { toast.error(e?.response?.data?.detail || 'Could not create the order'); }
+      const lbl = (DISPATCH_TYPES.find((x) => x.key === dt) || {}).label || 'Dispatch';
+      toast.success(`${lbl} ${data.order_id} created → awaiting accountant`);
+      setShowNew(false); setNf({ firm_id: MGIPL, dispatch_type: 'new_order', payment_mode: 'prepaid' }); setSkus([]); setTicketInfo(null); load();
+    } catch (e) { toast.error(e?.response?.data?.detail || 'Could not create the dispatch'); }
     finally { setSaving(false); }
   };
 
@@ -153,7 +181,7 @@ export default function ShipDeskBoard() {
     <IronShell title="Ship Desk" subtitle={`${board.counts?.awaiting_accountant || 0} AWAITING · ${board.counts?.ready_to_ship || 0} TO SHIP`} onRefresh={load}>
       {canEnter && (
         <div style={{ marginBottom: 12, textAlign: 'right' }}>
-          <button onClick={openNew} style={btnPrimary}>+ New order</button>
+          <button onClick={openNew} style={btnPrimary}>+ New dispatch</button>
         </div>
       )}
       {loading ? (
@@ -213,36 +241,77 @@ export default function ShipDeskBoard() {
       {showNew && (
         <div onClick={() => !saving && setShowNew(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,15,15,.45)', zIndex: 70, display: 'flex', justifyContent: 'center', alignItems: 'flex-start', paddingTop: 44 }}>
           <div onClick={(e) => e.stopPropagation()} style={{ width: 'min(560px,95%)', background: T.white, borderRadius: 10, padding: 22, boxShadow: '0 20px 60px rgba(0,0,0,.3)', maxHeight: '88vh', overflowY: 'auto' }}>
-            <div style={{ fontFamily: T.headline, fontWeight: 800, fontSize: 17, marginBottom: 4 }}>New order</div>
-            <div style={{ fontSize: 12, color: T.iron500, marginBottom: 16 }}>Enter the basics. It then waits on the accountant for invoice + tracking + label before it can ship.</div>
+            <div style={{ fontFamily: T.headline, fontWeight: 800, fontSize: 17, marginBottom: 4 }}>New dispatch</div>
+            <div style={{ fontSize: 12, color: T.iron500, marginBottom: 14 }}>What are you dispatching?</div>
+            {/* Step 1: dispatch type */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 14 }}>
+              {DISPATCH_TYPES.map((d) => {
+                const on = (nf.dispatch_type || 'new_order') === d.key;
+                return (
+                  <button key={d.key} onClick={() => { setF('dispatch_type', d.key); setTicketInfo(null); }}
+                    style={{ textAlign: 'left', padding: '9px 11px', borderRadius: 8, cursor: 'pointer',
+                      border: `1.5px solid ${on ? T.orange : T.iron200}`, background: on ? '#fff7ed' : T.white }}>
+                    <div style={{ fontWeight: 800, fontSize: 13, color: on ? T.orange : T.iron800 }}>{d.label}</div>
+                    <div style={{ fontSize: 10.5, color: T.iron500 }}>{d.sub}</div>
+                  </button>
+                );
+              })}
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              <div style={{ gridColumn: '1 / 3' }}><L>Order ID / invoice reference *</L>
-                <input style={inputStyle} placeholder="The real order / invoice / SO / challan number" value={nf.order_id || ''} onChange={(e) => setF('order_id', e.target.value)} />
-                <div style={{ fontSize: 10.5, color: T.iron400, marginTop: 3 }}>Use the actual reference the sale is known by — not auto-generated, so invoice, dispatch &amp; tracking all match.</div></div>
+              {/* Step 2a: reference — order id OR ticket number */}
+              {isTicketType(nf.dispatch_type) ? (
+                <div style={{ gridColumn: '1 / 3' }}><L>Ticket number *</L>
+                  <input style={inputStyle} placeholder="e.g. MG-R-20260219-00004" value={nf.ticket_number || ''} onChange={(e) => lookupTicket(e.target.value)} />
+                  {ticketInfo && (
+                    <div style={{ fontSize: 11, color: '#166534', background: '#f0fdf4', borderRadius: 6, padding: '5px 8px', marginTop: 4 }}>
+                      ✓ {ticketInfo.customer_name}{ticketInfo.customer_phone ? ` · ${ticketInfo.customer_phone}` : ''}{ticketInfo.product_name ? ` · ${ticketInfo.product_name}` : ''}{ticketInfo.serial_number ? ` · SN ${ticketInfo.serial_number}` : ''}
+                    </div>)}
+                  <div style={{ fontSize: 10.5, color: T.iron400, marginTop: 3 }}>Customer &amp; product come from the ticket. This is recorded on the customer's 360.</div></div>
+              ) : (
+                <div style={{ gridColumn: '1 / 3' }}><L>Order ID / invoice reference *</L>
+                  <input style={inputStyle} placeholder="The real order / invoice / SO / challan number" value={nf.order_id || ''} onChange={(e) => setF('order_id', e.target.value)} />
+                  <div style={{ fontSize: 10.5, color: T.iron400, marginTop: 3 }}>Use the actual reference the sale is known by, so invoice, dispatch &amp; tracking all match.</div></div>
+              )}
               <div style={{ gridColumn: '1 / 3' }}><L>Firm *</L>
                 <select style={inputStyle} value={nf.firm_id || MGIPL} onChange={(e) => setF('firm_id', e.target.value)}>
                   {(firms.length ? firms : [{ id: MGIPL, name: 'MGIPL' }]).map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
                 </select></div>
               <div style={{ gridColumn: '1 / 3', position: 'relative' }}>
-                <L>What to ship * {nf.master_sku_id && <span style={{ color: '#0b7d3e' }}>✓ catalogue</span>}</L>
-                <input style={inputStyle} placeholder='e.g. PCB C35, or search a product' value={nf._skuq || ''} onChange={(e) => searchSku(e.target.value)} />
+                <L>{nf.dispatch_type === 'spare_part' ? 'Which spare part *' : isTicketType(nf.dispatch_type) ? 'Item (defaults to the ticket product)' : 'What to ship *'} {nf.master_sku_id && <span style={{ color: '#0b7d3e' }}>✓ catalogue</span>}</L>
+                <input style={inputStyle} placeholder={nf.dispatch_type === 'spare_part' ? 'e.g. PCB C35, relay, display' : 'e.g. PCB C35, or search a product'} value={nf._skuq || ''} onChange={(e) => searchSku(e.target.value)} />
                 {skus.length > 0 && (
                   <div style={{ position: 'absolute', zIndex: 5, background: T.white, border: '1px solid ' + T.iron200, borderRadius: 6, width: '100%', maxHeight: 190, overflowY: 'auto', boxShadow: '0 8px 20px rgba(0,0,0,.15)' }}>
                     {skus.map((s) => <div key={s.id} onClick={() => { setF('master_sku_id', s.id); setF('product', s.name); setF('_skuq', s.name); setSkus([]); }} style={{ padding: '8px 10px', fontSize: 12.5, cursor: 'pointer', borderBottom: '1px solid ' + T.iron100 }}>{s.name}</div>)}
                   </div>)}
               </div>
-              <div style={{ gridColumn: '1 / 3' }}><L>Customer name *</L><input style={inputStyle} value={nf.customer_name || ''} onChange={(e) => setF('customer_name', e.target.value)} /></div>
-              <div><L>Phone</L><input style={inputStyle} value={nf.phone || ''} onChange={(e) => setF('phone', e.target.value)} /></div>
+              {!isTicketType(nf.dispatch_type) && (
+                <div style={{ gridColumn: '1 / 3' }}><L>Customer name *</L><input style={inputStyle} value={nf.customer_name || ''} onChange={(e) => setF('customer_name', e.target.value)} /></div>
+              )}
+              <div><L>Phone{isTicketType(nf.dispatch_type) ? ' (from ticket if blank)' : ''}</L><input style={inputStyle} value={nf.phone || ''} onChange={(e) => setF('phone', e.target.value)} /></div>
               <div><L>Pincode</L><input style={inputStyle} value={nf.pincode || ''} onChange={(e) => setF('pincode', e.target.value)} /></div>
-              <div style={{ gridColumn: '1 / 3' }}><L>Address</L><input style={inputStyle} value={nf.address || ''} onChange={(e) => setF('address', e.target.value)} /></div>
+              <div style={{ gridColumn: '1 / 3' }}><L>Address{isTicketType(nf.dispatch_type) ? ' (from ticket if blank)' : ''}</L><input style={inputStyle} value={nf.address || ''} onChange={(e) => setF('address', e.target.value)} /></div>
               <div><L>City</L><input style={inputStyle} value={nf.city || ''} onChange={(e) => setF('city', e.target.value)} /></div>
               <div><L>State</L><input style={inputStyle} value={nf.state || ''} onChange={(e) => setF('state', e.target.value)} /></div>
               <div><L>Qty</L><input type="number" min="1" style={inputStyle} value={nf.quantity || 1} onChange={(e) => setF('quantity', e.target.value)} /></div>
-              <div><L>Order value (₹)</L><input type="number" style={inputStyle} value={nf.invoice_value || ''} onChange={(e) => setF('invoice_value', e.target.value)} /></div>
+              {!isTicketType(nf.dispatch_type) && <div><L>Order value (₹)</L><input type="number" style={inputStyle} value={nf.invoice_value || ''} onChange={(e) => setF('invoice_value', e.target.value)} /></div>}
+            </div>
+            {/* Step 3: payment */}
+            <div style={{ marginTop: 14, padding: '10px 12px', border: `1px solid ${T.iron200}`, borderRadius: 8, background: T.iron50 }}>
+              <L>Payment</L>
+              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                {['prepaid', 'cod'].map((m) => {
+                  const on = (nf.payment_mode || 'prepaid') === m;
+                  return <button key={m} onClick={() => setF('payment_mode', m)} style={{ flex: 1, padding: '8px 10px', borderRadius: 7, cursor: 'pointer', fontWeight: 800, fontSize: 12.5, border: `1.5px solid ${on ? T.orange : T.iron200}`, background: on ? '#fff7ed' : T.white, color: on ? T.orange : T.iron700 }}>{m === 'cod' ? 'COD' : 'Prepaid'}</button>;
+                })}
+              </div>
+              {(nf.payment_mode || 'prepaid') === 'cod' && (
+                <div style={{ marginTop: 8 }}><L>COD amount to collect (₹) *</L>
+                  <input type="number" style={inputStyle} placeholder="Amount the courier collects" value={nf.cod_amount || ''} onChange={(e) => setF('cod_amount', e.target.value)} /></div>
+              )}
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
               <button onClick={() => setShowNew(false)} style={{ ...inputStyle, width: 'auto', cursor: 'pointer', fontFamily: T.headline, fontWeight: 700 }}>Cancel</button>
-              <button onClick={submitNew} disabled={saving} style={{ ...btnPrimary, opacity: saving ? 0.6 : 1 }}>{saving ? 'Adding…' : 'Create order'}</button>
+              <button onClick={submitNew} disabled={saving} style={{ ...btnPrimary, opacity: saving ? 0.6 : 1 }}>{saving ? 'Adding…' : 'Create dispatch'}</button>
             </div>
           </div>
         </div>
