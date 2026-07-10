@@ -23510,13 +23510,17 @@ async def dispatcher_pack_queue(user: dict = Depends(require_roles(["admin", "se
             if want and want != owner:
                 continue
             ao = ao_map.get(oid, {})
+            # The amazon_order_processing doc `a` itself carries the consignee the AGENT scraped at
+            # booking (customer_name/customer_phone/…). For API-booked orders (browser agent → Bigship
+            # API) there is NO courier_shipments panel row, so cs is empty — `a` is then the only place
+            # the real name lives (amazon_orders stays masked). Read it BEFORE the cs fallback.
             out.append({
                 "id": oid, "order_id": oid, "amazon_order_id": oid,
-                "customer_name": ao.get("buyer_name") or ao.get("customer_name_manual") or cs.get("customer_name") or cs.get("company_name") or "",
-                "phone": ao.get("phone") or ao.get("phone_manual") or cs.get("phone") or "",
-                "city": ao.get("city") or ao.get("city_manual") or cs.get("consignee_city"),
-                "state": ao.get("state") or cs.get("consignee_state"),
-                "pincode": ao.get("pincode") or ao.get("pincode_manual") or cs.get("consignee_pincode"),
+                "customer_name": ao.get("buyer_name") or ao.get("customer_name_manual") or a.get("customer_name") or cs.get("customer_name") or cs.get("company_name") or "",
+                "phone": ao.get("phone") or ao.get("phone_manual") or a.get("customer_phone") or cs.get("phone") or "",
+                "city": ao.get("city") or ao.get("city_manual") or a.get("customer_city") or cs.get("consignee_city"),
+                "state": ao.get("state") or a.get("customer_state") or cs.get("consignee_state"),
+                "pincode": ao.get("pincode") or ao.get("pincode_manual") or a.get("customer_pincode") or cs.get("consignee_pincode"),
                 "master_sku_name": title, "items": a.get("items") or [],
                 "tracking_id": a.get("awb_number"), "source": "amazon",
                 "amazon_deliver_by": ao.get("amazon_deliver_by"),
