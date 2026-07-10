@@ -2890,6 +2890,11 @@ class GateScanCreate(BaseModel):
     tracking_id: str
     courier: Optional[str] = None
     notes: Optional[str] = None
+    serial: Optional[str] = None  # unit serial scanned at the gate (outward) — binds the real unit to the order
+
+
+class GateTrackingLookup(BaseModel):
+    tracking_id: str
 
 class GateScanResponse(BaseModel):
     id: str
@@ -12977,6 +12982,63 @@ async def _gate_resolve_customer(tracking_id, ticket=None, dispatch=None):
     return None
 
 
+async def _gate_resolve_order(tracking_id: str) -> dict:
+    """Resolve the ORDER behind a scanned AWB/tracking id — for the gate's scan-tracking-then-serial flow.
+    Looks across dispatches → courier_shipments → amazon_order_processing → pending_fulfillment. Returns
+    the order id, product, customer, firm, any already-bound serials, and whether it's already scanned out."""
+    t = (tracking_id or "").strip()
+    if not t:
+        return {"found": False, "tracking_id": t}
+    d = await db.dispatches.find_one({"tracking_id": t}, {"_id": 0})
+    cs = await db.courier_shipments.find_one(
+        {"$or": [{"awb_number": t}, {"lr_number": t}, {"tracking_id": t}]}, {"_id": 0})
+    order_id = (d or {}).get("order_id") or (cs or {}).get("order_id") or (cs or {}).get("amazon_order_id")
+    aopq = {"$or": [{"awb_number": t}]}
+    if order_id:
+        aopq["$or"] += [{"order_id": order_id}, {"amazon_order_id": order_id}]
+    aop = await db.amazon_order_processing.find_one(aopq, {"_id": 0})
+    order_id = order_id or (aop or {}).get("order_id") or (aop or {}).get("amazon_order_id")
+    pfq = {"$or": [{"tracking_id": t}]}
+    if order_id:
+        pfq["$or"] += [{"order_id": order_id}, {"amazon_order_id": order_id}]
+    pf = await db.pending_fulfillment.find_one(pfq, {"_id": 0})
+    order_id = order_id or (pf or {}).get("order_id")
+    product = ((d or {}).get("product_name") or (aop or {}).get("product_title")
+               or (pf or {}).get("master_sku_name") or (cs or {}).get("product_name"))
+    firm = (aop or {}).get("firm_name") or (pf or {}).get("firm_name") or (cs or {}).get("firm_name")
+    customer = await _gate_resolve_customer(t, None, d)
+    # already-bound serials (from a prior pack/scan)
+    bound = []
+    for src in (d, aop, pf, cs):
+        if not src:
+            continue
+        for s in (src.get("bound_serials") or []):
+            if s and s not in bound:
+                bound.append(s)
+        if src.get("serial_number") and src["serial_number"] not in bound:
+            bound.append(src["serial_number"])
+        for it in (src.get("item_serials") or []):
+            sn = it.get("serial_number") if isinstance(it, dict) else it
+            if sn and sn not in bound:
+                bound.append(sn)
+    already = await db.gate_logs.find_one(
+        {"tracking_id": t, "scan_type": "outward"}, {"_id": 0, "scanned_at": 1, "serial": 1})
+    return {"found": bool(order_id or cs or aop or d), "tracking_id": t, "order_id": order_id,
+            "product": product, "customer_name": customer, "firm_name": firm,
+            "bound_serials": bound, "already_scanned_out": bool(already),
+            "already_out_at": (already or {}).get("scanned_at"),
+            "already_out_serial": (already or {}).get("serial")}
+
+
+@api_router.post("/gate/lookup-tracking")
+async def gate_lookup_tracking(
+    payload: GateTrackingLookup,
+    user: dict = Depends(require_roles(["gate", "dispatcher", "admin", "supervisor", "service_agent"]))):
+    """STEP 1 of the gate outward flow: scan the tracking id → pull up the order so the operator can verify
+    what's in front of them before scanning the unit serial. Returns found=false for an unknown AWB."""
+    return await _gate_resolve_order(payload.tracking_id)
+
+
 async def _return_otp_headsup(batch: dict):
     """(a) A new return batch arrived → tell the founder it's coming (firm-wise), OTP still held."""
     if batch.get("heads_up_sent"):
@@ -13098,9 +13160,26 @@ async def gate_scan(
         "media_count": 0,
         "images_count": 0,
         "videos_count": 0,
+        "serial": (scan_data.serial or "").strip() or None,
+        "serials": [],
+        "serial_source": None,
         "status": "pending"
     }
-    
+
+    # OUTWARD + serial scanned → bind that unit's serial to the order (scanned SSN wins: consumes stock +
+    # links the internal RSN, so the customer serial == the real unit that left the gate). Step 2 of the
+    # gate flow (operator scanned the tracking first, then the unit serial).
+    if scan_data.scan_type == "outward" and (scan_data.serial or "").strip():
+        try:
+            _o = await _gate_resolve_order(scan_data.tracking_id)
+            _oid = _o.get("order_id") or scan_data.tracking_id
+            serials, ssrc = await _resolve_or_bind_serials(_oid, scan_data.serial.strip())
+            gate_log["serials"] = serials
+            gate_log["serial_source"] = ssrc
+            gate_log["order_id"] = _oid
+        except Exception as _e:
+            logger.warning(f"gate serial bind failed for {scan_data.tracking_id}: {_e}")
+
     await db.gate_logs.insert_one(gate_log)
     
     # Handle based on scan type
