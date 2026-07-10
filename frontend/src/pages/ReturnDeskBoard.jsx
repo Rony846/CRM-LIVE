@@ -56,18 +56,36 @@ export default function ReturnDeskBoard() {
   };
 
   // ---- New pickup modal ----
+  const RETURN_TYPES = [
+    { key: 'faulty_pickup', label: 'Faulty unit', sub: 'Reverse pickup against a ticket' },
+    { key: 'refund_return', label: 'Return for refund', sub: 'Against the original order' },
+  ];
   const [showNew, setShowNew] = useState(false);
-  const [np, setNp] = useState({});
+  const [np, setNp] = useState({ return_type: 'faulty_pickup' });
+  const [ticketInfo, setTicketInfo] = useState(null);
   const [saving, setSaving] = useState(false);
   const setP = (k, v) => setNp((o) => ({ ...o, [k]: v }));
+  const isFaulty = (np.return_type || 'faulty_pickup') === 'faulty_pickup';
+  const lookupTicket = async (tn) => {
+    setP('ticket_number', tn); setTicketInfo(null);
+    if (!tn || tn.trim().length < 6) return;
+    try {
+      const { data } = await axios.get(`${API}/tickets`, { headers: H, params: { search: tn.trim(), limit: 3 } });
+      const list = Array.isArray(data) ? data : (data.tickets || data.items || []);
+      const t = list.find((x) => (x.ticket_number || '') === tn.trim()) || list[0];
+      if (t) { setTicketInfo(t); if (!np.customer_name) setP('customer_name', t.customer_name || ''); if (!np.product) setP('product', t.product_name || t.device_type || ''); }
+    } catch (e) { /* ignore */ }
+  };
   const submitNew = async () => {
-    if (!(np.customer_name || '').trim()) { toast.error('Customer name is required'); return; }
-    if (!(np.product || '').trim()) { toast.error('Enter what to pick up'); return; }
+    const rt = np.return_type || 'faulty_pickup';
+    if (rt === 'faulty_pickup' && !(np.ticket_number || '').trim()) { toast.error('Ticket number is required'); return; }
+    if (!(np.customer_name || '').trim() && !(np.ticket_number || '').trim()) { toast.error('Customer name is required'); return; }
+    if (!(np.product || '').trim() && !(np.ticket_number || '').trim()) { toast.error('Enter what to pick up'); return; }
     setSaving(true);
     try {
       const { data } = await axios.post(`${API}/return-desk/pickup`, np, { headers: H });
       toast.success(`Pickup ${data.pickup_id} created → awaiting label`);
-      setShowNew(false); setNp({}); load();
+      setShowNew(false); setNp({ return_type: 'faulty_pickup' }); setTicketInfo(null); load();
     } catch (e) { toast.error(e?.response?.data?.detail || 'Could not create the pickup'); }
     finally { setSaving(false); }
   };
@@ -123,17 +141,40 @@ export default function ReturnDeskBoard() {
         <div onClick={() => !saving && setShowNew(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,15,15,.45)', zIndex: 70, display: 'flex', justifyContent: 'center', alignItems: 'flex-start', paddingTop: 44 }}>
           <div onClick={(e) => e.stopPropagation()} style={{ width: 'min(560px,95%)', background: T.white, borderRadius: 10, padding: 22, boxShadow: '0 20px 60px rgba(0,0,0,.3)', maxHeight: '88vh', overflowY: 'auto' }}>
             <div style={{ fontFamily: T.headline, fontWeight: 800, fontSize: 17, marginBottom: 4 }}>Arrange a pickup</div>
-            <div style={{ fontSize: 12, color: T.iron500, marginBottom: 16 }}>Reverse pickup from a customer. The accountant then uploads the label, which is WhatsApp'd + emailed to the customer and shown in their portal.</div>
+            <div style={{ fontSize: 12, color: T.iron500, marginBottom: 14 }}>What are you picking up? The accountant then uploads the label, which is WhatsApp'd + emailed to the customer and shown in their portal.</div>
+            {/* return type */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 14 }}>
+              {RETURN_TYPES.map((d) => {
+                const on = (np.return_type || 'faulty_pickup') === d.key;
+                return (
+                  <button key={d.key} onClick={() => { setP('return_type', d.key); setTicketInfo(null); }}
+                    style={{ textAlign: 'left', padding: '9px 11px', borderRadius: 8, cursor: 'pointer', border: `1.5px solid ${on ? T.orange : T.iron200}`, background: on ? '#fff7ed' : T.white }}>
+                    <div style={{ fontWeight: 800, fontSize: 13, color: on ? T.orange : T.iron800 }}>{d.label}</div>
+                    <div style={{ fontSize: 10.5, color: T.iron500 }}>{d.sub}</div>
+                  </button>
+                );
+              })}
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              <div style={{ gridColumn: '1 / 3' }}><L>Customer name *</L><input style={inputStyle} value={np.customer_name || ''} onChange={(e) => setP('customer_name', e.target.value)} /></div>
+              {isFaulty ? (
+                <div style={{ gridColumn: '1 / 3' }}><L>Ticket number *</L>
+                  <input style={inputStyle} placeholder="e.g. MG-R-20260219-00004" value={np.ticket_number || ''} onChange={(e) => lookupTicket(e.target.value)} />
+                  {ticketInfo && (
+                    <div style={{ fontSize: 11, color: '#166534', background: '#f0fdf4', borderRadius: 6, padding: '5px 8px', marginTop: 4 }}>
+                      ✓ {ticketInfo.customer_name}{ticketInfo.customer_phone ? ` · ${ticketInfo.customer_phone}` : ''}{ticketInfo.product_name ? ` · ${ticketInfo.product_name}` : ''}{ticketInfo.serial_number ? ` · SN ${ticketInfo.serial_number}` : ''}
+                    </div>)}
+                  <div style={{ fontSize: 10.5, color: T.iron400, marginTop: 3 }}>Customer &amp; product come from the ticket; the pickup is recorded on it.</div></div>
+              ) : (
+                <div style={{ gridColumn: '1 / 3' }}><L>Original order / invoice ref *</L><input style={inputStyle} placeholder="The order the unit is being returned against" value={np.original_ref || ''} onChange={(e) => setP('original_ref', e.target.value)} /></div>
+              )}
+              <div style={{ gridColumn: '1 / 3' }}><L>Customer name{isFaulty ? ' (from ticket if blank)' : ' *'}</L><input style={inputStyle} value={np.customer_name || ''} onChange={(e) => setP('customer_name', e.target.value)} /></div>
               <div><L>Phone (for WhatsApp)</L><input style={inputStyle} value={np.phone || ''} onChange={(e) => setP('phone', e.target.value)} /></div>
               <div><L>Email</L><input style={inputStyle} value={np.email || ''} onChange={(e) => setP('email', e.target.value)} /></div>
-              <div style={{ gridColumn: '1 / 3' }}><L>What to pick up *</L><input style={inputStyle} placeholder="e.g. MG 8KVA 90V stabilizer (faulty)" value={np.product || ''} onChange={(e) => setP('product', e.target.value)} /></div>
-              <div style={{ gridColumn: '1 / 3' }}><L>Reason</L><input style={inputStyle} placeholder="repair / replacement / return" value={np.reason || ''} onChange={(e) => setP('reason', e.target.value)} /></div>
+              <div style={{ gridColumn: '1 / 3' }}><L>What to pick up{isFaulty ? ' (from ticket if blank)' : ' *'}</L><input style={inputStyle} placeholder="e.g. MG 8KVA 90V stabilizer (faulty)" value={np.product || ''} onChange={(e) => setP('product', e.target.value)} /></div>
+              <div style={{ gridColumn: '1 / 3' }}><L>Reason / notes</L><input style={inputStyle} placeholder={isFaulty ? 'e.g. not powering on, display fault' : 'e.g. buyer refund, DOA'} value={np.reason || ''} onChange={(e) => setP('reason', e.target.value)} /></div>
               <div style={{ gridColumn: '1 / 3' }}><L>Address</L><input style={inputStyle} value={np.address || ''} onChange={(e) => setP('address', e.target.value)} /></div>
               <div><L>City</L><input style={inputStyle} value={np.city || ''} onChange={(e) => setP('city', e.target.value)} /></div>
               <div><L>Pincode</L><input style={inputStyle} value={np.pincode || ''} onChange={(e) => setP('pincode', e.target.value)} /></div>
-              <div style={{ gridColumn: '1 / 3' }}><L>Original order / ticket ref (optional)</L><input style={inputStyle} value={np.original_ref || ''} onChange={(e) => setP('original_ref', e.target.value)} /></div>
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
               <button onClick={() => setShowNew(false)} style={{ ...inputStyle, width: 'auto', cursor: 'pointer', fontFamily: T.headline, fontWeight: 700 }}>Cancel</button>

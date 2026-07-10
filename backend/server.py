@@ -24462,36 +24462,69 @@ async def _return_desk_deliver(rp: dict, label_bytes: bytes):
         await db.return_pickups.update_one({"pickup_id": pid}, {"$set": sets})
 
 
+_RETURN_TYPES = {"faulty_pickup", "refund_return"}
+_RETURN_LABEL = {"faulty_pickup": "Faulty unit (reverse pickup)", "refund_return": "Return for refund"}
+
+
 @api_router.post("/return-desk/pickup")
 async def return_desk_create(payload: dict = Body(...),
                              user: dict = Depends(require_roles(RETURN_DESK_ENTRY_ROLES))):
-    """Arrange a reverse pickup — enter the basics; it then waits on the accountant for the RVP label."""
-    customer = (payload.get("customer_name") or "").strip()
+    """Arrange a reverse pickup. Two kinds: a FAULTY unit against a ticket (customer + product come from
+    the ticket), or a unit RETURNED for a refund (against the original order). Waits on the accountant for
+    the reverse-pickup label."""
+    return_type = (payload.get("return_type") or "faulty_pickup").strip().lower()
+    if return_type not in _RETURN_TYPES:
+        return_type = "faulty_pickup"
+    ticket = None
+    ticket_number = (payload.get("ticket_number") or "").strip()
+    if return_type == "faulty_pickup" and not ticket_number:
+        raise HTTPException(status_code=400, detail="A ticket number is required for a faulty-unit reverse pickup")
+    if ticket_number:
+        ticket = await db.tickets.find_one({"ticket_number": ticket_number}, {"_id": 0})
+        if not ticket:
+            raise HTTPException(status_code=404, detail=f"Ticket {ticket_number} not found")
+
+    customer = (payload.get("customer_name") or "").strip() or (ticket.get("customer_name") if ticket else "")
     if not customer:
         raise HTTPException(status_code=400, detail="Customer name is required")
     product = (payload.get("product") or payload.get("master_sku_name") or "").strip()
+    if not product and ticket:
+        product = ticket.get("product_name") or ticket.get("device_type") or ""
     if not product:
         raise HTTPException(status_code=400, detail="What to pick up is required")
+    phone = re.sub(r"\D", "", str(payload.get("phone") or (ticket.get("customer_phone") if ticket else "")))[-10:]
+    address = payload.get("address") or (ticket.get("customer_address") if ticket else None)
+    city = payload.get("city") or (ticket.get("customer_city") if ticket else None)
+    reason = (payload.get("reason") or "").strip() or _RETURN_LABEL[return_type]
+
     now = datetime.now(timezone.utc).isoformat()
     fid = str(uuid.uuid4())
     pickup_id = f"RVP-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{fid[:4].upper()}"
     doc = {"id": fid, "pickup_id": pickup_id, "source": "return_desk", "is_return": True,
+           "return_type": return_type, "ticket_number": ticket_number or None,
            "stage": "awaiting_label", "status": "awaiting_label",
-           "customer_name": customer, "phone": re.sub(r"\D", "", str(payload.get("phone") or ""))[-10:],
-           "email": (payload.get("email") or "").strip(),
-           "address": payload.get("address"), "city": payload.get("city"), "state": payload.get("state"),
+           "customer_name": customer, "phone": phone, "email": (payload.get("email") or (ticket.get("customer_email") if ticket else "") or "").strip(),
+           "address": address, "city": city, "state": payload.get("state"),
            "pincode": re.sub(r"\D", "", str(payload.get("pincode") or "")),
-           "product": product, "reason": payload.get("reason"), "original_ref": payload.get("original_ref"),
+           "product": product, "reason": reason, "original_ref": payload.get("original_ref") or ticket_number,
+           "serial_number": (ticket.get("serial_number") if ticket else None),
            "firm_id": payload.get("firm_id") or _MGIPL_FIRM,
            "created_at": now, "created_by": user.get("email") or user.get("name"), "created_by_role": user.get("role")}
     await db.return_pickups.insert_one(doc)
+
+    # Record the reverse pickup on the ticket so Customer 360 / the ticket shows it.
+    if ticket:
+        await db.tickets.update_one({"ticket_number": ticket_number}, {"$push": {"history": {
+            "action": "Reverse pickup arranged", "notes": f"{product} · {reason} · {pickup_id}",
+            "by": user.get("email") or user.get("name"), "timestamp": now}}})
+
     try:
         await create_notification(title="↩️ New pickup — needs a reverse-pickup label",
-            message=f"{customer} — {product}. Upload the RVP label to arrange collection.",
+            message=f"{customer} — {product} ({_RETURN_LABEL[return_type]})" + (f" · ticket {ticket_number}" if ticket_number else "") + ". Upload the RVP label to arrange collection.",
             notification_type="return_desk", link="/return-desk", target_roles=["accountant", "admin"], priority="normal")
     except Exception:
         pass
-    return {"success": True, "pickup_id": pickup_id, "stage": "awaiting_label"}
+    return {"success": True, "pickup_id": pickup_id, "return_type": return_type, "stage": "awaiting_label"}
 
 
 @api_router.post("/return-desk/pickup/{pickup_id}/label")
