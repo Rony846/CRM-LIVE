@@ -83462,10 +83462,11 @@ def _omni_intent(issue, product, summary, transcript) -> str:
     return ""
 
 
-async def _omnidim_autocreate(call_doc: dict, linked_ticket, summary, transcript):
+async def _omnidim_autocreate(call_doc: dict, linked_ticket, summary, transcript, notify: bool = True):
     """From a post-call: auto-create a SUPPORT ticket (technical calls) or a SALES lead (buying calls) so
     nothing falls through. Needs a real customer number. Deduped: skip a ticket if an open one already
-    exists for the phone; enrich an existing open lead instead of duplicating. Returns {ticket?, lead?}."""
+    exists for the phone; enrich an existing open lead instead of duplicating. Returns {ticket?, lead?}.
+    notify=False suppresses per-record staff notifications (used by the bulk historical backfill)."""
     digits = call_doc.get("phone")
     if not digits or len(digits) != 10:
         return {}
@@ -83509,7 +83510,8 @@ async def _omnidim_autocreate(call_doc: dict, linked_ticket, summary, transcript
             await db.omnidim_calls.update_one({"id": call_doc["id"]},
                 {"$set": {"auto_ticket": tnum, "intent": "support"}})
             try:
-                await create_notification(
+                if notify:
+                  await create_notification(
                     title="New support ticket (voice)",
                     message=f"{name or digits}: {subject}", notification_type="ticket_created",
                     target_roles=["admin", "call_support"], link=f"/tickets")
@@ -83550,7 +83552,8 @@ async def _omnidim_autocreate(call_doc: dict, linked_ticket, summary, transcript
         await db.omnidim_calls.update_one({"id": call_doc["id"]},
             {"$set": {"auto_lead": lead_id, "intent": "sales"}})
         try:
-            await create_notification(
+            if notify:
+              await create_notification(
                 title="New sales lead (voice)",
                 message=f"{name or digits}" + (f" — {product}" if product else "")
                         + (f" · {assignee.get('name')}" if assignee else ""),
@@ -83681,6 +83684,44 @@ async def admin_omnidim_call_detail(call_id: str, current_user: dict = Depends(g
     if not d:
         raise HTTPException(status_code=404, detail="Call not found")
     return d
+
+
+@api_router.post("/admin/omnidim-backfill-actions")
+async def admin_omnidim_backfill_actions(days: int = 30, dry_run: bool = True,
+                                         current_user: dict = Depends(get_current_user)):
+    """One-shot: turn recent Omnidim calls that carry a real customer number into SUPPORT tickets / SALES
+    leads via the same _omnidim_autocreate logic (deduped; notifications suppressed for the bulk run).
+    dry_run=true just reports what WOULD be created. Oldest-first so ticket numbers stay chronological."""
+    if current_user.get("role") not in ("admin",):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    since = (datetime.now(timezone.utc) - timedelta(days=max(1, days))).isoformat()
+    q = {"received_at": {"$gte": since}, "phone": {"$nin": [None, ""]},
+         "auto_ticket": {"$in": [None, ""]}, "auto_lead": {"$in": [None, ""]}}
+    calls = await db.omnidim_calls.find(q, {"_id": 0}).sort("received_at", 1).to_list(5000)
+    tickets = leads = skipped = 0
+    for c in calls:
+        if len(re.sub(r"\D", "", str(c.get("phone") or ""))[-10:]) != 10:
+            skipped += 1
+            continue
+        intent = _omni_intent(c.get("technical_issue"), c.get("product"), c.get("summary"), c.get("transcript"))
+        if not intent:
+            skipped += 1
+            continue
+        if dry_run:
+            if intent == "support":
+                tickets += 1
+            else:
+                leads += 1
+            continue
+        res = await _omnidim_autocreate(c, None, c.get("summary"), c.get("transcript"), notify=False)
+        if res.get("ticket") and "(existing)" not in str(res.get("ticket")):
+            tickets += 1
+        elif res.get("lead"):
+            leads += 1
+        else:
+            skipped += 1
+    return {"dry_run": dry_run, "days": days, "scanned": len(calls),
+            "tickets_created": tickets, "leads_created_or_updated": leads, "skipped": skipped}
 
 
 @api_router.get("/admin/whatsapp-chats")
