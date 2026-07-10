@@ -55,6 +55,29 @@ export default function QuotationList() {
   const [convertDialogOpen, setConvertDialogOpen] = useState(false);
   const [convertType, setConvertType] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
+  // Send-to-Ship-Desk (attach payment proof)
+  const [shipDlgOpen, setShipDlgOpen] = useState(false);
+  const [shipQ, setShipQ] = useState(null);
+  const [proofFile, setProofFile] = useState(null);
+  const [payRef, setPayRef] = useState('');
+  const [payAmt, setPayAmt] = useState('');
+  const canShipDesk = ['call_support', 'admin', 'accountant', 'supervisor', 'service_agent'].includes(user?.role);
+  const openShipDlg = (q) => { setShipQ(q); setProofFile(null); setPayRef(''); setPayAmt(q.grand_total ? Math.round(q.grand_total) : ''); setShipDlgOpen(true); };
+  const handleSendToShipDesk = async () => {
+    if (!proofFile) { toast.error('Attach the payment proof'); return; }
+    setActionLoading(true);
+    try {
+      const fd = new FormData();
+      fd.append('payment_proof', proofFile);
+      if (payRef.trim()) fd.append('payment_ref', payRef.trim());
+      if (payAmt) fd.append('payment_amount', String(payAmt));
+      const { data } = await axios.post(`${API}/quotations/${encodeURIComponent(shipQ.quotation_number)}/to-ship-desk`, fd,
+        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' } });
+      toast.success(`Sent to Ship Desk (${data.order_id}) — accountant will review payment & upload invoice/label`);
+      setShipDlgOpen(false); fetchQuotations();
+    } catch (e) { toast.error(e?.response?.data?.detail || 'Could not send to Ship Desk'); }
+    finally { setActionLoading(false); }
+  };
 
   useEffect(() => {
     if (token) {
@@ -423,6 +446,16 @@ export default function QuotationList() {
                             {q.status === 'approved' && !q.converted_at && ['admin', 'accountant'].includes(user?.role) && (
                               <button onClick={() => handleOpenConvertDialog(q)} data-testid="convert-btn" style={rowPrimaryStyle}><ArrowRight size={13} /> Convert</button>
                             )}
+
+                            {q.status === 'approved' && !q.ship_desk_order_id && !q.converted_at && canShipDesk && (
+                              <>
+                                <button onClick={() => navigate(`/quotations/edit/${q.id}`)} title="Edit the PI before sending" style={rowOutlineOrange}>Edit PI</button>
+                                <button onClick={() => openShipDlg(q)} title="Attach payment proof & send to Ship Desk" style={rowPrimaryStyle}><Truck size={13} /> To Ship Desk</button>
+                              </>
+                            )}
+                            {q.ship_desk_order_id && (
+                              <span style={{ fontSize: 11, color: T.green, fontWeight: 700, display: 'inline-flex', gap: 3, alignItems: 'center' }}><Truck size={12} /> On Ship Desk</span>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -684,6 +717,38 @@ export default function QuotationList() {
               style={{ background: T.orange, color: '#fff' }}>
               {actionLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <ArrowRight className="w-4 h-4 mr-2" />}
               {convertType === 'pending_fulfillment' ? 'Go to PI Pending Action' : `Convert to ${convertType ? CONVERSION_TYPES.find(t => t.value === convertType)?.label.split(' ')[0] : '...'}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Send to Ship Desk — attach payment proof */}
+      <Dialog open={shipDlgOpen} onOpenChange={setShipDlgOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Truck className="w-5 h-5" style={{ color: T.orange }} /> Send to Ship Desk</DialogTitle>
+          </DialogHeader>
+          <div style={{ fontSize: 13, color: T.iron600, marginBottom: 8 }}>
+            {shipQ && <>PI <b>{shipQ.quotation_number}</b> — {shipQ.customer_name}{shipQ.grand_total ? ` · ₹${Math.round(shipQ.grand_total).toLocaleString('en-IN')}` : ''}.</>}
+            <div style={{ marginTop: 4 }}>Attach the customer's payment proof. The accountant then reviews it and uploads the invoice + shipping label to release the order.</div>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div>
+              <Label style={{ fontSize: 11, color: T.iron500 }}>Payment proof (PDF / image) *</Label>
+              <input type="file" accept="application/pdf,image/*" onChange={(e) => setProofFile(e.target.files?.[0] || null)} style={{ fontSize: 13, marginTop: 4 }} />
+              {proofFile && <div style={{ fontSize: 11, color: T.iron500, marginTop: 3 }}>{proofFile.name}</div>}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <div style={{ flex: 1 }}><Label style={{ fontSize: 11, color: T.iron500 }}>UTR / payment ref</Label>
+                <input value={payRef} onChange={(e) => setPayRef(e.target.value)} placeholder="optional" style={{ width: '100%', border: `1px solid ${T.iron200}`, borderRadius: 6, padding: '7px 9px', fontSize: 13, marginTop: 4 }} /></div>
+              <div style={{ width: 130 }}><Label style={{ fontSize: 11, color: T.iron500 }}>Amount ₹</Label>
+                <input type="number" value={payAmt} onChange={(e) => setPayAmt(e.target.value)} style={{ width: '100%', border: `1px solid ${T.iron200}`, borderRadius: 6, padding: '7px 9px', fontSize: 13, marginTop: 4 }} /></div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShipDlgOpen(false)}>Cancel</Button>
+            <Button onClick={handleSendToShipDesk} disabled={actionLoading || !proofFile} style={{ background: T.orange, color: '#fff' }}>
+              {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Truck className="w-4 h-4" />} Send to Ship Desk
             </Button>
           </DialogFooter>
         </DialogContent>

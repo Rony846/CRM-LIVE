@@ -24248,9 +24248,11 @@ async def ship_desk_board(user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROL
                 "required": req, "present": present, "missing": [r for r in req if r not in present],
                 "owner_label": d.get("owner_label"), "created_by": d.get("created_by"),
                 "created_at": d.get("created_at"), "tracking_id": d.get("tracking_id"),
-                "sent_back_reason": d.get("sent_back_reason")}
+                "sent_back_reason": d.get("sent_back_reason"),
+                "pi_number": d.get("pi_number"), "has_payment_proof": bool(d.get("payment_proof_path")),
+                "payment_amount": d.get("payment_amount"), "payment_ref": d.get("payment_ref")}
     awaiting = [card(d) async for d in db.pending_fulfillment.find(
-        {"source": "ship_desk", "stage": "awaiting_accountant"}, {"_id": 0}).sort("created_at", -1)]
+        {"source": {"$in": ["ship_desk", "pi_paid"]}, "stage": "awaiting_accountant"}, {"_id": 0}).sort("created_at", -1)]
     ready_q = {"source": "ship_desk", "stage": "ready_to_ship", "pack_stage": {"$ne": "packed"}}
     ready = []
     async for d in db.pending_fulfillment.find(ready_q, {"_id": 0}).sort("created_at", -1):
@@ -24384,9 +24386,10 @@ async def ship_desk_download_file(order_id: str, kind: str, awb: str = Query(Non
                                   user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROLES + ["dispatcher", "gate"]))):
     """Download an attached ship-desk doc: kind = invoice | label | eway. For Amazon/Bigship orders the
     label isn't stored locally — fall back to pulling it straight from Bigship by AWB/order."""
-    field = {"invoice": "invoice_path", "label": "shipping_label_path", "eway": "eway_path"}.get((kind or "").lower())
+    field = {"invoice": "invoice_path", "label": "shipping_label_path", "eway": "eway_path",
+             "payment_proof": "payment_proof_path"}.get((kind or "").lower())
     if not field:
-        raise HTTPException(status_code=400, detail="kind must be invoice, label or eway")
+        raise HTTPException(status_code=400, detail="kind must be invoice, label, eway or payment_proof")
     d = await db.pending_fulfillment.find_one({"order_id": order_id}, {"_id": 0, field: 1})
     path = (d or {}).get(field)
     from utils.storage import download_file as _dl_sd
@@ -24417,6 +24420,65 @@ async def ship_desk_slip(order_id: str,
     pdf = generate_packing_slip_pdf(ps_doc)
     return _Resp(content=pdf, media_type="application/pdf",
                  headers={"Content-Disposition": f'inline; filename="slip_{str(order_id)[-8:]}.pdf"'})
+
+
+@api_router.post("/quotations/{quotation_number}/to-ship-desk")
+async def quotation_to_ship_desk(quotation_number: str, payment_proof: UploadFile = File(...),
+                                 payment_ref: str = Form(None), payment_amount: str = Form(None),
+                                 user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROLES))):
+    """Call support pushes a PAID Proforma Invoice to the Ship Desk: attach the customer's payment proof
+    and snapshot the PI's items/customer into a ship-desk order (awaiting_accountant). The accountant then
+    reviews the payment proof and uploads the tax invoice + shipping label to release it to Gaurav/Angad."""
+    q = await db.quotations.find_one({"quotation_number": quotation_number}, {"_id": 0})
+    if not q:
+        raise HTTPException(status_code=404, detail="PI / quotation not found")
+    if q.get("ship_desk_order_id"):
+        raise HTTPException(status_code=400, detail=f"This PI is already on the Ship Desk ({q['ship_desk_order_id']})")
+    data = await payment_proof.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty payment-proof file")
+    from utils.storage import upload_file as _up
+    proof_path, _ = await _up(data, "ship_desk_docs", payment_proof.filename or "payment_proof.pdf", filename_prefix="payment_proof")
+    items = []
+    for it in (q.get("items") or []):
+        items.append({"master_sku_id": it.get("master_sku_id"),
+                      "master_sku_name": it.get("name") or it.get("master_sku_name"),
+                      "sku_code": it.get("sku_code"), "hsn_code": it.get("hsn_code"),
+                      "gst_rate": it.get("gst_rate", 18), "quantity": int(it.get("quantity") or 1)})
+    if not items:
+        raise HTTPException(status_code=400, detail="This PI has no items")
+    val = float(q.get("grand_total") or q.get("total_amount") or 0)
+    now = datetime.now(timezone.utc).isoformat()
+    fid = str(uuid.uuid4())
+    order_id = quotation_number   # the PI number IS the order reference
+    if await db.pending_fulfillment.find_one({"order_id": order_id}, {"_id": 1}):
+        order_id = f"{quotation_number}-{fid[:4].upper()}"
+    doc = {
+        "id": fid, "order_id": order_id, "type": "ship_desk_order", "source": "ship_desk",
+        "from_pi": True, "pi_number": quotation_number, "dispatch_type": "new_order",
+        "firm_id": q.get("firm_id") or _MGIPL_FIRM, "firm_name": q.get("firm_name"),
+        "stage": "awaiting_accountant", "status": "awaiting_accountant", "required_docs": _ship_desk_required(val),
+        "customer_name": q.get("customer_name"), "phone": re.sub(r"\D", "", str(q.get("customer_phone") or ""))[-10:],
+        "address": q.get("customer_address"), "city": q.get("customer_city"), "state": q.get("customer_state"),
+        "pincode": re.sub(r"\D", "", str(q.get("customer_pincode") or "")),
+        "items": items, "master_sku_id": items[0].get("master_sku_id"), "master_sku_name": items[0].get("master_sku_name"),
+        "quantity": sum(i["quantity"] for i in items), "invoice_value": val,
+        "payment_proof_path": proof_path, "payment_ref": (payment_ref or "").strip() or None,
+        "payment_amount": float(payment_amount) if payment_amount else val,
+        "payment_proof_by": user.get("email") or user.get("name"), "payment_proof_at": now,
+        "order_id_generated": False, "invoice_number": None,
+        "created_at": now, "created_by": user.get("email") or user.get("name"), "created_by_role": user.get("role")}
+    await db.pending_fulfillment.insert_one(doc)
+    await db.quotations.update_one({"quotation_number": quotation_number}, {"$set": {
+        "status": "converted", "conversion_type": "ship_desk", "conversion_reference_id": order_id,
+        "converted_at": now, "ship_desk_order_id": order_id, "payment_proof_path": proof_path, "paid_at": now}})
+    try:
+        await create_notification(title="💰 Paid PI → Ship Desk — review payment",
+            message=f"{q.get('customer_name')} — {items[0].get('master_sku_name')} · ₹{val:,.0f} ({quotation_number}). Review the payment proof, then upload the invoice + shipping label.",
+            notification_type="ship_desk", link="/ship-desk", target_roles=["accountant", "admin"], priority="high")
+    except Exception:
+        pass
+    return {"success": True, "order_id": order_id, "stage": "awaiting_accountant"}
 
 
 # ===================== RETURN DESK — reverse-pickup pipeline =====================

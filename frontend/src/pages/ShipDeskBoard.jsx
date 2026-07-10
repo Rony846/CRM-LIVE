@@ -212,6 +212,11 @@ export default function ShipDeskBoard() {
           <Lane title="Awaiting accountant" tint="#fef2f2" items={board.awaiting_accountant || []} render={(o) => (
             <Card key={o.order_id} o={o}>
               {o.sent_back_reason && <div style={{ fontSize: 10.5, color: '#991b1b', background: '#fef2f2', borderRadius: 4, padding: '3px 6px', marginTop: 6 }}>↩ Sent back: {o.sent_back_reason}</div>}
+              {o.pi_number && (
+                <div style={{ fontSize: 10.5, color: '#166534', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 4, padding: '4px 6px', marginTop: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+                  <span>💰 Paid PI {o.pi_number}{o.payment_amount ? ` · ₹${Math.round(o.payment_amount).toLocaleString('en-IN')}` : ''}{o.payment_ref ? ` · ${o.payment_ref}` : ''}</span>
+                  {o.has_payment_proof && <button onClick={() => download(o.order_id, 'file/payment_proof', `payment_${o.order_id}.pdf`)} style={{ border: 'none', background: 'none', color: '#166534', cursor: 'pointer', fontWeight: 700, fontSize: 10.5, display: 'inline-flex', gap: 3, alignItems: 'center', whiteSpace: 'nowrap' }}><Download size={11} />Proof</button>}
+                </div>)}
               <div style={{ marginTop: 6 }}>{(o.required || []).map((k) => <Chip key={k} ok={(o.present || []).includes(k)} label={DOC_LABEL[k]} />)}</div>
               {isAcct && (
                 <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
