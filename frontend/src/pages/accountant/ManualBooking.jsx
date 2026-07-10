@@ -129,12 +129,14 @@ export default function ManualBooking() {
   const pickSkuRow = (i, s) => { setItem(i, 'master_sku_id', s.id); setItem(i, '_name', s.name); setItem(i, '_q', s.name); setSkuRes((ss) => ({ ...ss, [i]: [] })); };
 
   const submitOffline = async () => {
+    if (!(off.order_id || '').trim()) { toast.error('Order ID / invoice number is required'); return; }
     if (!(off.customer_name || '').trim()) { toast.error('Customer name is required'); return; }
     const items = (off.items || []).filter((it) => it.master_sku_id).map((it) => ({ master_sku_id: it.master_sku_id, quantity: Number(it.quantity || 1) }));
     if (!items.length) { toast.error('Add at least one product'); return; }
     setOffSaving(true);
     try {
       const { data } = await axios.post(`${API}/accountant/offline-order`, {
+        order_id: off.order_id.trim(),
         firm_id: off.firm_id || MGIPL, customer_name: off.customer_name, phone: off.phone, address: off.address,
         city: off.city, state: off.state, pincode: off.pincode, invoice_value: off.invoice_value,
         tracking_id: off.tracking_id, courier: off.courier, eway_bill_number: off.eway_bill_number, items,
@@ -164,6 +166,9 @@ export default function ManualBooking() {
             <div style={{ fontFamily: T.headline, fontWeight: 800, fontSize: 17, marginBottom: 4 }}>Add offline order</div>
             <div style={{ fontSize: 12, color: T.iron500, marginBottom: 16 }}>Direct / dealer / walk-in order for any firm. Non-Amazon orders release to Gaurav / Angad once the invoice is uploaded.</div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div style={{ gridColumn: '1 / 3' }}><L>Order ID / invoice number *</L>
+                <input style={inputStyle} placeholder="The real invoice / order number, e.g. MGIPL/26-27/592" value={off.order_id || ''} onChange={(e) => setO('order_id', e.target.value)} />
+                <div style={{ fontSize: 10.5, color: T.iron400, marginTop: 3 }}>Use the actual invoice number — not auto-generated, so the ship desk & tracking match the invoice.</div></div>
               <div style={{ gridColumn: '1 / 3' }}><L>Firm *</L>
                 <select style={inputStyle} value={off.firm_id || MGIPL} onChange={(e) => setO('firm_id', e.target.value)}>
                   {(firms.length ? firms : [{ id: MGIPL, name: 'MGIPL' }]).map((f) => <option key={f.id} value={f.id}>{f.name}{f.gstin ? ` · ${f.gstin}` : ''}</option>)}

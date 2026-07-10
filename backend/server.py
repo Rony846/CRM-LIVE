@@ -23374,6 +23374,9 @@ async def _order_dispatch_owners(entry: dict) -> set:
 _AMZ_OID_RE = re.compile(r"\d{3}-\d{7}-\d{7}")
 
 
+_GENERATED_OID_RE = re.compile(r"-(OFF|SD)-\d{8}-[A-Z0-9]{4}$")
+
+
 def _clean_ship_ref(*vals):
     """Return the first non-empty order reference, stripped of the trailing '-' the Bigship panel scrape
     tacks on (e.g. '402-2674569-9228342-' → '402-2674569-9228342', 'DC/2026-27/144' unchanged)."""
@@ -23432,6 +23435,17 @@ async def dispatcher_pack_queue(user: dict = Depends(require_roles(["admin", "se
     q = {"status": {"$in": ["ready_to_dispatch", "pending_dispatch", "ready", "pending"]},
          "pack_stage": "ready_to_pack"}
     entries = await db.pending_fulfillment.find(q, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    # An offline order booked in the Bigship panel carries the REAL invoice/order ref on courier_shipments
+    # (e.g. MGIPL/26-27/592). If the pending_fulfillment id was auto-generated (…-OFF-… / …-SD-…), show that
+    # real ref instead so the desk never displays a synthetic id.
+    pf_awbs = [e.get("tracking_id") for e in entries if e.get("tracking_id")]
+    awb_real_ref = {}
+    if pf_awbs:
+        async for cs in db.courier_shipments.find({"awb_number": {"$in": pf_awbs}},
+                {"_id": 0, "awb_number": 1, "invoice_number": 1, "panel_order_ref": 1}):
+            rr = _clean_ship_ref(cs.get("invoice_number"), cs.get("panel_order_ref"))
+            if rr and not _AMZ_OID_RE.search(rr):   # a real invoice no, not an Amazon order id
+                awb_real_ref[cs["awb_number"]] = rr
     out = []
     for e in entries:
         owners = await _order_dispatch_owners(e)
@@ -23441,6 +23455,12 @@ async def dispatcher_pack_queue(user: dict = Depends(require_roles(["admin", "se
         items = e.get("items") or []
         if not e.get("master_sku_name") and items:
             e["master_sku_name"] = items[0].get("master_sku_name") or items[0].get("title") or items[0].get("product_name")
+        # show the real invoice ref from the linked Bigship shipment when the id was auto-generated
+        rr = awb_real_ref.get(e.get("tracking_id"))
+        if rr and (_GENERATED_OID_RE.search(str(e.get("order_id") or "")) or e.get("order_id_generated")):
+            e["order_id_internal"] = e.get("order_id")
+            e["order_id"] = rr
+            e["invoice_number"] = rr
         e["dispatch_owners"] = sorted(owners)
         e["owner_label"] = ("Combo → both" if owners == {"inverter", "rest"}
                             else "Inverter → Gaurav" if owners == {"inverter"}
@@ -23815,9 +23835,15 @@ async def create_offline_order(payload: dict = Body(...),
     now = datetime.now(timezone.utc).isoformat()
     fid = str(uuid.uuid4())
     code = (firm.get("code") or "".join(w[0] for w in (firm.get("name") or "MG").split())[:4]).upper()
-    order_id = (payload.get("order_id") or "").strip() or f"{code}-OFF-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{fid[:4].upper()}"
+    # Use the REAL invoice/order number the accountant typed; only auto-generate as a legacy fallback and
+    # flag it so the ship desk can self-heal from the linked Bigship invoice.
+    supplied_oid = (payload.get("order_id") or "").strip()
+    order_id = supplied_oid or f"{code}-OFF-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{fid[:4].upper()}"
+    if supplied_oid and await db.pending_fulfillment.find_one({"order_id": order_id}, {"_id": 1}):
+        raise HTTPException(status_code=400, detail=f"Order ID '{order_id}' already exists — use the real, unique invoice number")
     doc = {
-        "id": fid, "order_id": order_id, "type": "offline_order", "source": "accountant_offline",
+        "id": fid, "order_id": order_id, "invoice_number": supplied_oid or None,
+        "order_id_generated": not supplied_oid, "type": "offline_order", "source": "accountant_offline",
         "firm_id": firm_id, "firm_name": firm.get("name"), "status": "ready_to_dispatch",
         "customer_name": customer, "phone": re.sub(r"\D", "", str(payload.get("phone") or ""))[-10:],
         "address": payload.get("address"), "city": payload.get("city"),
