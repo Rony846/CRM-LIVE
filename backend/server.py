@@ -23466,8 +23466,25 @@ async def dispatcher_pack_queue(user: dict = Depends(require_roles(["admin", "se
                  "phone": 1, "phone_manual": 1, "city": 1, "city_manual": 1, "state": 1, "pincode": 1, "pincode_manual": 1,
                  "amazon_deliver_by": 1, "amazon_ship_by": 1}):
             ao_map[ao["amazon_order_id"]] = ao
+        # The Bigship booking record (courier_shipments) is the SOURCE OF TRUTH for the consignee — Amazon
+        # masks buyer PII so amazon_orders is often blank, while the booking captured the real name/phone.
+        # It also carries the LIVE status, so we can drop orders that already shipped (In-Transit/Delivered).
+        awbs2 = [a.get("awb_number") for a in booked_amz if a.get("awb_number")]
+        cs_map = {}
+        if awbs2:
+            async for cs in db.courier_shipments.find({"awb_number": {"$in": awbs2}},
+                    {"_id": 0, "awb_number": 1, "customer_name": 1, "company_name": 1, "phone": 1,
+                     "consignee_city": 1, "consignee_state": 1, "consignee_pincode": 1,
+                     "status": 1, "delhivery_status": 1}):
+                cs_map[cs["awb_number"]] = cs
         for a in booked_amz:
             oid = a.get("amazon_order_id") or a.get("order_id")
+            awb = a.get("awb_number")
+            cs = cs_map.get(awb, {})
+            # Already picked/moved/delivered per the courier → not "ready to ship" anymore. (packed_at stays
+            # empty for panel-shipped orders, so this is the only reliable signal they've left the building.)
+            if _delhivery_picked(cs.get("status") or "") or _delhivery_picked(cs.get("delhivery_status") or ""):
+                continue
             title = a.get("product_title") or (a.get("items") or [{}])[0].get("title") or ""
             owner = "inverter" if "inverter" in title.lower() else "rest"  # battery/stabilizer/else → Angad
             if want and want != owner:
@@ -23475,10 +23492,11 @@ async def dispatcher_pack_queue(user: dict = Depends(require_roles(["admin", "se
             ao = ao_map.get(oid, {})
             out.append({
                 "id": oid, "order_id": oid, "amazon_order_id": oid,
-                "customer_name": ao.get("buyer_name") or ao.get("customer_name_manual") or "",
-                "phone": ao.get("phone") or ao.get("phone_manual") or "",
-                "city": ao.get("city") or ao.get("city_manual"), "state": ao.get("state"),
-                "pincode": ao.get("pincode") or ao.get("pincode_manual"),
+                "customer_name": ao.get("buyer_name") or ao.get("customer_name_manual") or cs.get("customer_name") or cs.get("company_name") or "",
+                "phone": ao.get("phone") or ao.get("phone_manual") or cs.get("phone") or "",
+                "city": ao.get("city") or ao.get("city_manual") or cs.get("consignee_city"),
+                "state": ao.get("state") or cs.get("consignee_state"),
+                "pincode": ao.get("pincode") or ao.get("pincode_manual") or cs.get("consignee_pincode"),
                 "master_sku_name": title, "items": a.get("items") or [],
                 "tracking_id": a.get("awb_number"), "source": "amazon",
                 "amazon_deliver_by": ao.get("amazon_deliver_by"),
