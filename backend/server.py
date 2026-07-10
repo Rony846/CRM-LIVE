@@ -24101,11 +24101,16 @@ async def ship_desk_create_order(payload: dict = Body(...),
 
     items = []
     for it in (payload.get("items") or []):
-        sk = await db.master_skus.find_one({"id": it.get("master_sku_id")}) if it.get("master_sku_id") else None
-        if not sk:
-            continue
-        items.append({"master_sku_id": sk["id"], "master_sku_name": sk.get("name"), "sku_code": sk.get("sku_code"),
-                      "hsn_code": sk.get("hsn_code"), "gst_rate": sk.get("gst_rate", 18), "quantity": int(it.get("quantity") or 1)})
+        if it.get("master_sku_id"):
+            sk = await db.master_skus.find_one({"id": it["master_sku_id"]})
+            if sk:
+                items.append({"master_sku_id": sk["id"], "master_sku_name": sk.get("name"), "sku_code": sk.get("sku_code"),
+                              "hsn_code": sk.get("hsn_code"), "gst_rate": sk.get("gst_rate", 18), "quantity": int(it.get("quantity") or 1)})
+                continue
+        # free-text line (e.g. "PCB C35", a spare part) — keep it, don't silently drop
+        nm = (it.get("product") or it.get("name") or it.get("master_sku_name") or "").strip()
+        if nm:
+            items.append({"master_sku_id": None, "master_sku_name": nm, "quantity": int(it.get("quantity") or 1)})
     if not items:
         name = (payload.get("product") or payload.get("master_sku_name") or "").strip()
         # a replacement/repair defaults to the ticket's product; a spare part is typed in
