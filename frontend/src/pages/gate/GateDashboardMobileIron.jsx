@@ -44,6 +44,8 @@ export default function GateDashboardMobile() {
 
   // Scan state
   const [trackingId, setTrackingId] = useState('');
+  const [orderInfo, setOrderInfo] = useState(null);  // resolved order after scanning tracking (outward)
+  const [serial, setSerial] = useState('');          // unit serial scanned at the gate (outward step 2)
   const [courier, setCourier] = useState('');
   const [customCourier, setCustomCourier] = useState('');
   const [scanning, setScanning] = useState(false);
@@ -280,6 +282,26 @@ export default function GateDashboardMobile() {
 
     const courierName = courier === 'Other' ? customCourier : courier;
 
+    // OUTWARD: scan tracking FIRST → pull up the order → then scan the unit serial (step 2).
+    if (scanType === 'outward') {
+      setScanning(true);
+      try {
+        const { data } = await axios.post(`${API}/gate/lookup-tracking`,
+          { tracking_id: trackingId.trim() }, { headers: { Authorization: `Bearer ${token}` } });
+        setOrderInfo(data);
+        setCourier(courierName);
+        setSerial('');
+        setCurrentStep('serial');
+        if (data && !data.found) toast.warning('Tracking not found in CRM — you can still record & scan a serial.');
+      } catch (error) {
+        toast.error(error.response?.data?.detail || 'Tracking lookup failed');
+      } finally {
+        setScanning(false);
+      }
+      return;
+    }
+
+    // INWARD: record directly (no serial).
     setScanning(true);
     try {
       const res = await axios.post(`${API}/gate/scan`, {
@@ -298,6 +320,33 @@ export default function GateDashboardMobile() {
       setCurrentStep('media');
       loadRecentScans();
 
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Scan failed');
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  // OUTWARD step 2: unit serial scanned → record the outward gate scan + bind the serial to the order.
+  const submitOutwardSerial = async () => {
+    if (!serial.trim()) {
+      toast.error('Scan the unit serial number');
+      return;
+    }
+    const courierName = courier === 'Other' ? customCourier : courier;
+    setScanning(true);
+    try {
+      const res = await axios.post(`${API}/gate/scan`, {
+        scan_type: 'outward',
+        tracking_id: trackingId.trim(),
+        courier: courierName,
+        serial: serial.trim(),
+        notes: ''
+      }, { headers: { Authorization: `Bearer ${token}` } });
+      setGateLog(res.data);
+      toast.success('Outward scan recorded — serial bound to the order');
+      setCurrentStep('media');
+      loadRecentScans();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Scan failed');
     } finally {
@@ -426,6 +475,8 @@ export default function GateDashboardMobile() {
     setCurrentStep('select');
     setScanType(null);
     setTrackingId('');
+    setOrderInfo(null);
+    setSerial('');
     setCourier('');
     setCustomCourier('');
     setGateLog(null);
@@ -908,7 +959,69 @@ export default function GateDashboardMobile() {
           ) : (
             <Scan style={{ width: 24, height: 24 }} />
           )}
-          Record {scanType === 'inward' ? 'Inward' : 'Outward'} Scan
+          {scanType === 'inward' ? 'Record Inward Scan' : 'Continue → scan serial'}
+        </button>
+      </div>
+    );
+  }
+
+  // ============ RENDER STEP: SERIAL (outward step 2) ============
+  if (currentStep === 'serial') {
+    const oi = orderInfo || {};
+    const accent = T.blue;
+    return (
+      <div style={{ ...screen, padding: 16, paddingBottom: 160 }}>
+        <Fonts />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+          <button onClick={() => { setSerial(''); setCurrentStep('scan'); }} style={iconBtn}>
+            <X style={{ width: 20, height: 20 }} />
+          </button>
+          <div>
+            <h1 style={{ ...headFont, fontSize: 20, fontWeight: 800, color: TEXT, margin: 0 }}>Scan Unit Serial</h1>
+            <p style={{ color: SUB, fontSize: 13, margin: 0 }}>Step 2 — bind the unit to this order</p>
+          </div>
+        </div>
+
+        {/* Resolved order */}
+        <div style={{ ...panelStyle, padding: 14, marginBottom: 14 }}>
+          <div style={{ fontSize: 10.5, color: SUB, letterSpacing: 0.4 }}>TRACKING</div>
+          <div style={{ ...monoFont, fontSize: 15, color: TEXT, fontWeight: 700 }}>{trackingId}</div>
+          {oi.found ? (
+            <>
+              <div style={{ marginTop: 10, fontSize: 15, color: TEXT, fontWeight: 700 }}>{oi.customer_name || '—'}</div>
+              <div style={{ fontSize: 12.5, color: SUB, marginTop: 2 }}>{(oi.product || '—').slice(0, 70)}</div>
+              <div style={{ fontSize: 11.5, color: SUB, marginTop: 4 }}>{oi.order_id}{oi.firm_name ? ` · ${oi.firm_name}` : ''}</div>
+              {oi.bound_serials?.length > 0 && (
+                <div style={{ marginTop: 8, fontSize: 12, color: T.green }}>Serial already on file: {oi.bound_serials.join(', ')}</div>
+              )}
+              {oi.already_scanned_out && (
+                <div style={{ marginTop: 8, fontSize: 12, color: T.orange, fontWeight: 700 }}>
+                  ⚠️ Already scanned out{oi.already_out_serial ? ` (serial ${oi.already_out_serial})` : ''}
+                </div>
+              )}
+            </>
+          ) : (
+            <div style={{ marginTop: 8, fontSize: 12.5, color: T.orange }}>Tracking not found in CRM — you can still record the scan + serial.</div>
+          )}
+        </div>
+
+        {/* Serial input */}
+        <div style={{ ...panelStyle, padding: 14, marginBottom: 16 }}>
+          <div style={{ fontSize: 10.5, color: SUB, letterSpacing: 0.4, marginBottom: 6 }}>UNIT SERIAL</div>
+          <input autoFocus value={serial} onChange={(e) => setSerial(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && submitOutwardSerial()}
+            placeholder="Scan or type the unit serial…"
+            style={{ width: '100%', padding: '14px 12px', fontSize: 17, fontWeight: 700, letterSpacing: 1,
+              background: '#0f172a', color: TEXT, border: `1px solid ${accent}`, borderRadius: 10, outline: 'none', boxSizing: 'border-box' }} />
+          <p style={{ color: SUB, fontSize: 11.5, marginTop: 8 }}>Handheld scanner or type it — this becomes the serial of the actual unit that left the gate.</p>
+        </div>
+
+        <button onClick={submitOutwardSerial} disabled={scanning || !serial.trim()}
+          style={{ width: '100%', padding: 16, background: accent, color: '#fff', border: 'none', borderRadius: 12,
+            fontSize: 16, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+            opacity: (scanning || !serial.trim()) ? 0.6 : 1, cursor: 'pointer' }}>
+          {scanning ? <Loader2 className="animate-spin" style={{ width: 22, height: 22 }} /> : <Scan style={{ width: 22, height: 22 }} />}
+          Record Outward Scan
         </button>
       </div>
     );
