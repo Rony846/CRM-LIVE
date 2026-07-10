@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { API, useAuth } from '@/App';
 import { toast } from 'sonner';
@@ -6,6 +6,7 @@ import IronShell from '@/components/iron/IronShell';
 import { T, Caps, IronCard, mono } from '@/components/iron/IronKit';
 import { Loader2, Upload, Check, Printer, Download } from 'lucide-react';
 import { CustomerName } from '@/components/Customer360';
+import { Coachmark } from '@/components/GuidedTour';
 
 /* Ship Desk 2.0 — one order pipeline, three lanes:
    Awaiting accountant (invoice+tracking+label) → Ready to ship (Gaurav/Angad) → Shipped. */
@@ -104,6 +105,18 @@ export default function ShipDeskBoard() {
   const [ticketInfo, setTicketInfo] = useState(null);
   const [saving, setSaving] = useState(false);
   const setF = (k, v) => setNf((o) => ({ ...o, [k]: v }));
+
+  // ---- Guided training tour ----
+  const tourRefs = { start: useRef(null), type: useRef(null), orderId: useRef(null), product: useRef(null), customer: useRef(null), pay: useRef(null), create: useRef(null) };
+  const [tourStep, setTourStep] = useState(-1);   // -1 = off
+  const tourActive = tourStep >= 0;
+  useEffect(() => {
+    (async () => {
+      try { const { data } = await axios.get(`${API}/me/training`, { headers: H }); if (!(data?.training?.ship_desk?.done)) setTourStep(0); } catch (e) {}
+    })(); // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => { if (tourActive && tourStep === 1 && showNew) setTourStep(2); }, [showNew, tourActive, tourStep]);
+  const finishTour = async (mark) => { setTourStep(-1); if (mark) { try { await axios.post(`${API}/me/training/ship_desk/complete`, {}, { headers: H }); toast.success('Ship Desk training complete ✓'); } catch (e) {} } };
   const openNew = async () => { setNf({ firm_id: MGIPL, dispatch_type: 'new_order', payment_mode: 'prepaid' }); setTicketInfo(null); setSkus([]); setShowNew(true); if (!firms.length) { try { const { data } = await axios.get(`${API}/firms`, { headers: H }); setFirms(Array.isArray(data) ? data : []); } catch (e) {} } };
   const searchSku = async (q) => {
     setF('_skuq', q); setF('master_sku_id', undefined); setF('product', q);
@@ -142,6 +155,7 @@ export default function ShipDeskBoard() {
       const lbl = (DISPATCH_TYPES.find((x) => x.key === dt) || {}).label || 'Dispatch';
       toast.success(`${lbl} ${data.order_id} created → awaiting accountant`);
       setShowNew(false); setNf({ firm_id: MGIPL, dispatch_type: 'new_order', payment_mode: 'prepaid' }); setSkus([]); setTicketInfo(null); load();
+      if (tourStep >= 0) setTourStep(8);   // guided-training booking completed
     } catch (e) { toast.error(e?.response?.data?.detail || 'Could not create the dispatch'); }
     finally { setSaving(false); }
   };
@@ -181,7 +195,7 @@ export default function ShipDeskBoard() {
     <IronShell title="Ship Desk" subtitle={`${board.counts?.awaiting_accountant || 0} AWAITING · ${board.counts?.ready_to_ship || 0} TO SHIP`} onRefresh={load}>
       {canEnter && (
         <div style={{ marginBottom: 12, textAlign: 'right' }}>
-          <button onClick={openNew} style={btnPrimary}>+ New dispatch</button>
+          <button ref={tourRefs.start} onClick={openNew} style={btnPrimary}>+ New dispatch</button>
         </div>
       )}
       {loading ? (
@@ -244,7 +258,7 @@ export default function ShipDeskBoard() {
             <div style={{ fontFamily: T.headline, fontWeight: 800, fontSize: 17, marginBottom: 4 }}>New dispatch</div>
             <div style={{ fontSize: 12, color: T.iron500, marginBottom: 14 }}>What are you dispatching?</div>
             {/* Step 1: dispatch type */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 14 }}>
+            <div ref={tourRefs.type} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 14 }}>
               {DISPATCH_TYPES.map((d) => {
                 const on = (nf.dispatch_type || 'new_order') === d.key;
                 return (
@@ -268,7 +282,7 @@ export default function ShipDeskBoard() {
                     </div>)}
                   <div style={{ fontSize: 10.5, color: T.iron400, marginTop: 3 }}>Customer &amp; product come from the ticket. This is recorded on the customer's 360.</div></div>
               ) : (
-                <div style={{ gridColumn: '1 / 3' }}><L>Order ID / invoice reference *</L>
+                <div ref={tourRefs.orderId} style={{ gridColumn: '1 / 3' }}><L>Order ID / invoice reference *</L>
                   <input style={inputStyle} placeholder="The real order / invoice / SO / challan number" value={nf.order_id || ''} onChange={(e) => setF('order_id', e.target.value)} />
                   <div style={{ fontSize: 10.5, color: T.iron400, marginTop: 3 }}>Use the actual reference the sale is known by, so invoice, dispatch &amp; tracking all match.</div></div>
               )}
@@ -276,7 +290,7 @@ export default function ShipDeskBoard() {
                 <select style={inputStyle} value={nf.firm_id || MGIPL} onChange={(e) => setF('firm_id', e.target.value)}>
                   {(firms.length ? firms : [{ id: MGIPL, name: 'MGIPL' }]).map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
                 </select></div>
-              <div style={{ gridColumn: '1 / 3', position: 'relative' }}>
+              <div ref={tourRefs.product} style={{ gridColumn: '1 / 3', position: 'relative' }}>
                 <L>{nf.dispatch_type === 'spare_part' ? 'Which spare part *' : isTicketType(nf.dispatch_type) ? 'Item (defaults to the ticket product)' : 'What to ship *'} {nf.master_sku_id && <span style={{ color: '#0b7d3e' }}>✓ catalogue</span>}</L>
                 <input style={inputStyle} placeholder={nf.dispatch_type === 'spare_part' ? 'e.g. PCB C35, relay, display' : 'e.g. PCB C35, or search a product'} value={nf._skuq || ''} onChange={(e) => searchSku(e.target.value)} />
                 {skus.length > 0 && (
@@ -285,7 +299,7 @@ export default function ShipDeskBoard() {
                   </div>)}
               </div>
               {!isTicketType(nf.dispatch_type) && (
-                <div style={{ gridColumn: '1 / 3' }}><L>Customer name *</L><input style={inputStyle} value={nf.customer_name || ''} onChange={(e) => setF('customer_name', e.target.value)} /></div>
+                <div ref={tourRefs.customer} style={{ gridColumn: '1 / 3' }}><L>Customer name *</L><input style={inputStyle} value={nf.customer_name || ''} onChange={(e) => setF('customer_name', e.target.value)} /></div>
               )}
               <div><L>Phone{isTicketType(nf.dispatch_type) ? ' (from ticket if blank)' : ''}</L><input style={inputStyle} value={nf.phone || ''} onChange={(e) => setF('phone', e.target.value)} /></div>
               <div><L>Pincode</L><input style={inputStyle} value={nf.pincode || ''} onChange={(e) => setF('pincode', e.target.value)} /></div>
@@ -296,7 +310,7 @@ export default function ShipDeskBoard() {
               {!isTicketType(nf.dispatch_type) && <div><L>Order value (₹)</L><input type="number" style={inputStyle} value={nf.invoice_value || ''} onChange={(e) => setF('invoice_value', e.target.value)} /></div>}
             </div>
             {/* Step 3: payment */}
-            <div style={{ marginTop: 14, padding: '10px 12px', border: `1px solid ${T.iron200}`, borderRadius: 8, background: T.iron50 }}>
+            <div ref={tourRefs.pay} style={{ marginTop: 14, padding: '10px 12px', border: `1px solid ${T.iron200}`, borderRadius: 8, background: T.iron50 }}>
               <L>Payment</L>
               <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
                 {['prepaid', 'cod'].map((m) => {
@@ -311,11 +325,26 @@ export default function ShipDeskBoard() {
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
               <button onClick={() => setShowNew(false)} style={{ ...inputStyle, width: 'auto', cursor: 'pointer', fontFamily: T.headline, fontWeight: 700 }}>Cancel</button>
-              <button onClick={submitNew} disabled={saving} style={{ ...btnPrimary, opacity: saving ? 0.6 : 1 }}>{saving ? 'Adding…' : 'Create dispatch'}</button>
+              <button ref={tourRefs.create} onClick={submitNew} disabled={saving} style={{ ...btnPrimary, opacity: saving ? 0.6 : 1 }}>{saving ? 'Adding…' : 'Create dispatch'}</button>
             </div>
           </div>
         </div>
       )}
+
+      {tourActive && (() => {
+        const S = {
+          0: { title: 'Ship Desk training', body: "Let's do a quick practice booking together — under a minute. Follow the orange highlights.", nextLabel: "Let's go", onNext: () => setTourStep(1), onSkip: () => finishTour(false), skipLabel: 'Skip for now', step: 1 },
+          1: { targetRef: tourRefs.start, title: 'Start a dispatch', body: 'Every shipment starts here.', hint: "Click '+ New dispatch'", nextLabel: 'Open it', onNext: () => openNew(), step: 1 },
+          2: { targetRef: tourRefs.type, title: 'What are you dispatching?', body: "A New order (a sale), or a spare part / replacement / repaired item against a ticket. Keep 'New order' for now.", onNext: () => setTourStep(3), step: 2 },
+          3: { targetRef: tourRefs.orderId, title: 'Order ID / invoice number', body: 'Type the real invoice or order number so everything ties together. For this practice, type TRAIN-001.', onNext: () => setTourStep(4), step: 3 },
+          4: { targetRef: tourRefs.product, title: 'What to ship', body: 'Type a product name (e.g. PCB C35) or search the catalogue and pick one.', onNext: () => setTourStep(5), step: 4 },
+          5: { targetRef: tourRefs.customer, title: 'Customer', body: "Enter the customer's name (and phone / address if you have them).", onNext: () => setTourStep(6), step: 5 },
+          6: { targetRef: tourRefs.pay, title: 'Prepaid or COD', body: 'Choose Prepaid, or COD and enter the amount the courier must collect.', onNext: () => setTourStep(7), step: 6 },
+          7: { targetRef: tourRefs.create, title: 'Create it', body: "Now click 'Create dispatch'. It moves to 'Awaiting accountant', where the invoice, tracking & label get attached.", hint: "Click 'Create dispatch'", step: 7 },
+          8: { title: '🎉 You booked a dispatch!', body: "It's now in 'Awaiting accountant' — that's the full flow. You're ready to use the Ship Desk.", nextLabel: 'Finish', onNext: () => finishTour(true), step: 7 },
+        }[tourStep];
+        return S ? <Coachmark total={7} {...S} /> : null;
+      })()}
     </IronShell>
   );
 }

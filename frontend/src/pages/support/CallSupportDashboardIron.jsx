@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import ClickToCallButton from '@/components/calls/ClickToCallButton';
 import IronShell from '@/components/iron/IronShell';
+import TrainingBanner from '@/components/TrainingBanner';
 import { T, Caps, IronCard, mono, thCell, tdCell, badgeStyle, ticketPill } from '@/components/iron/IronKit';
 
 const DEVICE_TYPES = ['Inverter', 'Battery', 'Stabilizer', 'Others'];
@@ -658,6 +659,7 @@ export default function CallSupportDashboard() {
 
   return (
     <IronShell title="Call Support" subtitle="SUPPORT OPS · TICKET QUEUE · SLA WATCH" onRefresh={fetchData} headerRight={headerRight}>
+      <TrainingBanner trainingKey="ship_desk" label="Ship Desk" to="/ship-desk" />
       {/* KPI tiles */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 12, marginBottom: 16 }} data-testid="support-stats">
         <KpiTile title="SLA Breached" value={stats?.sla_breached || 0} icon={AlarmClock} tone={T.orangeDeep} alert={stats?.sla_breached > 0} />

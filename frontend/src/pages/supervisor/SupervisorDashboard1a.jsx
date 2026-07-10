@@ -3,6 +3,7 @@ import axios from 'axios';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { API, useAuth } from '@/App';
 import SupervisorTeam from './SupervisorTeam';
+import TrainingBanner from '@/components/TrainingBanner';
 import IronSidebar from '@/components/iron/IronSidebar';
 import { IRON_SUPERVISOR_NAV } from '@/components/iron/IronKit';
 import StatusBadge from '@/components/ui/StatusBadge';
@@ -257,6 +258,7 @@ export default function SupervisorDashboard1a() {
         </header>
 
         <main style={{ padding: 22, overflow: 'auto' }}>
+          <TrainingBanner trainingKey="ship_desk" label="Ship Desk" to="/ship-desk" />
           {loading ? (
             <div style={{ display: 'grid', placeItems: 'center', height: 300 }}><Loader2 className="animate-spin" size={30} color={T.iron400} /></div>
           ) : (

@@ -24051,6 +24051,29 @@ _DISPATCH_LABEL = {"new_order": "New order", "spare_part": "Spare part",
 _DISPATCH_CODE = {"new_order": "SO", "spare_part": "SP", "replacement": "RPL", "repaired": "RPR"}
 
 
+@api_router.get("/me/training")
+async def my_training(user: dict = Depends(get_current_user)):
+    """Which onboarding trainings the logged-in user has completed (e.g. ship_desk)."""
+    u = await db.users.find_one({"id": user.get("id")}, {"_id": 0, "training": 1})
+    return {"training": (u or {}).get("training") or {}}
+
+
+@api_router.post("/me/training/{key}/complete")
+async def complete_training(key: str, user: dict = Depends(get_current_user)):
+    """Mark an onboarding training (e.g. ship_desk) complete for the logged-in user."""
+    await db.users.update_one({"id": user.get("id")}, {"$set": {
+        f"training.{key}": {"done": True, "at": datetime.now(timezone.utc).isoformat()}}})
+    return {"success": True, "key": key}
+
+
+@api_router.post("/admin/training/{key}/reset")
+async def reset_training(key: str, user_id: str = None, user: dict = Depends(require_roles(["admin"]))):
+    """Admin: re-arm a training for everyone (or one user) — clears the completed flag so it shows again."""
+    q = {"id": user_id} if user_id else {}
+    r = await db.users.update_many(q, {"$unset": {f"training.{key}": ""}})
+    return {"success": True, "reset_for": r.modified_count}
+
+
 @api_router.post("/ship-desk/order")
 async def ship_desk_create_order(payload: dict = Body(...),
                                  user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROLES))):
