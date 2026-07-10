@@ -38,8 +38,8 @@ export default function FinanceDashboard() {
   const [firms, setFirms] = useState([]);
   const [selectedFirm, setSelectedFirm] = useState('all');
   const [selectedMonth, setSelectedMonth] = useState(() => {
-    // default to the PREVIOUS month (the GST period typically being filed)
-    const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1);
+    // default to the CURRENT month
+    const d = new Date(); d.setDate(1);
     return d.toISOString().slice(0, 7);
   });
   const [firmSummary, setFirmSummary] = useState(null);
