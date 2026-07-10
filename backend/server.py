@@ -24025,6 +24025,52 @@ SHIP_DESK_ENTRY_ROLES = ["call_support", "admin", "accountant", "supervisor", "s
 _MGIPL_FIRM = "16abb602-875d-4283-bed9-f8789e688a17"
 
 
+def _sum_item_qty(items) -> int:
+    """Total physical units across a card's line items; 1 when none are listed (one order = one piece)."""
+    n = 0
+    for it in (items or []):
+        try:
+            n += int(float(it.get("quantity") or it.get("qty") or 1))
+        except Exception:
+            n += 1
+    return n or 1
+
+
+# capacity token — allow a unicode dot / mid-dot / comma as the decimal sep (some titles use '6·2KW')
+_MODEL_CAP_RE = re.compile(r"(\d+(?:[.·,]\d+)?)\s*(kva|kwh|kw|va|ah|wh|w)\b", re.I)
+
+
+def _ship_model_label(title: str) -> str:
+    """Collapse a long product/Amazon title into a short, STABLE model bucket for pendency counts, e.g.
+    'MG 8KVA (90V–300V) Heavy Duty Mainline Voltage Stabilizer…' → '8KVA Stabilizer'. Keyed on
+    capacity + type only (no voltage) so the same model never splits across buckets. Type is inferred
+    from the capacity UNIT when the title omits the product word (KVA→Stabilizer, KW/VA/W→Inverter,
+    AH/WH→Battery). 'inverter' wins over 'battery' so a 'Battery Less' hybrid inverter isn't mis-bucketed."""
+    t = str(title or "").strip()
+    if not t:
+        return "Other / unlabelled"
+    tl = t.lower()
+    cap = unit = ""
+    m = _MODEL_CAP_RE.search(tl)
+    if m:
+        cap = m.group(1).replace("·", ".").replace(",", ".").upper()
+        unit = m.group(2).upper()
+    # explicit product word first; 'inverter' before 'battery' (hybrid inverters say 'battery less')
+    if "stabiliz" in tl:
+        typ = "Stabilizer"
+    elif "inverter" in tl:
+        typ = "Inverter"
+    elif "pcb" in tl:
+        typ = "PCB"
+    elif any(k in tl for k in ("lifepo4", "lithium")) or (unit in ("AH", "WH")) or "battery" in tl:
+        typ = "Battery"
+    else:  # infer from the capacity unit
+        typ = {"KVA": "Stabilizer", "KW": "Inverter", "W": "Inverter", "VA": "Inverter",
+               "WH": "Battery", "AH": "Battery", "KWH": "Battery"}.get(unit, "")
+    label = " ".join(x for x in (f"{cap}{unit}" if cap else "", typ) if x).strip()
+    return label or t[:44]
+
+
 def _ship_desk_required(value: float) -> list:
     req = ["invoice", "tracking", "label"]
     if float(value or 0) > 50000:
@@ -24276,7 +24322,8 @@ async def ship_desk_board(user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROL
                 "created_at": d.get("created_at"), "tracking_id": d.get("tracking_id"),
                 "sent_back_reason": d.get("sent_back_reason"),
                 "pi_number": d.get("pi_number"), "has_payment_proof": bool(d.get("payment_proof_path")),
-                "payment_amount": d.get("payment_amount"), "payment_ref": d.get("payment_ref")}
+                "payment_amount": d.get("payment_amount"), "payment_ref": d.get("payment_ref"),
+                "items": d.get("items") or [], "qty": _sum_item_qty(d.get("items"))}
     awaiting = [card(d) async for d in db.pending_fulfillment.find(
         {"source": {"$in": ["ship_desk", "pi_paid"]}, "stage": "awaiting_accountant"}, {"_id": 0}).sort("created_at", -1)]
     ready_q = {"source": "ship_desk", "stage": "ready_to_ship", "pack_stage": {"$ne": "packed"}}
@@ -24312,7 +24359,8 @@ async def ship_desk_board(user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROL
                           "value": r.get("order_value") or r.get("invoice_value"), "stage": "ready_to_ship",
                           "required": ["invoice", "tracking", "label"], "present": ["invoice", "tracking", "label"],
                           "missing": [], "owner_label": r.get("owner_label"), "tracking_id": r.get("tracking_id"),
-                          "source": r.get("source") or "existing", "pickup_status": r.get("pickup_status")})
+                          "source": r.get("source") or "existing", "pickup_status": r.get("pickup_status"),
+                          "items": r.get("items") or [], "qty": _sum_item_qty(r.get("items"))})
     except Exception:
         pass
     try:
@@ -24330,6 +24378,34 @@ async def ship_desk_board(user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROL
         pass
     return {"awaiting_accountant": awaiting, "ready_to_ship": ready, "shipped": shipped,
             "counts": {"awaiting_accountant": len(awaiting), "ready_to_ship": len(ready), "shipped": len(shipped)}}
+
+
+@api_router.get("/ship-desk/pending-by-model")
+async def ship_desk_pending_by_model(
+    user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROLES + ["dispatcher", "gate"]))):
+    """Model-wise pendency: how many PIECES of each model are sitting in the Ready-to-ship queue (booked,
+    awaiting pickup/pack). Buckets the same ready lane the board shows by a short model label so the desk
+    can see, at a glance, 'how many of what' is still to go out. Role-scoped like the board."""
+    board = await ship_desk_board(user)
+    ready = board.get("ready_to_ship") or []
+    buckets: Dict[str, Any] = {}
+    for c in ready:
+        title = c.get("product") or c.get("master_sku_name") or ""
+        if not title:
+            items = c.get("items") or []
+            title = (items[0].get("title") or items[0].get("name") or items[0].get("master_sku_name")) if items else ""
+        label = _ship_model_label(title)
+        qty = c.get("qty") or _sum_item_qty(c.get("items")) or 1
+        b = buckets.setdefault(label, {"model": label, "count": 0, "orders": 0, "examples": []})
+        b["count"] += qty
+        b["orders"] += 1
+        if len(b["examples"]) < 3 and c.get("customer_name"):
+            b["examples"].append(c.get("customer_name"))
+    models = sorted(buckets.values(), key=lambda x: (-x["count"], x["model"]))
+    return {"models": models,
+            "total_pieces": sum(b["count"] for b in models),
+            "total_orders": len(ready),
+            "distinct_models": len(models)}
 
 
 @api_router.post("/ship-desk/order/{order_id}/send-back")

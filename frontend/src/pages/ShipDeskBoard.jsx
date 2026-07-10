@@ -17,6 +17,55 @@ const btnPrimary = { border: 'none', background: T.orange, color: '#fff', border
 const L = ({ children }) => <div style={{ fontSize: 10.5, color: '#888', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 3, fontWeight: 700 }}>{children}</div>;
 const DOC_LABEL = { invoice: 'Invoice', tracking: 'Tracking', label: 'Label', eway: 'E-way' };
 
+function PendencyModal({ data, loading, onClose }) {
+  const models = data?.models || [];
+  const max = models.reduce((m, x) => Math.max(m, x.count || 0), 0) || 1;
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 120, background: 'rgba(15,15,15,.55)', display: 'flex', justifyContent: 'center', alignItems: 'flex-start', paddingTop: 40 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 'min(560px,94%)', background: T.white, borderRadius: 16, boxShadow: '0 30px 80px rgba(0,0,0,.4)', maxHeight: '86vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div style={{ background: 'linear-gradient(135deg,#1f2937,#111827)', color: '#fff', padding: '18px 22px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div>
+              <div style={{ fontFamily: T.headline, fontWeight: 800, fontSize: 18, letterSpacing: 0.3 }}>Model-wise pendency</div>
+              <div style={{ fontSize: 11.5, opacity: 0.75, marginTop: 2 }}>Pieces awaiting dispatch in the Ready-to-ship queue</div>
+            </div>
+            <button onClick={onClose} style={{ border: 'none', background: 'rgba(255,255,255,.15)', color: '#fff', borderRadius: 8, width: 28, height: 28, cursor: 'pointer', fontSize: 15, lineHeight: 1 }}>✕</button>
+          </div>
+          {!loading && (
+            <div style={{ display: 'flex', gap: 20, marginTop: 14 }}>
+              <div><span style={{ fontFamily: T.headline, fontWeight: 800, fontSize: 26 }}>{data?.total_pieces ?? 0}</span><span style={{ fontSize: 11, opacity: 0.7, marginLeft: 5 }}>pieces</span></div>
+              <div style={{ borderLeft: '1px solid rgba(255,255,255,.2)', paddingLeft: 20 }}><span style={{ fontFamily: T.headline, fontWeight: 800, fontSize: 26 }}>{data?.distinct_models ?? models.length}</span><span style={{ fontSize: 11, opacity: 0.7, marginLeft: 5 }}>models</span></div>
+              <div style={{ borderLeft: '1px solid rgba(255,255,255,.2)', paddingLeft: 20 }}><span style={{ fontFamily: T.headline, fontWeight: 800, fontSize: 26 }}>{data?.total_orders ?? 0}</span><span style={{ fontSize: 11, opacity: 0.7, marginLeft: 5 }}>orders</span></div>
+            </div>
+          )}
+        </div>
+        <div style={{ padding: 14, overflowY: 'auto', background: T.iron50 }}>
+          {loading ? (
+            <div style={{ textAlign: 'center', padding: 50, color: T.iron400 }}><Loader2 size={20} className="animate-spin" /></div>
+          ) : models.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 44, color: T.iron400, fontSize: 13 }}>Nothing pending in the ready-to-ship queue 🎉</div>
+          ) : models.map((m, i) => (
+            <div key={m.model} style={{ background: T.white, border: '1px solid ' + T.iron200, borderRadius: 10, padding: '11px 13px', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ width: 22, textAlign: 'center', fontFamily: mono.fontFamily, fontSize: 11, color: T.iron400, fontWeight: 700 }}>{i + 1}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontFamily: T.headline, fontWeight: 700, fontSize: 13.5, color: T.iron900 }}>{m.model}</div>
+                <div style={{ height: 6, borderRadius: 4, background: T.iron100, marginTop: 6, overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: `${Math.max(6, Math.round((m.count / max) * 100))}%`, background: 'linear-gradient(90deg,' + T.orange + ',#f59e0b)', borderRadius: 4 }} />
+                </div>
+                {m.examples?.length > 0 && <div style={{ fontSize: 10, color: T.iron400, marginTop: 4 }}>{m.examples.join(' · ')}{m.orders > m.examples.length ? ' …' : ''}</div>}
+              </div>
+              <div style={{ minWidth: 46, textAlign: 'center' }}>
+                <div style={{ fontFamily: T.headline, fontWeight: 800, fontSize: 22, color: T.iron900, lineHeight: 1 }}>{m.count}</div>
+                <div style={{ fontSize: 8.5, color: T.iron400, textTransform: 'uppercase', letterSpacing: 0.4, marginTop: 2 }}>pending</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ShipDeskBoard() {
   const { token, user } = useAuth();
   const H = { Authorization: `Bearer ${token}` };
@@ -25,6 +74,17 @@ export default function ShipDeskBoard() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState({});   // order_id::kind -> true
   const [track, setTrack] = useState({});  // order_id -> tracking text
+  const [pend, setPend] = useState(null);  // model-wise pendency modal data (null = closed)
+  const [pendLoading, setPendLoading] = useState(false);
+
+  const openPendency = async () => {
+    setPend({ models: [], _loading: true }); setPendLoading(true);
+    try {
+      const { data } = await axios.get(`${API}/ship-desk/pending-by-model`, { headers: H });
+      setPend(data || { models: [] });
+    } catch (e) { toast.error(e?.response?.data?.detail || 'Could not load pendency'); setPend(null); }
+    finally { setPendLoading(false); }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -200,11 +260,17 @@ export default function ShipDeskBoard() {
 
   return (
     <IronShell title="Ship Desk" subtitle={`${board.counts?.awaiting_accountant || 0} AWAITING · ${board.counts?.ready_to_ship || 0} TO SHIP`} onRefresh={load}>
-      {canEnter && (
-        <div style={{ marginBottom: 12, textAlign: 'right' }}>
-          <button ref={tourRefs.start} onClick={openNew} style={btnPrimary}>+ New dispatch</button>
+      <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ flex: 1 }} />
+        <button onClick={openPendency}
+          style={{ border: 'none', background: 'linear-gradient(135deg,#1f2937,#111827)', color: '#fff', borderRadius: 8, padding: '9px 18px', fontFamily: T.headline, fontWeight: 800, fontSize: 12.5, cursor: 'pointer', letterSpacing: 0.3, boxShadow: '0 4px 14px rgba(0,0,0,.18)', display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+          📊 Model-wise pendency
+        </button>
+        <div style={{ flex: 1, textAlign: 'right' }}>
+          {canEnter && <button ref={tourRefs.start} onClick={openNew} style={btnPrimary}>+ New dispatch</button>}
         </div>
-      )}
+      </div>
+      {pend && <PendencyModal data={pend} loading={pendLoading} onClose={() => setPend(null)} />}
       {loading ? (
         <div style={{ textAlign: 'center', padding: 60, color: T.iron400 }}><Loader2 size={20} className="animate-spin" /></div>
       ) : (
