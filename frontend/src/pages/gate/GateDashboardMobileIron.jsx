@@ -69,6 +69,7 @@ export default function GateDashboardMobile() {
   const scanIntervalRef = useRef(null);
   const canvasRef = useRef(null);
   const audioRef = useRef(null);
+  const trackingRef = useRef(null);   // hardware scanner types into this + Enter → submit
 
   // Recent scans
   const [recentScans, setRecentScans] = useState([]);
@@ -272,6 +273,15 @@ export default function GateDashboardMobile() {
       }
     };
   }, []);
+
+  // Hardware-scanner ergonomics: whenever the scan step is showing (and the camera isn't), keep the
+  // tracking field focused so a scan lands straight in it — no clicking between parcels.
+  useEffect(() => {
+    if (currentStep === 'scan' && !scannerActive) {
+      const t = setTimeout(() => trackingRef.current?.focus(), 150);
+      return () => clearTimeout(t);
+    }
+  }, [currentStep, scannerActive]);
 
   // Handle initial scan submission
   const handleScan = async () => {
@@ -488,6 +498,16 @@ export default function GateDashboardMobile() {
     loadRecentScans();
     loadPendingUploads();
     loadScheduled();
+  };
+
+  // Rapid consecutive scanning: keep the same scan type (inward/outward), clear the per-parcel state,
+  // and jump straight back to the scan step (the tracking field auto-focuses for the next scan).
+  const scanNextSameType = () => {
+    setTrackingId(''); setOrderInfo(null); setSerial(''); setGateLog(null); setMedia([]);
+    setLastScannedId(''); setScannerStatus(''); setSelectedPendingScan(null);
+    stopScanner();
+    setCurrentStep('scan');
+    loadRecentScans();
   };
 
   // Calculate media requirements
@@ -904,9 +924,12 @@ export default function GateDashboardMobile() {
           <div>
             <label style={{ fontSize: 13, color: SUB, marginBottom: 4, display: 'block' }}>Tracking ID *</label>
             <input
-              placeholder="Enter tracking ID..."
+              placeholder="Scan or enter tracking ID..."
               value={trackingId}
               onChange={(e) => setTrackingId(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && trackingId.trim() && !scanning) handleScan(); }}
+              autoFocus
+              ref={trackingRef}
               style={{ width: '100%', height: 56, padding: '0 16px', borderRadius: 10, background: PANEL2, border: `1px solid ${BORDER}`, color: TEXT, fontSize: 18, ...monoFont, outline: 'none' }}
               data-testid="input-tracking"
               autoComplete="off"
@@ -1265,11 +1288,17 @@ export default function GateDashboardMobile() {
           </div>
 
           <button
+            onClick={scanNextSameType}
+            style={{ width: '100%', height: 56, borderRadius: 14, fontSize: 18, fontWeight: 800, ...headFont, color: '#0F0F0F', background: T.orange, border: 'none', cursor: 'pointer', marginBottom: 10 }}
+          >
+            Scan next {scanType === 'inward' ? 'inward' : 'outward'} →
+          </button>
+          <button
             onClick={resetFlow}
-            style={{ width: '100%', height: 56, borderRadius: 14, fontSize: 18, fontWeight: 800, ...headFont, color: '#0F0F0F', background: T.orange, border: 'none', cursor: 'pointer' }}
+            style={{ width: '100%', height: 48, borderRadius: 12, fontSize: 15, fontWeight: 700, ...headFont, color: TEXT, background: 'transparent', border: `1px solid ${BORDER}`, cursor: 'pointer' }}
             data-testid="btn-new-scan"
           >
-            Start New Scan
+            Change scan type
           </button>
         </div>
       </div>
