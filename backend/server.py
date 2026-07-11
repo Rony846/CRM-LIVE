@@ -20516,6 +20516,9 @@ async def customer_card_pdf(customer: str = None, serial: str = None, order_id: 
             customer = customer or o.get("customer_name") or o.get("party_name")
             product = product or o.get("product_title")
     cust = (customer or "Valued Customer").strip()
+    # Adaptive name size so long names don't wrap onto / overlap the product line. Single-line, clipped.
+    _cl = len(cust)
+    nm_size = 15 if _cl <= 11 else 13 if _cl <= 15 else 11 if _cl <= 20 else 9.5 if _cl <= 26 else 8.5
     product = product or "MuscleGrid Product"
     tip = _care_tip(product)
     qtarget = f"{SERIAL_VERIFY_BASE}/{serial}" if serial else "https://newcrm.musclegrid.in"
@@ -20533,7 +20536,7 @@ async def customer_card_pdf(customer: str = None, serial: str = None, order_id: 
     .b{{flex:1;display:flex;padding-top:1.3mm;gap:2.2mm;overflow:hidden}}
     .l{{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;overflow:hidden}}
     .for{{font-size:6.6pt;font-style:italic;color:#333}}
-    .nm{{font-family:Georgia,'Times New Roman',serif;font-size:15pt;font-weight:bold;line-height:1;margin:.3mm 0 .8mm}}
+    .nm{{font-family:Georgia,'Times New Roman',serif;font-size:{nm_size}pt;font-weight:bold;line-height:1.05;margin:.3mm 0 .8mm;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
     .pr{{font-size:6.6pt;line-height:1.22;max-height:8.2mm;overflow:hidden}} .wr{{font-size:7pt;font-weight:bold;margin-top:.9mm}}
     .tip{{font-size:6.3pt;font-style:italic;color:#333;margin-top:.5mm}}
     .r{{width:26mm;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}}
