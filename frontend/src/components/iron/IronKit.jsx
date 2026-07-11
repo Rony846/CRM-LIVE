@@ -81,10 +81,10 @@ export const fmtDateTime = (d) => {
 /* Complete admin navigation (mirrors the legacy DashboardLayout menu so no option is lost).
    Grouped; rendered collapsibly by IronSidebar. [groupLabel, [ [itemLabel, path], ... ] ] */
 export const IRON_ADMIN_NAV = [
-  ['Ship Desk', [['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk']]],
+  ['Ship Desk', [['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'], ['RTO / Returns', '/rto-returns']]],
   ['Dashboard', [['Overview', '/admin'], ['Compliance', '/admin/compliance']]],
   ['Team Dashboards', [['Call Support', '/support'], ['Supervisor', '/supervisor'], ['Technician', '/technician'], ['Accountant', '/accountant'], ['Dispatcher', '/dispatcher'], ['Gate', '/gate']]],
-  ['CRM', [['All Tickets', '/admin/tickets'], ['Call Center', '/calls'], ['Omnidim Calls', '/admin/omnidim-calls'], ['Customer WhatsApp', '/admin/whatsapp-chats'], ['Sales Leads', '/leads'], ['Repairs', '/admin/repairs'], ['Customers', '/admin/customers'], ['Customer 360', '/customer-360'], ['Warranties', '/admin/warranties'], ['Zoho Desk', '/admin/zoho-tickets'], ['Zoho Forms', '/admin/zoho-forms']]],
+  ['CRM', [['All Tickets', '/admin/tickets'], ['Call Center', '/calls'], ['Omnidim Calls', '/admin/omnidim-calls'], ['Customer WhatsApp', '/admin/whatsapp-chats'], ['Kommo Backup', '/admin/kommo-backup'], ['Sales Leads', '/leads'], ['Repairs', '/admin/repairs'], ['Customers', '/admin/customers'], ['Customer 360', '/customer-360'], ['Warranties', '/admin/warranties'], ['Zoho Desk', '/admin/zoho-tickets'], ['Zoho Forms', '/admin/zoho-forms']]],
   ['Solar Samrat', [['Samrat Admin', '/admin/solar-samrat']]],
   ['Sales', [['Orders', '/admin/orders'], ['Quotations', '/quotations'], ['PI Pending Action', '/quotations/pending-action']]],
   ['Inventory', [['Master SKUs', '/admin/master-sku'], ['Firms', '/admin/firms'], ['Serial Numbers', '/inventory/serial-numbers'], ['Stock Reports', '/admin/reports'], ['Product Datasheets', '/admin/product-datasheets']]],
@@ -103,7 +103,7 @@ export const IRON_ADMIN_NAV = [
 // Mirrors the legacy DashboardLayout supervisor menu exactly (all 11 items) + Customer 360.
 export const IRON_SUPERVISOR_NAV = [
   ['Workspace', [
-    ['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'],
+    ['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'], ['RTO / Returns', '/rto-returns'],
     ['Dashboard', '/supervisor'],
     ['Customer 360', '/customer-360'],
     ['Call Center', '/calls'],
@@ -119,7 +119,7 @@ export const IRON_SUPERVISOR_NAV = [
 // Call-support menu (mirrors the legacy DashboardLayout call_support menu) + Customer 360.
 export const IRON_SUPPORT_NAV = [
   ['Workspace', [
-    ['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'],
+    ['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'], ['RTO / Returns', '/rto-returns'],
     ['Dashboard', '/support'],
     ['Customer 360', '/customer-360'],
     ['My Calls', '/calls'],
@@ -135,7 +135,7 @@ export const IRON_SUPPORT_NAV = [
 ];
 
 export const IRON_ACCOUNTANT_NAV = [
-  ['Ship Desk', [['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk']]],
+  ['Ship Desk', [['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'], ['RTO / Returns', '/rto-returns']]],
   ['Dashboard', [['Overview', '/accountant'], ['Compliance', '/admin/compliance']]],
   ['Marketplace', [['Amazon Orders', '/operations/amazon-orders'], ['Courier Shipping', '/operations/courier-shipping'], ['Courier Tracking', '/operations/courier-tracking'], ['E-commerce Recon', '/finance/ecommerce-reconciliation'], ['Expenses & Tax Credits', '/accountant/expenses']]],
   ['Finance', [['Finance Analytics', '/finance/analytics'], ['Finance & GST', '/finance'], ['Online Orders', '/admin/online-orders'], ['Amazon Refunds', '/admin/refunds'], ['Refund Losses (Legal)', '/admin/refund-losses'], ['A-Z Claims', '/admin/az-claims'], ['Legal Cases', '/admin/legal-cases'], ['TDS Management', '/finance/tds'], ['GST / HSN', '/finance/gst-hsn'], ['GST Audit', '/finance/gst-audit'], ['Amazon Unmapped', '/admin/amazon-unmapped'], ['Bank Match', '/finance/reconciliation'], ['Sales Register', '/accountant/sales'], ['Purchase Register', '/accountant/purchases'], ['Party Master', '/admin/parties'], ['Party Ledger', '/accountant/ledger'], ['Payments', '/accountant/payments'], ['Credit Notes', '/accountant/credit-notes'], ['Reports', '/accountant/reports'], ['Reconciliation', '/accountant/reconciliation']]],
@@ -145,9 +145,9 @@ export const IRON_ACCOUNTANT_NAV = [
   ['Folders', [['Order Folders', '/admin/orders-folders']]],
 ];
 
-export const IRON_TECHNICIAN_NAV = [['Workspace', [['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'], ['Dashboard', '/technician'], ['Repair Queue', '/technician/queue'], ['My Repairs', '/technician/my-repairs'], ['Dispatch Queue', '/view/dispatch-queue'], ['My Attendance', '/my-attendance']]]];
-export const IRON_DISPATCHER_NAV = [['Workspace', [['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'], ['Dashboard', '/dispatcher'], ['Dispatch Queue', '/dispatcher/queue'], ['Courier Shipping', '/operations/courier-shipping'], ['Courier Tracking', '/operations/courier-tracking'], ['TV Mode', '/dispatcher/tv'], ['My Attendance', '/my-attendance']]]];
-export const IRON_GATE_NAV = [['Workspace', [['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'], ['Dashboard', '/gate'], ['Scan Parcel', '/gate/scan'], ['Gate Logs', '/gate/logs'], ['Scheduled', '/gate/scheduled'], ['Dispatch Queue', '/view/dispatch-queue'], ['My Attendance', '/my-attendance']]]];
+export const IRON_TECHNICIAN_NAV = [['Workspace', [['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'], ['RTO / Returns', '/rto-returns'], ['Dashboard', '/technician'], ['Repair Queue', '/technician/queue'], ['My Repairs', '/technician/my-repairs'], ['Dispatch Queue', '/view/dispatch-queue'], ['My Attendance', '/my-attendance']]]];
+export const IRON_DISPATCHER_NAV = [['Workspace', [['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'], ['RTO / Returns', '/rto-returns'], ['Dashboard', '/dispatcher'], ['Dispatch Queue', '/dispatcher/queue'], ['Courier Shipping', '/operations/courier-shipping'], ['Courier Tracking', '/operations/courier-tracking'], ['TV Mode', '/dispatcher/tv'], ['My Attendance', '/my-attendance']]]];
+export const IRON_GATE_NAV = [['Workspace', [['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'], ['RTO / Returns', '/rto-returns'], ['Dashboard', '/gate'], ['Scan Parcel', '/gate/scan'], ['Gate Logs', '/gate/logs'], ['Scheduled', '/gate/scheduled'], ['Dispatch Queue', '/view/dispatch-queue'], ['My Attendance', '/my-attendance']]]];
 export const IRON_CUSTOMER_NAV = [['Workspace', [['Dashboard', '/customer'], ['My Quotations', '/customer/quotations'], ['My Tickets', '/customer/tickets'], ['Create Ticket', '/customer/tickets/new'], ['Book Appointment', '/customer/appointments'], ['Register Warranty', '/customer/warranty/register'], ['My Warranties', '/customer/warranties']]]];
 export const IRON_DEALER_NAV = [['Workspace', [['Dashboard', '/dealer'], ['Customer Book', '/dealer/customers'], ['Product Catalogue', '/dealer/catalogue'], ['Place Order', '/dealer/orders/new'], ['My Orders', '/dealer/orders'], ['Track Dispatches', '/dealer/dispatches'], ['Reorder Suggestions', '/dealer/reorder-suggestions'], ['Sales Targets', '/dealer/targets'], ['Warranty Registration', '/dealer/warranty'], ['Warranty Claims', '/dealer/warranty-claims'], ['Spare Parts', '/dealer/spare-parts'], ['Spare Orders', '/dealer/spare-orders'], ['Announcements', '/dealer/announcements'], ['Ledger', '/dealer/ledger'], ['Performance', '/dealer/performance'], ['Certificate', '/dealer/certificate'], ['Downloads', '/dealer/documents'], ['My Profile', '/dealer/profile'], ['Deposit Status', '/dealer/deposit'], ['Support Tickets', '/dealer/tickets'], ['Promotions', '/dealer/promotions'], ['Dealer Agreement', '/dealer/terms']]]];
 

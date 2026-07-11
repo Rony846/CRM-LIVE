@@ -148,6 +148,8 @@ import AdminIncentives from './pages/incentives/AdminIncentivesIron';
 // Payroll & Attendance Pages
 import AdminPayroll from './pages/admin/AdminPayrollIron';
 import AdminOmnidimCalls from './pages/admin/AdminOmnidimCallsIron';
+import KommoBackupBrowse from './pages/admin/KommoBackupBrowse';
+import RTOReturns from './pages/RTOReturns';
 import AdminWhatsAppChats from './pages/admin/AdminWhatsAppChatsIron';
 import AdminAttendance from './pages/admin/AdminAttendanceIron';
 import MyAttendance from './pages/employee/MyAttendanceIron';
@@ -819,6 +821,16 @@ function App() {
           <Route path="/admin/omnidim-calls" element={
             <ProtectedRoute allowedRoles={['admin']}>
               <AdminOmnidimCalls />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/kommo-backup" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <KommoBackupBrowse />
+            </ProtectedRoute>
+          } />
+          <Route path="/rto-returns" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant', 'dispatcher', 'supervisor', 'service_agent', 'gate']}>
+              <RTOReturns />
             </ProtectedRoute>
           } />
           <Route path="/admin/whatsapp-chats" element={
