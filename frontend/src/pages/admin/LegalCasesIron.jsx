@@ -42,7 +42,8 @@ export default function LegalCases() {
   const [firms, setFirms] = useState([]);
   const [addOpen, setAddOpen] = useState(false);
   const [nc, setNc] = useState({});           // new complaint form
-  const [ncFile, setNcFile] = useState(null);
+  const [ncFile, setNcFile] = useState(null); // invoice
+  const [ncFiles, setNcFiles] = useState([]); // supporting evidence files/screenshots
   const [saving, setSaving] = useState(false);
 
   const load = async () => {
@@ -66,9 +67,10 @@ export default function LegalCases() {
       const fd = new FormData();
       ['customer_name', 'customer_phone', 'customer_email', 'customer_address', 'firm_id', 'description', 'order_id', 'claim_amount'].forEach((k) => fd.append(k, nc[k] || ''));
       if (ncFile) fd.append('invoice', ncFile);
+      (ncFiles || []).forEach((f) => fd.append('files', f));
       await axios.post(`${API}/admin/legal-complaint`, fd, { headers: { ...auth.headers, 'Content-Type': 'multipart/form-data' } });
       toast.success('Complaint filed — shows at the top for the lawyer');
-      setAddOpen(false); setNc({}); setNcFile(null); load();
+      setAddOpen(false); setNc({}); setNcFile(null); setNcFiles([]); load();
     } catch (e) { toast.error(e?.response?.data?.detail || 'Failed to file complaint'); }
     finally { setSaving(false); }
   };
@@ -193,7 +195,7 @@ export default function LegalCases() {
       {/* Actions */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 14, alignItems: 'center', flexWrap: 'wrap' }}>
         {canFile && !archived && (
-          <button onClick={() => { setNc({}); setNcFile(null); setAddOpen(true); }}
+          <button onClick={() => { setNc({}); setNcFile(null); setNcFiles([]); setAddOpen(true); }}
             style={{ border: 'none', background: T.orange, color: '#fff', borderRadius: 8, padding: '9px 16px', fontFamily: T.headline, fontWeight: 800, fontSize: 12.5, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <Plus size={15} /> Add Complaint
           </button>
@@ -430,6 +432,22 @@ export default function LegalCases() {
                   <input type="file" style={{ display: 'none' }} onChange={(e) => setNcFile(e.target.files[0] || null)} />
                 </label>
                 {ncFile && <span style={{ fontSize: 11, color: T.iron500 }}>{ncFile.name}</span>}
+              </div>
+              <div style={{ gridColumn: '1 / 3' }}>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: T.blue, cursor: 'pointer', fontWeight: 600 }}>
+                  <Upload size={14} /> Attach files / screenshots (optional, multiple)
+                  <input type="file" multiple style={{ display: 'none' }} onChange={(e) => setNcFiles((prev) => [...prev, ...Array.from(e.target.files || [])])} />
+                </label>
+                {ncFiles.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 6 }}>
+                    {ncFiles.map((f, i) => (
+                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: T.iron600, background: T.iron50, border: `1px solid ${T.iron200}`, borderRadius: 5, padding: '3px 7px' }}>
+                        <FileText size={12} /><span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
+                        <button onClick={() => setNcFiles((prev) => prev.filter((_, j) => j !== i))} style={{ border: 'none', background: 'transparent', color: '#dc2626', cursor: 'pointer', padding: 0, display: 'inline-flex' }}><Trash2 size={12} /></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>

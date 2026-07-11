@@ -42640,39 +42640,57 @@ async def _next_legal_serial() -> str:
     return f"MG{mx + 1}"
 
 
+async def _save_legal_upload(upload, label="file"):
+    """Store one uploaded file under uploads/legal_cases; returns (rel_path, doc_dict) or (None, None)."""
+    if upload is None:
+        return None, None
+    content = await upload.read()
+    if not content:
+        return None, None
+    if len(content) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail=f"{label} too large (max 25MB)")
+    os.makedirs(UPLOAD_DIR / "legal_cases", exist_ok=True)
+    safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in (upload.filename or label))[:80] or label
+    disk = f"{uuid.uuid4().hex[:8]}_{safe}"
+    with open(UPLOAD_DIR / "legal_cases" / disk, "wb") as f:
+        f.write(content)
+    rel = f"legal_cases/{disk}"
+    doc = {"id": str(uuid.uuid4()), "filename": upload.filename or safe, "disk": rel,
+           "mime": upload.content_type or "application/octet-stream", "at": datetime.now(timezone.utc).isoformat()}
+    return rel, doc
+
+
 @api_router.post("/admin/legal-complaint")
 async def create_legal_complaint(
     customer_name: str = Form(...), firm_id: str = Form(...), description: str = Form(...),
     customer_phone: str = Form(""), customer_email: str = Form(""), customer_address: str = Form(""),
     order_id: str = Form(""), claim_amount: str = Form(""), invoice: UploadFile = File(None),
+    files: List[UploadFile] = File(None),
     user: dict = Depends(require_roles(["admin", "accountant"]))):
-    """File a NEW complaint against a customer → becomes an active legal case shown at the top for the
-    lawyer. Customer details + what they did wrong + which firm sends the notice + optional invoice."""
+    """File a NEW complaint against a customer → active legal case shown at the top for the lawyer.
+    Customer details + what they did wrong + which firm sends the notice + optional invoice + optional
+    supporting files/screenshots (evidence)."""
     if not customer_name.strip() or not description.strip():
         raise HTTPException(status_code=400, detail="Customer name and description are required")
     firm = await db.firms.find_one({"id": firm_id}, {"_id": 0, "name": 1, "gstin": 1})
     if not firm:
         raise HTTPException(status_code=404, detail="Firm not found — pick the firm the notice is sent from")
     now = datetime.now(timezone.utc).isoformat()
-    client_document = None
-    if invoice is not None:
-        content = await invoice.read()
-        if content:
-            if len(content) > 25 * 1024 * 1024:
-                raise HTTPException(status_code=400, detail="Invoice too large (max 25MB)")
-            os.makedirs(UPLOAD_DIR / "legal_cases", exist_ok=True)
-            safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in (invoice.filename or "invoice"))[:80] or "invoice"
-            disk = f"{uuid.uuid4().hex[:8]}_{safe}"
-            with open(UPLOAD_DIR / "legal_cases" / disk, "wb") as f:
-                f.write(content)
-            client_document = f"legal_cases/{disk}"
+    client_document, _ = await _save_legal_upload(invoice, "Invoice")
+    # supporting evidence (screenshots / chats / proofs) → lawyer_documents as type 'evidence'
+    evidence_docs = []
+    for f in (files or []):
+        _, doc = await _save_legal_upload(f, "evidence")
+        if doc:
+            doc.update({"type": "evidence", "by": user.get("first_name") or user.get("email") or "Staff"})
+            evidence_docs.append(doc)
     case = {
         "id": str(uuid.uuid4()), "serial": await _next_legal_serial(),
         "party_name": customer_name.strip(), "customer_phone": re.sub(r"\D", "", customer_phone)[-10:] or "",
         "customer_email": customer_email.strip() or None, "customer_address": customer_address.strip() or None,
         "firm_id": firm_id, "firm_name": firm.get("name"), "order_id": order_id.strip() or None,
         "issue": description.strip(), "claim_amount": (float(claim_amount) if str(claim_amount).strip().replace(".", "").isdigit() else None),
-        "client_document": client_document, "notice_file": None, "lawyer_documents": [], "reminders": [],
+        "client_document": client_document, "notice_file": None, "lawyer_documents": evidence_docs, "reminders": [],
         "status": "notice_pending", "source": "complaint", "archived": False,
         "created_by_name": user.get("first_name") or user.get("email") or "Staff",
         "comments": [], "created_at": now, "updated_at": now,
