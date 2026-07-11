@@ -143,12 +143,28 @@ export default function LegalDiary() {
   };
 
   const saveDayReminder = async () => {
-    if (!dayAdd.case_id) { toast.error('Pick a case'); return; }
+    if (!dayAdd.case_id) { toast.error('Pick a case or General'); return; }
     try {
-      await axios.post(`${API}/admin/legal-cases/${dayAdd.case_id}/reminder`, { date: dayAdd.date, note: dayAdd.note }, auth);
+      if (dayAdd.case_id === '__general__') {
+        await axios.post(`${API}/admin/legal-reminders`, { date: dayAdd.date, note: dayAdd.note }, auth);
+      } else {
+        await axios.post(`${API}/admin/legal-cases/${dayAdd.case_id}/reminder`, { date: dayAdd.date, note: dayAdd.note }, auth);
+      }
       toast.success('Reminder set'); setDayAdd(null); load();
     } catch (e) { toast.error(e?.response?.data?.detail || 'Failed'); }
   };
+
+  // general (standalone) reminder edit modal
+  const [genModal, setGenModal] = useState(null);
+  const clickEvent = (e) => { if (e.general_id || e.case_id === null) setGenModal({ id: e.general_id, date: e.date, note: e.note || e.title || '' }); else openCase(e); };
+  const saveGen = async () => {
+    try {
+      await axios.patch(`${API}/admin/legal-reminders/${genModal.id}`, { date: genModal.date, note: genModal.note }, auth);
+      toast.success('Saved'); setGenModal(null); load();
+    } catch (e) { toast.error(e?.response?.data?.detail || 'Failed'); }
+  };
+  const genDone = async () => { try { await axios.patch(`${API}/admin/legal-reminders/${genModal.id}`, { done: true }, auth); setGenModal(null); load(); } catch { toast.error('Failed'); } };
+  const genDelete = async () => { try { await axios.delete(`${API}/admin/legal-reminders/${genModal.id}`, auth); setGenModal(null); load(); } catch { toast.error('Failed'); } };
 
   return (
     <IronShell title="Legal Diary" subtitle="Hearings · notice deadlines · limitation · reminders" onRefresh={load}>
@@ -160,6 +176,8 @@ export default function LegalDiary() {
               <CalendarDays size={18} color={T.orange} /> {monthName(cursor)}
             </h1>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <button style={{ ...navBtn, gap: 4, fontSize: 11.5, fontWeight: 700, color: '#854D0E' }}
+                onClick={() => setDayAdd({ date: iso(new Date()), case_id: '__general__', note: '' })}><Bell size={13} /> Reminder</button>
               <button style={navBtn} onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1))}><ChevronLeft size={15} /></button>
               <button style={navBtn} onClick={() => setCursor(new Date())}><span style={{ fontSize: 11.5, fontWeight: 700 }}>Today</span></button>
               <button style={navBtn} onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1))}><ChevronRight size={15} /></button>
@@ -173,7 +191,7 @@ export default function LegalDiary() {
             {grid.map((d, i) => {
               const di = iso(d); const inMonth = d.getMonth() === cursor.getMonth(); const evs = eventsByDay[di] || [];
               return (
-                <div key={i} onClick={() => setDayAdd({ date: di, case_id: cases[0]?.id || '', note: '' })}
+                <div key={i} onClick={() => setDayAdd({ date: di, case_id: '__general__', note: '' })}
                   style={{ minHeight: 74, borderRadius: 6, padding: 3, cursor: 'pointer',
                     border: '1px solid ' + (di === todayIso ? T.orange : T.iron200),
                     background: inMonth ? T.white : T.iron50, opacity: inMonth ? 1 : 0.5,
@@ -183,7 +201,7 @@ export default function LegalDiary() {
                     {evs.slice(0, 3).map((e, j) => {
                       const [bg, tx, bd] = TYPE_TONE[e.type] || TYPE_TONE.action;
                       return (
-                        <div key={j} onClick={(ev) => { ev.stopPropagation(); openCase(e); }} title={`${e.serial} ${e.party} — ${e.title}`}
+                        <div key={j} onClick={(ev) => { ev.stopPropagation(); clickEvent(e); }} title={`${e.serial} ${e.party} — ${e.title}`}
                           style={{ fontSize: 9.5, lineHeight: 1.25, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                             padding: '1px 4px', borderRadius: 4, cursor: 'pointer', background: bg, color: tx, border: '1px solid ' + bd }}>
                           {EMOJI[e.type] || '•'} {e.serial} {e.party}
@@ -209,7 +227,7 @@ export default function LegalDiary() {
           {!myday ? <div style={{ fontSize: 12, color: T.iron400 }}>Loading…</div> : (
             <>
               <Bucket icon={<Bell size={13} />} title="Reminders due" color="#854D0E" items={myday.reminders_due}
-                onClick={openCase} render={x => <span>{x.serial} <b>{x.party}</b> — {x.note || 'reminder'}{x.due_today ? '' : ` (${x.days_late}d late)`}</span>} />
+                onClick={clickEvent} render={x => <span>{x.serial} <b>{x.party}</b> — {x.note || 'reminder'}{x.due_today ? '' : ` (${x.days_late}d late)`}</span>} />
               <Bucket icon={<Hourglass size={13} />} title="Limitation (act now)" color="#991B1B" items={myday.limitation_watch}
                 onClick={openCase} render={x => <span>{x.serial} <b>{x.party}</b> — {x.expired ? `EXPIRED ${-x.in_days}d ago` : `${x.in_days}d left`}</span>} />
               <Bucket icon={<CircleAlert size={13} />} title="Overdue" color="#991B1B" items={myday.overdue}
@@ -290,7 +308,7 @@ export default function LegalDiary() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <label><Caps size={9}>Case</Caps>
                 <select style={inputStyle} value={dayAdd.case_id} onChange={e => setDayAdd({ ...dayAdd, case_id: e.target.value })}>
-                  <option value="">Select a case…</option>
+                  <option value="__general__">🔔 General (no case)</option>
                   {cases.map(c => <option key={c.id} value={c.id}>{c.serial} — {c.party_name}</option>)}
                 </select></label>
               <label><Caps size={9}>Note</Caps>
@@ -299,6 +317,31 @@ export default function LegalDiary() {
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
               <button onClick={() => setDayAdd(null)} style={{ ...navBtn, padding: '8px 14px', fontSize: 12.5, fontWeight: 700 }}>Cancel</button>
               <button onClick={saveDayReminder} style={primaryBtn}>Set reminder</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit a standalone (general) reminder */}
+      {genModal && (
+        <div onClick={() => setGenModal(null)} style={overlay}>
+          <div onClick={e => e.stopPropagation()} style={{ ...modalBox, maxWidth: 400 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <div style={{ fontFamily: T.headline, fontSize: 15, fontWeight: 800, color: T.iron900, display: 'flex', alignItems: 'center', gap: 6 }}><Bell size={15} color="#854D0E" /> General reminder</div>
+              <button onClick={() => setGenModal(null)} style={{ border: 'none', background: 'none', cursor: 'pointer', color: T.iron500 }}><X size={18} /></button>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <label><Caps size={9}>Date</Caps>
+                <input style={inputStyle} type="date" value={genModal.date} onChange={e => setGenModal({ ...genModal, date: e.target.value })} /></label>
+              <label><Caps size={9}>Note</Caps>
+                <input style={inputStyle} value={genModal.note} onChange={e => setGenModal({ ...genModal, note: e.target.value })} onKeyDown={e => e.key === 'Enter' && saveGen()} /></label>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 16 }}>
+              <button onClick={genDelete} style={{ ...navBtn, padding: '8px 12px', fontSize: 12, color: '#dc2626', display: 'inline-flex', gap: 5 }}><Trash2 size={13} /> Delete</button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={genDone} style={{ ...navBtn, padding: '8px 12px', fontSize: 12, color: T.green, fontWeight: 700, display: 'inline-flex', gap: 5 }}><Check size={13} /> Done</button>
+                <button onClick={saveGen} style={primaryBtn}>Save</button>
+              </div>
             </div>
           </div>
         </div>

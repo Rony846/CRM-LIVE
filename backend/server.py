@@ -42822,6 +42822,62 @@ async def delete_legal_reminder(case_id: str, rid: str, user: dict = Depends(req
     return {"success": True}
 
 
+# ── STANDALONE (general) legal reminders — not tied to any case (db.legal_general_reminders) ──
+@api_router.get("/admin/legal-reminders")
+async def list_general_reminders(user: dict = Depends(require_roles(_LEGAL_ROLES))):
+    rows = await db.legal_general_reminders.find({"done": {"$ne": True}}, {"_id": 0}).sort("date", 1).to_list(500)
+    return {"reminders": rows}
+
+
+@api_router.post("/admin/legal-reminders")
+async def add_general_reminder(body: LegalReminderBody, user: dict = Depends(require_roles(_LEGAL_ROLES))):
+    """Add a standalone reminder for any date, not attached to a case (general legal to-do)."""
+    d = _ld_date(body.date)
+    if not d:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+    rem = {"id": str(uuid.uuid4()), "date": d.isoformat(), "note": (body.note or "").strip(), "done": False,
+           "created_by": user.get("first_name") or user.get("email") or "Staff",
+           "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.legal_general_reminders.insert_one(dict(rem))
+    return {"success": True, "reminder": rem}
+
+
+@api_router.patch("/admin/legal-reminders/{rid}")
+async def edit_general_reminder(rid: str, body: LegalReminderEdit, user: dict = Depends(require_roles(_LEGAL_ROLES))):
+    sets = {}
+    if body.date is not None:
+        d = _ld_date(body.date)
+        if body.date.strip() and not d:
+            raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+        sets["date"] = d.isoformat() if d else None
+    if body.note is not None:
+        sets["note"] = body.note.strip()
+    if body.done is not None:
+        sets["done"] = bool(body.done)
+    if sets:
+        res = await db.legal_general_reminders.update_one({"id": rid}, {"$set": sets})
+        if not res.matched_count:
+            raise HTTPException(status_code=404, detail="Reminder not found")
+    return {"success": True}
+
+
+@api_router.delete("/admin/legal-reminders/{rid}")
+async def delete_general_reminder(rid: str, user: dict = Depends(require_roles(_LEGAL_ROLES))):
+    await db.legal_general_reminders.delete_one({"id": rid})
+    return {"success": True}
+
+
+async def _general_reminder_events():
+    """Standalone reminders as calendar events (case_id=None, serial='General')."""
+    ev = []
+    async for r in db.legal_general_reminders.find({"done": {"$ne": True}}, {"_id": 0}):
+        if _ld_date(r.get("date")):
+            ev.append({"case_id": None, "general_id": r["id"], "serial": "General", "party": "",
+                       "date": _ld_date(r["date"]).isoformat(), "type": "reminder",
+                       "title": r.get("note") or "Reminder", "urgency": "normal", "note": r.get("note")})
+    return ev
+
+
 @api_router.get("/admin/legal-cases/calendar")
 async def legal_calendar(from_: str = Query(None, alias="from"), to: str = None,
                          user: dict = Depends(require_roles(_LEGAL_ROLES))):
@@ -42835,6 +42891,11 @@ async def legal_calendar(from_: str = Query(None, alias="from"), to: str = None,
             if (d_from and ed < d_from) or (d_to and ed > d_to):
                 continue
             events.append(ev)
+    for ev in await _general_reminder_events():   # standalone reminders (all firms — not case-scoped)
+        ed = _ld_date(ev["date"])
+        if (d_from and ed < d_from) or (d_to and ed > d_to):
+            continue
+        events.append(ev)
     events.sort(key=lambda x: x["date"])
     return {"success": True, "events": events}
 
@@ -42844,7 +42905,16 @@ async def legal_my_day(user: dict = Depends(require_roles(_LEGAL_ROLES))):
     """Everything actionable today + overdue + the watchdog buckets."""
     scope = get_user_firm_scope(user)
     today = _ist_today()
-    return {"success": True, "date": today.isoformat(), **_legal_diary_buckets(await _legal_open_cases(scope), today)}
+    buckets = _legal_diary_buckets(await _legal_open_cases(scope), today)
+    # fold in standalone (general) reminders that are due today / overdue
+    async for r in db.legal_general_reminders.find({"done": {"$ne": True}}, {"_id": 0}):
+        rd = _ld_date(r.get("date"))
+        if rd and rd <= today:
+            buckets["reminders_due"].append({"case_id": None, "general_id": r["id"], "serial": "General",
+                "party": "", "date": rd.isoformat(), "note": r.get("note"),
+                "days_late": (today - rd).days, "due_today": rd == today})
+    buckets["reminders_due"].sort(key=lambda x: x["date"])
+    return {"success": True, "date": today.isoformat(), **buckets}
 
 
 async def scheduled_legal_diary():
@@ -42852,6 +42922,11 @@ async def scheduled_legal_diary():
     one message/day (never per-case) to avoid the notification-spam failure mode."""
     today = _ist_today()
     b = _legal_diary_buckets(await _legal_open_cases(), today)
+    async for r in db.legal_general_reminders.find({"done": {"$ne": True}}, {"_id": 0}):
+        rd = _ld_date(r.get("date"))
+        if rd and rd <= today:
+            b["reminders_due"].append({"serial": "General", "party": "", "note": r.get("note"),
+                "date": rd.isoformat(), "days_late": (today - rd).days, "due_today": rd == today})
     if not any([b["due_today"], b["overdue"], b["hearings_7d"], b["notice_deadline_lapsed"], b["limitation_watch"], b["dark_cases"], b.get("reminders_due")]):
         return
     def lst(items, fmt, cap=15):
