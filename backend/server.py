@@ -70371,8 +70371,43 @@ async def reconcile_ready_lane(dry_run: bool = False) -> dict:
             cleared += 1
             if not dry_run:
                 await db.amazon_order_processing.update_many(oq, {"$set": {"pickup_stuck": False}})
+
+    # SECOND PASS — Ship-Desk / offline orders (pending_fulfillment) that already moved on the courier but
+    # were never marked packed. The first pass only covered amazon_order_processing, so these lingered in
+    # ready-to-ship even though Delhivery/Bigship showed them In-Transit (the bug behind AWB …674330).
+    pf_moved = pf_cancelled = pf_scanned = 0
+    pfq = {"stage": "ready_to_ship", "pack_stage": {"$ne": "packed"}, "tracking_id": {"$nin": [None, ""]}}
+    pf_rows = await db.pending_fulfillment.find(pfq, {"_id": 0, "id": 1, "order_id": 1, "tracking_id": 1}).to_list(4000)
+    for p in pf_rows:
+        pf_scanned += 1
+        awb = (p.get("tracking_id") or "").strip()
+        cs = await db.courier_shipments.find_one(
+            {"$or": [{"awb_number": awb}, {"tracking_id": awb}, {"lr_number": awb}]},
+            {"_id": 0, "status": 1, "delhivery_status": 1})
+        st = ((cs or {}).get("delhivery_status") or "") + " " + ((cs or {}).get("status") or "")
+        if not _delhivery_picked(st):
+            dt = await db.delhivery_tracking.find_one(
+                {"$or": [{"awb": awb}, {"waybill": awb}, {"tracking_id": awb}]},
+                {"_id": 0, "status": 1, "latest_status": 1})
+            if dt:
+                st += " " + (dt.get("latest_status") or dt.get("status") or "")
+        st = st.strip()
+        if _delhivery_cancelled(st):
+            pf_cancelled += 1
+            if not dry_run:
+                await db.pending_fulfillment.update_one({"id": p["id"]}, {"$set": {
+                    "pack_stage": "packed", "packed_at": now_iso, "packed_by": "auto_reconcile",
+                    "reconciled_cancelled": True, "reconcile_note": f"courier cancelled: {st}"[:120]}})
+        elif _delhivery_picked(st):
+            pf_moved += 1
+            if not dry_run:
+                await db.pending_fulfillment.update_one({"id": p["id"]}, {"$set": {
+                    "pack_stage": "packed", "packed_at": now_iso, "packed_by": "auto_reconcile",
+                    "reconciled_shipped": True, "courier_status": st[:60]}})
+
     res = {"dry_run": dry_run, "scanned": len(rows), "marked_shipped": moved,
            "cancelled_dropped": cancelled, "flagged_stuck": stuck, "cleared_stuck": cleared,
+           "pf_scanned": pf_scanned, "pf_marked_shipped": pf_moved, "pf_cancelled_dropped": pf_cancelled,
            "at": now_iso}
     if not dry_run:
         try:
