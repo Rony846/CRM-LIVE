@@ -76,6 +76,8 @@ export default function ShipDeskBoard() {
   const [track, setTrack] = useState({});  // order_id -> tracking text
   const [pend, setPend] = useState(null);  // model-wise pendency modal data (null = closed)
   const [pendLoading, setPendLoading] = useState(false);
+  const [packScan, setPackScan] = useState(null);  // order being packed → scan its unit serial
+  const [scanVal, setScanVal] = useState('');
 
   const openPendency = async () => {
     setPend({ models: [], _loading: true }); setPendLoading(true);
@@ -121,16 +123,17 @@ export default function ShipDeskBoard() {
     finally { setBusy((b) => ({ ...b, [key]: false })); }
   };
 
-  const printPack = async (o, reprint = false) => {
+  const printPack = async (o, serial = '', reprint = false) => {
     const key = `${o.order_id}::pack`;
     setBusy((b) => ({ ...b, [key]: true }));
     try {
-      const { data } = await axios.post(`${API}/orders/${encodeURIComponent(o.order_id)}/print-pack-set`, null, { headers: H, params: { serial: '', customer: o.customer_name || '', reprint } });
+      const { data } = await axios.post(`${API}/orders/${encodeURIComponent(o.order_id)}/print-pack-set`, null, { headers: H, params: { serial: serial || '', customer: o.customer_name || '', reprint } });
       if (data?.already_packed) {
         // Server refused a duplicate print. Offer an explicit reprint.
-        if (window.confirm(`${data.message}\n\nReprint anyway?`)) { await printPack(o, true); return; }
+        if (window.confirm(`${data.message}\n\nReprint anyway?`)) { await printPack(o, serial, true); return; }
       } else {
-        toast.success('Print pack sent — check the printer');
+        toast.success(serial ? `Printed — unit serial ${serial} bound` : 'Printed — serial auto-assigned');
+        setPackScan(null); setScanVal('');
         load();  // refresh so the packed order drops off the lane (can't be re-clicked)
       }
     } catch (e) { toast.error(e?.response?.data?.detail || 'Print pack failed'); }
@@ -277,6 +280,28 @@ export default function ShipDeskBoard() {
         </div>
       </div>
       {pend && <PendencyModal data={pend} loading={pendLoading} onClose={() => setPend(null)} />}
+      {packScan && (
+        <div onClick={() => setPackScan(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,15,15,.5)', zIndex: 120, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 60 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: T.white, border: '1px solid ' + T.iron200, borderRadius: 14, width: 'min(420px,94%)', padding: 20, boxShadow: '0 24px 70px rgba(0,0,0,.3)' }}>
+            <div style={{ fontFamily: T.headline, fontWeight: 800, fontSize: 16, color: T.iron900 }}>Scan the unit serial</div>
+            <div style={{ fontSize: 12, color: T.iron600, margin: '4px 0 12px' }}>{(packScan.product || '').slice(0, 50)} · {packScan.customer_name || packScan.order_id}</div>
+            <input autoFocus value={scanVal} onChange={(e) => setScanVal(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && scanVal.trim() && !busy[`${packScan.order_id}::pack`]) printPack(packScan, scanVal.trim()); }}
+              placeholder="Scan or type the serial on the unit…"
+              style={{ width: '100%', padding: '13px 12px', fontSize: 16, fontWeight: 700, letterSpacing: 1, border: '1px solid ' + T.orange, borderRadius: 10, outline: 'none', boxSizing: 'border-box', ...mono }} />
+            <div style={{ fontSize: 11, color: T.iron400, marginTop: 7 }}>Scan the sticker on the actual unit going in this box — that becomes the customer's serial.</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 16 }}>
+              <button onClick={() => printPack(packScan, '')} disabled={busy[`${packScan.order_id}::pack`]}
+                style={{ border: '1px solid ' + T.iron200, background: T.white, borderRadius: 8, padding: '9px 12px', fontSize: 11.5, fontWeight: 700, cursor: 'pointer', color: T.iron600 }}>Print without scanning</button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={() => setPackScan(null)} style={{ border: '1px solid ' + T.iron200, background: T.white, borderRadius: 8, padding: '9px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', color: T.iron700 }}>Cancel</button>
+                <button onClick={() => scanVal.trim() && printPack(packScan, scanVal.trim())} disabled={busy[`${packScan.order_id}::pack`] || !scanVal.trim()}
+                  style={{ ...btnPrimary, opacity: (busy[`${packScan.order_id}::pack`] || !scanVal.trim()) ? 0.6 : 1 }}>Print pack</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {loading ? (
         <div style={{ textAlign: 'center', padding: 60, color: T.iron400 }}><Loader2 size={20} className="animate-spin" /></div>
       ) : (
@@ -321,7 +346,7 @@ export default function ShipDeskBoard() {
               )}
               {isDispatch && (
                 <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  <button onClick={() => printPack(o)} disabled={busy[`${o.order_id}::pack`]} style={{ ...btnPrimary, display: 'inline-flex', gap: 4, alignItems: 'center', opacity: busy[`${o.order_id}::pack`] ? 0.6 : 1 }}>
+                  <button onClick={() => { setScanVal(''); setPackScan(o); }} disabled={busy[`${o.order_id}::pack`]} style={{ ...btnPrimary, display: 'inline-flex', gap: 4, alignItems: 'center', opacity: busy[`${o.order_id}::pack`] ? 0.6 : 1 }}>
                     <Printer size={13} />{busy[`${o.order_id}::pack`] ? '…' : 'Print pack'}</button>
                   {(o.present || []).includes('label') && <button onClick={() => download(o.order_id, 'file/label', `label_${o.order_id}.pdf`, { awb: o.tracking_id })} style={ghostBtn}><Download size={12} />Label</button>}
                   <button onClick={() => download(o.order_id, 'slip.pdf', `slip_${o.order_id}.pdf`)} style={ghostBtn}><Download size={12} />Slip</button>
