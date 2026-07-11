@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import { API, useAuth } from '@/App';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Search, FileText, MessageSquare, Gavel, Send, IndianRupee, Upload, Inbox } from 'lucide-react';
+import { Search, FileText, MessageSquare, Gavel, Send, IndianRupee, Upload, Inbox, Trash2 } from 'lucide-react';
 import IronShell from '@/components/iron/IronShell';
 import { T, Caps, IronCard, mono, thCell, tdCell, badgeStyle, LIGHT_VARS } from '@/components/iron/IronKit';
 
@@ -78,6 +78,24 @@ export default function LegalCases() {
       setData((d) => ({ ...d, cases: d.cases.map((c) => c.id === open.id ? updated : c) }));
       setComment('');
     } catch (e) { toast.error('Failed to add comment'); }
+  };
+
+  const [remDate, setRemDate] = useState('');
+  const [remNote, setRemNote] = useState('');
+  const syncCase = (updated) => { setOpen(updated); setData((d) => ({ ...d, cases: d.cases.map((c) => c.id === updated.id ? updated : c) })); };
+  const addReminder = async () => {
+    if (!remDate || !open) { toast.error('Pick a date'); return; }
+    try {
+      const r = await axios.post(`${API}/admin/legal-cases/${open.id}/reminder`, { date: remDate, note: remNote }, auth);
+      syncCase({ ...open, reminders: [...(open.reminders || []), r.data.reminder] });
+      setRemDate(''); setRemNote(''); toast.success('Reminder set — shows in the Legal Diary');
+    } catch (e) { toast.error(e?.response?.data?.detail || 'Failed'); }
+  };
+  const delReminder = async (rid) => {
+    try {
+      await axios.delete(`${API}/admin/legal-cases/${open.id}/reminder/${rid}`, auth);
+      syncCase({ ...open, reminders: (open.reminders || []).filter((r) => r.id !== rid) });
+    } catch (e) { toast.error('Failed'); }
   };
 
   const openDoc = async (id) => {
@@ -257,6 +275,28 @@ export default function LegalCases() {
                 <Caps size={8.5}>Status</Caps><StatusSelect c={open} w={170} />
                 <button style={{ ...outlineBtn, marginLeft: 'auto', padding: '6px 10px', fontSize: 11.5 }} onClick={() => genNotice(open.id)}><Gavel size={14} /> Draft notice</button>
                 {open.client_document && <button style={{ ...outlineBtn, padding: '6px 10px', fontSize: 11.5 }} onClick={() => openDoc(open.id)}><FileText size={14} /> Client doc</button>}
+              </div>
+
+              {/* Reminders — assign a date to be reminded about this case (shows in the Legal Diary) */}
+              <div>
+                <Caps size={8.5} style={{ display: 'block', marginBottom: 4 }}>🔔 Reminders</Caps>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 6 }}>
+                  {(open.reminders || []).filter((r) => !r.done).length === 0 && <div style={{ fontSize: 11, color: T.iron400 }}>No reminders. Add one below.</div>}
+                  {(open.reminders || []).filter((r) => !r.done).map((r) => (
+                    <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#FEF9C3', border: '1px solid #FDE68A', borderRadius: 6, padding: '5px 8px' }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: '#854D0E', minWidth: 76 }}>{r.date}</span>
+                      <span style={{ fontSize: 12, color: T.iron700, flex: 1 }}>{r.note || 'Reminder'}</span>
+                      <button onClick={() => delReminder(r.id)} title="Delete" style={{ border: 'none', background: 'transparent', color: '#dc2626', cursor: 'pointer', padding: 2, display: 'inline-flex' }}><Trash2 size={14} /></button>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <input type="date" value={remDate} onChange={(e) => setRemDate(e.target.value)}
+                    style={{ border: `1px solid ${T.iron200}`, borderRadius: 6, padding: '6px 8px', fontSize: 12, color: T.iron900, outline: 'none' }} />
+                  <input value={remNote} onChange={(e) => setRemNote(e.target.value)} placeholder="Reminder note…" onKeyDown={(e) => e.key === 'Enter' && addReminder()}
+                    style={{ flex: 1, border: `1px solid ${T.iron200}`, borderRadius: 6, padding: '6px 8px', fontSize: 12, color: T.iron900, outline: 'none' }} />
+                  <button onClick={addReminder} style={{ ...primaryBtn, padding: '6px 12px', fontSize: 11.5 }}>Set</button>
+                </div>
               </div>
               {notice && (
                 <div>

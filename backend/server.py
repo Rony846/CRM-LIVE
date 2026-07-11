@@ -42673,15 +42673,28 @@ def _legal_events_for_case(c):
     add(c.get("hearing_date"), "hearing", "Court hearing", "high")
     add(c.get("notice_deadline"), "notice_deadline", "Notice reply deadline", "high")
     add(c.get("limitation_date"), "limitation", "⏳ Limitation expires", "critical")
+    for rem in (c.get("reminders") or []):
+        if rem.get("done") or not _ld_date(rem.get("date")):
+            continue
+        ev.append({**base, "date": _ld_date(rem["date"]).isoformat(), "type": "reminder",
+                   "title": rem.get("note") or "Reminder", "urgency": "normal", "reminder_id": rem.get("id")})
     return ev
 
 
 def _legal_diary_buckets(cases, today):
     due_today, overdue, upcoming, hearings, notice_lapsed, limitation, dark = [], [], [], [], [], [], []
+    reminders_due = []
     def it(c, extra):
         return {"case_id": c.get("id"), "serial": c.get("serial"), "party": c.get("party_name"),
                 "order_id": c.get("order_id"), "status": c.get("status"), **extra}
     for c in cases:
+        for rem in (c.get("reminders") or []):
+            if rem.get("done"):
+                continue
+            rd = _ld_date(rem.get("date"))
+            if rd and rd <= today:
+                reminders_due.append(it(c, {"date": rd.isoformat(), "note": rem.get("note"),
+                    "reminder_id": rem.get("id"), "days_late": (today - rd).days, "due_today": rd == today}))
         na = _ld_date(c.get("next_action_date"))
         if na:
             if na == today: due_today.append(it(c, {"action": c.get("next_action"), "date": na.isoformat()}))
@@ -42699,8 +42712,10 @@ def _legal_diary_buckets(cases, today):
         if lim and lim <= today + timedelta(days=90):
             limitation.append(it(c, {"date": lim.isoformat(), "in_days": (lim - today).days, "expired": lim < today}))
     limitation.sort(key=lambda x: x["in_days"])
+    reminders_due.sort(key=lambda x: x["date"])
     return {"due_today": due_today, "overdue": overdue, "upcoming_7d": upcoming, "hearings_7d": hearings,
-            "notice_deadline_lapsed": notice_lapsed, "limitation_watch": limitation, "dark_cases": dark}
+            "notice_deadline_lapsed": notice_lapsed, "limitation_watch": limitation, "dark_cases": dark,
+            "reminders_due": reminders_due}
 
 
 class LegalScheduleBody(BaseModel):
@@ -42749,6 +42764,64 @@ async def schedule_legal_case(case_id: str, body: LegalScheduleBody, user: dict 
     return {"success": True, "case_id": case_id}
 
 
+class LegalReminderBody(BaseModel):
+    date: str
+    note: Optional[str] = None
+
+
+class LegalReminderEdit(BaseModel):
+    date: Optional[str] = None
+    note: Optional[str] = None
+    done: Optional[bool] = None
+
+
+@api_router.post("/admin/legal-cases/{case_id}/reminder")
+async def add_legal_reminder(case_id: str, body: LegalReminderBody, user: dict = Depends(require_roles(_LEGAL_ROLES))):
+    """Add a reminder on ANY date for a case — shows on the diary calendar + fires in the daily digest."""
+    d = _ld_date(body.date)
+    if not d:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+    rem = {"id": str(uuid.uuid4()), "date": d.isoformat(), "note": (body.note or "").strip(),
+           "done": False, "created_by": user.get("first_name") or user.get("email") or "Staff",
+           "created_at": datetime.now(timezone.utc).isoformat()}
+    res = await db.legal_cases.update_one(
+        {"id": case_id}, {"$push": {"reminders": rem}, "$set": {"updated_at": rem["created_at"]}})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return {"success": True, "reminder": rem}
+
+
+@api_router.patch("/admin/legal-cases/{case_id}/reminder/{rid}")
+async def edit_legal_reminder(case_id: str, rid: str, body: LegalReminderEdit,
+                              user: dict = Depends(require_roles(_LEGAL_ROLES))):
+    """Edit a reminder — change its date/note or mark it done (so previously-entered reminders are editable)."""
+    sets = {}
+    if body.date is not None:
+        d = _ld_date(body.date)
+        if body.date.strip() and not d:
+            raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+        sets["reminders.$.date"] = d.isoformat() if d else None
+    if body.note is not None:
+        sets["reminders.$.note"] = body.note.strip()
+    if body.done is not None:
+        sets["reminders.$.done"] = bool(body.done)
+    if not sets:
+        return {"success": True}
+    res = await db.legal_cases.update_one({"id": case_id, "reminders.id": rid}, {"$set": sets})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Reminder not found")
+    return {"success": True}
+
+
+@api_router.delete("/admin/legal-cases/{case_id}/reminder/{rid}")
+async def delete_legal_reminder(case_id: str, rid: str, user: dict = Depends(require_roles(_LEGAL_ROLES))):
+    """Delete a reminder."""
+    res = await db.legal_cases.update_one({"id": case_id}, {"$pull": {"reminders": {"id": rid}}})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return {"success": True}
+
+
 @api_router.get("/admin/legal-cases/calendar")
 async def legal_calendar(from_: str = Query(None, alias="from"), to: str = None,
                          user: dict = Depends(require_roles(_LEGAL_ROLES))):
@@ -42779,7 +42852,7 @@ async def scheduled_legal_diary():
     one message/day (never per-case) to avoid the notification-spam failure mode."""
     today = _ist_today()
     b = _legal_diary_buckets(await _legal_open_cases(), today)
-    if not any([b["due_today"], b["overdue"], b["hearings_7d"], b["notice_deadline_lapsed"], b["limitation_watch"], b["dark_cases"]]):
+    if not any([b["due_today"], b["overdue"], b["hearings_7d"], b["notice_deadline_lapsed"], b["limitation_watch"], b["dark_cases"], b.get("reminders_due")]):
         return
     def lst(items, fmt, cap=15):
         return "\n".join(fmt(x) for x in items[:cap]) or "  —"
@@ -42795,6 +42868,9 @@ async def scheduled_legal_diary():
         P.append("\n🔴 *Overdue:*\n" + lst(b["overdue"], lambda x: f"  • {x['serial']} {x['party']} — {x.get('action') or 'action'} ({x['days_late']}d late)"))
     if b["notice_deadline_lapsed"]:
         P.append("\n⏰ *Notice reply lapsed → escalate:*\n" + lst(b["notice_deadline_lapsed"], lambda x: f"  • {x['serial']} {x['party']} ({x['days_late']}d)"))
+    if b.get("reminders_due"):
+        P.append("\n🔔 *Reminders due:*\n" + lst(b["reminders_due"],
+            lambda x: f"  • {x['serial']} {x['party']} — {x.get('note') or 'reminder'}" + ("" if x.get("due_today") else f" ({x['days_late']}d late)")))
     if b["dark_cases"]:
         P.append(f"\n⚫ *{len(b['dark_cases'])} open case(s) with NO next action set* — schedule them so nothing slips.")
     msg = "\n".join(P)
