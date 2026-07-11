@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import { API, useAuth } from '@/App';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Search, FileText, MessageSquare, Gavel, Send, IndianRupee, Upload, Inbox, Trash2 } from 'lucide-react';
+import { Search, FileText, MessageSquare, Gavel, Send, IndianRupee, Upload, Inbox, Trash2, Plus, Archive } from 'lucide-react';
 import IronShell from '@/components/iron/IronShell';
 import { T, Caps, IronCard, mono, thCell, tdCell, badgeStyle, LIGHT_VARS } from '@/components/iron/IronKit';
 
@@ -27,8 +27,10 @@ const outlineBtn = { display: 'inline-flex', alignItems: 'center', gap: 6, borde
 const primaryBtn = { display: 'inline-flex', alignItems: 'center', gap: 6, border: 'none', background: T.orange, color: '#fff', borderRadius: 6, padding: '8px 14px', fontFamily: T.headline, fontWeight: 700, fontSize: 12, cursor: 'pointer' };
 
 export default function LegalCases() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const auth = { headers: { Authorization: `Bearer ${token}` } };
+  const isAdmin = user?.role === 'admin';
+  const canFile = ['admin', 'accountant'].includes(user?.role);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState('all');
@@ -36,11 +38,17 @@ export default function LegalCases() {
   const [search, setSearch] = useState('');
   const [open, setOpen] = useState(null);
   const [comment, setComment] = useState('');
+  const [archived, setArchived] = useState(false);
+  const [firms, setFirms] = useState([]);
+  const [addOpen, setAddOpen] = useState(false);
+  const [nc, setNc] = useState({});           // new complaint form
+  const [ncFile, setNcFile] = useState(null);
+  const [saving, setSaving] = useState(false);
 
   const load = async () => {
     setLoading(true);
     try {
-      const params = {};
+      const params = { archived };
       if (status !== 'all') params.status = status;
       if (firm !== 'all') params.firm = firm;
       const r = await axios.get(`${API}/admin/legal-cases`, { ...auth, params });
@@ -48,7 +56,30 @@ export default function LegalCases() {
     } catch (e) { toast.error('Failed to load legal cases'); }
     finally { setLoading(false); }
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [status, firm]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [status, firm, archived]);
+  useEffect(() => { axios.get(`${API}/firms`, auth).then((r) => setFirms(r.data || [])).catch(() => {}); /* eslint-disable-next-line */ }, [token]);
+
+  const submitComplaint = async () => {
+    if (!nc.customer_name?.trim() || !nc.firm_id || !nc.description?.trim()) { toast.error('Customer name, firm, and description are required'); return; }
+    setSaving(true);
+    try {
+      const fd = new FormData();
+      ['customer_name', 'customer_phone', 'customer_email', 'customer_address', 'firm_id', 'description', 'order_id', 'claim_amount'].forEach((k) => fd.append(k, nc[k] || ''));
+      if (ncFile) fd.append('invoice', ncFile);
+      await axios.post(`${API}/admin/legal-complaint`, fd, { headers: { ...auth.headers, 'Content-Type': 'multipart/form-data' } });
+      toast.success('Complaint filed — shows at the top for the lawyer');
+      setAddOpen(false); setNc({}); setNcFile(null); load();
+    } catch (e) { toast.error(e?.response?.data?.detail || 'Failed to file complaint'); }
+    finally { setSaving(false); }
+  };
+
+  const archiveAll = async () => {
+    if (!window.confirm('Archive ALL current legal cases and start fresh?\n\nThey move to the Archive (viewable via the Archived filter) — nothing is deleted.')) return;
+    try {
+      const r = await axios.post(`${API}/admin/legal-cases/archive-all`, {}, auth);
+      toast.success(`Archived ${r.data.archived} case(s) — starting fresh`); load();
+    } catch (e) { toast.error(e?.response?.data?.detail || 'Failed'); }
+  };
 
   const cases = useMemo(() => {
     const c = data?.cases || [];
@@ -159,6 +190,26 @@ export default function LegalCases() {
 
   return (
     <IronShell title="Legal Cases" subtitle="FALSE-REFUND / NON-RETURN CASES" onRefresh={load}>
+      {/* Actions */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+        {canFile && !archived && (
+          <button onClick={() => { setNc({}); setNcFile(null); setAddOpen(true); }}
+            style={{ border: 'none', background: T.orange, color: '#fff', borderRadius: 8, padding: '9px 16px', fontFamily: T.headline, fontWeight: 800, fontSize: 12.5, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <Plus size={15} /> Add Complaint
+          </button>
+        )}
+        <div style={{ flex: 1 }} />
+        <button onClick={() => setArchived((a) => !a)}
+          style={{ border: '1px solid ' + T.iron200, background: archived ? T.iron900 : T.white, color: archived ? '#fff' : T.iron700, borderRadius: 8, padding: '8px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <Archive size={14} /> {archived ? 'Viewing Archive' : 'Archived'}
+        </button>
+        {isAdmin && !archived && (
+          <button onClick={archiveAll}
+            style={{ border: '1px solid #fca5a5', background: '#fef2f2', color: '#991b1b', borderRadius: 8, padding: '8px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+            Archive all · start fresh
+          </button>
+        )}
+      </div>
       {/* KPI tiles */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 16 }}>
         <Stat label="Total cases" value={s.count || 0} />
@@ -348,6 +399,46 @@ export default function LegalCases() {
           </>)}
         </DialogContent>
       </Dialog>
+
+      {/* Add Complaint modal */}
+      {addOpen && (
+        <div onClick={() => !saving && setAddOpen(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,15,15,.5)', zIndex: 120, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 40, overflowY: 'auto' }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: T.white, border: `1px solid ${T.iron200}`, borderRadius: 12, width: 'min(560px,94%)', padding: 20, boxShadow: '0 24px 70px rgba(0,0,0,.3)', marginBottom: 40 }}>
+            <div style={{ fontFamily: T.headline, fontSize: 17, fontWeight: 800, color: T.iron900, marginBottom: 4 }}>File a complaint</div>
+            <div style={{ fontSize: 12, color: T.iron500, marginBottom: 14 }}>Goes to the top of the lawyer's list to draft & send a notice.</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <label style={{ gridColumn: '1 / 3' }}><Caps size={8.5}>Customer name *</Caps>
+                <input style={{ ...inputStyle, width: '100%', marginTop: 3 }} value={nc.customer_name || ''} onChange={(e) => setNc({ ...nc, customer_name: e.target.value })} /></label>
+              <label><Caps size={8.5}>Phone</Caps>
+                <input style={{ ...inputStyle, width: '100%', marginTop: 3 }} value={nc.customer_phone || ''} onChange={(e) => setNc({ ...nc, customer_phone: e.target.value })} /></label>
+              <label><Caps size={8.5}>Email</Caps>
+                <input style={{ ...inputStyle, width: '100%', marginTop: 3 }} value={nc.customer_email || ''} onChange={(e) => setNc({ ...nc, customer_email: e.target.value })} /></label>
+              <label style={{ gridColumn: '1 / 3' }}><Caps size={8.5}>Address</Caps>
+                <input style={{ ...inputStyle, width: '100%', marginTop: 3 }} value={nc.customer_address || ''} onChange={(e) => setNc({ ...nc, customer_address: e.target.value })} /></label>
+              <label><Caps size={8.5}>Send from firm *</Caps>
+                <select style={{ ...selectStyle, width: '100%', marginTop: 3 }} value={nc.firm_id || ''} onChange={(e) => setNc({ ...nc, firm_id: e.target.value })}>
+                  <option value="">Select firm…</option>
+                  {firms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+                </select></label>
+              <label><Caps size={8.5}>Order ID (optional)</Caps>
+                <input style={{ ...inputStyle, width: '100%', marginTop: 3 }} value={nc.order_id || ''} onChange={(e) => setNc({ ...nc, order_id: e.target.value })} /></label>
+              <label style={{ gridColumn: '1 / 3' }}><Caps size={8.5}>What did they do wrong? *</Caps>
+                <Textarea style={{ fontSize: 12.5, minHeight: 80, marginTop: 3 }} value={nc.description || ''} onChange={(e) => setNc({ ...nc, description: e.target.value })} placeholder="e.g. Kept the stabilizer and told Amazon it was never delivered, took a full refund." /></label>
+              <div style={{ gridColumn: '1 / 3', display: 'flex', alignItems: 'center', gap: 10 }}>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: T.blue, cursor: 'pointer', fontWeight: 600 }}>
+                  <Upload size={14} /> {ncFile ? 'Change invoice' : 'Upload invoice (optional)'}
+                  <input type="file" style={{ display: 'none' }} onChange={(e) => setNcFile(e.target.files[0] || null)} />
+                </label>
+                {ncFile && <span style={{ fontSize: 11, color: T.iron500 }}>{ncFile.name}</span>}
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+              <button onClick={() => setAddOpen(false)} disabled={saving} style={{ border: `1px solid ${T.iron200}`, background: T.white, borderRadius: 8, padding: '9px 16px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', color: T.iron700 }}>Cancel</button>
+              <button onClick={submitComplaint} disabled={saving} style={{ border: 'none', background: T.orange, color: '#fff', borderRadius: 8, padding: '9px 18px', fontSize: 12.5, fontWeight: 800, cursor: 'pointer', opacity: saving ? 0.6 : 1 }}>{saving ? 'Filing…' : 'File complaint'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </IronShell>
   );
 }

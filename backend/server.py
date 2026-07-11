@@ -42579,10 +42579,11 @@ _LEGAL_ROLES = ["admin", "accountant", "lawyer"]
 @api_router.get("/admin/legal-cases")
 async def list_legal_cases(
     status: Optional[str] = None, firm: Optional[str] = None, q: Optional[str] = None,
+    archived: bool = False,
     user: dict = Depends(require_roles(_LEGAL_ROLES)),
 ):
-    """Legal cases against customers (mostly false-refund / non-return), imported from the old legal panel."""
-    query = {}
+    """Legal cases against customers. Active list excludes archived; pass ?archived=true for the archive."""
+    query = {"archived": True} if archived else {"archived": {"$ne": True}}
     scope = get_user_firm_scope(user)
     if scope:
         query["firm_id"] = scope
@@ -42590,7 +42591,8 @@ async def list_legal_cases(
         query["status"] = status
     if firm:
         query["firm_name"] = firm
-    rows = await db.legal_cases.find(query, {"_id": 0}).sort("old_case_id", 1).to_list(5000)
+    # Newest first so freshly-filed complaints show at the TOP for the lawyer.
+    rows = await db.legal_cases.find(query, {"_id": 0}).sort("created_at", -1).to_list(5000)
     # cross-link: attach any tracked refund-loss (matched by Amazon order id)
     loss_map = {}
     async for rl in db.amazon_refund_losses.find({}, {"order_id": 1, "refund_amount": 1, "loss_confidence": 1, "id": 1}):
@@ -42614,6 +42616,76 @@ async def list_legal_cases(
     }
     firms = sorted({r.get("firm_name") for r in await db.legal_cases.find({}, {"firm_name": 1}).to_list(5000) if r.get("firm_name")})
     return {"success": True, "summary": summary, "cases": rows, "statuses": LEGAL_CASE_STATUS, "firms": firms}
+
+
+@api_router.post("/admin/legal-cases/archive-all")
+async def archive_all_legal_cases(user: dict = Depends(require_roles(["admin"]))):
+    """Move every active legal case into the archive (fresh start). Reversible — archived cases stay in
+    db.legal_cases with archived=True and are viewable via ?archived=true / the Archive filter."""
+    now = datetime.now(timezone.utc).isoformat()
+    res = await db.legal_cases.update_many(
+        {"archived": {"$ne": True}},
+        {"$set": {"archived": True, "archived_at": now, "archived_by": user.get("email") or user.get("id"),
+                  "updated_at": now}})
+    return {"success": True, "archived": res.modified_count}
+
+
+async def _next_legal_serial() -> str:
+    mx = 0
+    async for c in db.legal_cases.find({"serial": {"$regex": "^MG\\d+$"}}, {"serial": 1}):
+        try:
+            mx = max(mx, int(str(c["serial"])[2:]))
+        except (ValueError, TypeError):
+            pass
+    return f"MG{mx + 1}"
+
+
+@api_router.post("/admin/legal-complaint")
+async def create_legal_complaint(
+    customer_name: str = Form(...), firm_id: str = Form(...), description: str = Form(...),
+    customer_phone: str = Form(""), customer_email: str = Form(""), customer_address: str = Form(""),
+    order_id: str = Form(""), claim_amount: str = Form(""), invoice: UploadFile = File(None),
+    user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """File a NEW complaint against a customer → becomes an active legal case shown at the top for the
+    lawyer. Customer details + what they did wrong + which firm sends the notice + optional invoice."""
+    if not customer_name.strip() or not description.strip():
+        raise HTTPException(status_code=400, detail="Customer name and description are required")
+    firm = await db.firms.find_one({"id": firm_id}, {"_id": 0, "name": 1, "gstin": 1})
+    if not firm:
+        raise HTTPException(status_code=404, detail="Firm not found — pick the firm the notice is sent from")
+    now = datetime.now(timezone.utc).isoformat()
+    client_document = None
+    if invoice is not None:
+        content = await invoice.read()
+        if content:
+            if len(content) > 25 * 1024 * 1024:
+                raise HTTPException(status_code=400, detail="Invoice too large (max 25MB)")
+            os.makedirs(UPLOAD_DIR / "legal_cases", exist_ok=True)
+            safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in (invoice.filename or "invoice"))[:80] or "invoice"
+            disk = f"{uuid.uuid4().hex[:8]}_{safe}"
+            with open(UPLOAD_DIR / "legal_cases" / disk, "wb") as f:
+                f.write(content)
+            client_document = f"legal_cases/{disk}"
+    case = {
+        "id": str(uuid.uuid4()), "serial": await _next_legal_serial(),
+        "party_name": customer_name.strip(), "customer_phone": re.sub(r"\D", "", customer_phone)[-10:] or "",
+        "customer_email": customer_email.strip() or None, "customer_address": customer_address.strip() or None,
+        "firm_id": firm_id, "firm_name": firm.get("name"), "order_id": order_id.strip() or None,
+        "issue": description.strip(), "claim_amount": (float(claim_amount) if str(claim_amount).strip().replace(".", "").isdigit() else None),
+        "client_document": client_document, "notice_file": None, "lawyer_documents": [], "reminders": [],
+        "status": "notice_pending", "source": "complaint", "archived": False,
+        "created_by_name": user.get("first_name") or user.get("email") or "Staff",
+        "comments": [], "created_at": now, "updated_at": now,
+    }
+    await db.legal_cases.insert_one(dict(case))
+    try:
+        await _alert_founder_free(
+            f"⚖️ New complaint filed → {case['serial']} · {case['party_name']} "
+            f"({firm.get('name')}) — lawyer to draft a notice.", "legal_complaint")
+    except Exception:
+        pass
+    case.pop("_id", None)
+    return {"success": True, "case": {"id": case["id"], "serial": case["serial"], "status": "notice_pending"}}
 
 
 class LegalCaseBody(BaseModel):
@@ -42657,7 +42729,7 @@ def _ist_today():
 
 
 async def _legal_open_cases(scope=None):
-    q = {"status": {"$nin": list(_LEGAL_CLOSED)}}
+    q = {"status": {"$nin": list(_LEGAL_CLOSED)}, "archived": {"$ne": True}}
     if scope:
         q["firm_id"] = scope
     return await db.legal_cases.find(q, {"_id": 0}).to_list(5000)
