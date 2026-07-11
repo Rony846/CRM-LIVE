@@ -672,25 +672,9 @@ export default function GateDashboardMobile() {
         {/* Tab Content: SCAN */}
         {activeTab === 'scan' && (
           <>
-            {/* Scan Type Selection - Large Touch Buttons */}
+            {/* Scan Type Selection - Large Touch Buttons. INWARD removed: all receiving now goes through
+                OPEN RETURN (pick source → bulk scan), so there's no separate generic Inward button. */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 24 }}>
-              <button
-                onClick={() => { setScanType('inward'); setCurrentStep('scan'); }}
-                style={{ width: '100%', padding: 22, borderRadius: 18, background: T.green, color: TEXT, display: 'flex', alignItems: 'center', justifyContent: 'space-between', border: 'none', cursor: 'pointer' }}
-                data-testid="btn-inward"
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                  <div style={{ width: 60, height: 60, borderRadius: 14, background: 'rgba(255,255,255,.18)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <ArrowDownLeft style={{ width: 30, height: 30 }} />
-                  </div>
-                  <div style={{ textAlign: 'left' }}>
-                    <p style={{ ...headFont, fontSize: 22, fontWeight: 800, margin: 0 }}>INWARD</p>
-                    <p style={{ color: 'rgba(255,255,255,.8)', fontSize: 13, margin: 0 }}>Receiving package</p>
-                  </div>
-                </div>
-                <ChevronRight style={{ width: 30, height: 30, color: 'rgba(255,255,255,.6)' }} />
-              </button>
-
               <button
                 onClick={() => { setScanType('outward'); setCurrentStep('scan'); }}
                 style={{ width: '100%', padding: 22, borderRadius: 18, background: T.blue, color: TEXT, display: 'flex', alignItems: 'center', justifyContent: 'space-between', border: 'none', cursor: 'pointer' }}
