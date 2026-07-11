@@ -2,34 +2,38 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { API, useAuth } from '@/App';
-import DashboardLayout from '@/components/layout/DashboardLayout';
-import { Card, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
+import IronShell from '@/components/iron/IronShell';
+import { T, Caps } from '@/components/iron/IronKit';
 import { ChevronLeft, ChevronRight, CalendarDays, AlarmClock, Gavel, Hourglass, CircleAlert, CalendarClock, X } from 'lucide-react';
 
+// Event tones in the Iron (light) theme — [bg, text, border]
 const TYPE_TONE = {
-  limitation: 'bg-red-500/20 text-red-300 border-red-500/40',
-  hearing: 'bg-violet-500/20 text-violet-300 border-violet-500/40',
-  notice_deadline: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
-  action: 'bg-sky-500/20 text-sky-300 border-sky-500/40',
+  limitation: ['#FEE2E2', '#991B1B', '#FCA5A5'],
+  hearing: ['#EDE9FE', '#6D28D9', '#DDD6FE'],
+  notice_deadline: ['#FEF3C7', '#92400E', '#FDE68A'],
+  action: [T.blueTint, T.blue, '#BFDDF0'],
 };
 const iso = (d) => d.toISOString().slice(0, 10);
 const monthName = (d) => d.toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+const card = { background: T.white, border: '1px solid ' + T.iron200, borderRadius: 12, padding: 16 };
+const navBtn = { border: '1px solid ' + T.iron200, background: T.white, borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: T.iron700, display: 'inline-flex', alignItems: 'center' };
+const inputStyle = { width: '100%', border: '1px solid ' + T.iron200, borderRadius: 8, padding: '8px 10px', fontSize: 13, color: T.iron900, outline: 'none', boxSizing: 'border-box', marginTop: 3 };
 
-function Bucket({ icon, title, tone, items, render, onClick }) {
+function Bucket({ icon, title, color, items, render, onClick }) {
   if (!items?.length) return null;
   return (
-    <div className="mb-3">
-      <div className={`text-xs font-semibold flex items-center gap-1.5 ${tone}`}>{icon}{title} <span className="opacity-60">({items.length})</span></div>
-      <div className="mt-1 space-y-1">
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 11.5, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 5, color }}>
+        {icon}{title} <span style={{ opacity: 0.6 }}>({items.length})</span>
+      </div>
+      <div style={{ marginTop: 5, display: 'flex', flexDirection: 'column', gap: 4 }}>
         {items.slice(0, 8).map((x, i) => (
-          <div key={i} onClick={() => onClick?.(x)} className="text-xs text-zinc-300 bg-zinc-900/50 border border-zinc-800 rounded px-2 py-1 cursor-pointer hover:border-zinc-600">
+          <div key={i} onClick={() => onClick?.(x)}
+            style={{ fontSize: 11.5, color: T.iron700, background: T.iron50, border: '1px solid ' + T.iron200, borderRadius: 6, padding: '4px 8px', cursor: 'pointer' }}>
             {render(x)}
           </div>
         ))}
-        {items.length > 8 && <div className="text-[11px] text-zinc-600">+{items.length - 8} more</div>}
+        {items.length > 8 && <div style={{ fontSize: 11, color: T.iron400 }}>+{items.length - 8} more</div>}
       </div>
     </div>
   );
@@ -41,8 +45,7 @@ export default function LegalDiary() {
   const [cursor, setCursor] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
   const [events, setEvents] = useState([]);
   const [myday, setMyday] = useState(null);
-  const [cases, setCases] = useState([]);
-  const [modal, setModal] = useState(null); // {case_id, serial, party, next_action_date,...}
+  const [modal, setModal] = useState(null);
 
   const monthRange = useMemo(() => {
     const first = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
@@ -59,10 +62,10 @@ export default function LegalDiary() {
       setEvents(cal.data.events || []);
       setMyday(md.data);
     } catch { toast.error('Failed to load legal diary'); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [monthRange, token]);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { axios.get(`${API}/admin/legal-cases`, auth).then(r => setCases(r.data.cases || [])).catch(() => {}); }, [token]);
 
   const eventsByDay = useMemo(() => {
     const m = {};
@@ -70,7 +73,6 @@ export default function LegalDiary() {
     return m;
   }, [events]);
 
-  // build 6-week grid
   const grid = useMemo(() => {
     const first = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
     const start = new Date(first); start.setDate(1 - first.getDay());
@@ -91,105 +93,111 @@ export default function LegalDiary() {
   };
 
   return (
-    <DashboardLayout>
-      <div className="p-4 grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
+    <IronShell title="Legal Diary" subtitle="Hearings · notice deadlines · limitation watch" onRefresh={load}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 320px', gap: 16, alignItems: 'start' }} className="legal-diary-grid">
         {/* Calendar */}
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h1 className="text-lg font-semibold text-zinc-100 flex items-center gap-2"><CalendarDays size={18} className="text-sky-400" /> Legal Diary</h1>
-              <div className="flex items-center gap-2">
-                <Button size="sm" variant="outline" onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1))}><ChevronLeft size={15} /></Button>
-                <span className="text-sm text-zinc-300 w-32 text-center">{monthName(cursor)}</span>
-                <Button size="sm" variant="outline" onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1))}><ChevronRight size={15} /></Button>
-              </div>
+        <div style={card}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <h1 style={{ fontFamily: T.headline, fontSize: 17, fontWeight: 800, color: T.iron900, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <CalendarDays size={18} color={T.orange} /> {monthName(cursor)}
+            </h1>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <button style={navBtn} onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1))}><ChevronLeft size={15} /></button>
+              <button style={navBtn} onClick={() => setCursor(new Date())}><span style={{ fontSize: 11.5, fontWeight: 700 }}>Today</span></button>
+              <button style={navBtn} onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1))}><ChevronRight size={15} /></button>
             </div>
-            <div className="grid grid-cols-7 gap-1 text-[11px] text-zinc-500 mb-1">
-              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => <div key={d} className="text-center">{d}</div>)}
-            </div>
-            <div className="grid grid-cols-7 gap-1">
-              {grid.map((d, i) => {
-                const di = iso(d); const inMonth = d.getMonth() === cursor.getMonth(); const evs = eventsByDay[di] || [];
-                return (
-                  <div key={i} className={`min-h-[74px] rounded border p-1 ${inMonth ? 'border-zinc-800 bg-zinc-900/30' : 'border-zinc-900 bg-transparent opacity-40'} ${di === todayIso ? 'ring-1 ring-sky-500' : ''}`}>
-                    <div className="text-[11px] text-zinc-500">{d.getDate()}</div>
-                    <div className="space-y-0.5 mt-0.5">
-                      {evs.slice(0, 3).map((e, j) => (
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 4, fontSize: 10.5, color: T.iron400, marginBottom: 4 }}>
+            {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => <div key={d} style={{ textAlign: 'center', fontWeight: 700 }}>{d}</div>)}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 4 }}>
+            {grid.map((d, i) => {
+              const di = iso(d); const inMonth = d.getMonth() === cursor.getMonth(); const evs = eventsByDay[di] || [];
+              return (
+                <div key={i} style={{ minHeight: 74, borderRadius: 6, padding: 3,
+                  border: '1px solid ' + (di === todayIso ? T.orange : T.iron200),
+                  background: inMonth ? T.white : T.iron50, opacity: inMonth ? 1 : 0.5,
+                  boxShadow: di === todayIso ? `0 0 0 1px ${T.orange}` : 'none' }}>
+                  <div style={{ fontSize: 10.5, color: T.iron400, fontWeight: 700 }}>{d.getDate()}</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 2 }}>
+                    {evs.slice(0, 3).map((e, j) => {
+                      const [bg, tx, bd] = TYPE_TONE[e.type] || TYPE_TONE.action;
+                      return (
                         <div key={j} onClick={() => openCase(e)} title={`${e.serial} ${e.party} — ${e.title}`}
-                          className={`text-[10px] leading-tight truncate px-1 rounded border cursor-pointer ${TYPE_TONE[e.type] || TYPE_TONE.action}`}>
+                          style={{ fontSize: 9.5, lineHeight: 1.25, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                            padding: '1px 4px', borderRadius: 4, cursor: 'pointer', background: bg, color: tx, border: '1px solid ' + bd }}>
                           {e.type === 'limitation' ? '⏳' : e.type === 'hearing' ? '⚖️' : e.type === 'notice_deadline' ? '⏰' : '•'} {e.serial} {e.party}
                         </div>
-                      ))}
-                      {evs.length > 3 && <div className="text-[10px] text-zinc-600">+{evs.length - 3}</div>}
-                    </div>
+                      );
+                    })}
+                    {evs.length > 3 && <div style={{ fontSize: 9.5, color: T.iron400 }}>+{evs.length - 3}</div>}
                   </div>
-                );
-              })}
-            </div>
-            <div className="flex gap-3 mt-3 text-[11px] text-zinc-500">
-              <span className="text-red-300">⏳ Limitation</span><span className="text-violet-300">⚖️ Hearing</span>
-              <span className="text-amber-300">⏰ Notice deadline</span><span className="text-sky-300">• Action</span>
-            </div>
-          </CardContent>
-        </Card>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ display: 'flex', gap: 12, marginTop: 12, fontSize: 11, color: T.iron500, flexWrap: 'wrap' }}>
+            <span>⏳ Limitation</span><span>⚖️ Hearing</span><span>⏰ Notice deadline</span><span>• Action</span>
+          </div>
+        </div>
 
         {/* My Day watchlist */}
-        <Card>
-          <CardContent className="p-4">
-            <h2 className="text-sm font-semibold text-zinc-200 mb-3 flex items-center gap-2"><AlarmClock size={16} className="text-amber-400" /> My Day{myday?.date ? ` — ${myday.date}` : ''}</h2>
-            {!myday ? <div className="text-xs text-zinc-500">Loading…</div> : (
-              <>
-                <Bucket icon={<Hourglass size={13} />} title="Limitation (act now)" tone="text-red-400" items={myday.limitation_watch}
-                  onClick={openCase} render={x => <span>{x.serial} <b>{x.party}</b> — {x.expired ? `EXPIRED ${-x.in_days}d ago` : `${x.in_days}d left`}</span>} />
-                <Bucket icon={<CircleAlert size={13} />} title="Overdue" tone="text-red-400" items={myday.overdue}
-                  onClick={openCase} render={x => <span>{x.serial} <b>{x.party}</b> — {x.action || 'action'} ({x.days_late}d late)</span>} />
-                <Bucket icon={<CalendarClock size={13} />} title="Due today" tone="text-sky-400" items={myday.due_today}
-                  onClick={openCase} render={x => <span>{x.serial} <b>{x.party}</b> — {x.action || 'action'}</span>} />
-                <Bucket icon={<Gavel size={13} />} title="Hearings (7d)" tone="text-violet-400" items={myday.hearings_7d}
-                  onClick={openCase} render={x => <span>{x.serial} <b>{x.party}</b> — in {x.in_days}d</span>} />
-                <Bucket icon={<AlarmClock size={13} />} title="Notice reply lapsed" tone="text-amber-400" items={myday.notice_deadline_lapsed}
-                  onClick={openCase} render={x => <span>{x.serial} <b>{x.party}</b> — {x.days_late}d late</span>} />
-                {myday.dark_cases?.length > 0 &&
-                  <div className="mt-2 text-xs text-zinc-400 bg-zinc-900/50 border border-zinc-800 rounded px-2 py-1.5">
-                    ⚫ <b>{myday.dark_cases.length}</b> open case(s) with no next action set. Schedule them so nothing slips.
-                  </div>}
-                {!myday.limitation_watch?.length && !myday.overdue?.length && !myday.due_today?.length && !myday.hearings_7d?.length && !myday.notice_deadline_lapsed?.length &&
-                  <div className="text-xs text-emerald-400">✓ Nothing overdue today.</div>}
-              </>
-            )}
-          </CardContent>
-        </Card>
+        <div style={card}>
+          <h2 style={{ fontFamily: T.headline, fontSize: 13.5, fontWeight: 800, color: T.iron900, margin: '0 0 12px', display: 'flex', alignItems: 'center', gap: 7 }}>
+            <AlarmClock size={16} color={T.orange} /> My Day{myday?.date ? ` · ${myday.date}` : ''}
+          </h2>
+          {!myday ? <div style={{ fontSize: 12, color: T.iron400 }}>Loading…</div> : (
+            <>
+              <Bucket icon={<Hourglass size={13} />} title="Limitation (act now)" color="#991B1B" items={myday.limitation_watch}
+                onClick={openCase} render={x => <span>{x.serial} <b>{x.party}</b> — {x.expired ? `EXPIRED ${-x.in_days}d ago` : `${x.in_days}d left`}</span>} />
+              <Bucket icon={<CircleAlert size={13} />} title="Overdue" color="#991B1B" items={myday.overdue}
+                onClick={openCase} render={x => <span>{x.serial} <b>{x.party}</b> — {x.action || 'action'} ({x.days_late}d late)</span>} />
+              <Bucket icon={<CalendarClock size={13} />} title="Due today" color={T.blue} items={myday.due_today}
+                onClick={openCase} render={x => <span>{x.serial} <b>{x.party}</b> — {x.action || 'action'}</span>} />
+              <Bucket icon={<Gavel size={13} />} title="Hearings (7d)" color="#6D28D9" items={myday.hearings_7d}
+                onClick={openCase} render={x => <span>{x.serial} <b>{x.party}</b> — in {x.in_days}d</span>} />
+              <Bucket icon={<AlarmClock size={13} />} title="Notice reply lapsed" color="#92400E" items={myday.notice_deadline_lapsed}
+                onClick={openCase} render={x => <span>{x.serial} <b>{x.party}</b> — {x.days_late}d late</span>} />
+              {myday.dark_cases?.length > 0 &&
+                <div style={{ marginTop: 8, fontSize: 11.5, color: T.iron600, background: T.iron50, border: '1px solid ' + T.iron200, borderRadius: 6, padding: '6px 9px' }}>
+                  ⚫ <b>{myday.dark_cases.length}</b> open case(s) with no next action set. Schedule them so nothing slips.
+                </div>}
+              {!myday.limitation_watch?.length && !myday.overdue?.length && !myday.due_today?.length && !myday.hearings_7d?.length && !myday.notice_deadline_lapsed?.length &&
+                <div style={{ fontSize: 12, color: T.green, fontWeight: 700 }}>✓ Nothing overdue today.</div>}
+            </>
+          )}
+        </div>
       </div>
 
       {/* Schedule modal */}
       {modal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setModal(null)}>
-          <div className="bg-zinc-950 border border-zinc-800 rounded-lg w-full max-w-md p-4" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-3">
-              <div className="text-sm font-semibold text-zinc-100">Schedule — {modal.serial} <span className="text-zinc-400">{modal.party}</span></div>
-              <button onClick={() => setModal(null)}><X size={16} className="text-zinc-500" /></button>
+        <div onClick={() => setModal(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,15,15,.5)', zIndex: 120, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 50 }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: T.white, border: '1px solid ' + T.iron200, borderRadius: 12, width: 'min(460px,94%)', padding: 18, boxShadow: '0 24px 70px rgba(0,0,0,.3)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <div style={{ fontFamily: T.headline, fontSize: 15, fontWeight: 800, color: T.iron900 }}>Schedule — {modal.serial} <span style={{ color: T.iron500, fontWeight: 500 }}>{modal.party}</span></div>
+              <button onClick={() => setModal(null)} style={{ border: 'none', background: 'none', cursor: 'pointer', color: T.iron500 }}><X size={18} /></button>
             </div>
-            <div className="space-y-2.5 text-sm">
-              <label className="block"><span className="text-xs text-zinc-400">Next action</span>
-                <Input value={modal.next_action} onChange={e => setModal({ ...modal, next_action: e.target.value })} placeholder="e.g. Send reminder notice" /></label>
-              <label className="block"><span className="text-xs text-zinc-400">Next action date</span>
-                <Input type="date" value={modal.next_action_date} onChange={e => setModal({ ...modal, next_action_date: e.target.value })} /></label>
-              <div className="grid grid-cols-2 gap-2">
-                <label className="block"><span className="text-xs text-zinc-400">Hearing date</span>
-                  <Input type="date" value={modal.hearing_date} onChange={e => setModal({ ...modal, hearing_date: e.target.value })} /></label>
-                <label className="block"><span className="text-xs text-zinc-400">Notice reply deadline</span>
-                  <Input type="date" value={modal.notice_deadline} onChange={e => setModal({ ...modal, notice_deadline: e.target.value })} /></label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <label><Caps size={9}>Next action</Caps>
+                <input style={inputStyle} value={modal.next_action} onChange={e => setModal({ ...modal, next_action: e.target.value })} placeholder="e.g. Send reminder notice" /></label>
+              <label><Caps size={9}>Next action date</Caps>
+                <input style={inputStyle} type="date" value={modal.next_action_date} onChange={e => setModal({ ...modal, next_action_date: e.target.value })} /></label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <label><Caps size={9}>Hearing date</Caps>
+                  <input style={inputStyle} type="date" value={modal.hearing_date} onChange={e => setModal({ ...modal, hearing_date: e.target.value })} /></label>
+                <label><Caps size={9}>Notice reply deadline</Caps>
+                  <input style={inputStyle} type="date" value={modal.notice_deadline} onChange={e => setModal({ ...modal, notice_deadline: e.target.value })} /></label>
               </div>
-              <label className="block"><span className="text-xs text-zinc-400">Cause‑of‑action date <span className="opacity-60">(sets 3‑yr limitation)</span></span>
-                <Input type="date" value={modal.cause_of_action_date} onChange={e => setModal({ ...modal, cause_of_action_date: e.target.value })} /></label>
+              <label><Caps size={9}>Cause-of-action date (sets 3-yr limitation)</Caps>
+                <input style={inputStyle} type="date" value={modal.cause_of_action_date} onChange={e => setModal({ ...modal, cause_of_action_date: e.target.value })} /></label>
             </div>
-            <div className="flex justify-end gap-2 mt-4">
-              <Button variant="outline" size="sm" onClick={() => setModal(null)}>Cancel</Button>
-              <Button size="sm" onClick={save}>Save to diary</Button>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+              <button onClick={() => setModal(null)} style={{ ...navBtn, padding: '8px 14px', fontSize: 12.5, fontWeight: 700 }}>Cancel</button>
+              <button onClick={save} style={{ border: 'none', background: T.orange, color: '#fff', borderRadius: 8, padding: '8px 16px', fontSize: 12.5, fontWeight: 800, cursor: 'pointer' }}>Save to diary</button>
             </div>
           </div>
         </div>
       )}
-    </DashboardLayout>
+    </IronShell>
   );
 }
