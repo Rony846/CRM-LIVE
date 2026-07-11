@@ -20986,13 +20986,15 @@ def _inr_group(n) -> str:
     return re.sub(r"(\d)(?=(\d\d)+\d\d\d$)", r"\1,", s[:-3]) + "," + s[-3:]
 
 
-async def _mrp_label_pdf_bytes(order_id: str) -> Optional[bytes]:
+async def _mrp_label_pdf_bytes(order_id: str, serials: list = None) -> Optional[bytes]:
     """MRP (Retail Price) label — prints for EVERY product EXCEPT stabilizers (founder rule 2026-07-08).
-    MRP from master_skus.mrp → selling_price → order value. Returns None to SKIP (stabilizer / no MRP)."""
+    MRP from master_skus.mrp → selling_price → order value. Also carries the unit SERIAL NUMBER so the box
+    has a serial-bearing label. Returns None to SKIP (stabilizer / no MRP)."""
     rec = (await db.amazon_order_processing.find_one({"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]}, {"_id": 0})
            or await db.pending_fulfillment.find_one({"$or": [{"order_id": order_id}, {"amazon_order_id": order_id}]}, {"_id": 0}))
     if not rec:
         return None
+    serial = (serials or [None])[0] or (rec.get("bound_serials") or [None])[0]
     items = rec.get("items") or ([{"master_sku_id": rec.get("master_sku_id")}] if rec.get("master_sku_id") else [])
     sku = None
     for it in items:
@@ -21028,12 +21030,14 @@ async def _mrp_label_pdf_bytes(order_id: str) -> Optional[bytes]:
     .pname{{font-size:8pt;font-weight:700;line-height:1.15;margin:1.4mm 0 1mm;max-height:6.7mm;overflow:hidden}}
     .mrpline{{display:flex;align-items:baseline;gap:2mm}}
     .mrpk{{font-size:9pt;font-weight:800;letter-spacing:.5pt}} .mrpv{{font-size:17pt;font-weight:800}} .incl{{font-size:6pt}}
+    .sn{{margin-top:1.2mm;font-size:7pt}} .sn b{{font-size:6.5pt}} .snv{{font-family:'Courier New',monospace;font-size:9.5pt;font-weight:800;letter-spacing:.6pt}}
     .row{{display:flex;gap:4mm;font-size:6.3pt;margin-top:1mm}}
     .foot{{margin-top:auto;border-top:.75pt solid #000;padding-top:1mm;font-size:5.8pt;line-height:1.3}}
     </style></head><body><div class="w">
       <div class="top"><div class="brand">Muscle<span>Grid</span></div><div class="tag">Retail Price Label</div></div>
       <div class="pname">{_he(product[:60])}</div>
       <div class="mrpline"><span class="mrpk">M.R.P.</span><span class="mrpv">&#8377;{_inr_group(mrp)}</span><span class="incl">(incl. of all taxes)</span></div>
+      {(f'<div class="sn"><b>Serial No.:</b> <span class="snv">{_he(str(serial))}</span></div>') if serial else ''}
       <div class="row"><span><b>Net Qty:</b> 1 Unit</span><span><b>Mfg:</b> {mfg}</span><span><b>Origin:</b> India</span></div>
       <div class="foot">Marketed by: <b>MuscleGrid Industries Pvt. Ltd.</b>, Neb Sarai, New Delhi &middot; Customer care: service@musclegrid.in &middot; wa.me/919999036254</div>
     </div></body></html>"""
@@ -21287,7 +21291,7 @@ async def print_pack_set(order_id: str, serial: str = None, customer: str = None
         out["qc_label"] = f"err:{str(ex)[:50]}"
     # MRP (retail price) label — every product EXCEPT stabilizers
     try:
-        mrp = await _mrp_label_pdf_bytes(order_id)
+        mrp = await _mrp_label_pdf_bytes(order_id, serials)
         out["mrp_label"] = (await _office_print(mrp, OFFICE_LABEL_PRINTER, "landscape,fit", "mrp")) if mrp else "skipped (stabilizer / no MRP)"
     except Exception as ex:
         out["mrp_label"] = f"err:{str(ex)[:50]}"
@@ -21310,6 +21314,29 @@ async def print_pack_set(order_id: str, serial: str = None, customer: str = None
         pass
     return {"success": True, "order_id": order_id, "serials": serials,
             "serial_source": serial_note, "printed": out}
+
+
+@api_router.get("/orders/{order_id:path}/mrp-label.pdf")
+async def get_mrp_label_pdf(order_id: str, user: dict = Depends(require_roles(
+        ["admin", "accountant", "dispatcher", "supervisor", "service_agent", "technician", "gate", "call_support"]))):
+    """Preview the MRP / box label (now carries the unit serial)."""
+    from fastapi.responses import Response as _Resp
+    pdf = await _mrp_label_pdf_bytes(order_id)
+    if not pdf:
+        raise HTTPException(status_code=404, detail="No MRP label for this order (stabilizer / no MRP on file)")
+    return _Resp(content=pdf, media_type="application/pdf",
+                 headers={"Content-Disposition": 'inline; filename="mrp_label.pdf"'})
+
+
+@api_router.post("/orders/{order_id:path}/reprint-mrp")
+async def reprint_mrp_label(order_id: str, user: dict = Depends(require_roles(
+        ["admin", "accountant", "dispatcher", "supervisor", "service_agent", "technician", "gate", "call_support"]))):
+    """Reprint just the MRP / box label (with the serial) for one order — no need to reprint the whole set."""
+    pdf = await _mrp_label_pdf_bytes(order_id)
+    if not pdf:
+        return {"success": False, "message": "No MRP label for this order (stabilizer / no MRP on file)"}
+    ok = await _office_print(pdf, OFFICE_LABEL_PRINTER, "landscape,fit", "mrp")
+    return {"success": ok is True, "printed": ok}
 
 
 async def _fetch_label_by_tracking(tracking: str):
