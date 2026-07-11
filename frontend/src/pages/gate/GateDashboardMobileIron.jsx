@@ -6,7 +6,7 @@ import {
   Scan, ArrowDownLeft, ArrowUpRight, Camera, Video, X, Check,
   Loader2, Image as ImageIcon, Trash2, Upload, QrCode,
   Package, ChevronRight, AlertCircle, CheckCircle2, ChevronDown,
-  Clock, Truck, ImageOff
+  Clock, Truck, ImageOff, RotateCcw
 } from 'lucide-react';
 import imageCompression from 'browser-image-compression';
 import { T, Fonts } from '@/components/iron/IronKit';
@@ -46,6 +46,8 @@ export default function GateDashboardMobile() {
   const [trackingId, setTrackingId] = useState('');
   const [orderInfo, setOrderInfo] = useState(null);  // resolved order after scanning tracking (outward)
   const [serial, setSerial] = useState('');          // unit serial scanned at the gate (outward step 2)
+  const [returnSource, setReturnSource] = useState(null);  // Amazon/Delhivery/Flipkart/Others (chosen once)
+  const [returnScans, setReturnScans] = useState([]);      // returns rapid-scanned this session
   const [courier, setCourier] = useState('');
   const [customCourier, setCustomCourier] = useState('');
   const [scanning, setScanning] = useState(false);
@@ -335,6 +337,26 @@ export default function GateDashboardMobile() {
     } finally {
       setScanning(false);
     }
+  };
+
+  // RETURN mode: rapid-record one scanned return with the pre-chosen source (no per-label courier prompt,
+  // no photo — photos are added later from the Pending tab). Keeps focus for the next scan.
+  const recordReturn = async (tid) => {
+    const t = (tid || trackingId).trim();
+    if (!t) return;
+    if (returnScans.some((r) => r.tracking_id === t)) { setTrackingId(''); return; }  // dedupe
+    setScanning(true);
+    try {
+      const { data } = await axios.post(`${API}/gate/scan`, {
+        scan_type: 'inward', tracking_id: t, courier: returnSource, notes: `Return via ${returnSource}`,
+      }, { headers: { Authorization: `Bearer ${token}` } });
+      setReturnScans((prev) => [{ tracking_id: t, customer: data?.customer_name, at: Date.now() }, ...prev]);
+      setTrackingId('');
+      try { audioRef.current?.play?.(); } catch { /* beep best-effort */ }
+      setTimeout(() => trackingRef.current?.focus(), 60);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Scan failed'); trackingRef.current?.focus();
+    } finally { setScanning(false); }
   };
 
   // OUTWARD step 2: unit serial scanned → record the outward gate scan + bind the serial to the order.
@@ -685,6 +707,22 @@ export default function GateDashboardMobile() {
                 </div>
                 <ChevronRight style={{ width: 30, height: 30, color: 'rgba(255,255,255,.6)' }} />
               </button>
+
+              <button
+                onClick={() => { setReturnSource(null); setReturnScans([]); setTrackingId(''); setCurrentStep('return_source'); }}
+                style={{ width: '100%', padding: 22, borderRadius: 18, background: T.orange, color: '#0F0F0F', display: 'flex', alignItems: 'center', justifyContent: 'space-between', border: 'none', cursor: 'pointer' }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                  <div style={{ width: 60, height: 60, borderRadius: 14, background: 'rgba(0,0,0,.12)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <RotateCcw style={{ width: 30, height: 30 }} />
+                  </div>
+                  <div style={{ textAlign: 'left' }}>
+                    <p style={{ ...headFont, fontSize: 22, fontWeight: 800, margin: 0 }}>OPEN RETURN</p>
+                    <p style={{ color: 'rgba(0,0,0,.6)', fontSize: 13, margin: 0 }}>Bulk-scan returns · photos later</p>
+                  </div>
+                </div>
+                <ChevronRight style={{ width: 30, height: 30, color: 'rgba(0,0,0,.4)' }} />
+              </button>
             </div>
 
             {/* Recent Scans */}
@@ -845,6 +883,77 @@ export default function GateDashboardMobile() {
             )}
           </div>
         )}
+      </div>
+    );
+  }
+
+  // ============ RENDER STEP: RETURN SOURCE (pick once) ============
+  if (currentStep === 'return_source') {
+    const SOURCES = ['Amazon', 'Delhivery', 'Flipkart', 'Others'];
+    return (
+      <div style={{ ...screen, padding: 16 }}>
+        <Fonts />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
+          <button onClick={resetFlow} style={iconBtn}><X style={{ width: 20, height: 20 }} /></button>
+          <div>
+            <h1 style={{ ...headFont, fontSize: 20, fontWeight: 800, color: TEXT, margin: 0 }}>Receive Returns</h1>
+            <p style={{ color: SUB, fontSize: 13, margin: 0 }}>Where are these returns from?</p>
+          </div>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {SOURCES.map((s) => (
+            <button key={s} onClick={() => { setReturnSource(s); setTrackingId(''); setCurrentStep('return_scan'); }}
+              style={{ width: '100%', padding: 20, borderRadius: 16, background: PANEL, border: `1px solid ${BORDER}`, color: TEXT, ...headFont, fontSize: 20, fontWeight: 800, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              {s}<ChevronRight style={{ width: 26, height: 26, color: SUB }} />
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // ============ RENDER STEP: RETURN SCAN (rapid, no per-label courier / photo) ============
+  if (currentStep === 'return_scan') {
+    return (
+      <div style={{ ...screen, padding: 16, paddingBottom: 40 }}>
+        <Fonts />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+          <button onClick={() => setCurrentStep('return_source')} style={iconBtn}><X style={{ width: 20, height: 20 }} /></button>
+          <div style={{ flex: 1 }}>
+            <h1 style={{ ...headFont, fontSize: 20, fontWeight: 800, color: TEXT, margin: 0 }}>Returns · {returnSource}</h1>
+            <p style={{ color: SUB, fontSize: 13, margin: 0 }}>Scan each parcel — {returnScans.length} done</p>
+          </div>
+          <span style={{ ...headFont, fontSize: 26, fontWeight: 800, color: T.orange }}>{returnScans.length}</span>
+        </div>
+
+        <div style={{ ...panelStyle, padding: 14, marginBottom: 14 }}>
+          <input autoFocus ref={trackingRef} value={trackingId}
+            onChange={(e) => setTrackingId(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && trackingId.trim() && !scanning) recordReturn(); }}
+            placeholder="Scan return tracking / AWB…"
+            style={{ width: '100%', height: 56, padding: '0 16px', borderRadius: 10, background: PANEL2, border: `1px solid ${T.orange}`, color: TEXT, fontSize: 18, ...monoFont, outline: 'none' }} />
+          <p style={{ color: SUB, fontSize: 11.5, marginTop: 8 }}>Just keep scanning — courier is set to <b>{returnSource}</b>. Add photos later from the <b>Pending</b> tab.</p>
+        </div>
+
+        {returnScans.length > 0 && (
+          <div style={{ ...panelStyle, padding: 12 }}>
+            <div style={{ fontSize: 11, color: SUB, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '.4px' }}>Scanned this session</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 5, maxHeight: '46vh', overflowY: 'auto' }}>
+              {returnScans.map((r, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, background: PANEL2, borderRadius: 6, padding: '5px 8px' }}>
+                  <Check style={{ width: 14, height: 14, color: '#5FD68A' }} />
+                  <span style={{ ...monoFont, color: TEXT }}>{r.tracking_id}</span>
+                  <span style={{ color: SUB, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.customer || ''}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <button onClick={resetFlow}
+          style={{ width: '100%', height: 54, borderRadius: 14, marginTop: 14, fontSize: 16, fontWeight: 800, ...headFont, color: TEXT, background: 'transparent', border: `1px solid ${BORDER}`, cursor: 'pointer' }}>
+          Done ({returnScans.length} received)
+        </button>
       </div>
     );
   }
