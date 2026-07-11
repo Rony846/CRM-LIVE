@@ -23,9 +23,13 @@ export default function IronSidebar({ nav, roleLabel }) {
   const navigate = useNavigate();
   const location = useLocation();
   const role = user?.role || 'admin';
-  nav = nav || NAV_BY_ROLE[role] || IRON_ADMIN_NAV;         // auto-pick the viewer's menu
-  roleLabel = roleLabel || ROLE_LABEL[role] || 'Console';
-  const home = role === 'admin' ? '/admin' : (nav[0] && nav[0][1] && nav[0][1][0] && nav[0][1][0][1]) || '/';
+  // FAIL CLOSED: only 'admin' ever gets the full admin menu. Any role not explicitly mapped in
+  // NAV_BY_ROLE (incl. third-party lawyer/ca/importer) gets ONLY its own scoped menu — never the admin
+  // menu. Previously this fell back to IRON_ADMIN_NAV, leaking the whole company nav to outside parties.
+  nav = nav || NAV_BY_ROLE[role] || (role === 'admin' ? IRON_ADMIN_NAV : []);
+  roleLabel = roleLabel || ROLE_LABEL[role] || 'Portal';
+  const home = role === 'admin' ? '/admin'
+    : (nav[0] && nav[0][1] && nav[0][1][0] && nav[0][1][0][1]) || '/';
   const cur = location.pathname + location.search;
   const isActive = (p) => (p.includes('?') ? cur === p : location.pathname === p);
   const groupHasActive = (items) => items.some(([, p]) => isActive(p));

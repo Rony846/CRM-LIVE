@@ -151,14 +151,22 @@ export const IRON_GATE_NAV = [['Workspace', [['Ship Desk', '/ship-desk'], ['Retu
 export const IRON_CUSTOMER_NAV = [['Workspace', [['Dashboard', '/customer'], ['My Quotations', '/customer/quotations'], ['My Tickets', '/customer/tickets'], ['Create Ticket', '/customer/tickets/new'], ['Book Appointment', '/customer/appointments'], ['Register Warranty', '/customer/warranty/register'], ['My Warranties', '/customer/warranties']]]];
 export const IRON_DEALER_NAV = [['Workspace', [['Dashboard', '/dealer'], ['Customer Book', '/dealer/customers'], ['Product Catalogue', '/dealer/catalogue'], ['Place Order', '/dealer/orders/new'], ['My Orders', '/dealer/orders'], ['Track Dispatches', '/dealer/dispatches'], ['Reorder Suggestions', '/dealer/reorder-suggestions'], ['Sales Targets', '/dealer/targets'], ['Warranty Registration', '/dealer/warranty'], ['Warranty Claims', '/dealer/warranty-claims'], ['Spare Parts', '/dealer/spare-parts'], ['Spare Orders', '/dealer/spare-orders'], ['Announcements', '/dealer/announcements'], ['Ledger', '/dealer/ledger'], ['Performance', '/dealer/performance'], ['Certificate', '/dealer/certificate'], ['Downloads', '/dealer/documents'], ['My Profile', '/dealer/profile'], ['Deposit Status', '/dealer/deposit'], ['Support Tickets', '/dealer/tickets'], ['Promotions', '/dealer/promotions'], ['Dealer Agreement', '/dealer/terms']]]];
 
+// Third-party / external read-only roles — SCOPED to only their own page. They must NEVER inherit the
+// admin menu (they're outside parties: lawyer, CA, importer). Keep these minimal.
+export const IRON_LAWYER_NAV = [['Legal', [['Legal Cases', '/admin/legal-cases'], ['Legal Diary', '/admin/legal-diary']]]];
+export const IRON_CA_NAV = [['CA', [['GST Filing', '/ca']]]];
+export const IRON_IMPORTER_NAV = [['Importer', [['Reconciliation', '/importer']]]];
+
 // Pick the right sidebar for whoever is viewing (admin sees the full admin menu).
 export const NAV_BY_ROLE = {
   admin: IRON_ADMIN_NAV, supervisor: IRON_SUPERVISOR_NAV, call_support: IRON_SUPPORT_NAV,
   accountant: IRON_ACCOUNTANT_NAV, technician: IRON_TECHNICIAN_NAV, service_agent: IRON_TECHNICIAN_NAV,
   dispatcher: IRON_DISPATCHER_NAV, gate: IRON_GATE_NAV, customer: IRON_CUSTOMER_NAV, dealer: IRON_DEALER_NAV,
+  lawyer: IRON_LAWYER_NAV, ca: IRON_CA_NAV, importer: IRON_IMPORTER_NAV,
 };
 export const ROLE_LABEL = {
   admin: 'Admin Console', supervisor: 'Supervisor', call_support: 'Call Support', accountant: 'Accounts',
   technician: 'Technician', service_agent: 'Technician', dispatcher: 'Dispatch', gate: 'Gate',
-  customer: 'Customer Portal', dealer: 'Dealer Portal',
+  customer: 'Customer Portal', dealer: 'Dealer Portal', lawyer: 'Legal Portal', ca: 'CA Portal',
+  importer: 'Importer Portal',
 };
