@@ -596,6 +596,17 @@ async def create_indexes():
             misfire_grace_time=1800,
         )
 
+        # RTO/returns reconcile - detect failed-delivery returns into the worklist (db.rto_returns) so they
+        # get received at the gate and dispositioned (restock/scrap/repair). Default every 6h.
+        scheduler.add_job(
+            reconcile_rto_returns,
+            IntervalTrigger(hours=int(os.environ.get("RTO_RECONCILE_INTERVAL_HOURS", "6"))),
+            id="rto_returns_reconcile",
+            name="RTO/returns reconcile (detect returns into worklist)",
+            replace_existing=True,
+            misfire_grace_time=1800,
+        )
+
         # Nightly Amazon sync — pulls fresh orders + refunds + A-Z claims for every
         # firm with active Amazon credentials. Default 02:00 IST (20:30 UTC); can be
         # overridden via CRON_AMAZON_HOUR_UTC / CRON_AMAZON_MIN_UTC env vars.
@@ -13181,7 +13192,21 @@ async def gate_scan(
             logger.warning(f"gate serial bind failed for {scan_data.tracking_id}: {_e}")
 
     await db.gate_logs.insert_one(gate_log)
-    
+
+    # RTO auto-receive: an inward scan whose AWB matches a return on the worklist marks it physically
+    # received (awaiting disposition) — the gate no longer has to open the RTO board separately.
+    if scan_data.scan_type == "inward":
+        try:
+            rr = await db.rto_returns.find_one(
+                {"awb": scan_data.tracking_id, "stage": "expected"}, {"_id": 0, "id": 1})
+            if rr:
+                await db.rto_returns.update_one({"id": rr["id"]}, {"$set": {
+                    "stage": "received", "received_at": now.isoformat(),
+                    "received_by": user.get("email") or user["id"], "gate_log_id": scan_id,
+                    "updated_at": now.isoformat()}})
+        except Exception as _e:
+            logger.warning(f"RTO auto-receive failed for {scan_data.tracking_id}: {_e}")
+
     # Handle based on scan type
     if scan_data.scan_type == "inward":
         # ============ CREATE INCOMING QUEUE ENTRY ============
@@ -70225,6 +70250,154 @@ async def admin_ready_lane_stuck(
          "customer_name": 1, "firm_name": 1, "stuck_age_days": 1, "stuck_status": 1, "stuck_since": 1}
     ).sort("stuck_age_days", -1).to_list(500)
     return {"count": len(rows), "orders": rows}
+
+
+# ───────────────────────── RTO / RETURNS LOOP ─────────────────────────
+# Forward shipments that failed delivery come back to us (Return-To-Origin). Without a loop they just sit
+# as courier rows — the unit never gets restocked/scrapped and the sale isn't reconciled. This closes it:
+# detect RTOs → worklist (db.rto_returns) linked to the order + its dispatched serials → receive at gate →
+# disposition (restock the serial / scrap / send to repair) + flag the sale for reversal.
+_RTO_RE = re.compile(r"\brto\b|return\s*to\s*origin|undeliver|\brts\b|returned\s*to", re.I)
+_RTO_BACK_RE = re.compile(r"rto delivered|returned to origin|rto received|reached.*origin|delivered.*rto", re.I)
+_RTO_TERMINAL = ("restocked", "scrapped", "repair", "closed")
+
+
+async def reconcile_rto_returns(dry_run: bool = False, days: int = 90) -> dict:
+    """Detect RTO shipments and build/refresh the returns worklist (db.rto_returns), linked to the original
+    order + its dispatched serials. Stage = 'received' once the courier shows it back at origin, else
+    'expected'. Never re-touches an already-dispositioned return. Bounded to the last `days` of activity."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    q = {"$or": [{"status": {"$regex": r"rto|undeliver|return to|\brts\b|returned to", "$options": "i"}},
+                 {"delhivery_status": {"$regex": r"rto|undeliver|return to|\brts\b|returned to", "$options": "i"}}]}
+    new = updated = skipped_old = 0
+    async for cs in db.courier_shipments.find(q, {"_id": 0}):
+        awb = (cs.get("awb_number") or "").strip()
+        if not awb:
+            continue
+        st = ((cs.get("delhivery_status") or "") + " " + (cs.get("status") or "")).strip()
+        if _delhivery_cancelled(st):    # a cancelled booking, not a real RTO
+            continue
+        dt = cs.get("last_tracked") or cs.get("updated_at") or cs.get("created_at") or ""
+        existing = await db.rto_returns.find_one({"awb": awb}, {"_id": 0})
+        if not existing and str(dt) < cutoff:
+            skipped_old += 1
+            continue
+        if existing and existing.get("stage") in _RTO_TERMINAL:
+            continue
+        oid = cs.get("order_id") or cs.get("amazon_order_id")
+        serials = []
+        if oid:
+            serials = [s["serial_number"] async for s in db.finished_good_serials.find(
+                {"order_id": oid, "status": {"$nin": ["scrapped", "in_stock"]}},
+                {"_id": 0, "serial_number": 1})]
+        back = bool(_RTO_BACK_RE.search(st))
+        if existing:
+            setf = {"courier_status": st[:80], "updated_at": now_iso}
+            if serials and not existing.get("original_serials"):
+                setf["original_serials"] = serials
+            if back and existing.get("stage") == "expected":
+                setf.update({"stage": "received", "received_at": now_iso, "received_by": "courier_rto"})
+            if not dry_run:
+                await db.rto_returns.update_one({"awb": awb}, {"$set": setf})
+            updated += 1
+        else:
+            doc = {"id": str(uuid.uuid4()), "awb": awb, "order_id": oid,
+                   "amazon_order_id": cs.get("amazon_order_id"), "customer_name": cs.get("customer_name"),
+                   "product_name": cs.get("product_name"), "invoice_amount": cs.get("invoice_amount"),
+                   "firm_id": cs.get("firm_id"), "firm_name": cs.get("firm_name"),
+                   "courier_status": st[:80], "original_serials": serials,
+                   "stage": "received" if back else "expected", "rto_detected_at": now_iso,
+                   "created_at": now_iso, "updated_at": now_iso}
+            if back:
+                doc.update({"received_at": now_iso, "received_by": "courier_rto"})
+            if not dry_run:
+                await db.rto_returns.insert_one(doc)
+            new += 1
+    res = {"dry_run": dry_run, "new": new, "updated": updated, "skipped_older_than_days": skipped_old, "at": now_iso}
+    return res
+
+
+@api_router.post("/admin/rto-returns/reconcile")
+async def admin_rto_reconcile(dry_run: bool = False, days: int = 90,
+                              user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Detect RTO shipments into the returns worklist (dry_run reports without writing)."""
+    return await reconcile_rto_returns(dry_run=dry_run, days=days)
+
+
+@api_router.get("/rto-returns")
+async def get_rto_returns(
+    stage: str = "", user: dict = Depends(require_roles(
+        ["admin", "accountant", "dispatcher", "supervisor", "service_agent", "gate"]))):
+    """The RTO/returns board — units coming back or awaiting disposition, grouped by stage.
+    expected → received (at gate) → restocked / scrapped / repair."""
+    q = {} if not stage else {"stage": stage}
+    rows = await db.rto_returns.find(q, {"_id": 0}).sort("updated_at", -1).to_list(1000)
+    counts = {s["_id"]: s["n"] async for s in db.rto_returns.aggregate(
+        [{"$group": {"_id": "$stage", "n": {"$sum": 1}}}])}
+    return {"count": len(rows), "counts": counts, "returns": rows}
+
+
+@api_router.post("/rto-returns/{rid}/receive")
+async def rto_receive(rid: str, user: dict = Depends(require_roles(
+        ["admin", "gate", "dispatcher", "supervisor", "service_agent"]))):
+    """Gate confirms the returned unit is physically back — moves it to 'received' (awaiting disposition)."""
+    r = await db.rto_returns.find_one({"id": rid}, {"_id": 0})
+    if not r:
+        raise HTTPException(status_code=404, detail="Return not found")
+    await db.rto_returns.update_one({"id": rid}, {"$set": {
+        "stage": "received", "received_at": datetime.now(timezone.utc).isoformat(),
+        "received_by": user.get("email") or user.get("id"), "updated_at": datetime.now(timezone.utc).isoformat()}})
+    return {"success": True, "stage": "received"}
+
+
+@api_router.post("/rto-returns/{rid}/disposition")
+async def rto_disposition(rid: str, payload: dict = Body(...),
+                          user: dict = Depends(require_roles(["admin", "accountant", "dispatcher", "supervisor"]))):
+    """Close the loop on a received return: restock (serial → in_stock), scrap (serial → scrapped), or send
+    to repair. Also marks the original order returned + flags the sale/COGS for accountant reversal."""
+    action = (payload.get("action") or "").strip().lower()
+    if action not in ("restock", "scrap", "repair"):
+        raise HTTPException(status_code=400, detail="action must be restock | scrap | repair")
+    r = await db.rto_returns.find_one({"id": rid}, {"_id": 0})
+    if not r:
+        raise HTTPException(status_code=404, detail="Return not found")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    by = user.get("email") or user.get("id")
+    serials = payload.get("serials") or r.get("original_serials") or []
+    done_serials = []
+    for sn in serials:
+        if action == "restock":
+            u = await db.finished_good_serials.update_one(
+                {"serial_number": sn, "status": {"$in": ["dispatched", "reserved"]}},
+                {"$set": {"status": "in_stock", "order_id": None, "customer_name": None, "phone": None,
+                          "dispatch_id": None, "reserved_by_order_id": None,
+                          "returned_from_rto": r.get("awb"), "restocked_at": now_iso, "updated_at": now_iso}})
+            if u.modified_count:
+                done_serials.append(sn)
+        elif action == "scrap":
+            await db.finished_good_serials.update_one(
+                {"serial_number": sn}, {"$set": {"status": "scrapped", "scrap_reason": "RTO — unit not resalable",
+                                                 "scrapped_at": now_iso, "scrapped_by": by, "updated_at": now_iso}})
+            done_serials.append(sn)
+        elif action == "repair":
+            await db.finished_good_serials.update_one(
+                {"serial_number": sn}, {"$set": {"status": "in_repair", "repair_note": "RTO — sent to repair yard",
+                                                 "updated_at": now_iso}})
+            done_serials.append(sn)
+    stage = "restocked" if action == "restock" else "scrapped" if action == "scrap" else "repair"
+    await db.rto_returns.update_one({"id": rid}, {"$set": {
+        "stage": stage, "disposition": action, "disposition_at": now_iso, "disposition_by": by,
+        "disposition_note": (payload.get("note") or "")[:300], "dispositioned_serials": done_serials,
+        "updated_at": now_iso}})
+    # Reconcile the sale: mark the original order returned + flag COGS reversal for the accountant to action.
+    oid = r.get("order_id") or r.get("amazon_order_id")
+    if oid:
+        await db.amazon_order_processing.update_many(
+            {"$or": [{"order_id": oid}, {"amazon_order_id": oid}]},
+            {"$set": {"rto_returned": True, "rto_returned_at": now_iso, "rto_disposition": action,
+                      "cogs_reversal_flagged": True, "updated_at": now_iso}})
+    return {"success": True, "stage": stage, "serials_actioned": done_serials, "order_flagged": bool(oid)}
 
 
 async def _unshipped_audit(window_h: int = None):
