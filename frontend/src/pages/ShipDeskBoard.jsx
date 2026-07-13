@@ -337,6 +337,10 @@ export default function ShipDeskBoard() {
                   {o.has_payment_proof && <button onClick={() => download(o.order_id, 'file/payment_proof', `payment_${o.order_id}.pdf`)} style={{ border: 'none', background: 'none', color: '#166534', cursor: 'pointer', fontWeight: 700, fontSize: 10.5, display: 'inline-flex', gap: 3, alignItems: 'center', whiteSpace: 'nowrap' }}><Download size={11} />Proof</button>}
                 </div>)}
               <div style={{ marginTop: 6 }}>{(o.required || []).map((k) => <Chip key={k} ok={(o.present || []).includes(k)} label={DOC_LABEL[k]} />)}</div>
+              {(o.label_gaps || []).length > 0 && (
+                <div style={{ marginTop: 6, fontSize: 10.5, color: '#92400e', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 4, padding: '4px 7px' }}>
+                  ⚠️ Missing for labels: <b>{o.label_gaps.join(', ')}</b> — please enter before packing
+                </div>)}
               {isAcct && (
                 <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                   {!(o.present || []).includes('invoice') && (
@@ -359,6 +363,10 @@ export default function ShipDeskBoard() {
           )} />
           <Lane title="Ready to ship" tint="#eff6ff" items={board.ready_to_ship || []} render={(o) => (
             <Card key={o.order_id} o={o}>
+              {(o.label_gaps || []).length > 0 && (
+                <div style={{ marginTop: 6, fontSize: 10.5, color: '#92400e', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 4, padding: '4px 7px' }}>
+                  ⚠️ Labels missing: <b>{o.label_gaps.join(', ')}</b> — ask accountant to fill before packing
+                </div>)}
               {o.tracking_id && (
                 <div style={{ marginTop: 5, display: 'flex', alignItems: 'center', gap: 5 }}>
                   <span style={{ fontSize: 9.5, color: T.iron400, textTransform: 'uppercase', letterSpacing: 0.3, fontWeight: 700 }}>AWB</span>

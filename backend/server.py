@@ -24916,15 +24916,36 @@ async def ship_desk_attach_doc(order_id: str, kind: str = Form(...),
     return {"success": True, "order_id": order_id, "stage": (advanced or {}).get("stage", "awaiting_accountant")}
 
 
+async def _label_data_gaps(d: dict) -> list:
+    """Label-critical fields that are MISSING — surfaced to the accountant so nothing prints blank.
+    Checks the order's shipping fields + the MRP on the mapped SKU (MRP is skipped for stabilizers)."""
+    gaps = []
+    if not str(d.get("phone") or "").strip(): gaps.append("phone")
+    if not str(d.get("address") or "").strip(): gaps.append("address")
+    if not str(d.get("pincode") or "").strip(): gaps.append("pincode")
+    if not str(d.get("city") or "").strip(): gaps.append("city")
+    items = d.get("items") or ([{"master_sku_id": d.get("master_sku_id")}] if d.get("master_sku_id") else [])
+    sku_id = items[0].get("master_sku_id") if items else None
+    if not sku_id:
+        gaps.append("product/SKU")
+    else:
+        sku = await db.master_skus.find_one({"id": sku_id}, {"_id": 0, "mrp": 1, "selling_price": 1, "category": 1, "name": 1})
+        if sku:
+            is_stab = "stabil" in ((sku.get("category") or "") + " " + (sku.get("name") or "")).lower()
+            if not is_stab and not (sku.get("mrp") or sku.get("selling_price")):
+                gaps.append("MRP price")
+    return gaps
+
+
 @api_router.get("/ship-desk/board")
 async def ship_desk_board(user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROLES + ["dispatcher", "gate"]))):
     """The Ship Desk board — orders grouped by stage, scoped to the viewer's role."""
     role = user.get("role")
     want = {"service_agent": "inverter", "technician": "inverter", "supervisor": "rest"}.get(role)
-    def card(d):
+    async def card(d, with_gaps=False):
         req = d.get("required_docs") or _ship_desk_required(d.get("invoice_value"))
         present = _ship_desk_present(d)
-        return {"order_id": d.get("order_id"), "customer_name": d.get("customer_name"),
+        out = {"order_id": d.get("order_id"), "customer_name": d.get("customer_name"),
                 "product": d.get("master_sku_name") or (d.get("items") or [{}])[0].get("master_sku_name"),
                 "firm_name": d.get("firm_name"), "value": d.get("invoice_value"), "stage": d.get("stage"),
                 "required": req, "present": present, "missing": [r for r in req if r not in present],
@@ -24934,7 +24955,10 @@ async def ship_desk_board(user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROL
                 "pi_number": d.get("pi_number"), "has_payment_proof": bool(d.get("payment_proof_path")),
                 "payment_amount": d.get("payment_amount"), "payment_ref": d.get("payment_ref"),
                 "items": d.get("items") or [], "qty": _sum_item_qty(d.get("items"))}
-    awaiting = [card(d) async for d in db.pending_fulfillment.find(
+        if with_gaps:
+            out["label_gaps"] = await _label_data_gaps(d)
+        return out
+    awaiting = [await card(d, True) async for d in db.pending_fulfillment.find(
         {"source": {"$in": ["ship_desk", "pi_paid"]}, "stage": "awaiting_accountant"}, {"_id": 0}).sort("created_at", -1)]
     ready_q = {"source": "ship_desk", "stage": "ready_to_ship", "pack_stage": {"$ne": "packed"}}
     ready = []
@@ -24942,12 +24966,12 @@ async def ship_desk_board(user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROL
         owners = await _order_dispatch_owners(d)
         if want and want not in owners:
             continue
-        c = card(d)
+        c = await card(d, True)
         c["owner_label"] = ("Combo → both" if owners == {"inverter", "rest"}
                             else "Inverter → Gaurav" if owners == {"inverter"} else "Battery/Stabilizer → Angad")
         ready.append(c)
     recent = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-    shipped = [card(d) async for d in db.pending_fulfillment.find(
+    shipped = [await card(d) async for d in db.pending_fulfillment.find(
         {"source": "ship_desk", "pack_stage": "packed", "created_at": {"$gte": recent}}, {"_id": 0}
     ).sort("created_at", -1).limit(100)]
 
