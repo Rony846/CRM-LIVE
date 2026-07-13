@@ -48,6 +48,8 @@ export default function GateDashboardMobile() {
   const [serial, setSerial] = useState('');          // unit serial scanned at the gate (outward step 2)
   const [returnSource, setReturnSource] = useState(null);  // Amazon/Delhivery/Flipkart/Others (chosen once)
   const [returnScans, setReturnScans] = useState([]);      // returns rapid-scanned this session
+  const [outwardCourier, setOutwardCourier] = useState(null); // Amazon/Delhivery (chosen once for bulk outward)
+  const [outwardScans, setOutwardScans] = useState([]);       // outward parcels rapid-scanned this session
   const [courier, setCourier] = useState('');
   const [customCourier, setCustomCourier] = useState('');
   const [scanning, setScanning] = useState(false);
@@ -351,6 +353,27 @@ export default function GateDashboardMobile() {
         scan_type: 'inward', tracking_id: t, courier: returnSource, notes: `Return via ${returnSource}`,
       }, { headers: { Authorization: `Bearer ${token}` } });
       setReturnScans((prev) => [{ tracking_id: t, customer: data?.customer_name, at: Date.now() }, ...prev]);
+      setTrackingId('');
+      try { audioRef.current?.play?.(); } catch { /* beep best-effort */ }
+      setTimeout(() => trackingRef.current?.focus(), 60);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Scan failed'); trackingRef.current?.focus();
+    } finally { setScanning(false); }
+  };
+
+  // OUTWARD BULK: courier chosen once (Amazon/Delhivery) → rapid-scan each parcel's AWB. Records the
+  // outward gate scan (books the dispatch); the unit serial was already bound at packing, so no per-
+  // parcel serial prompt — same fast flow as OPEN RETURN, just outward. Keeps focus for the next scan.
+  const recordOutward = async (tid) => {
+    const t = (tid || trackingId).trim();
+    if (!t) return;
+    if (outwardScans.some((r) => r.tracking_id === t)) { setTrackingId(''); return; }  // dedupe
+    setScanning(true);
+    try {
+      const { data } = await axios.post(`${API}/gate/scan`, {
+        scan_type: 'outward', tracking_id: t, courier: outwardCourier, notes: `Outward via ${outwardCourier}`,
+      }, { headers: { Authorization: `Bearer ${token}` } });
+      setOutwardScans((prev) => [{ tracking_id: t, customer: data?.customer_name, at: Date.now() }, ...prev]);
       setTrackingId('');
       try { audioRef.current?.play?.(); } catch { /* beep best-effort */ }
       setTimeout(() => trackingRef.current?.focus(), 60);
@@ -676,7 +699,7 @@ export default function GateDashboardMobile() {
                 OPEN RETURN (pick source → bulk scan), so there's no separate generic Inward button. */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 24 }}>
               <button
-                onClick={() => { setScanType('outward'); setCurrentStep('scan'); }}
+                onClick={() => { setOutwardCourier(null); setOutwardScans([]); setTrackingId(''); setCurrentStep('outward_source'); }}
                 style={{ width: '100%', padding: 22, borderRadius: 18, background: T.blue, color: TEXT, display: 'flex', alignItems: 'center', justifyContent: 'space-between', border: 'none', cursor: 'pointer' }}
                 data-testid="btn-outward"
               >
@@ -686,7 +709,7 @@ export default function GateDashboardMobile() {
                   </div>
                   <div style={{ textAlign: 'left' }}>
                     <p style={{ ...headFont, fontSize: 22, fontWeight: 800, margin: 0 }}>OUTWARD</p>
-                    <p style={{ color: 'rgba(255,255,255,.8)', fontSize: 13, margin: 0 }}>Dispatching package</p>
+                    <p style={{ color: 'rgba(255,255,255,.8)', fontSize: 13, margin: 0 }}>Pick courier → bulk-scan dispatch</p>
                   </div>
                 </div>
                 <ChevronRight style={{ width: 30, height: 30, color: 'rgba(255,255,255,.6)' }} />
@@ -867,6 +890,77 @@ export default function GateDashboardMobile() {
             )}
           </div>
         )}
+      </div>
+    );
+  }
+
+  // ============ RENDER STEP: OUTWARD COURIER (pick once) ============
+  if (currentStep === 'outward_source') {
+    const COURIERS = ['Amazon', 'Delhivery', 'Others'];
+    return (
+      <div style={{ ...screen, padding: 16, paddingBottom: 40 }}>
+        <Fonts />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
+          <button onClick={resetFlow} style={iconBtn}><X style={{ width: 20, height: 20 }} /></button>
+          <div>
+            <h1 style={{ ...headFont, fontSize: 20, fontWeight: 800, color: TEXT, margin: 0 }}>Outward Dispatch</h1>
+            <p style={{ color: SUB, fontSize: 13, margin: 0 }}>Which courier are these going out with?</p>
+          </div>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {COURIERS.map((s) => (
+            <button key={s} onClick={() => { setOutwardCourier(s); setTrackingId(''); setCurrentStep('outward_scan'); }}
+              style={{ width: '100%', padding: 20, borderRadius: 16, background: PANEL, border: `1px solid ${BORDER}`, color: TEXT, ...headFont, fontSize: 20, fontWeight: 800, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              {s}<ChevronRight style={{ width: 26, height: 26, color: SUB }} />
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // ============ RENDER STEP: OUTWARD SCAN (rapid, courier pre-chosen, no per-label serial) ============
+  if (currentStep === 'outward_scan') {
+    return (
+      <div style={{ ...screen, padding: 16, paddingBottom: 40 }}>
+        <Fonts />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+          <button onClick={() => setCurrentStep('outward_source')} style={iconBtn}><X style={{ width: 20, height: 20 }} /></button>
+          <div style={{ flex: 1 }}>
+            <h1 style={{ ...headFont, fontSize: 20, fontWeight: 800, color: TEXT, margin: 0 }}>Outward · {outwardCourier}</h1>
+            <p style={{ color: SUB, fontSize: 13, margin: 0 }}>Scan each parcel — {outwardScans.length} done</p>
+          </div>
+          <span style={{ ...headFont, fontSize: 26, fontWeight: 800, color: T.blue }}>{outwardScans.length}</span>
+        </div>
+
+        <div style={{ ...panelStyle, padding: 14, marginBottom: 14 }}>
+          <input autoFocus ref={trackingRef} value={trackingId}
+            onChange={(e) => setTrackingId(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && trackingId.trim() && !scanning) recordOutward(); }}
+            placeholder="Scan dispatch tracking / AWB…"
+            style={{ width: '100%', height: 56, padding: '0 16px', borderRadius: 10, background: PANEL2, border: `1px solid ${T.blue}`, color: TEXT, fontSize: 18, ...monoFont, outline: 'none' }} />
+          <p style={{ color: SUB, fontSize: 11.5, marginTop: 8 }}>Just keep scanning — courier is set to <b>{outwardCourier}</b>. The unit serial was already bound at packing.</p>
+        </div>
+
+        {outwardScans.length > 0 && (
+          <div style={{ ...panelStyle, padding: 12 }}>
+            <div style={{ fontSize: 11, color: SUB, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '.4px' }}>Dispatched this session</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 5, maxHeight: '46vh', overflowY: 'auto' }}>
+              {outwardScans.map((r, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, background: PANEL2, borderRadius: 6, padding: '5px 8px' }}>
+                  <Check style={{ width: 14, height: 14, color: '#5BA8DE' }} />
+                  <span style={{ ...monoFont, color: TEXT }}>{r.tracking_id}</span>
+                  <span style={{ color: SUB, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.customer || ''}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <button onClick={resetFlow}
+          style={{ width: '100%', height: 54, borderRadius: 14, marginTop: 14, fontSize: 16, fontWeight: 800, ...headFont, color: TEXT, background: 'transparent', border: `1px solid ${BORDER}`, cursor: 'pointer' }}>
+          Done ({outwardScans.length} dispatched)
+        </button>
       </div>
     );
   }
