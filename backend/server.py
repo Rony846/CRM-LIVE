@@ -20336,6 +20336,14 @@ async def _serial_label_pdf_bytes(serial_number: str, s: dict = None) -> bytes:
     prod = str(s.get("master_sku_name") or "MuscleGrid Product")
     bc_html = f'<img src="{bc}">' if bc else ""
     flag = _serial_origin_flag(s)
+    # Component genealogy on the SAME sticker (founder 2026-07-13): a built battery shows its BMS, a built
+    # inverter shows motherboard + WiFi — right beside the finished-unit serial, so one label carries both.
+    comps = s.get("components") or {}
+    _cbits = []
+    if comps.get("bms"): _cbits.append(f"BMS: {comps['bms']}")
+    if comps.get("motherboard"): _cbits.append(f"MB: {comps['motherboard']}")
+    if comps.get("wifi"): _cbits.append(f"WiFi: {comps['wifi']}")
+    comp_html = f'<div class="comp">{_he(" &middot; ".join(_cbits))}</div>' if _cbits else ""
     # Thermal-optimised, professional (founder-approved 2026-07-08): white bg, black text + thin rules,
     # NO solid-black header bar (smears on direct thermal), NO firm name. Tiny S/N stock marker bottom-right.
     html = f"""<html><head><meta charset="utf-8"><style>
@@ -20352,6 +20360,7 @@ async def _serial_label_pdf_bytes(serial_number: str, s: dict = None) -> bytes:
     .snlabel{{font-size:6.5pt;letter-spacing:.5pt;text-transform:uppercase}}
     .serial{{font-family:'Courier New',monospace;font-size:13.5pt;font-weight:800;letter-spacing:.5pt;line-height:1}}
     .bc{{margin-top:1.2mm}} .bc img{{width:44mm;height:6.5mm}}
+    .comp{{font-size:6pt;font-weight:700;margin-top:1mm;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-top:.5pt dashed #000;padding-top:.8mm}}
     .foot{{border-top:.75pt solid #000;padding-top:1mm;display:flex;justify-content:space-between;align-items:center;font-size:6pt}}
     .og{{font-size:6pt;font-weight:800;border:.75pt solid #000;border-radius:2px;padding:0 1.2mm;margin-left:1.6mm}}
     </style></head><body><div class="w">
@@ -20362,6 +20371,7 @@ async def _serial_label_pdf_bytes(serial_number: str, s: dict = None) -> bytes:
           <div class="plabel">Product</div><div class="pname">{_he(prod[:50])}</div>
           <div class="snlabel">Serial No.</div><div class="serial">{_he(serial_number)}</div>
           <div class="bc">{bc_html}</div>
+          {comp_html}
         </div>
       </div>
       <div class="foot"><span>Verify &middot; Register warranty &middot; Support</span><span>Mfg {mfg} &middot; wa.me/919999036254<span class="og">{flag}</span></span></div>
