@@ -21395,16 +21395,20 @@ async def _mrp_label_pdf_bytes(order_id: str, serials: list = None) -> Optional[
     product = str(sku.get("name") or rec.get("master_sku_name") or "MuscleGrid Product")
     dt = str(rec.get("processed_at") or rec.get("created_at") or "")
     mfg = (dt[5:7] + "/" + dt[0:4]) if len(dt) >= 7 else (datetime.now(timezone.utc)).strftime("%m/%Y")
+    # Scannable serial barcode on the BOX label so the sealed carton can be scanned at pack/gate
+    # dispatch (the serial-label barcode is on the unit, often inside the box).
+    sn_bc = _serial_barcode_datauri(str(serial)) if serial else ""
     from weasyprint import HTML
     html = f"""<html><head><meta charset="utf-8"><style>
     @page{{size:100mm 50mm;margin:0}} *{{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;color:#000}}
-    .w{{width:100mm;height:50mm;padding:8mm;display:flex;flex-direction:column}}
+    .w{{width:100mm;height:50mm;padding:5.5mm 8mm;display:flex;flex-direction:column;overflow:hidden}}
     .top{{display:flex;align-items:baseline;justify-content:space-between;padding-bottom:1mm;border-bottom:1.5pt solid #000}}
     .brand{{font-size:13pt;font-weight:800}} .brand span{{font-weight:400}} .tag{{font-size:6.5pt;letter-spacing:1pt;text-transform:uppercase}}
-    .pname{{font-size:8pt;font-weight:700;line-height:1.15;margin:1.4mm 0 1mm;max-height:6.7mm;overflow:hidden}}
+    .pname{{font-size:8pt;font-weight:700;line-height:1.15;margin:1.2mm 0 .8mm;max-height:6.7mm;overflow:hidden}}
     .mrpline{{display:flex;align-items:baseline;gap:2mm}}
     .mrpk{{font-size:9pt;font-weight:800;letter-spacing:.5pt}} .mrpv{{font-size:17pt;font-weight:800}} .incl{{font-size:6pt}}
     .sn{{margin-top:1.2mm;font-size:7pt}} .sn b{{font-size:6.5pt}} .snv{{font-family:'Courier New',monospace;font-size:9.5pt;font-weight:800;letter-spacing:.6pt}}
+    .snbc{{margin-top:.6mm}} .snbc img{{width:42mm;height:5.5mm}}
     .row{{display:flex;gap:4mm;font-size:6.3pt;margin-top:1mm}}
     .foot{{margin-top:auto;border-top:.75pt solid #000;padding-top:1mm;font-size:5.8pt;line-height:1.3}}
     </style></head><body><div class="w">
@@ -21412,6 +21416,7 @@ async def _mrp_label_pdf_bytes(order_id: str, serials: list = None) -> Optional[
       <div class="pname">{_he(product[:60])}</div>
       <div class="mrpline"><span class="mrpk">M.R.P.</span><span class="mrpv">&#8377;{_inr_group(mrp)}</span><span class="incl">(incl. of all taxes)</span></div>
       {(f'<div class="sn"><b>Serial No.:</b> <span class="snv">{_he(str(serial))}</span></div>') if serial else ''}
+      {(f'<div class="snbc"><img src="{sn_bc}"></div>') if sn_bc else ''}
       <div class="row"><span><b>Net Qty:</b> 1 Unit</span><span><b>Mfg:</b> {mfg}</span><span><b>Origin:</b> India</span></div>
       <div class="foot">Marketed by: <b>MuscleGrid Industries Pvt. Ltd.</b>, Neb Sarai, New Delhi &middot; Customer care: service@musclegrid.in &middot; wa.me/919999036254</div>
     </div></body></html>"""
