@@ -20585,6 +20585,22 @@ class ProductionBuildBody(BaseModel):
     bms_code: Optional[str] = None
     motherboard_code: Optional[str] = None
     wifi_code: Optional[str] = None
+    skip_bms: bool = False                   # exception: build without scanning components (flag to backfill)
+    count: Optional[int] = 1                 # exception only: mint N serials at once
+
+
+async def _bms_exception_active() -> bool:
+    """Is the 'build a battery without scanning its BMS' exception window currently open?
+    Set per-day by a supervisor/admin (auto-expires end of day) — for when units were already built
+    and just need their serial labels. Exception builds are flagged bms_pending for later backfill."""
+    doc = await db.production_settings.find_one({"_id": "bms_exception"}, {"_id": 0, "until": 1})
+    until = (doc or {}).get("until")
+    if not until:
+        return False
+    try:
+        return datetime.now(timezone.utc) < datetime.fromisoformat(until)
+    except Exception:
+        return False
 
 
 @api_router.post("/production/build")
@@ -20599,30 +20615,49 @@ async def production_build(body: ProductionBuildBody, background: BackgroundTask
         raise HTTPException(status_code=400, detail="Valid product (master_sku_id) is required")
     codes = {"bms": (body.bms_code or "").strip(), "motherboard": (body.motherboard_code or "").strip(),
              "wifi": (body.wifi_code or "").strip()}
-    components = {}
-    for c in _COMPONENTS_BY_TYPE[pt]:
-        if not codes[c]:
-            raise HTTPException(status_code=400, detail=f"Scan the {_COMPONENT_LABEL[c]} code")
-        components[c] = codes[c]
-    # single-use guard — a component can't be built into two units
+    components = {c: codes[c] for c in _COMPONENTS_BY_TYPE[pt] if codes[c]}
+    missing = [c for c in _COMPONENTS_BY_TYPE[pt] if not codes[c]]
+    # EXCEPTION path (founder-granted, per-day): units already built, just need serial labels — allow a
+    # build without the component scan when the exception window is open. Flagged bms_pending to backfill.
+    exception = False
+    if missing:
+        if body.skip_bms and await _bms_exception_active():
+            exception = True
+        else:
+            raise HTTPException(status_code=400, detail=f"Scan the {_COMPONENT_LABEL[missing[0]]} code")
+    # single-use guard — a scanned component can't be built into two units
     for c, v in components.items():
         dup = await db.finished_good_serials.find_one(
             {f"components.{c}": v, "status": {"$ne": "cancelled"}}, {"_id": 0, "serial_number": 1})
         if dup:
             raise HTTPException(status_code=400,
                 detail=f"{_COMPONENT_LABEL[c]} {v} is already built into serial {dup['serial_number']}")
+    count = 1
+    if exception:
+        try:
+            count = max(1, min(int(body.count or 1), 100))
+        except Exception:
+            count = 1
     now = datetime.now(timezone.utc).isoformat()
-    sn = await _generate_serial({**sku, "product_type": pt})
-    rec = {"id": str(uuid.uuid4()), "serial_number": sn, "master_sku_id": sku["id"],
-           "master_sku_name": sku.get("name"), "master_sku_code": sku.get("sku_code"),
-           "firm_id": body.firm_id, "status": "in_stock", "origin": "built", "source": "production_build",
-           "product_type": pt, "components": components,
-           "built_by": user.get("email") or user.get("name"), "built_at": now, "created_at": now}
-    await db.finished_good_serials.insert_one(rec)
+    serials = []
+    for _ in range(count):
+        sn = await _generate_serial({**sku, "product_type": pt})
+        rec = {"id": str(uuid.uuid4()), "serial_number": sn, "master_sku_id": sku["id"],
+               "master_sku_name": sku.get("name"), "master_sku_code": sku.get("sku_code"),
+               "firm_id": body.firm_id, "status": "in_stock", "origin": "built", "source": "production_build",
+               "product_type": pt, "components": components,
+               "built_by": user.get("email") or user.get("name"), "built_at": now, "created_at": now}
+        if exception:
+            rec["bms_pending"] = True          # component(s) not scanned — backfill the genealogy later
+            rec["component_exception"] = True
+            rec["component_exception_by"] = user.get("email") or user.get("name")
+        await db.finished_good_serials.insert_one(rec)
+        serials.append(sn)
     if background is not None:
-        background.add_task(_print_serial_labels_batch, [sn])
-    return {"success": True, "serial": sn, "product": sku.get("name"), "product_type": pt,
-            "components": components, "printed": ["serial_label"]}
+        background.add_task(_print_serial_labels_batch, serials)
+    return {"success": True, "serial": serials[0], "serials": serials, "count": len(serials),
+            "product": sku.get("name"), "product_type": pt, "components": components,
+            "exception": exception, "bms_pending": exception, "printed": ["serial_label"]}
 
 
 @api_router.post("/production/component-stock")
@@ -20640,6 +20675,31 @@ async def set_component_stock(payload: dict = Body(...),
         {"component": comp}, {"$set": {"received": received, "updated_at": datetime.now(timezone.utc).isoformat(),
                                        "updated_by": user.get("email")}}, upsert=True)
     return {"success": True, "component": comp, "received": received}
+
+
+@api_router.get("/production/bms-exception")
+async def get_bms_exception(user: dict = Depends(require_roles(_PRODUCTION_ROLES))):
+    """Whether the build-without-BMS exception window is open (so the UI can show the Skip-BMS option)."""
+    doc = await db.production_settings.find_one({"_id": "bms_exception"}, {"_id": 0}) or {}
+    return {"active": await _bms_exception_active(), "until": doc.get("until"), "set_by": doc.get("set_by")}
+
+
+@api_router.post("/production/bms-exception")
+async def set_bms_exception(payload: dict = Body(default={}),
+                            user: dict = Depends(require_roles(["admin", "supervisor"]))):
+    """Open/close the build-without-BMS exception. Default opens it until END OF TODAY (IST); it then
+    auto-expires so scanning the BMS is required again tomorrow. Pass {"enable": false} to close early."""
+    if payload.get("enable") is False:
+        await db.production_settings.update_one({"_id": "bms_exception"},
+            {"$set": {"until": None, "closed_by": user.get("email"), "closed_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+        return {"active": False}
+    ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    end_ist = ist_now.replace(hour=23, minute=59, second=59, microsecond=0)
+    until_utc = (end_ist - timedelta(hours=5, minutes=30)).isoformat()
+    await db.production_settings.update_one({"_id": "bms_exception"},
+        {"$set": {"until": until_utc, "set_by": user.get("email") or user.get("name"),
+                  "set_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    return {"active": True, "until": until_utc}
 
 
 @api_router.get("/production/summary")

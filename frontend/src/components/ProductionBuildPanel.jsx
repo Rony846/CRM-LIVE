@@ -26,6 +26,9 @@ export default function ProductionBuildPanel({ autoFocus = true }) {
   const [busy, setBusy] = useState(false);
   const [summary, setSummary] = useState(null);
   const [lastSerial, setLastSerial] = useState(null);
+  const [exc, setExc] = useState({ active: false });   // BMS-skip exception window (today only)
+  const [skipBms, setSkipBms] = useState(false);
+  const [count, setCount] = useState(1);
   const bmsRef = useRef(null); const mbRef = useRef(null); const wifiRef = useRef(null);
 
   const loadSummary = useCallback(() => {
@@ -34,6 +37,7 @@ export default function ProductionBuildPanel({ autoFocus = true }) {
   }, [token]);
   useEffect(() => {
     axios.get(`${API}/master-skus`, { headers: H }).then((r) => setSkus(Array.isArray(r.data) ? r.data : (r.data.master_skus || []))).catch(() => {});
+    axios.get(`${API}/production/bms-exception`, { headers: H }).then((r) => setExc(r.data || { active: false })).catch(() => {});
     loadSummary();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
@@ -46,18 +50,20 @@ export default function ProductionBuildPanel({ autoFocus = true }) {
   useEffect(() => { setSkuId(''); setBms(''); setMb(''); setWifi(''); setLastSerial(null); }, [mode]);
   useEffect(() => { if (!autoFocus) return; const t = setTimeout(() => (mode === 'battery' ? bmsRef : mbRef).current?.focus(), 150); return () => clearTimeout(t); }, [mode, skuId, autoFocus]);
 
+  const noBms = mode === 'battery' && exc.active && skipBms;   // exception: build w/o scanning BMS
   const build = async () => {
     if (!skuId) { toast.error('Pick the product first'); return; }
-    if (mode === 'battery' && !bms.trim()) { toast.error('Scan the BMS'); return; }
+    if (mode === 'battery' && !noBms && !bms.trim()) { toast.error('Scan the BMS'); return; }
     if (mode === 'inverter' && (!mb.trim() || !wifi.trim())) { toast.error('Scan motherboard and wifi board'); return; }
     setBusy(true);
     try {
       const body = { product_type: mode, master_sku_id: skuId };
-      if (mode === 'battery') body.bms_code = bms.trim();
+      if (mode === 'battery') { if (noBms) { body.skip_bms = true; body.count = Math.max(1, Math.min(100, parseInt(count, 10) || 1)); } else body.bms_code = bms.trim(); }
       else { body.motherboard_code = mb.trim(); body.wifi_code = wifi.trim(); }
       const { data } = await axios.post(`${API}/production/build`, body, { headers: H });
-      setLastSerial({ serial: data.serial, components: data.components });
-      toast.success(`Built ${data.serial} — label printing`);
+      const serials = data.serials || [data.serial];
+      setLastSerial({ serial: serials.join(', '), components: data.components, exception: data.exception });
+      toast.success(serials.length > 1 ? `Built ${serials.length} serials — labels printing` : `Built ${data.serial} — label printing`);
       setBms(''); setMb(''); setWifi(''); loadSummary();
       setTimeout(() => (mode === 'battery' ? bmsRef : mbRef).current?.focus(), 120);
     } catch (e) { toast.error(e?.response?.data?.detail || 'Build failed'); }
@@ -115,9 +121,27 @@ export default function ProductionBuildPanel({ autoFocus = true }) {
 
         {mode === 'battery' ? (
           <>
-            <Caps size={9}>Scan BMS</Caps>
-            <input ref={bmsRef} value={bms} onChange={(e) => setBms(e.target.value)} placeholder="Scan the BMS label…"
-              onKeyDown={(e) => e.key === 'Enter' && bms.trim() && !busy && build()} style={{ ...scanInput, marginTop: 3 }} />
+            {exc.active && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 8, padding: '8px 10px', marginBottom: 10, cursor: 'pointer' }}>
+                <input type="checkbox" checked={skipBms} onChange={(e) => setSkipBms(e.target.checked)} />
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#92400e' }}>⚠️ No BMS — exception (today only)</span>
+                <span style={{ fontSize: 10.5, color: '#b45309' }}>for batteries already built</span>
+              </label>
+            )}
+            {noBms ? (
+              <>
+                <Caps size={9}>How many battery serials to print</Caps>
+                <input type="number" min={1} max={100} value={count} onChange={(e) => setCount(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && !busy && build()} style={{ ...scanInput, marginTop: 3, letterSpacing: 0 }} />
+                <div style={{ fontSize: 10.5, color: '#b45309', marginTop: 5 }}>BMS not scanned — these are flagged to link the BMS later.</div>
+              </>
+            ) : (
+              <>
+                <Caps size={9}>Scan BMS</Caps>
+                <input ref={bmsRef} value={bms} onChange={(e) => setBms(e.target.value)} placeholder="Scan the BMS label…"
+                  onKeyDown={(e) => e.key === 'Enter' && bms.trim() && !busy && build()} style={{ ...scanInput, marginTop: 3 }} />
+              </>
+            )}
           </>
         ) : (
           <>
@@ -132,7 +156,7 @@ export default function ProductionBuildPanel({ autoFocus = true }) {
 
         <button onClick={build} disabled={busy}
           style={{ width: '100%', marginTop: 16, border: 'none', background: T.orange, color: '#fff', borderRadius: 10, padding: 14, fontSize: 15, fontWeight: 800, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, opacity: busy ? 0.6 : 1 }}>
-          {busy ? <Loader2 size={18} className="animate-spin" /> : <Cpu size={18} />} Build & print serial
+          {busy ? <Loader2 size={18} className="animate-spin" /> : <Cpu size={18} />} {noBms ? `Print ${Math.max(1, parseInt(count, 10) || 1)} battery serial${(parseInt(count, 10) || 1) > 1 ? 's' : ''}` : 'Build & print serial'}
         </button>
 
         {lastSerial && (
