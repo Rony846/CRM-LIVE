@@ -202,12 +202,12 @@ export default function ShipDeskBoard() {
   const openNew = async () => { setNf({ firm_id: MGIPL, dispatch_type: 'new_order', payment_mode: 'prepaid', items: [{}] }); setTicketInfo(null); setSkus([]); setSkusByRow({}); setShowNew(true); if (!firms.length) { try { const { data } = await axios.get(`${API}/firms`, { headers: H }); setFirms(Array.isArray(data) ? data : []); } catch (e) {} } };
   const lookupTicket = async (tn) => {
     setF('ticket_number', tn); setTicketInfo(null);
-    if (!tn || tn.trim().length < 6) return;
+    if (!tn || tn.trim().length < 4) return;
     try {
-      const { data } = await axios.get(`${API}/tickets`, { headers: H, params: { search: tn.trim(), limit: 3 } });
-      const list = Array.isArray(data) ? data : (data.tickets || data.items || []);
-      const t = list.find((x) => (x.ticket_number || '') === tn.trim()) || list[0];
-      if (t) { setTicketInfo(t); if (!nf.customer_name) setF('customer_name', t.customer_name || ''); }
+      // Resolve the SAME way the create endpoint does (CRM tickets → Zoho Desk) so the preview never
+      // disagrees with what "Create dispatch" will accept.
+      const { data } = await axios.get(`${API}/ship-desk/ticket-lookup`, { headers: H, params: { ticket_number: tn.trim() } });
+      if (data && data.found) { setTicketInfo(data); if (!nf.customer_name) setF('customer_name', data.customer_name || ''); }
     } catch (e) { /* ignore */ }
   };
   const submitNew = async () => {
@@ -410,6 +410,7 @@ export default function ShipDeskBoard() {
                   {ticketInfo && (
                     <div style={{ fontSize: 11, color: '#166534', background: '#f0fdf4', borderRadius: 6, padding: '5px 8px', marginTop: 4 }}>
                       ✓ {ticketInfo.customer_name}{ticketInfo.customer_phone ? ` · ${ticketInfo.customer_phone}` : ''}{ticketInfo.product_name ? ` · ${ticketInfo.product_name}` : ''}{ticketInfo.serial_number ? ` · SN ${ticketInfo.serial_number}` : ''}
+                      {ticketInfo.source === 'zoho' && <div style={{ color: '#065f46', marginTop: 2 }}>Zoho Desk{ticketInfo.subject ? ` · ${(ticketInfo.subject || '').slice(0, 60)}` : ''} — add the item(s) to ship below.</div>}
                     </div>)}
                   <div style={{ fontSize: 10.5, color: T.iron400, marginTop: 3 }}>Customer &amp; product come from the ticket. This is recorded on the customer's 360.</div></div>
               ) : (

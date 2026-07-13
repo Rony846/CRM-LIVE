@@ -24458,13 +24458,36 @@ async def ship_desk_create_order(payload: dict = Body(...),
 
     # Ticket-linked dispatches resolve the customer + product from the ticket.
     ticket = None
+    ticket_source = None   # which collection the ticket came from (for the history write-back below)
     ticket_number = (payload.get("ticket_number") or "").strip()
     if dispatch_type in _TICKET_DISPATCH:
         if not ticket_number:
             raise HTTPException(status_code=400, detail=f"A ticket number is required for a {_DISPATCH_LABEL[dispatch_type].lower()} dispatch")
-        ticket = await db.tickets.find_one({"ticket_number": ticket_number}, {"_id": 0})
+        tn_ci = {"$regex": f"^{re.escape(ticket_number)}$", "$options": "i"}   # tolerate case/format
+        ticket = await db.tickets.find_one({"ticket_number": tn_ci}, {"_id": 0})
+        if ticket:
+            ticket_source = "tickets"
+            ticket_number = ticket.get("ticket_number") or ticket_number
+        else:
+            # Fall back to imported Zoho Desk tickets (the reverse-pickup/repair backlog lives here, not in
+            # db.tickets) — normalize its fields to the shape this flow expects so the dispatch can proceed.
+            z = await db.zoho_tickets.find_one({"ticket_number": tn_ci}, {"_id": 0})
+            if z:
+                ticket_source = "zoho_tickets"
+                ticket_number = z.get("ticket_number") or ticket_number
+                ticket = {
+                    "ticket_number": ticket_number,
+                    "customer_name": z.get("contact_name") or z.get("customer_name"),
+                    "customer_phone": z.get("phone") or z.get("customer_phone"),
+                    "customer_email": z.get("email"),
+                    "customer_address": z.get("customer_address"),
+                    "customer_city": z.get("customer_city"),
+                    "product_name": z.get("product_name"),
+                    "device_type": z.get("device_type"),
+                    "serial_number": z.get("serial_number"),
+                }
         if not ticket:
-            raise HTTPException(status_code=404, detail=f"Ticket {ticket_number} not found")
+            raise HTTPException(status_code=404, detail=f"Ticket {ticket_number} not found in CRM tickets or Zoho Desk")
 
     items = []
     for it in (payload.get("items") or []):
@@ -24535,8 +24558,8 @@ async def ship_desk_create_order(payload: dict = Body(...),
     await db.pending_fulfillment.insert_one(doc)
 
     # Record replacements / repairs / spares against the ticket so Customer 360 surfaces them.
-    if ticket:
-        await db.tickets.update_one({"ticket_number": ticket_number}, {"$push": {"history": {
+    if ticket and ticket_source:
+        await db[ticket_source].update_one({"ticket_number": ticket_number}, {"$push": {"history": {
             "action": f"{_DISPATCH_LABEL[dispatch_type]} dispatched",
             "notes": f"{items[0].get('master_sku_name')} · {payment_mode.upper()}"
                      + (f" ₹{cod_amount:,.0f}" if payment_mode == "cod" else "") + f" · {order_id}",
@@ -24554,6 +24577,33 @@ async def ship_desk_create_order(payload: dict = Body(...),
         pass
     return {"success": True, "order_id": order_id, "dispatch_type": dispatch_type, "stage": "awaiting_accountant",
             "order_id_generated": order_id_generated, "required_docs": required}
+
+
+@api_router.get("/ship-desk/ticket-lookup")
+async def ship_desk_ticket_lookup(ticket_number: str,
+                                  user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROLES))):
+    """Resolve a ticket for a ship-desk dispatch the SAME way the create endpoint does — CRM tickets first,
+    then imported Zoho Desk tickets — so the operator sees a match/confirmation before submitting (no more
+    'fill everything, then get "not found" on save')."""
+    tn = (ticket_number or "").strip()
+    if len(tn) < 4:
+        return {"found": False}
+    tn_ci = {"$regex": f"^{re.escape(tn)}$", "$options": "i"}
+    t = await db.tickets.find_one({"ticket_number": tn_ci},
+        {"_id": 0, "ticket_number": 1, "customer_name": 1, "customer_phone": 1,
+         "customer_address": 1, "customer_city": 1, "product_name": 1, "device_type": 1, "serial_number": 1})
+    if t:
+        return {"found": True, "source": "crm", **t}
+    z = await db.zoho_tickets.find_one({"ticket_number": tn_ci}, {"_id": 0})
+    if z:
+        return {"found": True, "source": "zoho",
+                "ticket_number": z.get("ticket_number"),
+                "customer_name": z.get("contact_name") or z.get("customer_name"),
+                "customer_phone": z.get("phone") or z.get("customer_phone"),
+                "subject": z.get("subject"),
+                "product_name": z.get("product_name"),
+                "serial_number": z.get("serial_number")}
+    return {"found": False}
 
 
 @api_router.post("/ship-desk/order/{order_id}/doc")
