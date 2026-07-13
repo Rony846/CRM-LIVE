@@ -17715,6 +17715,40 @@ async def remove_sku_alias(
     return {"message": "Alias removed successfully"}
 
 
+@api_router.get("/master-skus/{sku_id}/combo-components")
+async def get_combo_components(sku_id: str, user: dict = Depends(require_roles(["admin", "accountant", "supervisor"]))):
+    """List the finished-good components a combo SKU is made of (for policy-b serialization)."""
+    sku = await db.master_skus.find_one({"id": sku_id}, {"_id": 0, "id": 1, "name": 1, "combo_components": 1})
+    if not sku:
+        raise HTTPException(status_code=404, detail="Master SKU not found")
+    return {"sku_id": sku_id, "name": sku.get("name"), "combo_components": sku.get("combo_components") or []}
+
+
+@api_router.put("/master-skus/{sku_id}/combo-components")
+async def set_combo_components(sku_id: str, payload: dict = Body(...),
+                               user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Define a combo SKU's components so a dispatch serializes EACH serializable unit (policy b:
+    e.g. a 10.2KW inverter + a 48V 120Ah battery each get their own serial + label). Body:
+    {components: [{master_sku_id, quantity?=1, serialize?=true}]}. Set serialize=false for non-
+    serialized items (e.g. solar panels)."""
+    sku = await db.master_skus.find_one({"id": sku_id}, {"_id": 0, "id": 1})
+    if not sku:
+        raise HTTPException(status_code=404, detail="Master SKU not found")
+    comps = []
+    for c in (payload.get("components") or []):
+        cid = (c.get("master_sku_id") or "").strip()
+        if not cid or cid == sku_id:
+            continue
+        cs = await db.master_skus.find_one({"id": cid}, {"_id": 0, "id": 1, "name": 1, "sku_code": 1})
+        if not cs:
+            raise HTTPException(status_code=400, detail=f"Component master_sku_id {cid} not found")
+        comps.append({"master_sku_id": cid, "sku_code": cs.get("sku_code"), "name": cs.get("name"),
+                      "quantity": int(c.get("quantity") or 1), "serialize": c.get("serialize", True)})
+    await db.master_skus.update_one({"id": sku_id},
+        {"$set": {"combo_components": comps, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    return {"success": True, "sku_id": sku_id, "combo_components": comps}
+
+
 @api_router.get("/master-skus/{sku_id}/stock")
 async def get_master_sku_stock(
     sku_id: str,
@@ -20922,9 +20956,23 @@ async def _serials_for_line(sku_id: str, qty: int, firm_id: str, order_id: str, 
     Applies to ANY product (traded or manufactured), not just manufactured. The remainder is GENERATED
     fresh. Every item ends up with a serial; each record is tagged `origin` = stock | new."""
     sku = await db.master_skus.find_one(
-        {"id": sku_id}, {"_id": 0, "product_type": 1, "is_manufactured": 1, "name": 1, "sku_code": 1}) or {}
+        {"id": sku_id}, {"_id": 0, "product_type": 1, "is_manufactured": 1, "name": 1, "sku_code": 1,
+                         "combo_components": 1}) or {}
     now = datetime.now(timezone.utc).isoformat()
     out = []
+    # 0) COMBO (policy b, 2026-07-13): a combo SKU serializes EACH serializable component (e.g. the
+    # inverter AND the battery) rather than one serial for the bundle — so each unit gets its own
+    # correct serial + label + genealogy, and both are booked. Recurse per component; lines flagged
+    # serialize=false (e.g. solar panels) are skipped. Guard against self-reference loops.
+    combo = sku.get("combo_components") or []
+    if combo:
+        for comp in combo:
+            cid = comp.get("master_sku_id")
+            if not cid or cid == sku_id or comp.get("serialize") is False:
+                continue
+            cq = int(comp.get("quantity") or 1) * max(1, int(qty or 1))
+            out += await _serials_for_line(cid, cq, firm_id, order_id, customer)
+        return out
     # 1) Consume pre-generated in-stock serials FIRST (oldest first), firm-scoped then firm-agnostic.
     base = {"master_sku_id": sku_id, "status": "in_stock"}
     avail = await db.finished_good_serials.find({**base, "firm_id": firm_id} if firm_id else base,
