@@ -24,6 +24,20 @@ export default function ReturnDeskBoard() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState({});
   const [track, setTrack] = useState({});
+  // Product tabs — split the mixed return list so the inverter tech sees inverters separately from
+  // stabilizers (founder ask). 'all' keeps full visibility for supervisors/accountants.
+  const prodType = (name) => {
+    const t = (name || '').toLowerCase();
+    if (t.includes('stabiliz')) return 'stabilizer';
+    if (t.includes('inverter')) return 'inverter';
+    return 'other';
+  };
+  const RTABS = [['inverter', 'Inverter'], ['stabilizer', 'Stabilizer'], ['all', 'All']];
+  const [tab, setTab] = useState(user?.role === 'service_agent' ? 'inverter' : 'all');
+  const laneItems = (key) => {
+    const items = board[key] || [];
+    return tab === 'all' ? items : items.filter((o) => prodType(o.product) === tab);
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -108,16 +122,32 @@ export default function ReturnDeskBoard() {
 
   return (
     <IronShell title="Return Desk" subtitle={`${board.counts?.awaiting_label || 0} AWAITING LABEL`} onRefresh={load}>
-      {canEnter && <div style={{ marginBottom: 12, textAlign: 'right' }}><button onClick={() => setShowNew(true)} style={btnPrimary}>+ Arrange pickup</button></div>}
+      <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {RTABS.map(([key, label]) => {
+            const on = tab === key;
+            const n = key === 'all' ? LANES.reduce((s, [k]) => s + (board[k] || []).length, 0)
+              : LANES.reduce((s, [k]) => s + (board[k] || []).filter((o) => prodType(o.product) === key).length, 0);
+            return (
+              <button key={key} onClick={() => setTab(key)}
+                style={{ border: '1.5px solid ' + (on ? T.orange : T.iron200), background: on ? '#fff7ed' : T.white, color: on ? T.orange : T.iron700, borderRadius: 8, padding: '7px 14px', fontFamily: T.headline, fontWeight: 800, fontSize: 12.5, cursor: 'pointer' }}>
+                {label} · {n}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ flex: 1 }} />
+        {canEnter && <button onClick={() => setShowNew(true)} style={btnPrimary}>+ Arrange pickup</button>}
+      </div>
       {loading ? (
         <div style={{ textAlign: 'center', padding: 60, color: T.iron400 }}><Loader2 size={20} className="animate-spin" /></div>
       ) : (
         <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
           {LANES.map(([key, title, tint]) => (
             <div key={key} style={{ flex: 1, minWidth: 270 }}>
-              <div style={{ padding: '8px 12px', borderRadius: '8px 8px 0 0', background: tint, borderBottom: '2px solid ' + T.iron200 }}><Caps size={9}>{title} · {(board[key] || []).length}</Caps></div>
+              <div style={{ padding: '8px 12px', borderRadius: '8px 8px 0 0', background: tint, borderBottom: '2px solid ' + T.iron200 }}><Caps size={9}>{title} · {laneItems(key).length}</Caps></div>
               <div style={{ background: T.iron50, padding: 8, borderRadius: '0 0 8px 8px', minHeight: 120, maxHeight: '72vh', overflowY: 'auto' }}>
-                {(board[key] || []).length === 0 ? <div style={{ textAlign: 'center', color: T.iron400, fontSize: 12, padding: 24 }}>—</div> : (board[key] || []).map((o) => (
+                {laneItems(key).length === 0 ? <div style={{ textAlign: 'center', color: T.iron400, fontSize: 12, padding: 24 }}>—</div> : laneItems(key).map((o) => (
                   <Card key={o.pickup_id} o={o}>
                     {key === 'awaiting_label' && isAcct && (
                       <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 5 }}>
