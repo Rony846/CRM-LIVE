@@ -20450,6 +20450,99 @@ async def stock_serial_summary(user: dict = Depends(require_roles(["admin", "sup
     return {"total_in_stock": sum(r["in_stock"] for r in rows), "items": rows}
 
 
+# ─────────────────────── PRODUCTION BUILD (component genealogy) ───────────────────────
+# Shop-floor flow: the operator SCANS the components first, then the system MINTS the finished-good
+# serial and prints its label, linking the components to it. Battery = 1 BMS; Inverter = 1 motherboard +
+# 1 wifi board. Each component code is single-use (dedup) so we can count consumption → stock remaining.
+_PRODUCTION_ROLES = ["admin", "supervisor", "service_agent", "technician"]
+_COMPONENTS_BY_TYPE = {"battery": ["bms"], "inverter": ["motherboard", "wifi"]}
+_COMPONENT_LABEL = {"bms": "BMS", "motherboard": "Motherboard", "wifi": "WiFi board"}
+
+
+class ProductionBuildBody(BaseModel):
+    product_type: str                       # "battery" | "inverter"
+    master_sku_id: str
+    firm_id: Optional[str] = None
+    bms_code: Optional[str] = None
+    motherboard_code: Optional[str] = None
+    wifi_code: Optional[str] = None
+
+
+@api_router.post("/production/build")
+async def production_build(body: ProductionBuildBody, background: BackgroundTasks = None,
+                           user: dict = Depends(require_roles(_PRODUCTION_ROLES))):
+    """Scan components → mint + print the finished-good serial, linked to the components it's built from."""
+    pt = (body.product_type or "").strip().lower()
+    if pt not in _COMPONENTS_BY_TYPE:
+        raise HTTPException(status_code=400, detail="product_type must be 'battery' or 'inverter'")
+    sku = await db.master_skus.find_one({"id": body.master_sku_id}, {"_id": 0, "id": 1, "name": 1, "sku_code": 1})
+    if not sku:
+        raise HTTPException(status_code=400, detail="Valid product (master_sku_id) is required")
+    codes = {"bms": (body.bms_code or "").strip(), "motherboard": (body.motherboard_code or "").strip(),
+             "wifi": (body.wifi_code or "").strip()}
+    components = {}
+    for c in _COMPONENTS_BY_TYPE[pt]:
+        if not codes[c]:
+            raise HTTPException(status_code=400, detail=f"Scan the {_COMPONENT_LABEL[c]} code")
+        components[c] = codes[c]
+    # single-use guard — a component can't be built into two units
+    for c, v in components.items():
+        dup = await db.finished_good_serials.find_one(
+            {f"components.{c}": v, "status": {"$ne": "cancelled"}}, {"_id": 0, "serial_number": 1})
+        if dup:
+            raise HTTPException(status_code=400,
+                detail=f"{_COMPONENT_LABEL[c]} {v} is already built into serial {dup['serial_number']}")
+    now = datetime.now(timezone.utc).isoformat()
+    sn = await _generate_serial({**sku, "product_type": pt})
+    rec = {"id": str(uuid.uuid4()), "serial_number": sn, "master_sku_id": sku["id"],
+           "master_sku_name": sku.get("name"), "master_sku_code": sku.get("sku_code"),
+           "firm_id": body.firm_id, "status": "in_stock", "origin": "built", "source": "production_build",
+           "product_type": pt, "components": components,
+           "built_by": user.get("email") or user.get("name"), "built_at": now, "created_at": now}
+    await db.finished_good_serials.insert_one(rec)
+    if background is not None:
+        background.add_task(_print_serial_labels_batch, [sn])
+    return {"success": True, "serial": sn, "product": sku.get("name"), "product_type": pt,
+            "components": components, "printed": ["serial_label"]}
+
+
+@api_router.post("/production/component-stock")
+async def set_component_stock(payload: dict = Body(...),
+                              user: dict = Depends(require_roles(["admin", "supervisor"]))):
+    """Set how many of a component were RECEIVED, so remaining = received − consumed."""
+    comp = (payload.get("component") or "").strip().lower()
+    if comp not in _COMPONENT_LABEL:
+        raise HTTPException(status_code=400, detail="component must be bms / motherboard / wifi")
+    try:
+        received = int(payload.get("received"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="received must be a number")
+    await db.production_component_stock.update_one(
+        {"component": comp}, {"$set": {"received": received, "updated_at": datetime.now(timezone.utc).isoformat(),
+                                       "updated_by": user.get("email")}}, upsert=True)
+    return {"success": True, "component": comp, "received": received}
+
+
+@api_router.get("/production/summary")
+async def production_summary(user: dict = Depends(require_roles(_PRODUCTION_ROLES + ["accountant", "dispatcher"]))):
+    """Component stock (consumed / received / remaining) + today's build count."""
+    today_iso = _ist_today().isoformat()
+    consumed, remaining = {}, {}
+    received = {r["component"]: r.get("received", 0) async for r in db.production_component_stock.find({}, {"_id": 0})}
+    for c in _COMPONENT_LABEL:
+        n = await db.finished_good_serials.count_documents({f"components.{c}": {"$exists": True, "$ne": ""}})
+        consumed[c] = n
+        remaining[c] = (received.get(c, 0) - n) if c in received else None
+    built_today = await db.finished_good_serials.count_documents(
+        {"source": "production_build", "built_at": {"$gte": today_iso}})
+    recent = await db.finished_good_serials.find(
+        {"source": "production_build"}, {"_id": 0, "serial_number": 1, "master_sku_name": 1,
+         "product_type": 1, "components": 1, "built_by": 1, "built_at": 1}
+    ).sort("built_at", -1).to_list(15)
+    return {"consumed": consumed, "received": received, "remaining": remaining,
+            "built_today": built_today, "recent": recent, "labels": _COMPONENT_LABEL}
+
+
 @api_router.get("/public/verify/{serial}")
 async def public_verify_serial(serial: str):
     """PUBLIC (no auth) — the QR target on the serial label. Returns ONLY safe fields (genuine status,
@@ -20501,10 +20594,12 @@ async def customer_card_pdf(customer: str = None, serial: str = None, order_id: 
     """Premium PERSONALISED unboxing card ('Specially crafted for Mr. X') — pulls customer/product/serial/
     warranty from an order or serial + an intelligent product-specific care tip. Second label type,
     alongside the plain serial label."""
+    wifi_serial = None
     if serial:
-        s = await db.finished_good_serials.find_one({"serial_number": serial}, {"_id": 0, "master_sku_name": 1})
+        s = await db.finished_good_serials.find_one({"serial_number": serial}, {"_id": 0, "master_sku_name": 1, "components": 1})
         if s and not product:
             product = s.get("master_sku_name")
+        wifi_serial = ((s or {}).get("components") or {}).get("wifi")   # inverter: show the WiFi serial for app pairing
         if not warranty_till:
             w = await db.warranty_registrations.find_one({"serial_number": serial}, {"_id": 0, "warranty_end_date": 1})
             if w:
@@ -20550,6 +20645,7 @@ async def customer_card_pdf(customer: str = None, serial: str = None, order_id: 
           <div class="nm">{_he(cust[:26])}</div>
           <div class="pr">Your <b>{_he(product[:34])}</b> &mdash; hand-assembled &amp; individually tested for you.</div>
           <div class="wr">{wline}</div>
+          {(f'<div class="tip">&#128246; WiFi ID: <b>{_he(str(wifi_serial))}</b> &mdash; pair in the MuscleGrid app</div>') if wifi_serial else ''}
           <div class="tip">Care tip: {_he(tip)}</div>
         </div>
         <div class="r"><img src="{qri}"><div>Scan to activate warranty &amp; meet your care team</div></div>
@@ -20697,11 +20793,33 @@ async def _office_print(pdf_bytes: bytes, printer: str, settings: str = "fit", t
     return await _office_print_a4(pdf_bytes, printer, tag)
 
 
+# Founder serial design (2026-07): MG<FAMILY><YYMM><seq>, e.g. MGLIB2604xxxxx = LIB family, 2026 April.
+# Family is derived from the product type/category so a battery always reads LIB, an inverter INV, etc.
+# Falls back to the SKU code only when no known family matches.
+_SERIAL_FAMILIES = [
+    ("LIB", ("lithium", "lifepo", "battery", "batter", "lib")),
+    ("INV", ("inverter",)),
+    ("STB", ("stabiliz", "stabilizer")),
+    ("PCB", ("pcb", "board")),
+    ("SOL", ("solar", "panel")),
+]
+
+def _serial_family_prefix(sku: dict) -> str:
+    hay = " ".join(str(sku.get(k) or "") for k in ("product_type", "category", "name", "sku_code")).lower()
+    for code, kws in _SERIAL_FAMILIES:
+        if any(k in hay for k in kws):
+            return code
+    return ""
+
 async def _generate_serial(sku: dict) -> str:
     """Mint a fresh, unique serial number for ANY product (traded or manufactured) at dispatch.
-    Format: MG<up-to-6 SKU-code chars><YYMM><5-digit atomic seq>, e.g. MG5KVA50-2607-00042."""
-    raw = (sku.get("sku_code") or sku.get("name") or "MG")
-    prefix = re.sub(r"[^A-Za-z0-9]", "", raw)[:6].upper() or "MG"
+    Format: MG<FAMILY><YYMM><5-digit atomic seq>, e.g. MGLIB260700042 (LIB family, 2026-07).
+    FAMILY comes from the product type/category (battery->LIB, inverter->INV, ...); if none match,
+    it falls back to the first 6 chars of the SKU code."""
+    prefix = _serial_family_prefix(sku)
+    if not prefix:
+        raw = (sku.get("sku_code") or sku.get("name") or "MG")
+        prefix = re.sub(r"[^A-Za-z0-9]", "", raw)[:6].upper() or "MG"
     yymm = datetime.now(timezone.utc).strftime("%y%m")
     for _ in range(6):
         c = await db.counters.find_one_and_update(

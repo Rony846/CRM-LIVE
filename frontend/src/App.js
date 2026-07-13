@@ -79,6 +79,7 @@ import PendingFulfillment from './pages/accountant/PendingFulfillmentIron';
 import ShipDesk from './pages/accountant/ShipDeskIron';
 import ShipDeskHome from './pages/ShipDeskHome';
 import ShipDeskBoard from './pages/ShipDeskBoard';
+import ProductionBuild from './pages/production/ProductionBuild';
 import ReturnDeskBoard from './pages/ReturnDeskBoard';
 import MyPickups from './pages/customer/MyPickups';
 import DispatcherShipDesk from './pages/dispatcher/DispatcherShipDesk';
@@ -514,6 +515,11 @@ function App() {
           <Route path="/ship-desk/board" element={
             <ProtectedRoute allowedRoles={['call_support', 'accountant', 'admin', 'supervisor', 'technician', 'service_agent', 'dispatcher', 'gate']}>
               <ShipDeskBoard />
+            </ProtectedRoute>
+          } />
+          <Route path="/production/build" element={
+            <ProtectedRoute allowedRoles={['admin', 'supervisor', 'service_agent', 'technician', 'call_support']}>
+              <ProductionBuild />
             </ProtectedRoute>
           } />
           <Route path="/return-desk" element={

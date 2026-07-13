@@ -87,7 +87,7 @@ export const IRON_ADMIN_NAV = [
   ['CRM', [['All Tickets', '/admin/tickets'], ['Call Center', '/calls'], ['Omnidim Calls', '/admin/omnidim-calls'], ['Customer WhatsApp', '/admin/whatsapp-chats'], ['Kommo Backup', '/admin/kommo-backup'], ['Sales Leads', '/leads'], ['Repairs', '/admin/repairs'], ['Customers', '/admin/customers'], ['Customer 360', '/customer-360'], ['Warranties', '/admin/warranties'], ['Zoho Desk', '/admin/zoho-tickets'], ['Zoho Forms', '/admin/zoho-forms']]],
   ['Solar Samrat', [['Samrat Admin', '/admin/solar-samrat']]],
   ['Sales', [['Orders', '/admin/orders'], ['Quotations', '/quotations'], ['PI Pending Action', '/quotations/pending-action']]],
-  ['Inventory', [['Master SKUs', '/admin/master-sku'], ['Firms', '/admin/firms'], ['Serial Numbers', '/inventory/serial-numbers'], ['Stock Reports', '/admin/reports'], ['Product Datasheets', '/admin/product-datasheets']]],
+  ['Inventory', [['Master SKUs', '/admin/master-sku'], ['Firms', '/admin/firms'], ['Serial Numbers', '/inventory/serial-numbers'], ['Build Unit', '/production/build'], ['Stock Reports', '/admin/reports'], ['Product Datasheets', '/admin/product-datasheets']]],
   ['Operations', [['Amazon Orders', '/operations/amazon-orders'], ['SKU Weights', '/admin/sku-weights'], ['File Repository', '/admin/file-repository'], ['Courier Shipping', '/operations/courier-shipping'], ['Courier Tracking', '/operations/courier-tracking'], ['Incoming Queue', '/accountant/incoming-queue'], ['Inventory', '/accountant/inventory'], ['Battery Production', '/admin/supervisor-production'],['Dispatch Queue', '/view/dispatch-queue']]],
   ['Folders', [['Order Folders', '/admin/orders-folders']]],
   ['Online Store', [['Products', '/admin/store-products'], ['Store Orders', '/admin/online-orders']]],
@@ -104,6 +104,7 @@ export const IRON_ADMIN_NAV = [
 export const IRON_SUPERVISOR_NAV = [
   ['Workspace', [
     ['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'], ['RTO / Returns', '/rto-returns'],
+    ['Build Battery', '/production/build'],
     ['Dashboard', '/supervisor'],
     ['Customer 360', '/customer-360'],
     ['Call Center', '/calls'],
@@ -120,6 +121,7 @@ export const IRON_SUPERVISOR_NAV = [
 export const IRON_SUPPORT_NAV = [
   ['Workspace', [
     ['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'], ['RTO / Returns', '/rto-returns'],
+    ['Build Battery', '/production/build'],
     ['Dashboard', '/support'],
     ['Customer 360', '/customer-360'],
     ['My Calls', '/calls'],
@@ -145,7 +147,7 @@ export const IRON_ACCOUNTANT_NAV = [
   ['Folders', [['Order Folders', '/admin/orders-folders']]],
 ];
 
-export const IRON_TECHNICIAN_NAV = [['Workspace', [['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'], ['RTO / Returns', '/rto-returns'], ['Dashboard', '/technician'], ['Repair Queue', '/technician/queue'], ['My Repairs', '/technician/my-repairs'], ['Dispatch Queue', '/view/dispatch-queue'], ['My Attendance', '/my-attendance']]]];
+export const IRON_TECHNICIAN_NAV = [['Workspace', [['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'], ['RTO / Returns', '/rto-returns'], ['Build Inverter', '/production/build'], ['Dashboard', '/technician'], ['Repair Queue', '/technician/queue'], ['My Repairs', '/technician/my-repairs'], ['Dispatch Queue', '/view/dispatch-queue'], ['My Attendance', '/my-attendance']]]];
 export const IRON_DISPATCHER_NAV = [['Workspace', [['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'], ['RTO / Returns', '/rto-returns'], ['Dashboard', '/dispatcher'], ['Dispatch Queue', '/dispatcher/queue'], ['Courier Shipping', '/operations/courier-shipping'], ['Courier Tracking', '/operations/courier-tracking'], ['TV Mode', '/dispatcher/tv'], ['My Attendance', '/my-attendance']]]];
 export const IRON_GATE_NAV = [['Workspace', [['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'], ['RTO / Returns', '/rto-returns'], ['Dashboard', '/gate'], ['Scan Parcel', '/gate/scan'], ['Gate Logs', '/gate/logs'], ['Scheduled', '/gate/scheduled'], ['Dispatch Queue', '/view/dispatch-queue'], ['My Attendance', '/my-attendance']]]];
 export const IRON_CUSTOMER_NAV = [['Workspace', [['Dashboard', '/customer'], ['My Quotations', '/customer/quotations'], ['My Tickets', '/customer/tickets'], ['Create Ticket', '/customer/tickets/new'], ['Book Appointment', '/customer/appointments'], ['Register Warranty', '/customer/warranty/register'], ['My Warranties', '/customer/warranties']]]];
