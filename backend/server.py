@@ -13717,6 +13717,26 @@ async def get_gate_media(
     }
 
 
+@api_router.delete("/gate/scan/{scan_id}")
+async def delete_gate_scan(scan_id: str,
+                           user: dict = Depends(require_roles(["gate", "dispatcher", "admin", "accountant"]))):
+    """Undo a gate scan (a mis-scan at the gate). Deletes the gate log, its media, and — if an outward
+    scan had consumed a serial — reverts that serial to in-stock so nothing is left half-bound. Lets the
+    bulk scan lists be edited: remove a wrong parcel without re-choosing the courier or re-scanning the rest."""
+    log = await db.gate_logs.find_one({"id": scan_id}, {"_id": 0})
+    if not log:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    # revert a serial that this outward scan consumed at the gate (scanned SSN → back to in_stock)
+    sn = (log.get("serial") or "").strip()
+    if sn and log.get("scan_type") == "outward":
+        await db.finished_good_serials.update_one(
+            {"serial_number": sn, "scanned_at_dispatch": True, "order_id": log.get("order_id")},
+            {"$set": {"status": "in_stock"}, "$unset": {"order_id": "", "rsn": "", "scanned_at_dispatch": "", "dispatched_at": ""}})
+    await db.gate_media.delete_many({"gate_log_id": scan_id})
+    await db.gate_logs.delete_one({"id": scan_id})
+    return {"success": True, "deleted": scan_id, "tracking_id": log.get("tracking_id")}
+
+
 @api_router.delete("/gate/media/{media_id}")
 async def delete_gate_media(
     media_id: str,

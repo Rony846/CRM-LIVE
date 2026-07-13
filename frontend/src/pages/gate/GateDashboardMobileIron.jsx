@@ -352,7 +352,7 @@ export default function GateDashboardMobile() {
       const { data } = await axios.post(`${API}/gate/scan`, {
         scan_type: 'inward', tracking_id: t, courier: returnSource, notes: `Return via ${returnSource}`,
       }, { headers: { Authorization: `Bearer ${token}` } });
-      setReturnScans((prev) => [{ tracking_id: t, customer: data?.customer_name, at: Date.now() }, ...prev]);
+      setReturnScans((prev) => [{ tracking_id: t, customer: data?.customer_name, id: data?.id, at: Date.now() }, ...prev]);
       setTrackingId('');
       try { audioRef.current?.play?.(); } catch { /* beep best-effort */ }
       setTimeout(() => trackingRef.current?.focus(), 60);
@@ -373,13 +373,24 @@ export default function GateDashboardMobile() {
       const { data } = await axios.post(`${API}/gate/scan`, {
         scan_type: 'outward', tracking_id: t, courier: outwardCourier, notes: `Outward via ${outwardCourier}`,
       }, { headers: { Authorization: `Bearer ${token}` } });
-      setOutwardScans((prev) => [{ tracking_id: t, customer: data?.customer_name, at: Date.now() }, ...prev]);
+      setOutwardScans((prev) => [{ tracking_id: t, customer: data?.customer_name, id: data?.id, at: Date.now() }, ...prev]);
       setTrackingId('');
       try { audioRef.current?.play?.(); } catch { /* beep best-effort */ }
       setTimeout(() => trackingRef.current?.focus(), 60);
     } catch (e) {
       toast.error(e?.response?.data?.detail || 'Scan failed'); trackingRef.current?.focus();
     } finally { setScanning(false); }
+  };
+
+  // Editable list: undo a mis-scan. Drops it locally immediately, then reverses the gate log (and any
+  // serial binding) server-side. Lets the operator fix a wrong scan without re-choosing courier or
+  // re-scanning the rest.
+  const removeScan = async (entry, kind) => {
+    const setList = kind === 'inward' ? setReturnScans : setOutwardScans;
+    setList((prev) => prev.filter((r) => (r.id || r.tracking_id) !== (entry.id || entry.tracking_id)));
+    if (!entry.id) return;
+    try { await axios.delete(`${API}/gate/scan/${entry.id}`, { headers: { Authorization: `Bearer ${token}` } }); }
+    catch (e) { toast.error('Could not undo on server — refresh to verify'); }
   };
 
   // OUTWARD step 2: unit serial scanned → record the outward gate scan + bind the serial to the order.
@@ -699,7 +710,7 @@ export default function GateDashboardMobile() {
                 OPEN RETURN (pick source → bulk scan), so there's no separate generic Inward button. */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 24 }}>
               <button
-                onClick={() => { setOutwardCourier(null); setOutwardScans([]); setTrackingId(''); setCurrentStep('outward_source'); }}
+                onClick={() => { setOutwardScans([]); setTrackingId(''); const last = localStorage.getItem('gate_outward_courier'); if (last) { setOutwardCourier(last); setCurrentStep('outward_scan'); } else { setOutwardCourier(null); setCurrentStep('outward_source'); } }}
                 style={{ width: '100%', padding: 22, borderRadius: 18, background: T.blue, color: TEXT, display: 'flex', alignItems: 'center', justifyContent: 'space-between', border: 'none', cursor: 'pointer' }}
                 data-testid="btn-outward"
               >
@@ -716,7 +727,7 @@ export default function GateDashboardMobile() {
               </button>
 
               <button
-                onClick={() => { setReturnSource(null); setReturnScans([]); setTrackingId(''); setCurrentStep('return_source'); }}
+                onClick={() => { setReturnScans([]); setTrackingId(''); const last = localStorage.getItem('gate_return_source'); if (last) { setReturnSource(last); setCurrentStep('return_scan'); } else { setReturnSource(null); setCurrentStep('return_source'); } }}
                 style={{ width: '100%', padding: 22, borderRadius: 18, background: T.orange, color: '#0F0F0F', display: 'flex', alignItems: 'center', justifyContent: 'space-between', border: 'none', cursor: 'pointer' }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -909,7 +920,7 @@ export default function GateDashboardMobile() {
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {COURIERS.map((s) => (
-            <button key={s} onClick={() => { setOutwardCourier(s); setTrackingId(''); setCurrentStep('outward_scan'); }}
+            <button key={s} onClick={() => { setOutwardCourier(s); localStorage.setItem('gate_outward_courier', s); setTrackingId(''); setCurrentStep('outward_scan'); }}
               style={{ width: '100%', padding: 20, borderRadius: 16, background: PANEL, border: `1px solid ${BORDER}`, color: TEXT, ...headFont, fontSize: 20, fontWeight: 800, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               {s}<ChevronRight style={{ width: 26, height: 26, color: SUB }} />
             </button>
@@ -925,9 +936,11 @@ export default function GateDashboardMobile() {
       <div style={{ ...screen, padding: 16, paddingBottom: 40 }}>
         <Fonts />
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
-          <button onClick={() => setCurrentStep('outward_source')} style={iconBtn}><X style={{ width: 20, height: 20 }} /></button>
+          <button onClick={resetFlow} style={iconBtn}><X style={{ width: 20, height: 20 }} /></button>
           <div style={{ flex: 1 }}>
-            <h1 style={{ ...headFont, fontSize: 20, fontWeight: 800, color: TEXT, margin: 0 }}>Outward · {outwardCourier}</h1>
+            <h1 style={{ ...headFont, fontSize: 20, fontWeight: 800, color: TEXT, margin: 0 }}>Outward · {outwardCourier}
+              <button onClick={() => setCurrentStep('outward_source')} style={{ marginLeft: 8, border: `1px solid ${BORDER}`, background: 'transparent', color: SUB, borderRadius: 6, fontSize: 11, padding: '2px 8px', cursor: 'pointer', verticalAlign: 'middle' }}>change</button>
+            </h1>
             <p style={{ color: SUB, fontSize: 13, margin: 0 }}>Scan each parcel — {outwardScans.length} done</p>
           </div>
           <span style={{ ...headFont, fontSize: 26, fontWeight: 800, color: T.blue }}>{outwardScans.length}</span>
@@ -951,6 +964,7 @@ export default function GateDashboardMobile() {
                   <Check style={{ width: 14, height: 14, color: '#5BA8DE' }} />
                   <span style={{ ...monoFont, color: TEXT }}>{r.tracking_id}</span>
                   <span style={{ color: SUB, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.customer || ''}</span>
+                  <button onClick={() => removeScan(r, 'outward')} title="Undo this scan" style={{ border: 'none', background: 'transparent', color: '#E8865A', cursor: 'pointer', fontSize: 15, lineHeight: 1, padding: '0 4px', flex: 'none' }}>✕</button>
                 </div>
               ))}
             </div>
@@ -980,7 +994,7 @@ export default function GateDashboardMobile() {
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {SOURCES.map((s) => (
-            <button key={s} onClick={() => { setReturnSource(s); setTrackingId(''); setCurrentStep('return_scan'); }}
+            <button key={s} onClick={() => { setReturnSource(s); localStorage.setItem('gate_return_source', s); setTrackingId(''); setCurrentStep('return_scan'); }}
               style={{ width: '100%', padding: 20, borderRadius: 16, background: PANEL, border: `1px solid ${BORDER}`, color: TEXT, ...headFont, fontSize: 20, fontWeight: 800, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               {s}<ChevronRight style={{ width: 26, height: 26, color: SUB }} />
             </button>
@@ -996,9 +1010,11 @@ export default function GateDashboardMobile() {
       <div style={{ ...screen, padding: 16, paddingBottom: 40 }}>
         <Fonts />
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
-          <button onClick={() => setCurrentStep('return_source')} style={iconBtn}><X style={{ width: 20, height: 20 }} /></button>
+          <button onClick={resetFlow} style={iconBtn}><X style={{ width: 20, height: 20 }} /></button>
           <div style={{ flex: 1 }}>
-            <h1 style={{ ...headFont, fontSize: 20, fontWeight: 800, color: TEXT, margin: 0 }}>Returns · {returnSource}</h1>
+            <h1 style={{ ...headFont, fontSize: 20, fontWeight: 800, color: TEXT, margin: 0 }}>Returns · {returnSource}
+              <button onClick={() => setCurrentStep('return_source')} style={{ marginLeft: 8, border: `1px solid ${BORDER}`, background: 'transparent', color: SUB, borderRadius: 6, fontSize: 11, padding: '2px 8px', cursor: 'pointer', verticalAlign: 'middle' }}>change</button>
+            </h1>
             <p style={{ color: SUB, fontSize: 13, margin: 0 }}>Scan each parcel — {returnScans.length} done</p>
           </div>
           <span style={{ ...headFont, fontSize: 26, fontWeight: 800, color: T.orange }}>{returnScans.length}</span>
@@ -1022,6 +1038,7 @@ export default function GateDashboardMobile() {
                   <Check style={{ width: 14, height: 14, color: '#5FD68A' }} />
                   <span style={{ ...monoFont, color: TEXT }}>{r.tracking_id}</span>
                   <span style={{ color: SUB, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.customer || ''}</span>
+                  <button onClick={() => removeScan(r, 'inward')} title="Undo this scan" style={{ border: 'none', background: 'transparent', color: '#E8865A', cursor: 'pointer', fontSize: 15, lineHeight: 1, padding: '0 4px', flex: 'none' }}>✕</button>
                 </div>
               ))}
             </div>
