@@ -2290,9 +2290,52 @@ PENDING_FULFILLMENT_STATUSES = [
 ]
 
 # ============ SHARED AMAZON SKU RESOLVER ============
+# ---- Cross-category mapping guard (2026-07-13, after the Parmeshwari EV-charger incident) ---------
+# The auto-mappers (alias / global-copy) occasionally map an Amazon listing to a master SKU in a
+# DIFFERENT product family — a battery sold as an inverter, an inverter as an EV charger. This guard
+# classifies BOTH the Amazon title and the candidate master SKU into a coarse family and BLOCKS an
+# auto-map that crosses families, routing it to manual review instead of silently mislabelling.
+# It is deliberately battery-aware: MuscleGrid inverter names are full of the word "battery"
+# ("Battery-Less", "Support LiPO4 Battery", "120A Battery Charger") and battery titles say
+# "Solar Inverter Battery", so a naive keyword check over-flags — this one weighs phrasing.
+def _sku_family(text: str) -> str:
+    t = (text or "").lower()
+    if re.search(r"ev[\s\-]*charger", t): return "ev_charger"
+    if "combo" in t: return "combo"
+    has_b = bool(re.search(r"batter|lifepo|lithium|tubular|lead[\s\-]acid", t))
+    has_i = "inverter" in t
+    if has_b and has_i:
+        # Primary signal: inverters are kW/kVA-rated, batteries are Ah/V-rated. A kW/kVA item that
+        # says "inverter" is an INVERTER, even if it mentions battery features ("Battery-Less",
+        # "Support LiPO4 Battery", "120A Battery Charger", "Inverter Battery-Less").
+        if re.search(r"\d(?:\.\d)?\s*k(?:w|va)\b", t): return "inverter"
+        # No kW rating: "inverter battery" phrasing = a BATTERY sold for inverters
+        if re.search(r"inverter batter|solar inverter batter", t): return "battery"
+        # a battery described by what it powers ("suitable for solar inverters", "energy storage")
+        if re.search(r"suitable for.*inverter|for .*inverter|energy storage", t): return "battery"
+        return "battery"
+    if has_i: return "inverter"
+    if has_b: return "battery"
+    if "stabiliz" in t: return "stabilizer"
+    if "mppt" in t or "controller" in t: return "controller"
+    if re.search(r"solar panel|monocryst|polycryst|\bpanel\b", t): return "panel"
+    return "other"
+
+# Families that must never be silently crossed by an auto-map. 'combo'/'other' are excluded on
+# purpose (combos are expanded via combo_components; 'other' = unknown, don't block).
+_HARD_FAMILIES = {"battery", "inverter", "stabilizer", "ev_charger", "panel", "controller"}
+
+def _mapping_family_conflict(title: str, master_name: str):
+    """Return (title_family, master_family) if an auto-map would cross product families; else None."""
+    tf, mf = _sku_family(title), _sku_family(master_name)
+    if tf in _HARD_FAMILIES and mf in _HARD_FAMILIES and tf != mf:
+        return (tf, mf)
+    return None
+
+
 async def resolve_amazon_order_items_to_master_skus(
-    order: dict, 
-    firm_id: str, 
+    order: dict,
+    firm_id: str,
     db_instance,
     auto_persist_mapping: bool = True
 ) -> dict:
@@ -2409,6 +2452,15 @@ async def resolve_amazon_order_items_to_master_skus(
         if mapping and mapping.get("master_sku_id"):
             master_sku = await db_instance.master_skus.find_one({"id": mapping["master_sku_id"]}, {"_id": 0})
             if master_sku:
+                _conf = _mapping_family_conflict(item.get("title"), master_sku.get("name"))
+                if _conf:
+                    unmapped_skus.append({"index": idx, "amazon_sku": amazon_sku, "asin": item.get("asin"),
+                        "title": (item.get("title") or "")[:100],
+                        "reason": f"category_conflict: listing looks like {_conf[0]} but SKU '{master_sku.get('sku_code')}' is a {_conf[1]} — held for manual mapping"})
+                    resolved_item["mapping_confidence"] = "needs_review"
+                    resolved_item["category_conflict"] = f"{_conf[0]}->{_conf[1]}"
+                    resolved_items.append(resolved_item)
+                    continue
                 resolved_item["master_sku_id"] = mapping["master_sku_id"]
                 resolved_item["master_sku_code"] = master_sku.get("sku_code")
                 resolved_item["master_sku_name"] = master_sku.get("name")
@@ -2500,6 +2552,15 @@ async def resolve_amazon_order_items_to_master_skus(
             )
         
         if master_sku:
+            _conf = _mapping_family_conflict(item.get("title"), master_sku.get("name"))
+            if _conf:
+                unmapped_skus.append({"index": idx, "amazon_sku": amazon_sku, "asin": item.get("asin"),
+                    "title": (item.get("title") or "")[:100],
+                    "reason": f"category_conflict: listing looks like {_conf[0]} but SKU '{master_sku.get('sku_code')}' is a {_conf[1]} — held for manual mapping"})
+                resolved_item["mapping_confidence"] = "needs_review"
+                resolved_item["category_conflict"] = f"{_conf[0]}->{_conf[1]}"
+                resolved_items.append(resolved_item)
+                continue
             resolved_item["master_sku_id"] = master_sku["id"]
             resolved_item["master_sku_code"] = master_sku.get("sku_code")
             resolved_item["master_sku_name"] = master_sku.get("name")
