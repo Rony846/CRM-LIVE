@@ -30,6 +30,15 @@ export default function ProductionBuildPanel({ autoFocus = true }) {
   const [skipBms, setSkipBms] = useState(false);
   const [count, setCount] = useState(1);
   const bmsRef = useRef(null); const mbRef = useRef(null); const wifiRef = useRef(null);
+  // Inventory intake (record EXISTING labelled units into stock by scanning their serial)
+  const [action, setAction] = useState('build');   // 'build' | 'stock'
+  const [stockMulti, setStockMulti] = useState(true);
+  const [stockSearch, setStockSearch] = useState('');
+  const [stockSku, setStockSku] = useState('');
+  const [stockSerial, setStockSerial] = useState('');
+  const [stockScans, setStockScans] = useState([]);
+  const [inStock, setInStock] = useState(null);
+  const stockRef = useRef(null);
 
   const loadSummary = useCallback(() => {
     axios.get(`${API}/production/summary`, { headers: H }).then((r) => setSummary(r.data)).catch(() => {});
@@ -46,6 +55,33 @@ export default function ProductionBuildPanel({ autoFocus = true }) {
     const kw = mode === 'battery' ? ['batter', 'lithium', 'lifepo'] : ['inverter'];
     return skus.filter((s) => kw.some((k) => `${s.name || ''} ${s.category || ''}`.toLowerCase().includes(k)));
   }, [skus, mode]);
+  // Stock intake can be ANY product — filter the full catalogue by a search term.
+  const stockProducts = useMemo(() => {
+    const q = stockSearch.trim().toLowerCase();
+    const list = q ? skus.filter((s) => `${s.name || ''} ${s.sku_code || ''}`.toLowerCase().includes(q)) : skus;
+    return list.slice(0, 100);
+  }, [skus, stockSearch]);
+
+  const loadInStock = (sid) => {
+    if (!sid) { setInStock(null); return; }
+    axios.get(`${API}/production/inventory-summary`, { headers: H, params: { master_sku_id: sid } })
+      .then((r) => setInStock(r.data?.in_stock)).catch(() => {});
+  };
+  const recordStock = async () => {
+    if (!stockSku) { toast.error('Pick the product first'); return; }
+    const sn = stockSerial.trim();
+    if (!sn) { toast.error('Scan the serial'); return; }
+    if (stockScans.some((s) => s.serial === sn)) { setStockSerial(''); toast.info('Already scanned in this session'); return; }
+    setBusy(true);
+    try {
+      const { data } = await axios.post(`${API}/production/inventory-scan`, { master_sku_id: stockSku, serial: sn }, { headers: H });
+      setStockScans((prev) => [{ serial: sn, already: data.already }, ...prev]);
+      if (data.already) toast.info(`${sn} was already on record (${data.status})`);
+      setStockSerial(''); loadInStock(stockSku);
+      if (stockMulti) setTimeout(() => stockRef.current?.focus(), 80);
+    } catch (e) { toast.error(e?.response?.data?.detail || 'Could not record'); }
+    finally { setBusy(false); }
+  };
 
   useEffect(() => { setSkuId(''); setBms(''); setMb(''); setWifi(''); setLastSerial(null); }, [mode]);
   useEffect(() => { if (!autoFocus) return; const t = setTimeout(() => (mode === 'battery' ? bmsRef : mbRef).current?.focus(), 150); return () => clearTimeout(t); }, [mode, skuId, autoFocus]);
@@ -96,6 +132,55 @@ export default function ProductionBuildPanel({ autoFocus = true }) {
 
   return (
     <>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+        <button onClick={() => setAction('build')} style={actBtn(action === 'build')}><Cpu size={15} /> Build unit</button>
+        <button onClick={() => setAction('stock')} style={actBtn(action === 'stock')}>📦 Add to stock</button>
+      </div>
+
+      {action === 'stock' ? (
+        <>
+          <div style={{ background: T.white, border: '1px solid ' + T.iron200, borderRadius: 12, padding: 16, marginBottom: 14 }}>
+            <Caps size={9}>Product</Caps>
+            <input value={stockSearch} onChange={(e) => setStockSearch(e.target.value)} placeholder="Search any product…"
+              style={{ width: '100%', height: 38, borderRadius: 8, border: '1px solid ' + T.iron200, padding: '0 10px', fontSize: 12.5, marginTop: 3, marginBottom: 8, boxSizing: 'border-box' }} />
+            <select value={stockSku} onChange={(e) => { setStockSku(e.target.value); loadInStock(e.target.value); }}
+              style={{ width: '100%', height: 44, borderRadius: 8, border: '1px solid ' + T.iron200, padding: '0 10px', fontSize: 13, background: T.white, color: T.iron900, marginBottom: 12 }}>
+              <option value="">Select the product…</option>
+              {stockProducts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+              <button onClick={() => setStockMulti(false)} style={pillBtn(!stockMulti)}>Single item</button>
+              <button onClick={() => setStockMulti(true)} style={pillBtn(stockMulti)}>Scan multiple</button>
+            </div>
+            <Caps size={9}>Scan serial</Caps>
+            <input ref={stockRef} autoFocus value={stockSerial} onChange={(e) => setStockSerial(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && stockSerial.trim() && !busy && recordStock()}
+              placeholder="Scan the serial on the unit…" style={{ ...scanInput, marginTop: 3 }} />
+            <div style={{ fontSize: 10.5, color: T.iron500, marginTop: 6 }}>
+              {inStock != null ? `${inStock} currently in stock for this product` : 'Pick a product to see its stock'}{stockMulti ? ' · keep scanning, each is recorded' : ''}
+            </div>
+            {!stockMulti && (
+              <button onClick={recordStock} disabled={busy}
+                style={{ width: '100%', marginTop: 14, border: 'none', background: T.orange, color: '#fff', borderRadius: 10, padding: 13, fontSize: 14.5, fontWeight: 800, cursor: 'pointer', opacity: busy ? 0.6 : 1 }}>Add to stock</button>
+            )}
+          </div>
+          {stockScans.length > 0 && (
+            <div style={{ background: T.white, border: '1px solid ' + T.iron200, borderRadius: 12, padding: 16 }}>
+              <Caps size={9}>Added this session · {stockScans.length}</Caps>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginTop: 8, maxHeight: '40vh', overflowY: 'auto' }}>
+                {stockScans.map((s, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, background: T.iron50, borderRadius: 6, padding: '5px 8px' }}>
+                    <span style={{ color: s.already ? '#b45309' : '#16a34a', fontWeight: 800 }}>{s.already ? '=' : '✓'}</span>
+                    <span style={{ ...mono, color: T.iron900, fontWeight: 700 }}>{s.serial}</span>
+                    <span style={{ color: T.iron400, flex: 1, textAlign: 'right', fontSize: 10.5 }}>{s.already ? 'already on record' : 'added to stock'}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+      <>
       {allowInverter && allowBattery && (
         <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
           <button onClick={() => setMode('battery')} style={modeBtn(mode === 'battery', '#16a34a')}><Battery size={16} /> Battery</button>
@@ -178,8 +263,12 @@ export default function ProductionBuildPanel({ autoFocus = true }) {
           </div>
         </div>
       )}
+      </>
+      )}
     </>
   );
 }
 
 const modeBtn = (active, color) => ({ flex: 1, border: '1px solid ' + (active ? color : T.iron200), background: active ? color : T.white, color: active ? '#fff' : T.iron700, borderRadius: 10, padding: '10px 14px', fontSize: 13.5, fontWeight: 800, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 });
+const actBtn = (active) => ({ flex: 1, border: '1px solid ' + (active ? T.iron900 : T.iron200), background: active ? T.iron900 : T.white, color: active ? '#fff' : T.iron700, borderRadius: 10, padding: '9px 14px', fontSize: 13, fontWeight: 800, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 });
+const pillBtn = (active) => ({ flex: 1, border: '1.5px solid ' + (active ? T.orange : T.iron200), background: active ? '#fff7ed' : T.white, color: active ? T.orange : T.iron700, borderRadius: 8, padding: '8px 10px', fontSize: 12.5, fontWeight: 800, cursor: 'pointer' });

@@ -20722,6 +20722,52 @@ async def set_bms_exception(payload: dict = Body(default={}),
     return {"active": True, "until": until_utc}
 
 
+class InventoryScanBody(BaseModel):
+    master_sku_id: str
+    serial: str
+    firm_id: Optional[str] = None
+
+
+@api_router.post("/production/inventory-scan")
+async def inventory_scan(body: InventoryScanBody,
+                         user: dict = Depends(require_roles(_PRODUCTION_ROLES + ["accountant"]))):
+    """Record an EXISTING physical unit into stock by scanning the serial already on it (stock intake —
+    no build, no components, no printing). Each scan lands the serial in finished_good_serials as
+    in_stock, so it feeds the same pool that gets consumed at dispatch. Idempotent per serial."""
+    sn = (body.serial or "").strip()
+    if not sn:
+        raise HTTPException(status_code=400, detail="Scan the serial on the unit")
+    sku = await db.master_skus.find_one({"id": body.master_sku_id}, {"_id": 0, "id": 1, "name": 1, "sku_code": 1})
+    if not sku:
+        raise HTTPException(status_code=400, detail="Pick the product first")
+    existing = await db.finished_good_serials.find_one({"serial_number": sn}, {"_id": 0, "status": 1, "master_sku_name": 1})
+    if existing:
+        return {"success": True, "serial": sn, "already": True, "status": existing.get("status"),
+                "product": existing.get("master_sku_name"),
+                "note": f"Already on record ({existing.get('status')})"}
+    now = datetime.now(timezone.utc).isoformat()
+    await db.finished_good_serials.insert_one({
+        "id": str(uuid.uuid4()), "serial_number": sn, "master_sku_id": sku["id"],
+        "master_sku_name": sku.get("name"), "master_sku_code": sku.get("sku_code"),
+        "firm_id": body.firm_id, "status": "in_stock", "origin": "stock", "source": "inventory_scan",
+        "recorded_by": user.get("email") or user.get("name"), "created_at": now})
+    return {"success": True, "serial": sn, "already": False, "product": sku.get("name")}
+
+
+@api_router.get("/production/inventory-summary")
+async def inventory_summary(master_sku_id: str = None,
+                            user: dict = Depends(require_roles(_PRODUCTION_ROLES + ["accountant", "dispatcher"]))):
+    """In-stock serial count (optionally for one product) + the most recent inventory-scan intakes."""
+    q = {"status": "in_stock"}
+    if master_sku_id:
+        q["master_sku_id"] = master_sku_id
+    in_stock = await db.finished_good_serials.count_documents(q)
+    recent = await db.finished_good_serials.find(
+        {"source": "inventory_scan"}, {"_id": 0, "serial_number": 1, "master_sku_name": 1, "created_at": 1}
+        ).sort("created_at", -1).to_list(20)
+    return {"in_stock": in_stock, "recent": recent}
+
+
 @api_router.get("/production/summary")
 async def production_summary(user: dict = Depends(require_roles(_PRODUCTION_ROLES + ["accountant", "dispatcher"]))):
     """Component stock (consumed / received / remaining) + today's build count."""
