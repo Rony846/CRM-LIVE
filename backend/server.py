@@ -20973,22 +20973,19 @@ async def _office_print(pdf_bytes: bytes, printer: str, settings: str = "fit", t
 
 
 # Founder serial design (2026-07): MG<FAMILY><YYMM><seq>, e.g. MGLIB2604xxxxx = LIB family, 2026 April.
-# Family is derived from the product type/category so a battery always reads LIB, an inverter INV, etc.
-# Falls back to the SKU code only when no known family matches.
-_SERIAL_FAMILIES = [
-    ("LIB", ("lithium", "lifepo", "battery", "batter", "lib")),
-    ("INV", ("inverter",)),
-    ("STB", ("stabiliz", "stabilizer")),
-    ("PCB", ("pcb", "board")),
-    ("SOL", ("solar", "panel")),
-]
-
+# Family = explicit product_type first, else the BATTERY-AWARE classifier (_sku_family) — so an inverter
+# whose name says "Battery-Less" / "Support LiPO4 Battery" is NOT misread as the LIB (battery) family.
+# (A naive keyword list with "battery" before "inverter" gave inverters MGLIB serials — the fix.)
 def _serial_family_prefix(sku: dict) -> str:
-    hay = " ".join(str(sku.get(k) or "") for k in ("product_type", "category", "name", "sku_code")).lower()
-    for code, kws in _SERIAL_FAMILIES:
-        if any(k in hay for k in kws):
-            return code
-    return ""
+    pt = (sku.get("product_type") or "").strip().lower()
+    if pt == "inverter": return "INV"
+    if pt == "battery": return "LIB"
+    if pt in ("stabilizer", "stabiliser"): return "STB"
+    text = " ".join(str(sku.get(k) or "") for k in ("name", "category", "sku_code"))
+    if re.search(r"\bpcb\b", text, re.I): return "PCB"
+    fam = _sku_family(text)
+    return {"inverter": "INV", "battery": "LIB", "stabilizer": "STB",
+            "ev_charger": "EVC", "panel": "SOL", "controller": "CTL"}.get(fam, "")
 
 async def _generate_serial(sku: dict) -> str:
     """Mint a fresh, unique serial number for ANY product (traded or manufactured) at dispatch.
