@@ -7,6 +7,7 @@ import { T, Caps, IronCard, mono } from '@/components/iron/IronKit';
 import { Loader2, Upload, Check, Printer, Download } from 'lucide-react';
 import { CustomerName } from '@/components/Customer360';
 import { Coachmark } from '@/components/GuidedTour';
+import ProductionBuildPanel from '@/components/ProductionBuildPanel';
 
 /* Ship Desk 2.0 — one order pipeline, three lanes:
    Awaiting accountant (invoice+tracking+label) → Ready to ship (Gaurav/Angad) → Shipped. */
@@ -78,6 +79,7 @@ export default function ShipDeskBoard() {
   const [pendLoading, setPendLoading] = useState(false);
   const [packScan, setPackScan] = useState(null);  // order being packed → scan its unit serial
   const [scanVal, setScanVal] = useState('');
+  const [showBuild, setShowBuild] = useState(false);  // build-unit popup (build + pack same station)
 
   const openPendency = async () => {
     setPend({ models: [], _loading: true }); setPendLoading(true);
@@ -237,6 +239,7 @@ export default function ShipDeskBoard() {
   };
 
   const canEnter = ['call_support', 'admin', 'accountant', 'supervisor', 'service_agent'].includes(role);
+  const canBuild = ['admin', 'supervisor', 'service_agent', 'technician', 'call_support'].includes(role);
   const isAcct = ['accountant', 'admin'].includes(role);
   const isDispatch = ['admin', 'dispatcher', 'supervisor', 'service_agent', 'technician'].includes(role);
 
@@ -270,7 +273,12 @@ export default function ShipDeskBoard() {
   return (
     <IronShell title="Ship Desk" subtitle={`${board.counts?.awaiting_accountant || 0} AWAITING · ${board.counts?.ready_to_ship || 0} TO SHIP`} onRefresh={load}>
       <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
-        <div style={{ flex: 1 }} />
+        <div style={{ flex: 1, display: 'flex', gap: 8 }}>
+          {canBuild && <button onClick={() => setShowBuild(true)}
+            style={{ border: 'none', background: T.orange, color: '#fff', borderRadius: 8, padding: '9px 18px', fontFamily: T.headline, fontWeight: 800, fontSize: 12.5, cursor: 'pointer', letterSpacing: 0.3, boxShadow: '0 4px 14px rgba(245,130,32,.28)', display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+            🔧 Build unit
+          </button>}
+        </div>
         <button onClick={openPendency}
           style={{ border: 'none', background: 'linear-gradient(135deg,#1f2937,#111827)', color: '#fff', borderRadius: 8, padding: '9px 18px', fontFamily: T.headline, fontWeight: 800, fontSize: 12.5, cursor: 'pointer', letterSpacing: 0.3, boxShadow: '0 4px 14px rgba(0,0,0,.18)', display: 'inline-flex', alignItems: 'center', gap: 7 }}>
           📊 Model-wise pendency
@@ -280,6 +288,20 @@ export default function ShipDeskBoard() {
         </div>
       </div>
       {pend && <PendencyModal data={pend} loading={pendLoading} onClose={() => setPend(null)} />}
+      {showBuild && (
+        <div onClick={() => setShowBuild(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,15,15,.5)', zIndex: 120, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 40, overflowY: 'auto' }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: T.iron50, border: '1px solid ' + T.iron200, borderRadius: 14, width: 'min(560px,94%)', padding: 18, boxShadow: '0 24px 70px rgba(0,0,0,.3)', marginBottom: 40 }}>
+            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 14 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontFamily: T.headline, fontWeight: 800, fontSize: 17, color: T.iron900 }}>🔧 Build a unit</div>
+                <div style={{ fontSize: 11.5, color: T.iron600, marginTop: 2 }}>Scan the raw components → serial is minted, linked & printed. Stick it on the unit before packing.</div>
+              </div>
+              <button onClick={() => setShowBuild(false)} style={{ border: '1px solid ' + T.iron200, background: T.white, color: T.iron700, borderRadius: 8, width: 30, height: 30, cursor: 'pointer', fontSize: 15, lineHeight: 1, flex: 'none' }}>✕</button>
+            </div>
+            <ProductionBuildPanel />
+          </div>
+        </div>
+      )}
       {packScan && (
         <div onClick={() => setPackScan(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,15,15,.5)', zIndex: 120, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 60 }}>
           <div onClick={(e) => e.stopPropagation()} style={{ background: T.white, border: '1px solid ' + T.iron200, borderRadius: 14, width: 'min(420px,94%)', padding: 20, boxShadow: '0 24px 70px rgba(0,0,0,.3)' }}>
