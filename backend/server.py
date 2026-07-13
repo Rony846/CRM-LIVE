@@ -17216,7 +17216,7 @@ async def list_master_skus(
     is_manufactured: Optional[bool] = None,
     is_active: Optional[bool] = None,
     search: Optional[str] = None,
-    user: dict = Depends(require_roles(["admin", "accountant", "call_support"]))
+    user: dict = Depends(require_roles(["admin", "accountant", "call_support", "supervisor", "service_agent", "technician"]))
 ):
     """List all Master SKUs with optional filters"""
     query = {}
@@ -24785,7 +24785,7 @@ async def ship_desk_ticket_lookup(ticket_number: str,
     return {"found": False}
 
 
-@api_router.post("/ship-desk/order/{order_id}/doc")
+@api_router.post("/ship-desk/order/{order_id:path}/doc")
 async def ship_desk_attach_doc(order_id: str, kind: str = Form(...),
                                tracking_id: str = Form(None), courier: str = Form(None),
                                eway_bill_number: str = Form(None), file: UploadFile = File(None),
@@ -24932,7 +24932,7 @@ async def ship_desk_pending_by_model(
             "distinct_models": len(models)}
 
 
-@api_router.post("/ship-desk/order/{order_id}/send-back")
+@api_router.post("/ship-desk/order/{order_id:path}/send-back")
 async def ship_desk_send_back(order_id: str, payload: dict = Body(...),
                               user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROLES + ["dispatcher"]))):
     """Bounce an order back a stage with a reason (e.g. dispatcher spots a wrong label → back to accountant)."""
@@ -25008,7 +25008,7 @@ async def _resolve_bigship_label(order_id: str, awb: str = None) -> Optional[byt
     return None
 
 
-@api_router.get("/ship-desk/order/{order_id}/file/{kind}")
+@api_router.get("/ship-desk/order/{order_id:path}/file/{kind}")
 async def ship_desk_download_file(order_id: str, kind: str, awb: str = Query(None),
                                   user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROLES + ["dispatcher", "gate"]))):
     """Download an attached ship-desk doc: kind = invoice | label | eway. For Amazon/Bigship orders the
@@ -25031,7 +25031,7 @@ async def ship_desk_download_file(order_id: str, kind: str, awb: str = Query(Non
                  headers={"Content-Disposition": f'inline; filename="{kind}_{str(order_id)[-8:]}.pdf"'})
 
 
-@api_router.get("/ship-desk/order/{order_id}/slip.pdf")
+@api_router.get("/ship-desk/order/{order_id:path}/slip.pdf")
 async def ship_desk_slip(order_id: str,
                          user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROLES + ["dispatcher", "gate"]))):
     """Generate the Amazon-format packing slip for a ship-desk order. Resolves the order from ALL three
