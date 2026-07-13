@@ -20459,11 +20459,15 @@ async def _serial_label_pdf_bytes(serial_number: str, s: dict = None) -> bytes:
     if comps.get("motherboard"): _cbits.append(f"MB: {comps['motherboard']}")
     if comps.get("wifi"): _cbits.append(f"WiFi: {comps['wifi']}")
     comp_html = f'<div class="comp">{_he(" &middot; ".join(_cbits))}</div>' if _cbits else ""
+    # Show the FULL product name (wrap, no mid-word cut) — shrink the font for long names so serial +
+    # barcode always stay visible (founder 2026-07-13: names must not be cut off).
+    _pl = len(prod)
+    pn_size = 8.5 if _pl <= 30 else 7.5 if _pl <= 52 else 6.5 if _pl <= 80 else 5.7 if _pl <= 120 else 5.0
     # Thermal-optimised, professional (founder-approved 2026-07-08): white bg, black text + thin rules,
     # NO solid-black header bar (smears on direct thermal), NO firm name. Tiny S/N stock marker bottom-right.
     html = f"""<html><head><meta charset="utf-8"><style>
     @page{{size:100mm 50mm;margin:0}} *{{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;color:#000}}
-    .w{{width:100mm;height:50mm;padding:8mm;display:flex;flex-direction:column}}
+    .w{{width:100mm;height:50mm;padding:6mm 8mm;display:flex;flex-direction:column}}
     .top{{display:flex;align-items:center;justify-content:space-between;padding-bottom:1.4mm;border-bottom:1.5pt solid #000}}
     .brand{{font-size:16pt;font-weight:800;letter-spacing:.2pt}} .brand span{{font-weight:400}}
     .gen{{font-size:8pt;font-weight:800;border:1.4pt solid #000;border-radius:3px;padding:1px 6px;letter-spacing:.5pt}}
@@ -20471,10 +20475,10 @@ async def _serial_label_pdf_bytes(serial_number: str, s: dict = None) -> bytes:
     .qr{{width:21mm;text-align:center}} .qr img{{width:21mm;height:21mm}} .qr div{{font-size:6pt;margin-top:.6mm}}
     .right{{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;overflow:hidden}}
     .plabel{{font-size:6.5pt;letter-spacing:.5pt;text-transform:uppercase}}
-    .pname{{font-size:8pt;font-weight:700;line-height:1.15;margin:.3mm 0 1.2mm;max-height:6.7mm;overflow:hidden}}
+    .pname{{font-size:{pn_size}pt;font-weight:700;line-height:1.12;margin:.3mm 0 1mm;max-height:10mm;overflow:hidden}}
     .snlabel{{font-size:6.5pt;letter-spacing:.5pt;text-transform:uppercase}}
-    .serial{{font-family:'Courier New',monospace;font-size:13.5pt;font-weight:800;letter-spacing:.5pt;line-height:1}}
-    .bc{{margin-top:1.2mm}} .bc img{{width:44mm;height:6.5mm}}
+    .serial{{font-family:'Courier New',monospace;font-size:13pt;font-weight:800;letter-spacing:.5pt;line-height:1}}
+    .bc{{margin-top:1mm}} .bc img{{width:44mm;height:6mm}}
     .comp{{font-size:6pt;font-weight:700;margin-top:1mm;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-top:.5pt dashed #000;padding-top:.8mm}}
     .foot{{border-top:.75pt solid #000;padding-top:1mm;display:flex;justify-content:space-between;align-items:center;font-size:6pt}}
     .og{{font-size:6pt;font-weight:800;border:.75pt solid #000;border-radius:2px;padding:0 1.2mm;margin-left:1.6mm}}
@@ -20483,7 +20487,7 @@ async def _serial_label_pdf_bytes(serial_number: str, s: dict = None) -> bytes:
       <div class="body">
         <div class="qr"><img src="{qr}"><div>Scan to verify</div></div>
         <div class="right">
-          <div class="plabel">Product</div><div class="pname">{_he(prod[:50])}</div>
+          <div class="plabel">Product</div><div class="pname">{_he(prod)}</div>
           <div class="snlabel">Serial No.</div><div class="serial">{_he(serial_number)}</div>
           <div class="bc">{bc_html}</div>
           {comp_html}
@@ -21308,9 +21312,10 @@ async def _qc_label_pdf_bytes(order_id: str, serials: list, user: dict, customer
     clines = []
     for it in items[:2]:
         nm = it.get("master_sku_name") or it.get("title") or it.get("product_name") or "Item"
-        clines.append(f"{it.get('quantity', 1)} &times; {_he(str(nm)[:44])}")
+        clines.append(f"{it.get('quantity', 1)} &times; {_he(str(nm))}")   # full name, wraps
     contents = "<br>".join(clines) or "&mdash;"
     sn_html = (f'<div>S/N <span class="sn">{_he(", ".join(serials)[:36])}</span></div>' if serials else "")
+    sn_bc = _serial_barcode_datauri(str(serials[0])) if serials else ""
     ref = _he(str((pf or {}).get("order_id") or order_id)[:24])
     packed_by = _he(str((user or {}).get("name") or (user or {}).get("username")
                         or (user or {}).get("email", "").split("@")[0] or "Dispatch")[:16])
@@ -21321,17 +21326,19 @@ async def _qc_label_pdf_bytes(order_id: str, serials: list, user: dict, customer
     # Thermal-optimised: white bg, black text + thin rules, NO solid-black bars, outlined QC badge.
     html = f"""<html><head><meta charset="utf-8"><style>
     @page{{size:100mm 50mm;margin:0}} *{{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;color:#000}}
-    .wrap{{width:100mm;height:50mm;padding:8mm;overflow:hidden;display:flex;flex-direction:column}}
+    .wrap{{width:100mm;height:50mm;padding:5mm 7mm;overflow:hidden;display:flex;flex-direction:column}}
     .hdr{{display:flex;justify-content:space-between;align-items:center;padding-bottom:1.2mm;border-bottom:1.5pt solid #000}}
     .brand{{font-size:14px;font-weight:800;letter-spacing:.3px}} .brand span{{font-weight:400}}
     .qc{{font-size:9px;font-weight:800;border:1.4px solid #000;border-radius:4px;padding:1px 5px;letter-spacing:.3px}}
-    .body{{flex:1;display:flex;padding-top:1.6mm;gap:2mm;min-height:0}}
-    .left{{flex:1;font-size:9.5px;line-height:1.22}}
-    .k{{font-size:7.5px;text-transform:uppercase;letter-spacing:.3px;margin-top:1mm}}
+    .body{{flex:1;display:flex;padding-top:1.4mm;gap:2mm;min-height:0;overflow:hidden}}
+    .left{{flex:1;font-size:9px;line-height:1.2;overflow:hidden}}
+    .k{{font-size:7px;text-transform:uppercase;letter-spacing:.3px;margin-top:.8mm}}
     .k:first-child{{margin-top:0}} .v{{font-weight:700}}
+    .cont{{font-weight:700;font-size:8px;line-height:1.15;max-height:19px;overflow:hidden}}
     .sn{{font-family:'Courier New',monospace;font-weight:800;font-size:11px}}
     .right{{width:20mm;text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:center}}
     .right img{{width:18mm;height:18mm}} .scan{{font-size:6.5px;margin-top:.5mm}}
+    .bc{{text-align:center;padding-top:.6mm}} .bc img{{width:52mm;height:5mm}}
     .ftr{{border-top:.75pt solid #000;font-size:7px;text-align:center;padding-top:1mm}}
     </style></head><body><div class="wrap">
       <div class="hdr"><div class="brand">Muscle<span>Grid</span></div><div class="qc">&#10003; QC PASSED &middot; SEALED</div></div>
@@ -21339,11 +21346,12 @@ async def _qc_label_pdf_bytes(order_id: str, serials: list, user: dict, customer
         <div class="left">
           <div class="k">Order / Ref</div><div class="v">{ref}</div>
           <div class="k">Ship to</div><div class="v">{ship_to}</div>
-          <div class="k">Contents</div><div class="v">{contents}</div>{sn_html}
+          <div class="k">Contents</div><div class="cont">{contents}</div>{sn_html}
           <div class="k">Packed by &middot; Date</div><div class="v">{packed_by} &middot; {date}</div>
         </div>
         <div class="right"><img src="{qri}"><div class="scan">Scan to verify</div></div>
       </div>
+      {(f'<div class="bc"><img src="{sn_bc}"></div>') if sn_bc else ''}
       <div class="ftr">Do not accept if seal is tampered &middot; Support wa.me/919999036254</div>
     </div></body></html>"""
     return HTML(string=html).write_pdf()
@@ -21398,13 +21406,15 @@ async def _mrp_label_pdf_bytes(order_id: str, serials: list = None) -> Optional[
     # Scannable serial barcode on the BOX label so the sealed carton can be scanned at pack/gate
     # dispatch (the serial-label barcode is on the unit, often inside the box).
     sn_bc = _serial_barcode_datauri(str(serial)) if serial else ""
+    _ml = len(product)          # full product name, font shrinks for long names (no mid-word cut)
+    mp_size = 8 if _ml <= 40 else 7 if _ml <= 66 else 6 if _ml <= 95 else 5.3
     from weasyprint import HTML
     html = f"""<html><head><meta charset="utf-8"><style>
     @page{{size:100mm 50mm;margin:0}} *{{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;color:#000}}
     .w{{width:100mm;height:50mm;padding:5.5mm 8mm;display:flex;flex-direction:column;overflow:hidden}}
     .top{{display:flex;align-items:baseline;justify-content:space-between;padding-bottom:1mm;border-bottom:1.5pt solid #000}}
     .brand{{font-size:13pt;font-weight:800}} .brand span{{font-weight:400}} .tag{{font-size:6.5pt;letter-spacing:1pt;text-transform:uppercase}}
-    .pname{{font-size:8pt;font-weight:700;line-height:1.15;margin:1.2mm 0 .8mm;max-height:6.7mm;overflow:hidden}}
+    .pname{{font-size:{mp_size}pt;font-weight:700;line-height:1.12;margin:1mm 0 .8mm;max-height:8mm;overflow:hidden}}
     .mrpline{{display:flex;align-items:baseline;gap:2mm}}
     .mrpk{{font-size:9pt;font-weight:800;letter-spacing:.5pt}} .mrpv{{font-size:17pt;font-weight:800}} .incl{{font-size:6pt}}
     .sn{{margin-top:1.2mm;font-size:7pt}} .sn b{{font-size:6.5pt}} .snv{{font-family:'Courier New',monospace;font-size:9.5pt;font-weight:800;letter-spacing:.6pt}}
@@ -21413,7 +21423,7 @@ async def _mrp_label_pdf_bytes(order_id: str, serials: list = None) -> Optional[
     .foot{{margin-top:auto;border-top:.75pt solid #000;padding-top:1mm;font-size:5.8pt;line-height:1.3}}
     </style></head><body><div class="w">
       <div class="top"><div class="brand">Muscle<span>Grid</span></div><div class="tag">Retail Price Label</div></div>
-      <div class="pname">{_he(product[:60])}</div>
+      <div class="pname">{_he(product)}</div>
       <div class="mrpline"><span class="mrpk">M.R.P.</span><span class="mrpv">&#8377;{_inr_group(mrp)}</span><span class="incl">(incl. of all taxes)</span></div>
       {(f'<div class="sn"><b>Serial No.:</b> <span class="snv">{_he(str(serial))}</span></div>') if serial else ''}
       {(f'<div class="snbc"><img src="{sn_bc}"></div>') if sn_bc else ''}
