@@ -20448,7 +20448,15 @@ async def _serial_label_pdf_bytes(serial_number: str, s: dict = None) -> bytes:
     qr = _serial_qr_datauri(f"{SERIAL_VERIFY_BASE}/{serial_number}")
     bc = _serial_barcode_datauri(serial_number)
     mfg = str(s.get("created_at") or "")[:10]
+    # Product name comes LIVE from the SKU link (master_sku_id), not the stored snapshot — a serial's
+    # stored master_sku_name can go stale (SKU renamed) or be mistyped, but its master_sku_id is what
+    # FIFO matched the order on, so the live SKU name is always the right product. (Fixes the MG62001
+    # "INVERTER 6.2" on a 3KW order issue.)
     prod = str(s.get("master_sku_name") or "MuscleGrid Product")
+    if s.get("master_sku_id"):
+        _lv = await db.master_skus.find_one({"id": s["master_sku_id"]}, {"_id": 0, "name": 1})
+        if _lv and _lv.get("name"):
+            prod = str(_lv["name"])
     bc_html = f'<img src="{bc}">' if bc else ""
     flag = _serial_origin_flag(s)
     # Component genealogy on the SAME sticker (founder 2026-07-13): a built battery shows its BMS, a built
