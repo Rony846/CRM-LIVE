@@ -20382,18 +20382,32 @@ async def serial_label_pdf(serial_number: str, user: dict = Depends(require_role
                  headers={"Content-Disposition": f'inline; filename="serial_{serial_number}.pdf"'})
 
 
-async def _print_serial_labels_batch(serials: list):
+async def _print_serial_labels_batch(serials: list, reprint: bool = False):
     """Fire-and-forget: print each stock serial's thermal label on the TSC (one per warehouse unit).
-    Sequential (single thermal head); never raises."""
-    ok = 0
+    Sequential (single thermal head); never raises.
+    IDEMPOTENT PER SERIAL: a serial whose label was already printed is SKIPPED unless reprint=True, and
+    every successful print is stamped (`label_printed_at` + `label_print_count`). This guarantees the same
+    physical label never comes out twice on a retried background task, a double-submitted batch, or a
+    serial that appears twice in the list — the core 'nothing gets printed twice' guard for serials."""
+    ok = skipped = 0
     for sn in serials:
         try:
+            if not reprint:
+                already = await db.finished_good_serials.find_one(
+                    {"serial_number": sn, "label_printed_at": {"$exists": True, "$ne": None}}, {"_id": 1})
+                if already:
+                    skipped += 1
+                    continue
             pdf = await _serial_label_pdf_bytes(sn)
             if pdf and await _office_print(pdf, OFFICE_LABEL_PRINTER, "fit", "serial"):
                 ok += 1
+                await db.finished_good_serials.update_one(
+                    {"serial_number": sn},
+                    {"$set": {"label_printed_at": datetime.now(timezone.utc).isoformat()},
+                     "$inc": {"label_print_count": 1}})
         except Exception as ex:
             logger.warning(f"stock serial print {sn} failed: {ex}")
-    logger.info(f"stock serial batch print: {ok}/{len(serials)} labels sent to the TSC")
+    logger.info(f"stock serial batch print: {ok} sent, {skipped} already-printed skipped (of {len(serials)})")
     return ok
 
 
