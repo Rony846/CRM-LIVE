@@ -45980,15 +45980,70 @@ async def create_quotation(
     
     await db.quotations.insert_one(quotation_doc)
     quotation_doc.pop("_id", None)
-    
+
+    # Auto-create an MGIPL-Razorpay payment link on every SENT PI so the customer can pay online.
+    if status == "sent" and RAZORPAY_ENABLED:
+        try:
+            pl = await _create_quotation_payment_link(quotation_doc)
+            quotation_doc["payment_link_url"] = pl.get("short_url")
+            quotation_doc["payment_link_id"] = pl.get("id")
+        except Exception as e:
+            logger.warning(f"PI {quotation_number} payment-link create failed: {e}")
+
     # Log event
     await log_quotation_event(quotation_id, "created", {
         "quotation_number": quotation_number,
         "grand_total": totals["grand_total"],
         "status": status
     }, user)
-    
+
     return quotation_doc
+
+
+async def _create_quotation_payment_link(q: dict) -> dict:
+    """Create (or return the existing) MGIPL-Razorpay payment link for a PI so the customer can pay
+    online by card / UPI / netbanking. Idempotent per PI (stored on the quotation record)."""
+    if q.get("payment_link_url"):
+        return {"short_url": q["payment_link_url"], "id": q.get("payment_link_id"), "existing": True}
+    if not RAZORPAY_ENABLED:
+        raise HTTPException(status_code=400, detail="Razorpay is not configured")
+    amount = int(round(float(q.get("grand_total") or 0) * 100))
+    if amount < 100:
+        raise HTTPException(status_code=400, detail="PI amount is too low for a payment link")
+    contact = re.sub(r"\D", "", str(q.get("customer_phone") or ""))[-10:]
+    payload = {
+        "amount": amount, "currency": "INR", "accept_partial": False,
+        "description": f"Payment for PI {q.get('quotation_number')} — {q.get('firm_name') or 'MuscleGrid'}",
+        "reference_id": f"PI-{q.get('quotation_number')}",
+        "customer": {"name": q.get("customer_name") or "Customer",
+                     "email": q.get("customer_email") or "",
+                     "contact": ("+91" + contact) if len(contact) == 10 else ""},
+        "notify": {"sms": len(contact) == 10, "email": bool(q.get("customer_email"))},
+        "reminder_enable": True,
+        "notes": {"quotation_id": str(q.get("id")), "pi_number": str(q.get("quotation_number")),
+                  "firm_id": str(q.get("firm_id"))},
+    }
+    try:
+        link = await asyncio.to_thread(razorpay_client.payment_link.create, payload)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Razorpay: {str(e)[:140]}")
+    now = datetime.now(timezone.utc).isoformat()
+    await db.quotations.update_one({"id": q["id"]}, {"$set": {
+        "payment_link_url": link.get("short_url"), "payment_link_id": link.get("id"),
+        "payment_link_status": link.get("status"), "payment_link_created_at": now}})
+    return {"short_url": link.get("short_url"), "id": link.get("id"), "existing": False}
+
+
+@api_router.post("/quotations/{quotation_id}/payment-link")
+async def quotation_payment_link(quotation_id: str,
+                                 user: dict = Depends(require_roles(["call_support", "admin", "accountant", "supervisor"]))):
+    """Generate (or fetch) the MGIPL-Razorpay payment link for this PI, to share with the customer."""
+    q = await db.quotations.find_one({"$or": [{"id": quotation_id}, {"quotation_number": quotation_id}]}, {"_id": 0})
+    if not q:
+        raise HTTPException(status_code=404, detail="PI not found")
+    res = await _create_quotation_payment_link(q)
+    return {"success": True, "payment_link": res["short_url"], "payment_link_id": res["id"],
+            "quotation_number": q.get("quotation_number"), "amount": q.get("grand_total")}
 
 
 @api_router.get("/quotations")
@@ -46482,9 +46537,18 @@ async def view_quotation_public(token: str, request: Request):
             {"$inc": {"view_count": 1}}
         )
     
+    # Ensure a payment link exists (auto-create for older PIs on first view) so any PI can be paid online.
+    if (not quotation.get("payment_link_url") and RAZORPAY_ENABLED
+            and quotation.get("status") in ("sent", "viewed") and (quotation.get("grand_total") or 0) >= 1):
+        try:
+            pl = await _create_quotation_payment_link(quotation)
+            quotation["payment_link_url"] = pl.get("short_url")
+        except Exception as e:
+            logger.warning(f"PI {quotation.get('quotation_number')} view payment-link failed: {e}")
+
     # Remove sensitive fields
     quotation.pop("access_token", None)
-    
+
     return quotation
 
 

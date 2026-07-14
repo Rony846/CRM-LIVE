@@ -346,6 +346,18 @@ export default function PublicQuotationView() {
           </div>
         )}
 
+        {/* Pay Now — MGIPL Razorpay payment link */}
+        {quotation.payment_link_url && ['sent', 'viewed', 'approved'].includes(quotation.status) && (
+          <div className="no-print mg-card rounded-lg border-2 border-primary bg-primary/5 p-6 mb-4 text-center">
+            <p className="mb-3 text-sm font-semibold text-foreground">Pay securely online — {formatCurrency(quotation.grand_total)}</p>
+            <a href={quotation.payment_link_url} target="_blank" rel="noopener noreferrer"
+               className="inline-flex items-center justify-center gap-2 rounded bg-primary px-10 py-3 text-base font-bold text-primary-foreground transition-opacity hover:opacity-90">
+              Pay Now
+            </a>
+            <p className="mt-3 text-xs text-muted-foreground">Card · UPI · Netbanking · secured by Razorpay</p>
+          </div>
+        )}
+
         {/* Approve / Reject action box */}
         {canAct && (
           <div className="no-print mg-card rounded-lg border border-border bg-muted/40 p-6">
