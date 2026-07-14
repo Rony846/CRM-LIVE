@@ -98,6 +98,7 @@ import CreditNotes from './pages/accountant/CreditNotesIron';
 import ReconciliationReports from './pages/accountant/ReconciliationReportsIron';
 import ExpensesDashboard from './pages/accountant/ExpensesDashboardIron';
 import SerialNumbersManagement from './pages/inventory/SerialNumbersManagementIron';
+import StabilizerStockScan from './pages/inventory/StabilizerStockScan';
 import SupervisorProduction from './pages/supervisor/SupervisorProductionIron';
 import TechnicianProduction from './pages/technician/TechnicianProductionIron';
 import DispatchTasks from './pages/dispatch/DispatchTasksIron';
@@ -927,6 +928,11 @@ function App() {
           <Route path="/inventory/serial-numbers" element={
             <ProtectedRoute allowedRoles={['accountant', 'admin', 'dispatcher']}>
               <SerialNumbersManagement />
+            </ProtectedRoute>
+          } />
+          <Route path="/inventory/stabilizer-scan" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant', 'supervisor', 'service_agent', 'technician', 'call_support', 'dispatcher']}>
+              <StabilizerStockScan />
             </ProtectedRoute>
           } />
           
