@@ -119,7 +119,7 @@ def drain_local_usage():
 async def complete(brain: str, *, system: str = None, messages: list = None,
                    prompt: str = None, max_tokens: int = 1024,
                    temperature: float = None, tools: list = None,
-                   timeout: float = 180.0) -> dict:
+                   timeout: float = 180.0, think: bool = None) -> dict:
     """Run one completion on `brain`. Returns {"text", "model_ok", "tool_calls", "model"}.
 
     Provide either `prompt` (single user turn) or `messages` (Anthropic-style
@@ -134,7 +134,7 @@ async def complete(brain: str, *, system: str = None, messages: list = None,
         return await _anthropic_complete(cfg, system, msgs, max_tokens, tools)
     if cfg["provider"] == "openai":
         return await _openai_complete(cfg, system, msgs, max_tokens, temperature, timeout)
-    return await _ollama_complete(brain, cfg, system, msgs, max_tokens, temperature, tools, timeout)
+    return await _ollama_complete(brain, cfg, system, msgs, max_tokens, temperature, tools, timeout, think)
 
 
 async def _openai_complete(cfg, system, msgs, max_tokens, temperature, timeout):
@@ -188,7 +188,7 @@ async def _anthropic_complete(cfg, system, msgs, max_tokens, tools):
         return {"text": "", "model_ok": False, "tool_calls": 0, "model": cfg["model"]}
 
 
-async def _ollama_complete(brain, cfg, system, msgs, max_tokens, temperature, tools, timeout):
+async def _ollama_complete(brain, cfg, system, msgs, max_tokens, temperature, tools, timeout, think=None):
     if not _local_enabled():
         return {"text": "", "model_ok": False, "tool_calls": 0, "model": cfg["model"]}
     payload = {
@@ -198,6 +198,12 @@ async def _ollama_complete(brain, cfg, system, msgs, max_tokens, temperature, to
         "keep_alive": cfg["keep_alive"],
         "options": {"num_predict": max_tokens},
     }
+    # Qwen3 (and other hybrid reasoners) THINK by default → slow. Default it OFF for speed; a caller that
+    # wants real reasoning (e.g. the voice decision-maker) passes think=True. Non-reasoning models ignore it.
+    if think is None and "qwen3" in str(cfg.get("model", "")).lower():
+        think = False
+    if think is not None:
+        payload["think"] = think
     if temperature is not None:
         payload["options"]["temperature"] = temperature
     if tools:

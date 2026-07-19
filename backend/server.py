@@ -84799,6 +84799,41 @@ _PLAYBOOK_TOPIC_SLUGS = {
 }
 
 
+async def _voice_execute_decision(action: str, reason: str, phone: str = "", q: str = ""):
+    """Execute the action the voice DECISION-MAKER chose. Non-destructive by design: it creates flags / tasks /
+    a critical decision / a ticket — NEVER a booking or a money move (those stay human-gated)."""
+    digits = re.sub(r"\D", "", str(phone or ""))[-10:]
+    name = ""
+    tn = ""
+    if len(digits) == 10:
+        lead = await db.leads.find_one({"phone": {"$regex": re.escape(digits) + "$"}},
+                                       {"_id": 0, "name": 1, "customer_name": 1})
+        name = (lead or {}).get("name") or (lead or {}).get("customer_name") or ""
+        tk = await db.tickets.find_one({"customer_phone": {"$regex": re.escape(digits) + "$"}},
+                                       {"_id": 0, "ticket_number": 1}, sort=[("created_at", -1)])
+        tn = (tk or {}).get("ticket_number", "")
+    dec = {"customer_name": name, "customer_phone": digits, "ticket_number": tn}
+    summ = f"On call: {q[:160]}. {reason}".strip()
+    low = (q + " " + reason).lower()
+    if action == "raise_decision":
+        typ = ("refund_replacement" if re.search(r"refund|replace|wapas|paisa|रिफंड|रिप्लेस", low)
+               else "legal_threat" if re.search(r"legal|court|कानून|वकील", low)
+               else "review_warning" if re.search(r"rating|review|रेटिंग", low) else "other")
+        await raise_critical_decision(type=typ, title=f"Voice call — {name or digits}", summary=summ,
+                                      customer_name=name, customer_phone=digits, ticket_number=tn,
+                                      source="voice_decision", dedup_key=f"voice:{typ}:{digits}")
+    elif action == "flag_pcb":
+        await _cd_ops_task("pcb", f"Stabilizer PCB — {name or digits}", dec, summ, "dispatcher")
+    elif action == "flag_pickup":
+        await _cd_ops_task("reverse_pickup", f"Reverse pickup — {name or digits}", dec, summ, "dispatcher")
+    elif action == "callback":
+        await _cd_ops_task("callback", f"Callback — {name or digits}", dec, summ, "call_support")
+    elif action == "sales_lead":
+        await _cd_ops_task("sales", f"Sales lead — {name or digits}", dec, summ, "call_support")
+    elif action == "create_ticket":
+        await _wa_capture_support_ticket(digits, q, name)
+
+
 async def _playbook_guidance(text: str, is_dealer: bool = False, limit: int = 3) -> str:
     """Retrieve the decision_playbook rules relevant to this turn and format a compact block for the brain."""
     low = (text or "").lower()
@@ -84960,6 +84995,69 @@ async def omnidim_ask(payload: dict = Body(default={}), x_omnidim_token: str = H
             for m in hist if m.get("content")][-6:]
     msgs.append({"role": "user", "content": q})
     from utils.brain_registry import complete as brain_complete
+    # TWO-TIER voice: 14B (pratibha) fronts the call; 32B (jasmine) is the expert "manager/resources" behind it.
+    # stage=front → 14B gives a short "let me check with my resources" hold line (doesn't answer).
+    # stage=expert → 32B answers, grounded in the KB + decision playbook already in `system`.
+    stage = (payload.get("stage") or "").lower()
+    if stage == "front":
+        # Front-desk hold line — a FIXED polite line (instant, correct tone; keeps the 32B warm as the brain).
+        # The 14B can't share RAM with the 32B and its Hindi was garbled, so we don't model-generate the front.
+        _front = [
+            "Ji Sir, ek minute — main apne senior technician se check kar rahi hoon.",
+            "Bilkul Ma'am, ek pal rukiye — main apne resources se confirm kar rahi hoon.",
+            "Theek hai Sir, main abhi apne senior se check karke bata rahi hoon.",
+        ]
+        return {"answer": _front[len(q) % len(_front)], "model": "fixed", "stage": "front"}
+    if stage == "expert":
+        _think = os.environ.get("OMNIDIM_EXPERT_THINK", "0") in ("1", "true", "on")
+        esys = system
+        if _think:
+            esys = system + ("\n\nREASON it through, then give a thoughtful, correct answer in Hindi (2-4 sentences) "
+                             "that shows your reasoning. Sir/Ma'am, female tone ('kar rahi hoon'), never 'bhai'.")
+        r = await brain_complete("jasmine", system=esys, messages=msgs,
+                                 max_tokens=int(os.environ.get("OMNIDIM_EXPERT_MAX_TOKENS", "160")),
+                                 timeout=float(os.environ.get("OMNIDIM_EXPERT_TIMEOUT", "60")),
+                                 think=(True if _think else None))
+        ans = (r.get("text") or "").strip() or "Sir, main aapki request team ko bhej rahi hoon, wo WhatsApp par update karengi."
+        return {"answer": ans, "model": r.get("model"), "stage": "expert", "thought": _think}
+    if stage == "decide":
+        # DECISION-MAKER brain: analyse → DECIDE an action per the rules → DO it (safe backend action) → speak.
+        dsys = (
+            "You are the SENIOR MuscleGrid support DECISION-MAKER on a LIVE phone call. You are FEMALE: address the "
+            "customer as 'Sir' or 'Ma'am', use feminine Hindi verbs ('kar rahi hoon'), NEVER say 'bhai' or slang. "
+            "Read the situation and DECIDE the single best next action per the MuscleGrid rules + knowledge below, then "
+            "reply with ONLY a compact JSON object and nothing else:\n"
+            '{"action":"raise_decision|create_ticket|callback|sales_lead|flag_pcb|flag_pickup|none",'
+            '"reason":"<short why>","say":"<ONE short warm Hindi sentence to speak to the customer, under 25 words>"}\n'
+            "How to choose: refund / replacement / return / legal threat / rating threat / return-authenticity -> "
+            "raise_decision (ONLY the founder decides money/returns). Stabilizer internal fault -> flag_pcb (send a PCB "
+            "first). Inverter or battery needs repair -> create_ticket (and flag_pickup if a pickup is needed; battery/"
+            "stabilizer need approval, inverter can be self-arranged). Wants to buy / asks price -> sales_lead. Wants a "
+            "call/expert or asks repeatedly to call -> callback. A simple question answerable from the knowledge -> none "
+            "(put the actual answer in 'say'). NEVER promise a refund, replacement, or a firm date in 'say'.\n\n" + system
+        )
+        r = await brain_complete("jasmine", system=dsys, messages=msgs,
+                                 max_tokens=int(os.environ.get("OMNIDIM_DECIDE_MAX_TOKENS", "260")),
+                                 timeout=float(os.environ.get("OMNIDIM_DECIDE_TIMEOUT", "120")),
+                                 think=(os.environ.get("OMNIDIM_DECIDE_THINK", "1") in ("1", "true", "on")))
+        txt = (r.get("text") or "").strip()
+        action, say, reason = "none", "", ""
+        try:
+            import json as _json
+            mo = re.search(r"\{.*\}", txt, re.S)
+            d = _json.loads(mo.group(0)) if mo else {}
+            action = str(d.get("action") or "none").strip()
+            say = str(d.get("say") or "").strip()
+            reason = str(d.get("reason") or "").strip()
+        except Exception:
+            say = txt
+        try:
+            await _voice_execute_decision(action, reason, phone=payload.get("caller_phone"), q=q)
+        except Exception as e:
+            logger.warning(f"voice decision execute failed: {e}")
+        if not say:
+            say = "Ji Sir, maine aapka case note kar liya hai — hamari team aapko jaldi update karegi."
+        return {"answer": say, "action": action, "reason": reason, "model": r.get("model"), "stage": "decide"}
     fb = os.environ.get("OMNIDIM_FALLBACK_BRAIN", "pratibha").strip()   # faster 14B local, keeps voice latency sane
     # Router: Sonnet (riya) by default; Opus (kalpana) when Omnidim flags a hard turn (escalate/hard=true).
     primary = _OMNIDIM_ESCALATE_BRAIN if (payload.get("escalate") or payload.get("hard")) else _OMNIDIM_BRAIN
