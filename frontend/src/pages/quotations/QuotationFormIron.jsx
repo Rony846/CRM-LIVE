@@ -127,6 +127,7 @@ export default function QuotationForm() {
   const [customerSearch, setCustomerSearch] = useState('');
   const [showCustomerSearch, setShowCustomerSearch] = useState(false);
   const [linkedDatasheets, setLinkedDatasheets] = useState({}); // { master_sku_id: datasheet_id }
+  const [phoneAlert, setPhoneAlert] = useState(null); // fraud guard: phone already used under another name
 
   const [form, setForm] = useState({
     firm_id: '',
@@ -151,6 +152,22 @@ export default function QuotationForm() {
       fetchInitialData();
     }
   }, [token]);
+
+  // FRAUD GUARD: warn if this phone was already used on a PI under a different customer name.
+  useEffect(() => {
+    const digits = (form.customer_phone || '').replace(/\D/g, '').slice(-10);
+    if (digits.length !== 10) { setPhoneAlert(null); return; }
+    const t = setTimeout(async () => {
+      try {
+        const { data } = await axios.get(`${API}/quotations/phone-reuse-check`, {
+          headers: { Authorization: `Bearer ${token}` },
+          params: { phone: digits, name: form.customer_name || '' },
+        });
+        setPhoneAlert(data?.alert ? data : null);
+      } catch { setPhoneAlert(null); }
+    }, 500);
+    return () => clearTimeout(t);
+  }, [form.customer_phone, form.customer_name, token]);
 
   useEffect(() => {
     if (isEdit && token) {
@@ -534,8 +551,16 @@ export default function QuotationForm() {
                     value={form.customer_phone}
                     onChange={(e) => setForm({ ...form, customer_phone: e.target.value })}
                     placeholder="Enter phone number"
-                    style={inputStyle}
+                    style={phoneAlert ? { ...inputStyle, borderColor: '#b91c1c', background: '#fef2f2' } : inputStyle}
                   />
+                  {phoneAlert && (
+                    <div style={{ marginTop: 6, background: '#fef2f2', border: '1px solid #f5c2c2', borderRadius: 8, padding: '8px 10px', fontSize: 12, color: '#7f1d1d' }}>
+                      <b>⚠ Fraud check:</b> this phone is already used on PIs under {phoneAlert.distinct_other_names} other name{phoneAlert.distinct_other_names > 1 ? 's' : ''} —{' '}
+                      {phoneAlert.other_names.map((o, i) => (
+                        <span key={i}>{i > 0 ? ', ' : ''}<b>{o.name}</b> ({o.pi_count} PI{o.pi_count > 1 ? 's' : ''}{o.reps?.length ? ', ' + o.reps.join('/') : ''})</span>
+                      ))}. Verify this is a genuine customer before raising a PI.
+                    </div>
+                  )}
                 </div>
                 <div>
                   <label style={labelStyle}>Email</label>

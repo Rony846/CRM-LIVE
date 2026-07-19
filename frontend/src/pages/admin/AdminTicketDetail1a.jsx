@@ -96,6 +96,14 @@ export default function AdminTicketDetail1a() {
     } catch (e) { toast.error(e.response?.data?.detail || 'Failed to close ticket'); }
     finally { setCloseLoading(false); }
   };
+  const addNote = async () => {
+    const note = window.prompt('Add a note to this ticket (e.g. "Pickup done — courier collected today"):', '');
+    if (note === null || !note.trim()) return;
+    try {
+      await axios.post(`${API}/admin/tickets/${ticketId}/note`, { note: note.trim() }, { headers: { Authorization: `Bearer ${token}` } });
+      toast.success('Note added'); fetchTicket();
+    } catch (e) { toast.error(e.response?.data?.detail || 'Failed to add note'); }
+  };
   const openEdit = () => {
     if (!ticket?.customer_id) { toast.error('No customer ID for this ticket'); return; }
     const parts = (ticket.customer_name || '').split(' ');
@@ -114,6 +122,7 @@ export default function AdminTicketDetail1a() {
 
   const actions = ticket && (
     <div style={{ display: 'flex', gap: 8 }}>
+      <button onClick={addNote} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: `1px solid ${T.iron200}`, background: T.white, color: T.iron700, borderRadius: 6, padding: '7px 12px', cursor: 'pointer', fontFamily: T.headline, fontWeight: 700, fontSize: 12 }}><MessageSquare size={14} /> Add Note</button>
       <button onClick={() => { setNewStatus(''); setStatusNotes(''); setStatusOpen(true); }} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: `1px solid ${T.voltage}`, background: T.voltageTint, color: T.voltageText, borderRadius: 6, padding: '7px 12px', cursor: 'pointer', fontFamily: T.headline, fontWeight: 700, fontSize: 12 }}><RefreshCw size={14} /> Change Status</button>
       {ticket.status !== 'closed' && (
         <button onClick={() => setCloseOpen(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: 'none', background: T.orange, color: '#fff', borderRadius: 6, padding: '7px 12px', cursor: 'pointer', fontFamily: T.headline, fontWeight: 700, fontSize: 12 }}><XCircle size={14} /> Close Ticket</button>

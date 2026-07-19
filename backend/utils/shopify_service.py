@@ -24,35 +24,64 @@ logger = logging.getLogger(__name__)
 DEFAULT_TOPICS = ["orders/create", "orders/updated", "orders/paid", "orders/cancelled", "orders/fulfilled"]
 
 
-def cfg() -> dict:
-    store = (os.environ.get("SHOPIFY_STORE", "") or "").strip()
-    store = store.replace("https://", "").replace("http://", "").strip("/")
+# Multi-store: each store key maps to an env prefix. "in" = the original India store (SHOPIFY_*),
+# "hk" = MuscleGrid Industries HK Limited (SHOPIFY_HK_*). Add a new store here + its *_STORE/*_ADMIN_TOKEN
+# env vars and it flows through the webhook router, reconcile loop, and registrar automatically.
+STORE_ENV = {"in": "SHOPIFY", "hk": "SHOPIFY_HK"}
+DEFAULT_STORE = "in"
+
+
+def cfg(store: str = DEFAULT_STORE) -> dict:
+    p = STORE_ENV.get(store, "SHOPIFY")
+    dom = (os.environ.get(f"{p}_STORE", "") or "").strip()
+    dom = dom.replace("https://", "").replace("http://", "").strip("/")
+    # Webhooks from a custom app are HMAC-signed with the app's API secret key. India has a dedicated
+    # SHOPIFY_WEBHOOK_SECRET; other stores fall back to their *_CLIENT_SECRET (the app secret).
+    wsecret = ((os.environ.get(f"{p}_WEBHOOK_SECRET", "") or "").strip()
+               or (os.environ.get(f"{p}_CLIENT_SECRET", "") or "").strip())
     return {
-        "store": store,
-        "token": (os.environ.get("SHOPIFY_ADMIN_TOKEN", "") or "").strip(),
-        "api_version": (os.environ.get("SHOPIFY_API_VERSION", "") or "").strip() or "2024-10",
-        "webhook_secret": (os.environ.get("SHOPIFY_WEBHOOK_SECRET", "") or "").strip(),
-        "default_firm_id": (os.environ.get("SHOPIFY_DEFAULT_FIRM_ID", "") or "").strip() or None,
+        "store_key": store,
+        "store": dom,
+        "token": (os.environ.get(f"{p}_ADMIN_TOKEN", "") or "").strip(),
+        "api_version": (os.environ.get(f"{p}_API_VERSION", "") or "").strip() or "2024-10",
+        "webhook_secret": wsecret,
+        "default_firm_id": (os.environ.get(f"{p}_DEFAULT_FIRM_ID", "") or "").strip() or None,
     }
 
 
-def is_configured() -> bool:
-    c = cfg()
+def is_configured(store: str = DEFAULT_STORE) -> bool:
+    c = cfg(store)
     return bool(c["store"] and c["token"])
 
 
-def _base() -> str:
-    c = cfg()
+def configured_stores() -> list:
+    """Store keys that have both a domain and an admin token set (ready for live sync)."""
+    return [s for s in STORE_ENV if is_configured(s)]
+
+
+def store_for_domain(domain: str):
+    """Map an inbound X-Shopify-Shop-Domain to its store key (None if unknown)."""
+    d = (domain or "").strip().lower()
+    if not d:
+        return None
+    for s in STORE_ENV:
+        if cfg(s)["store"].lower() == d:
+            return s
+    return None
+
+
+def _base(store: str = DEFAULT_STORE) -> str:
+    c = cfg(store)
     return f"https://{c['store']}/admin/api/{c['api_version']}"
 
 
-def _headers() -> dict:
-    return {"X-Shopify-Access-Token": cfg()["token"], "Content-Type": "application/json"}
+def _headers(store: str = DEFAULT_STORE) -> dict:
+    return {"X-Shopify-Access-Token": cfg(store)["token"], "Content-Type": "application/json"}
 
 
-def verify_webhook(raw_body: bytes, hmac_header: str) -> bool:
-    """Verify the X-Shopify-Hmac-Sha256 header against the raw request body."""
-    secret = cfg()["webhook_secret"]
+def verify_webhook(raw_body: bytes, hmac_header: str, store: str = DEFAULT_STORE) -> bool:
+    """Verify the X-Shopify-Hmac-Sha256 header against the raw request body (per-store secret)."""
+    secret = cfg(store)["webhook_secret"]
     if not secret or not hmac_header:
         return False
     digest = hmac.new(secret.encode("utf-8"), raw_body or b"", hashlib.sha256).digest()
@@ -60,18 +89,18 @@ def verify_webhook(raw_body: bytes, hmac_header: str) -> bool:
     return hmac.compare_digest(computed, hmac_header)
 
 
-async def fetch_orders(updated_at_min=None, status="any", limit=250) -> list:
+async def fetch_orders(updated_at_min=None, status="any", limit=250, store: str = DEFAULT_STORE) -> list:
     """Pull orders via the Admin API, following Link-header cursor pagination."""
-    if not is_configured():
+    if not is_configured(store):
         return []
     params = {"status": status, "limit": min(int(limit), 250)}
     if updated_at_min:
         params["updated_at_min"] = updated_at_min
-    url = f"{_base()}/orders.json"
+    url = f"{_base(store)}/orders.json"
     out = []
     async with httpx.AsyncClient(timeout=60) as client:
         while url:
-            r = await client.get(url, headers=_headers(), params=params)
+            r = await client.get(url, headers=_headers(store), params=params)
             r.raise_for_status()
             out.extend(r.json().get("orders", []))
             # Cursor pagination: the next page URL is in the Link header (rel="next").
@@ -84,20 +113,20 @@ async def fetch_orders(updated_at_min=None, status="any", limit=250) -> list:
     return out
 
 
-async def register_webhooks(callback_url: str, topics=None) -> dict:
+async def register_webhooks(callback_url: str, topics=None, store: str = DEFAULT_STORE) -> dict:
     """Idempotently register the order webhooks to point at the CRM callback URL."""
-    if not is_configured():
+    if not is_configured(store):
         return {"error": "not configured"}
     topics = topics or DEFAULT_TOPICS
     results = {}
     async with httpx.AsyncClient(timeout=60) as client:
-        existing = (await client.get(f"{_base()}/webhooks.json", headers=_headers())).json().get("webhooks", [])
+        existing = (await client.get(f"{_base(store)}/webhooks.json", headers=_headers(store))).json().get("webhooks", [])
         have = {(w.get("topic"), w.get("address")) for w in existing}
         for t in topics:
             if (t, callback_url) in have:
                 results[t] = "exists"
                 continue
-            r = await client.post(f"{_base()}/webhooks.json", headers=_headers(),
+            r = await client.post(f"{_base(store)}/webhooks.json", headers=_headers(store),
                                   json={"webhook": {"topic": t, "address": callback_url, "format": "json"}})
             results[t] = "created" if r.status_code in (200, 201) else f"err {r.status_code}: {r.text[:140]}"
     return results

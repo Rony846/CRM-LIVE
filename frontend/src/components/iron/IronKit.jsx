@@ -84,16 +84,18 @@ export const IRON_ADMIN_NAV = [
   ['Ship Desk', [['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'], ['RTO / Returns', '/rto-returns']]],
   ['Dashboard', [['Overview', '/admin'], ['Compliance', '/admin/compliance']]],
   ['Team Dashboards', [['Call Support', '/support'], ['Supervisor', '/supervisor'], ['Technician', '/technician'], ['Accountant', '/accountant'], ['Dispatcher', '/dispatcher'], ['Gate', '/gate']]],
-  ['CRM', [['All Tickets', '/admin/tickets'], ['Call Center', '/calls'], ['Omnidim Calls', '/admin/omnidim-calls'], ['Customer WhatsApp', '/admin/whatsapp-chats'], ['Kommo Backup', '/admin/kommo-backup'], ['Sales Leads', '/leads'], ['Repairs', '/admin/repairs'], ['Customers', '/admin/customers'], ['Customer 360', '/customer-360'], ['Warranties', '/admin/warranties'], ['Zoho Desk', '/admin/zoho-tickets'], ['Zoho Forms', '/admin/zoho-forms']]],
+  ['CRM', [['Critical Decisions', '/admin/critical-decisions'], ['All Tickets', '/admin/tickets'], ['Call Center', '/calls'], ['Omnidim Calls', '/admin/omnidim-calls'], ['Customer WhatsApp', '/admin/whatsapp-chats'], ['Kommo Backup', '/admin/kommo-backup'], ['Sales Leads', '/leads'], ['Repairs', '/admin/repairs'], ['Customers', '/admin/customers'], ['Customer 360', '/customer-360'], ['Warranties', '/admin/warranties'], ['Zoho Desk', '/admin/zoho-tickets'], ['Zoho Forms', '/admin/zoho-forms']]],
   ['Solar Samrat', [['Samrat Admin', '/admin/solar-samrat']]],
-  ['Sales', [['Orders', '/admin/orders'], ['Quotations', '/quotations'], ['PI Pending Action', '/quotations/pending-action']]],
-  ['Inventory', [['Master SKUs', '/admin/master-sku'], ['Firms', '/admin/firms'], ['Serial Numbers', '/inventory/serial-numbers'], ['Build Unit', '/production/build'], ['Stabilizer Scan-in', '/inventory/stabilizer-scan'], ['Inventory Inward', '/inventory/inward'], ['Stock Reports', '/admin/reports'], ['Product Datasheets', '/admin/product-datasheets']]],
+  ['Sales', [['Orders', '/admin/orders'], ['Quotations', '/quotations'], ['PI Pending Action', '/quotations/pending-action'], ['PI Payment Approvals', '/admin/pi-approvals']]],
+  ['Inventory', [['Master SKUs', '/admin/master-sku'], ['Firms', '/admin/firms'], ['Serial Numbers', '/inventory/serial-numbers'], ['Build Unit', '/production/build'], ['Unit Genealogy', '/production/genealogy'], ['Stabilizer Scan-in', '/inventory/stabilizer-scan'], ['Inventory Inward', '/inventory/inward'], ['Stock Reports', '/admin/reports'], ['Product Datasheets', '/admin/product-datasheets']]],
   ['Operations', [['Amazon Orders', '/operations/amazon-orders'], ['SKU Weights', '/admin/sku-weights'], ['File Repository', '/admin/file-repository'], ['Courier Shipping', '/operations/courier-shipping'], ['Courier Tracking', '/operations/courier-tracking'], ['Incoming Queue', '/accountant/incoming-queue'], ['Inventory', '/accountant/inventory'], ['Battery Production', '/admin/supervisor-production'],['Dispatch Queue', '/view/dispatch-queue']]],
   ['Folders', [['Order Folders', '/admin/orders-folders']]],
   ['Online Store', [['Products', '/admin/store-products'], ['Store Orders', '/admin/online-orders']]],
   ['Shopify', [['Orders', '/admin/online-orders?tab=shopify'], ['Products', '/admin/online-orders?tab=products']]],
   ['Browser Agents', [['EBAY UP Browser', '/admin/browser-agent/a9b65de0-ef07-47d7-b778-2a9f63ef52ab'], ['SPV Browser', '/admin/browser-agent/c715c1b7-aca3-4100-8b00-4f711a729829'], ['Electronics Bay Browser', '/admin/browser-agent/76b41510-bb17-42be-887f-abcbfd9f4180'], ['MuscleGrid Gurgaon Browser', '/admin/browser-agent/8bf93db6-045f-4aed-988c-352103ed049d'], ['MGIPL Bigship Browser', '/admin/browser-agent/16abb602-875d-4283-bed9-f8789e688a17']]],
-  ['Finance', [['Finance Analytics', '/finance/analytics'], ['Finance & GST', '/finance'], ['Online Orders', '/admin/online-orders'], ['Amazon Refunds', '/admin/refunds'], ['Refund Losses (Legal)', '/admin/refund-losses'], ['A-Z Claims', '/admin/az-claims'], ['Legal Cases', '/admin/legal-cases'], ['TDS Management', '/finance/tds'], ['GST / HSN', '/finance/gst-hsn'], ['GST Audit', '/finance/gst-audit'], ['Amazon Unmapped', '/admin/amazon-unmapped'], ['Bank Match', '/finance/reconciliation'], ['E-commerce Recon', '/finance/ecommerce-reconciliation'], ['Import Costing', '/finance/import-costing'], ['Importer Reconciliation', '/admin/importer-reconciliation'], ['Bank Reconciliation', '/finance/bank-reconciliation'], ['Unbooked Receipts', '/finance/unbooked-receipts'], ['Sales Register', '/accountant/sales'], ['Purchase Register', '/accountant/purchases'], ['Party Master', '/admin/parties'], ['Party Ledger', '/accountant/ledger'], ['Payments', '/accountant/payments'], ['Expenses & Tax Credits', '/accountant/expenses'], ['Credit Notes', '/accountant/credit-notes'], ['Accounting Reports', '/accountant/reports'], ['Reconciliation', '/accountant/reconciliation']]],
+  ['Finance', [['Finance & GST', '/finance'], ['Finance Analytics', '/finance/analytics'], ['Sales Register', '/accountant/sales'], ['Purchase Register', '/accountant/purchases'], ['Party Master', '/admin/parties'], ['Party Ledger', '/accountant/ledger'], ['Payments', '/accountant/payments'], ['Credit Notes', '/accountant/credit-notes'], ['Expenses & Tax Credits', '/accountant/expenses'], ['GST Audit', '/finance/gst-audit'], ['GST / HSN', '/finance/gst-hsn'], ['TDS Management', '/finance/tds'], ['Bank Reconciliation', '/finance/bank-reconciliation'], ['Monthly Reconciliation', '/accountant/reconciliation'], ['Unbooked Receipts', '/finance/unbooked-receipts'], ['CRM ⇄ Tally Recon', '/accountant/tally-reconciliation'], ['Intercompany Recon', '/accountant/tally-intercompany'], ['Accounting Reports', '/accountant/reports'], ['Import Costing', '/finance/import-costing'], ['Importer Reconciliation', '/admin/importer-reconciliation']]],
+  ['Marketplace', [['Online Orders', '/admin/online-orders'], ['Refunds', '/admin/refunds'], ['A-Z Claims', '/admin/az-claims'], ['Amazon Unmapped', '/admin/amazon-unmapped'], ['E-commerce Recon', '/finance/ecommerce-reconciliation'], ['Fraud Watch (Phones)', '/admin/phone-alerts']]],
+  ['Legal', [['Legal Cases', '/admin/legal-cases'], ['Legal Diary', '/admin/legal-diary']]],
   ['Agents', [['Email Agent', '/admin/email-agent'], ['Finance Agent', '/agents/finance'], ['Watch Live', '/agents/finance/watch'], ['Data Inbox', '/agents/finance/inbox']]],
   ['HR & Payroll', [['Salary & Payroll', '/admin/payroll'], ['Employees', '/admin/employees'], ['Attendance', '/admin/attendance'], ['Incentives', '/admin/incentives'], ['Users', '/admin/users']]],
   ['Dealer Portal', [['Applications', '/admin/dealer-applications'], ['All Dealers', '/admin/dealers'], ['Dealer Orders', '/admin/dealer-applications?tab=orders'], ['Dealer Products', '/admin/dealer-applications?tab=products'], ['Warranty Claims', '/admin/warranty-claims'], ['Spare Parts Catalog', '/admin/spare-parts'], ['Spare Orders', '/admin/spare-orders'], ['T&C Audit', '/admin/dealer-terms']]],
@@ -105,6 +107,7 @@ export const IRON_SUPERVISOR_NAV = [
   ['Workspace', [
     ['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'], ['RTO / Returns', '/rto-returns'],
     ['Build Battery', '/production/build'],
+    ['Unit Genealogy', '/production/genealogy'],
     ['Stabilizer Scan-in', '/inventory/stabilizer-scan'],
     ['Inventory Inward', '/inventory/inward'],
     ['Dashboard', '/supervisor'],
@@ -124,6 +127,7 @@ export const IRON_SUPPORT_NAV = [
   ['Workspace', [
     ['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'], ['RTO / Returns', '/rto-returns'],
     ['Build Battery', '/production/build'],
+    ['Unit Genealogy', '/production/genealogy'],
     ['Dashboard', '/support'],
     ['Customer 360', '/customer-360'],
     ['My Calls', '/calls'],
@@ -141,8 +145,8 @@ export const IRON_SUPPORT_NAV = [
 export const IRON_ACCOUNTANT_NAV = [
   ['Ship Desk', [['Ship Desk', '/ship-desk'], ['Return Desk', '/return-desk'], ['RTO / Returns', '/rto-returns']]],
   ['Dashboard', [['Overview', '/accountant'], ['Compliance', '/admin/compliance']]],
-  ['Marketplace', [['Amazon Orders', '/operations/amazon-orders'], ['Courier Shipping', '/operations/courier-shipping'], ['Courier Tracking', '/operations/courier-tracking'], ['E-commerce Recon', '/finance/ecommerce-reconciliation'], ['Expenses & Tax Credits', '/accountant/expenses']]],
-  ['Finance', [['Finance Analytics', '/finance/analytics'], ['Finance & GST', '/finance'], ['Online Orders', '/admin/online-orders'], ['Amazon Refunds', '/admin/refunds'], ['Refund Losses (Legal)', '/admin/refund-losses'], ['A-Z Claims', '/admin/az-claims'], ['Legal Cases', '/admin/legal-cases'], ['TDS Management', '/finance/tds'], ['GST / HSN', '/finance/gst-hsn'], ['GST Audit', '/finance/gst-audit'], ['Amazon Unmapped', '/admin/amazon-unmapped'], ['Bank Match', '/finance/reconciliation'], ['Sales Register', '/accountant/sales'], ['Purchase Register', '/accountant/purchases'], ['Party Master', '/admin/parties'], ['Party Ledger', '/accountant/ledger'], ['Payments', '/accountant/payments'], ['Credit Notes', '/accountant/credit-notes'], ['Reports', '/accountant/reports'], ['Reconciliation', '/accountant/reconciliation']]],
+  ['Marketplace', [['Online Orders', '/admin/online-orders'], ['Amazon Orders', '/operations/amazon-orders'], ['Refunds', '/admin/refunds'], ['A-Z Claims', '/admin/az-claims'], ['Amazon Unmapped', '/admin/amazon-unmapped'], ['E-commerce Recon', '/finance/ecommerce-reconciliation'], ['Fraud Watch (Phones)', '/admin/phone-alerts'], ['Courier Shipping', '/operations/courier-shipping'], ['Courier Tracking', '/operations/courier-tracking']]],
+  ['Finance', [['Finance & GST', '/finance'], ['Finance Analytics', '/finance/analytics'], ['Sales Register', '/accountant/sales'], ['Purchase Register', '/accountant/purchases'], ['Party Master', '/admin/parties'], ['Party Ledger', '/accountant/ledger'], ['Payments', '/accountant/payments'], ['Credit Notes', '/accountant/credit-notes'], ['Expenses & Tax Credits', '/accountant/expenses'], ['GST Audit', '/finance/gst-audit'], ['GST / HSN', '/finance/gst-hsn'], ['TDS Management', '/finance/tds'], ['Bank Reconciliation', '/finance/bank-reconciliation'], ['Monthly Reconciliation', '/accountant/reconciliation'], ['CRM ⇄ Tally Recon', '/accountant/tally-reconciliation'], ['Intercompany Recon', '/accountant/tally-intercompany'], ['Accounting Reports', '/accountant/reports']]],
   ['Agents', [['Finance Agent', '/agents/finance'], ['Data Inbox', '/agents/finance/inbox']]],
   ['Sales', [['Quotations', '/quotations'], ['PI Pending Action', '/quotations/pending-action']]],
   ['Operations', [['Incoming Queue', '/accountant/incoming-queue'], ['Inventory', '/accountant/inventory'], ['Serial Numbers', '/inventory/serial-numbers'], ['Battery Production', '/admin/supervisor-production'],['Master SKUs', '/admin/master-sku'], ['Product Datasheets', '/admin/product-datasheets']]],
@@ -159,7 +163,7 @@ export const IRON_DEALER_NAV = [['Workspace', [['Dashboard', '/dealer'], ['Custo
 // admin menu (they're outside parties: lawyer, CA, importer). Keep these minimal.
 export const IRON_LAWYER_NAV = [['Legal', [['Legal Cases', '/admin/legal-cases'], ['Legal Diary', '/admin/legal-diary']]]];
 export const IRON_CA_NAV = [['CA', [['GST Filing', '/ca']]]];
-export const IRON_IMPORTER_NAV = [['Importer', [['Reconciliation', '/importer']]]];
+export const IRON_IMPORTER_NAV = [['Importer', [['Reconciliation', '/importer'], ['Ledger', '/importer/ledger']]]];
 
 // Pick the right sidebar for whoever is viewing (admin sees the full admin menu).
 export const NAV_BY_ROLE = {

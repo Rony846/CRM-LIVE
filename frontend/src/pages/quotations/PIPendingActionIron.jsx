@@ -70,6 +70,7 @@ export default function PIPendingAction() {
   });
   const [shippingLabelFile, setShippingLabelFile] = useState(null);
   const [invoiceFile, setInvoiceFile] = useState(null);
+  const [paymentReceived, setPaymentReceived] = useState(false);
 
   const shippingLabelRef = useRef(null);
   const invoiceRef = useRef(null);
@@ -136,6 +137,7 @@ export default function PIPendingAction() {
     });
     setShippingLabelFile(null);
     setInvoiceFile(null);
+    setPaymentReceived(false);
   };
 
   const validateConvertForm = () => {
@@ -177,6 +179,7 @@ export default function PIPendingAction() {
       formData.append('notes', convertForm.notes.trim());
       formData.append('shipping_label_pdf', shippingLabelFile);
       formData.append('invoice_pdf', invoiceFile);
+      formData.append('payment_received', paymentReceived ? 'true' : 'false');
 
       await axios.post(
         `${API}/quotations/${selectedQuotation.id}/convert-to-fulfillment`,
@@ -736,6 +739,15 @@ export default function PIPendingAction() {
                 <Label>Notes (Optional)</Label>
                 <Textarea value={convertForm.notes} onChange={(e) => setConvertForm({ ...convertForm, notes: e.target.value })} className="mt-1" placeholder="Any additional notes..." rows={2} data-testid="convert-notes" />
               </div>
+
+              {/* Payment confirmation — required when this PI has no admin-approved / Razorpay payment on file */}
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, background: paymentReceived ? '#f0fdf4' : '#fffbeb', border: `1px solid ${paymentReceived ? '#bbf7d0' : '#f5d9b0'}`, borderRadius: 8, padding: '10px 12px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={paymentReceived} onChange={(e) => setPaymentReceived(e.target.checked)} style={{ marginTop: 2 }} data-testid="convert-payment-received" />
+                <span style={{ fontSize: 12.5, color: T.iron700 }}>
+                  <b>I confirm payment has been received</b> for this PI.
+                  <span style={{ display: 'block', color: T.iron500, fontSize: 11.5, marginTop: 2 }}>Required only if payment wasn't already approved (PI Payment Approvals) or paid via the Razorpay link. Your confirmation is logged.</span>
+                </span>
+              </label>
 
               {/* Actions */}
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, paddingTop: 14, borderTop: `1px solid ${T.iron200}` }}>

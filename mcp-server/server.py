@@ -661,6 +661,80 @@ MCP_TOOLS = [
         }
     },
     {
+        "name": "create_purchase_draft",
+        "description": "Record a supplier PURCHASE invoice you parsed from a PDF/image into the CRM accountant's review queue. Extract every field EXACTLY as printed on the document — NEVER invent or estimate GST, totals, or amounts; leave a field null if it is not on the invoice. This creates a DRAFT only: nothing is posted to the books or marked paid. The accountant verifies it against the invoice and finalizes it in the Purchase Register. Use this for each supplier bill the user sends you.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "supplier_name": {"type": "string", "description": "Supplier / vendor name exactly as on the invoice"},
+                "supplier_gstin": {"type": "string", "description": "Supplier GSTIN if printed (15 chars), else omit"},
+                "invoice_number": {"type": "string", "description": "Invoice / bill number"},
+                "invoice_date": {"type": "string", "description": "Invoice date, ISO YYYY-MM-DD if possible"},
+                "firm_name": {"type": "string", "description": "Which of OUR group firms is buying (the 'Bill To' party): e.g. MGIPL, MuscleGrid Gurgaon, Electronics Bay, SPV. Omit if unclear — accountant will assign."},
+                "items": {
+                    "type": "array",
+                    "description": "Line items as printed. Do NOT guess a CRM SKU — just give the description; the accountant maps it.",
+                    "items": {"type": "object", "properties": {
+                        "description": {"type": "string", "description": "Item/product description as printed"},
+                        "hsn": {"type": "string", "description": "HSN/SAC code if shown"},
+                        "quantity": {"type": "number"},
+                        "rate": {"type": "number", "description": "Unit rate before tax"},
+                        "amount": {"type": "number", "description": "Line taxable value"},
+                        "gst_rate": {"type": "number", "description": "GST % for this line (e.g. 18)"}
+                    }}
+                },
+                "subtotal": {"type": "number", "description": "Total taxable value (before GST)"},
+                "cgst": {"type": "number", "description": "CGST amount if intra-state"},
+                "sgst": {"type": "number", "description": "SGST amount if intra-state"},
+                "igst": {"type": "number", "description": "IGST amount if inter-state"},
+                "total_gst": {"type": "number", "description": "Total tax amount"},
+                "grand_total": {"type": "number", "description": "Invoice grand total (payable)"},
+                "confidence": {"type": "string", "enum": ["high", "medium", "low"], "description": "How confident your reading is; use low if the scan was unclear"},
+                "notes": {"type": "string", "description": "Anything the accountant should double-check (blurry figure, missing GSTIN, round-off, etc.)"},
+                "invoice_base64": {"type": "string", "description": "REQUIRED: base64 of the ORIGINAL invoice file (the exact PDF/image the user sent) so the accountant can verify against the source. ALWAYS include this on every call. Read the raw bytes of the uploaded file and base64-encode them — do not skip it."},
+                "invoice_filename": {"type": "string", "description": "Filename for the attached invoice, e.g. INV-1234.pdf"}
+            },
+            "required": ["supplier_name", "invoice_base64"]
+        }
+    },
+    {
+        "name": "find_dealers",
+        "description": "Find REAL competitor-brand dealers (with unmasked phone numbers) from Google Business listings for sales outreach — e.g. brand='Luminous', city='Jaipur'. Files each new dealer as a prospect (deduped against existing prospects/parties/dealers/leads). Nothing is messaged here — after filing, send them the dealer_intro_v1 template. Do NOT use IndiaMART/JustDial (masked numbers).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "brand": {"type": "string", "description": "Competitor brand whose dealers to target, e.g. Luminous, UTL Solar, V-Guard, Livguard, Microtek"},
+                "city": {"type": "string", "description": "City or area to search, e.g. Jaipur"},
+                "limit": {"type": "integer", "description": "Max dealers to fetch (1-20, default 20)"}
+            },
+            "required": ["brand", "city"]
+        }
+    },
+    {
+        "name": "scrape_dealer_locator",
+        "description": "Scrape a competitor brand's 'find a dealer' / dealer-locator web page for real dealer contacts (name, phone, address). Pass the locator URL (UTL/Luminous/V-Guard etc.) and optionally an area/city to filter. Files new dealers as prospects (deduped). Uses our own browser + free local model. Prefer this + find_dealers over IndiaMART/JustDial (masked numbers).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "The dealer-locator / find-a-dealer results page URL"},
+                "brand": {"type": "string", "description": "Brand name, e.g. UTL Solar, Luminous, V-Guard"},
+                "area": {"type": "string", "description": "City/area/pincode to search on the page (best-effort)"}
+            },
+            "required": ["url"]
+        }
+    },
+    {
+        "name": "get_dealer_prospects",
+        "description": "List dealer prospects already found (default status 'new' = not yet contacted). Use this to pick who to send dealer_intro_v1 to.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "description": "new | contacted | interested | not_interested | all (default new)"},
+                "limit": {"type": "integer", "description": "Max to return (default 200)"}
+            }
+        }
+    },
+    {
         "name": "get_sla_breaches",
         "description": "Get tickets that have breached SLA",
         "inputSchema": {"type": "object", "properties": {}}
@@ -801,7 +875,7 @@ MCP_TOOLS = [
     # WhatsApp Tools
     {
         "name": "send_whatsapp_message",
-        "description": "Send a WhatsApp message",
+        "description": "Send a free-form WhatsApp message. ONLY works if the customer messaged us in the last 24 hours (open window). For the FIRST touch to a customer who hasn't replied yet, use send_whatsapp_template instead.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -812,11 +886,80 @@ MCP_TOOLS = [
         }
     },
     {
+        "name": "send_whatsapp_template",
+        "description": "Send an APPROVED WhatsApp TEMPLATE — the ONLY way to reach a customer who has NOT messaged us in the last 24h (cold first-touch). Use this to OPEN a conversation; once the customer replies, switch to send_whatsapp_message. Good opener: template 'service_followup' with params=[customer_first_name] (invites them to reply about their issue).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "phone": {"type": "string", "description": "Phone number with country code (e.g., 919876543210)"},
+                "template": {"type": "string", "description": "Approved template name, e.g. service_followup, service_pcb_dispatch, order_dispatched, pickup_scheduled, feedback_request"},
+                "params": {"type": "array", "items": {"type": "string"}, "description": "Body variables in order: {{1}},{{2}}... e.g. [customer_first_name]"}
+            },
+            "required": ["phone", "template"]
+        }
+    },
+    {
         "name": "get_whatsapp_status",
         "description": "Check WhatsApp connection status",
         "inputSchema": {"type": "object", "properties": {}}
     },
-    
+    {
+        "name": "get_whatsapp_conversation",
+        "description": "Read the recent WhatsApp message history with ONE customer (both their inbound messages and our outbound replies), ordered OLDEST → NEWEST. Use this to see the full context before replying. Each message has message_id, direction (inbound/outbound), text, media (with media_id to fetch via get_whatsapp_media), timestamp, and delivery status.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "phone": {"type": "string", "description": "Customer phone number (with or without country code, e.g. 919876543210)"},
+                "limit": {"type": "integer", "description": "Max messages to return (default 50, newest kept)"}
+            },
+            "required": ["phone"]
+        }
+    },
+    {
+        "name": "get_whatsapp_unread_messages",
+        "description": "List inbound customer WhatsApp messages that are still AWAITING a reply (arrived after our last outbound and not yet marked read). Use this to find conversations that need you to respond, without the user pasting messages. Omit phone to scan all customers, or pass phone to check one.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "phone": {"type": "string", "description": "Optional — limit to one customer's number"},
+                "limit": {"type": "integer", "description": "Max messages to return (default 50)"}
+            }
+        }
+    },
+    {
+        "name": "mark_whatsapp_messages_read",
+        "description": "Mark inbound customer messages as handled/read by you, so they stop showing up in get_whatsapp_unread_messages. Pass the message_id(s) you have acted on.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "message_ids": {"type": "array", "items": {"type": "string"}, "description": "List of message_id (wamid) values to mark read"}
+            },
+            "required": ["message_ids"]
+        }
+    },
+    {
+        "name": "get_whatsapp_message_status",
+        "description": "Check the delivery status of a message YOU sent: sent / delivered / read / failed. If failed, returns the provider error so you can decide whether to resend or use a template.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "message_id": {"type": "string", "description": "The message_id (wamid) returned by send_whatsapp_message"}
+            },
+            "required": ["message_id"]
+        }
+    },
+    {
+        "name": "get_whatsapp_media",
+        "description": "Fetch a customer's WhatsApp photo / video / document by its media_id (from a message's media object in get_whatsapp_conversation). Returns a downloadable signed URL, and for images also inline base64 so you can visually inspect the photo (e.g. a damaged product or an error-code display).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "media_id_or_url": {"type": "string", "description": "The media_id from a message, or an existing stored /api/files URL"}
+            },
+            "required": ["media_id_or_url"]
+        }
+    },
+
     # Discovery Tools - Help AI find correct names/IDs
     {
         "name": "list_party_names",
@@ -986,9 +1129,40 @@ MCP_TOOLS = [
 
 # ==================== Tool Execution ====================
 
+# --- Access control: when MCP_READONLY is set, only READ tools (+ an explicit write allowlist) are
+# exposed/allowed. Lets an external agent (e.g. a ChatGPT agent) read everything and do a SAFE subset of
+# writes (text a customer, open a ticket) while money/dispatch/stock writes stay blocked. ---
+import re as _re
+MCP_READONLY = os.environ.get("MCP_READONLY", "0").strip().lower() in ("1", "true", "yes", "on")
+_READ_PREFIXES = ("get_", "list_", "search_", "find_", "track_", "lookup_", "check_", "fetch_", "read_", "query_", "count_")
+_READ_EXTRA = {"smart_search",   # search-type tools without a read_ prefix
+               "mark_whatsapp_messages_read"}  # benign state-flag (marks a customer msg handled); not destructive
+# Write tools explicitly permitted even in read-only mode (env MCP_WRITE_ALLOWLIST, comma-separated).
+MCP_WRITE_ALLOW = set(x.strip() for x in os.environ.get("MCP_WRITE_ALLOWLIST", "").split(",") if x.strip())
+# Safety whitelist for send_whatsapp_message: if set, ONLY these numbers (last-10-digits) can be messaged.
+MCP_WA_WHITELIST = set(_re.sub(r"\D", "", x)[-10:] for x in os.environ.get("MCP_WA_WHITELIST", "").split(",") if x.strip())
+def _is_read_tool(name: str) -> bool:
+    name = str(name or "")
+    return name in _READ_EXTRA or name.startswith(_READ_PREFIXES)
+def _tool_allowed(name: str) -> bool:
+    return (not MCP_READONLY) or _is_read_tool(name) or (str(name) in MCP_WRITE_ALLOW)
+SERVED_TOOLS = ([t for t in MCP_TOOLS if _is_read_tool(t.get("name")) or t.get("name") in MCP_WRITE_ALLOW]
+                if MCP_READONLY else MCP_TOOLS)
+
+
 async def execute_tool(tool_name: str, arguments: dict) -> dict:
     """Execute an MCP tool and return results"""
-    
+    if not _tool_allowed(tool_name):
+        return {"error": f"'{tool_name}' is disabled on this MCP endpoint (read + safe-comms only). "
+                          f"Money/dispatch/stock actions must be done in the CRM."}
+    if tool_name in ("send_whatsapp_message", "send_whatsapp_template"):
+        _raw = str((arguments or {}).get("phone", ""))
+        _to = _re.sub(r"\D", "", _raw)[-10:]
+        _allowed = (not MCP_WA_WHITELIST) or (_to in MCP_WA_WHITELIST)
+        print(f"[MCP send_whatsapp_message] raw={_raw!r} last10={_to} whitelist={sorted(MCP_WA_WHITELIST)} allowed={_allowed}", flush=True)
+        if MCP_WA_WHITELIST and not _allowed:
+            return {"error": f"WhatsApp is in TEST mode — only whitelisted numbers can be messaged. '{_to}' "
+                             f"is NOT on the whitelist, so nothing was sent. (Ask admin to widen it.)"}
     try:
         # Inventory Tools
         if tool_name == "get_inventory":
@@ -1458,13 +1632,55 @@ async def execute_tool(tool_name: str, arguments: dict) -> dict:
         # WhatsApp Tools
         elif tool_name == "send_whatsapp_message":
             return await crm_request("POST", "/whatsapp/send", data={
-                "phone": arguments["phone"],
+                "to": arguments["phone"],
                 "message": arguments["message"]
+            })
+
+        elif tool_name == "send_whatsapp_template":
+            return await crm_request("POST", "/whatsapp/send-template", data={
+                "to": arguments["phone"],
+                "template": arguments["template"],
+                "params": arguments.get("params", []),
             })
         
         elif tool_name == "get_whatsapp_status":
             return await crm_request("GET", "/whatsapp/status")
-        
+
+        elif tool_name == "create_purchase_draft":
+            return await crm_request("POST", "/purchases/draft-from-agent", data=arguments)
+
+        elif tool_name == "find_dealers":
+            return await crm_request("POST", "/sales/find-dealers", data=arguments)
+
+        elif tool_name == "scrape_dealer_locator":
+            return await crm_request("POST", "/sales/scrape-locator", data=arguments)
+
+        elif tool_name == "get_dealer_prospects":
+            params = {"status": arguments.get("status", "new"), "limit": arguments.get("limit", 200)}
+            return await crm_request("GET", "/sales/dealer-prospects", params=params)
+
+        elif tool_name == "get_whatsapp_conversation":
+            return await crm_request("GET", "/whatsapp/conversation", params={
+                "phone": arguments["phone"], "limit": arguments.get("limit", 50)})
+
+        elif tool_name == "get_whatsapp_unread_messages":
+            params = {"limit": arguments.get("limit", 50)}
+            if arguments.get("phone"):
+                params["phone"] = arguments["phone"]
+            return await crm_request("GET", "/whatsapp/unread", params=params)
+
+        elif tool_name == "mark_whatsapp_messages_read":
+            return await crm_request("POST", "/whatsapp/mark-read", data={
+                "message_ids": arguments.get("message_ids", [])})
+
+        elif tool_name == "get_whatsapp_message_status":
+            return await crm_request("GET", "/whatsapp/message-status", params={
+                "message_id": arguments["message_id"]})
+
+        elif tool_name == "get_whatsapp_media":
+            return await crm_request("GET", "/whatsapp/media", params={
+                "media_id_or_url": arguments["media_id_or_url"]})
+
         # Discovery Tools - Help AI find correct names/IDs
         elif tool_name == "list_party_names":
             params = {}
@@ -1813,7 +2029,7 @@ async def health():
 @app.get("/mcp/tools")
 async def list_tools(_: bool = Depends(verify_api_key)):
     """List all available MCP tools"""
-    return {"tools": MCP_TOOLS}
+    return {"tools": SERVED_TOOLS}
 
 @app.post("/mcp/execute")
 async def execute_tool_endpoint(
@@ -1846,11 +2062,11 @@ async def mcp_jsonrpc(request: MCPRequest, _: bool = Depends(verify_api_key)):
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {
-                    "tools": {}
+                    "tools": {"listChanged": True}
                 },
                 "serverInfo": {
                     "name": "musclegrid-crm-mcp",
-                    "version": "1.0.0"
+                    "version": "1.2.0"
                 }
             }
         }
@@ -1860,7 +2076,7 @@ async def mcp_jsonrpc(request: MCPRequest, _: bool = Depends(verify_api_key)):
             "jsonrpc": "2.0",
             "id": request.id,
             "result": {
-                "tools": MCP_TOOLS
+                "tools": SERVED_TOOLS
             }
         }
     
@@ -1940,6 +2156,54 @@ async def mcp_sse(request: Request, _: bool = Depends(verify_api_key)):
             await asyncio.sleep(30)
     
     return EventSourceResponse(event_generator())
+
+# ==================== Fresh connector surface (bypasses ChatGPT manifest cache) ====================
+# ChatGPT caches a connector's tool manifest against the server IDENTITY (serverInfo.name) + URL, and
+# re-adding the SAME connector reuses that cache — which is why stale tool names (e.g. an ancient
+# check_whatsapp_status) persisted even after the live tools/list was correct. This is a byte-identical
+# MCP surface on a NEW path with a NEW serverInfo.name, so ChatGPT treats it as a brand-new server and
+# performs a clean discovery. Point the ChatGPT connector at:  https://mcp.musclegrid.in/support/sse
+SUPPORT_SERVER_NAME = "musclegrid-support-brain"
+SUPPORT_VERSION = "2.0.0"
+
+@app.post("/support/mcp")
+async def support_mcp_jsonrpc(request: MCPRequest, _: bool = Depends(verify_api_key)):
+    """Same MCP JSON-RPC as /mcp, but announces a fresh server identity so ChatGPT re-discovers tools."""
+    if request.method == "initialize":
+        return {"jsonrpc": "2.0", "id": request.id, "result": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {"listChanged": True}},
+            "serverInfo": {"name": SUPPORT_SERVER_NAME, "version": SUPPORT_VERSION}}}
+    elif request.method == "tools/list":
+        return {"jsonrpc": "2.0", "id": request.id, "result": {"tools": SERVED_TOOLS}}
+    elif request.method == "tools/call":
+        params = request.params or {}
+        tool_name = params.get("name")
+        arguments = params.get("arguments", {})
+        if not tool_name:
+            return {"jsonrpc": "2.0", "id": request.id,
+                    "error": {"code": -32602, "message": "Missing tool name"}}
+        result = await execute_tool(tool_name, arguments)
+        return {"jsonrpc": "2.0", "id": request.id, "result": {
+            "content": [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]}}
+    return {"jsonrpc": "2.0", "id": request.id,
+            "error": {"code": -32601, "message": f"Method not found: {request.method}"}}
+
+@app.get("/support/sse")
+async def support_sse(request: Request, _: bool = Depends(verify_api_key)):
+    """SSE handshake for the fresh /support connector — hands the client the /support/mcp POST endpoint."""
+    async def event_generator():
+        yield {"event": "endpoint", "data": json.dumps({"endpoint": "/support/mcp", "method": "POST"})}
+        while True:
+            if await request.is_disconnected():
+                break
+            yield {"event": "ping", "data": ""}
+            await asyncio.sleep(30)
+    return EventSourceResponse(event_generator())
+
+@app.get("/support/tools")
+async def support_tools(_: bool = Depends(verify_api_key)):
+    return {"tools": SERVED_TOOLS}
 
 # ==================== Convenience Endpoints ====================
 

@@ -502,6 +502,82 @@ async def answer_data(subject: str, body: str, sender: str, tool_executor, allow
         return {"reply": "", "model_ok": False, "tool_calls": calls}
 
 
+# ===================== LOCAL (qwen) CRM ANALYST — powers the `qq` terminal =====================
+# Same read-only QUERY_TOOLS, but the loop runs FREE on the local qwen 32B via Ollama's function-calling,
+# plus a queue_task tool so the founder can hand work to Claude Code straight from the qq chat.
+QUEUE_TASK_TOOL = {
+    "name": "queue_task",
+    "description": "Add ONE task to Claude Code's work queue (the CRM engineer/agent will do queued tasks later, "
+                   "one by one). Call this when the founder says 'queue this', 'add a task', 'tell Claude to…', or "
+                   "gives a list of things to build/fix/investigate. One call per distinct task; make each task "
+                   "self-contained and specific.",
+    "input_schema": {"type": "object", "properties": {
+        "task": {"type": "string", "description": "the instruction for Claude Code, self-contained and specific"},
+        "priority": {"type": "string", "enum": ["normal", "high"], "description": "default normal"},
+    }, "required": ["task"]},
+}
+
+_DATA_SYS_LOCAL = (
+    "You are the founder's private CRM analyst for MuscleGrid (an Indian solar/inverter/battery company), running "
+    "locally. Answer questions about the business by CALLING the read-only tools provided and basing every number on "
+    "what they return — NEVER invent figures. Money is Indian Rupees (₹, lakh/crore). Be concise and direct. "
+    "If the founder asks you to DO something in the CRM (build/fix/investigate/change), don't attempt it yourself — "
+    "call queue_task to hand it to Claude Code (one call per task). If the tools can't answer, say so plainly."
+)
+
+
+def _tools_ollama(tool_list):
+    """Anthropic-style tool schemas -> Ollama/OpenAI function-calling format. Descriptions are trimmed to
+    the first sentence: on a CPU box, prompt-eval of long tool schemas every round-trip dominates latency."""
+    def _short(desc):
+        d = (desc or "").strip()
+        first = d.split(". ")[0]
+        return (first if len(first) >= 25 else d)[:170]
+    return [{"type": "function", "function": {
+        "name": t["name"], "description": _short(t["description"]), "parameters": t["input_schema"]}}
+        for t in tool_list]
+
+
+async def answer_data_local(question: str, tool_executor, model: str = None) -> dict:
+    """Answer a founder DATA question grounded in the CRM on the local qwen brain (32B) with the read-only
+    QUERY_TOOLS + queue_task. tool_executor(name, params)->dict. Returns {reply, model_ok, tool_calls}."""
+    import os as _os, json as _json, httpx as _httpx
+    base = (_os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434").rstrip("/")
+    mdl = model or _os.environ.get("QQ_MODEL") or "qwen2.5:14b-instruct"  # 14B for interactive speed on CPU
+    tools = _tools_ollama(QUERY_TOOLS + [QUEUE_TASK_TOOL])
+    messages = [{"role": "system", "content": _DATA_SYS_LOCAL},
+                {"role": "user", "content": (question or "")[:6000]}]
+    calls = 0
+    try:
+        async with _httpx.AsyncClient(timeout=300.0) as hc:
+            for _ in range(8):
+                r = await hc.post(f"{base}/api/chat", json={
+                    "model": mdl, "messages": messages, "stream": False,
+                    "tools": tools, "keep_alive": "30m", "options": {"temperature": 0.2}})
+                r.raise_for_status()
+                msg = (r.json().get("message") or {})
+                tcs = msg.get("tool_calls") or []
+                if not tcs:
+                    return {"reply": (msg.get("content") or "").strip(), "model_ok": True, "tool_calls": calls}
+                messages.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": tcs})
+                for tc in tcs:
+                    calls += 1
+                    fn = tc.get("function") or {}
+                    name = fn.get("name"); args = fn.get("arguments") or {}
+                    if isinstance(args, str):
+                        try: args = _json.loads(args)
+                        except Exception: args = {}
+                    try:
+                        out = await tool_executor(name, args)
+                    except Exception as e:
+                        out = {"error": str(e)}
+                    messages.append({"role": "tool", "content": _json.dumps(out, default=str)[:6000]})
+            return {"reply": "I couldn't finish that with the data tools available.", "model_ok": False, "tool_calls": calls}
+    except Exception as e:
+        logger.error(f"answer_data_local failed: {e}")
+        return {"reply": "", "model_ok": False, "tool_calls": calls}
+
+
 # --------------------------------------------------------------------------- #
 # 3) Customer reply drafting.                                                 #
 # --------------------------------------------------------------------------- #
@@ -587,9 +663,12 @@ _SUPPORT_HANDOFF = ("\n- You are TAKING OVER this chat from Pratibha right now. 
                     "problem dekhungi\"), then get straight to helping. Do NOT introduce yourself again after that.")
 
 _SUPPORT_SYS = """HOW YOU TALK
-- PROFESSIONAL, courteous Hinglish (Hindi in Roman letters). Address the customer respectfully using "aap". Do NOT \
-use casual words like "bhai", "yaar", "bro", or "dost". Keep it short, clear and polite — like a professional support \
-executive. At most one emoji. No "Dear", no sign-off, no email address, never mention any internal email.
+- PROFESSIONAL, courteous Hinglish (Hindi in Roman letters). Address EVERY customer as "Sir" or "Ma'am" (with "aap"). \
+NEVER use casual words like "bhai", "yaar", "bro", or "dost" — regardless of the model running you. Keep it short, clear \
+and polite — like a professional support executive. At most one emoji. No "Dear", no sign-off, no email address, never \
+mention any internal email.
+- You are a FEMALE agent: ALWAYS use feminine Hindi verb forms ("kar rahi hoon", "bata rahi hoon", "dekh rahi hoon", \
+"karungi"). NEVER use masculine forms ("kar raha hoon", "karke deta hoon", "karunga").
 - Be empathetic and professional. Safety first: for burning smell / sparks / shock, tell them to switch off and unplug at once.
 
 WHAT YOU CAN DO (tools — use your judgement on when)
@@ -776,12 +855,44 @@ Judge the LATEST customer message, using the recent turns as context.
 Respond with ONLY compact JSON: {"tier":"easy|hard"}"""
 
 
+async def _local_support(system_text: str, messages: list, brain: str) -> dict:
+    """Answer a support turn on the LOCAL brain (no tools). The fallback when Claude is unavailable
+    (e.g. the Anthropic usage cap) so WhatsApp support keeps working for free. Senior turns prefer the
+    32B (jasmine); front-line prefers the 14B (pratibha); either degrades to whichever local brain is up."""
+    try:
+        from utils import brain_registry
+        order = [brain, "jasmine", "pratibha"]
+        pick = next((b for b in order if brain_registry.available(b)), None)
+        if not pick:
+            return None
+        loc = await brain_registry.complete(
+            pick, system=system_text,
+            messages=[m for m in messages if isinstance(m.get("content"), str)],
+            max_tokens=700, temperature=0.3)
+        rep = (loc.get("text") or "").strip()
+        if loc.get("model_ok") and rep:
+            return {"reply": rep, "model_ok": True, "tool_calls": 0, "brain": f"{pick}-local"}
+    except Exception as e:
+        logger.warning(f"local support fallback failed: {e}")
+    return None
+
+
+def _local_brain_up() -> bool:
+    try:
+        from utils import brain_registry
+        return brain_registry.available("pratibha") or brain_registry.available("jasmine")
+    except Exception:
+        return False
+
+
 async def support_triage(conversation: list) -> str:
     """Router: pick the cheap brain (easy turns) or the smart brain (hard turns). A tiny Haiku call.
-    Fails safe to 'hard' on any doubt or error — we never want to under-serve a real problem to save a rupee."""
+    Fails safe to 'hard' on any doubt or error — we never want to under-serve a real problem to save a rupee.
+    BUT when Claude is unavailable (usage cap), routing 'hard' just sends the turn to a dead senior brain;
+    so if a local brain is up, keep the turn on the working local front-line path ('easy') instead."""
     client = _client_or_none()
     if client is None:
-        return "hard"
+        return "easy" if _local_brain_up() else "hard"
     convo = [m for m in conversation if m.get("content")][-6:]
     lines = []
     for m in convo:
@@ -798,7 +909,7 @@ async def support_triage(conversation: list) -> str:
         return "easy" if tier == "easy" else "hard"
     except Exception as e:
         logger.error(f"support_triage failed: {e}")
-        return "hard"
+        return "easy" if _local_brain_up() else "hard"
 
 
 async def support_agent(conversation: list, situation: str, tool_executor, brain: str = None, handoff: bool = False) -> dict:
@@ -860,6 +971,9 @@ async def support_agent(conversation: list, situation: str, tool_executor, brain
         return {"reply": "", "model_ok": False, "tool_calls": calls}
     except Exception as e:
         logger.error(f"Pratibha support_agent failed: {e}")
+        loc = await _local_support(system_text, messages, "jasmine" if is_senior else "pratibha")
+        if loc:
+            return loc
         return {"reply": "", "model_ok": False, "tool_calls": calls}
 
 

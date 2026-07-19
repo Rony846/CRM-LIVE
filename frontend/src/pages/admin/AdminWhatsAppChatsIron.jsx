@@ -5,7 +5,15 @@ import { User, Bot, Send, Download, Power, MessageCircle } from 'lucide-react';
 import IronShell from '@/components/iron/IronShell';
 import { T, Caps, IronCard, mono, badgeStyle } from '@/components/iron/IronKit';
 
-const fmt = (iso) => (iso ? new Date(iso).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '');
+// WhatsApp timestamps arrive as ISO (outgoing/Kommo) OR unix epoch strings (Cloud incoming, s or ms).
+const fmt = (v) => {
+  if (!v) return '';
+  let d;
+  const s = String(v).trim();
+  if (/^\d+$/.test(s)) { const n = Number(s); d = new Date(n > 1e12 ? n : n * 1000); }
+  else d = new Date(s);
+  return isNaN(d.getTime()) ? '' : d.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+};
 
 // Outgoing message author badge -> label + Iron badge tone.
 const brainLabel = (m) => {
@@ -27,12 +35,13 @@ export default function AdminWhatsAppChats() {
   const [loading, setLoading] = useState(true);
   const [reply, setReply] = useState('');
   const [sending, setSending] = useState(false);
+  const [search, setSearch] = useState('');
   const endRef = useRef(null);
 
-  const loadConvos = useCallback(async () => {
+  const loadConvos = useCallback(async (q = '') => {
     setLoading(true);
     try {
-      const { data } = await axios.get(`${API}/admin/whatsapp-chats`, { headers });
+      const { data } = await axios.get(`${API}/admin/whatsapp-chats`, { headers, params: q ? { search: q } : {} });
       setConvos(data.conversations || []);
     } catch (e) { console.error('chats load failed', e); }
     finally { setLoading(false); }
@@ -70,28 +79,54 @@ export default function AdminWhatsAppChats() {
   };
 
   useEffect(() => { loadConvos(); }, [loadConvos]);
+  // Debounced server-side search across all conversations (not just the loaded page).
+  useEffect(() => {
+    const id = setTimeout(() => loadConvos(search.trim()), 300);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
 
   const bubbleIn = { background: T.iron100, border: `1px solid ${T.iron200}`, color: T.iron900 };
   const bubbleOut = { background: '#FDEEE6', border: `1px solid #F6D8BA`, color: T.iron900 };
+  // Channel tag → little pill. Cloud = our official line; Kommo = mirrored from Kommo.
+  const chPill = (ch) => {
+    const on = ch === 'kommo';
+    return (
+      <span key={ch} style={{
+        fontSize: 8.5, fontWeight: 800, letterSpacing: 0.3, textTransform: 'uppercase',
+        padding: '1px 5px', borderRadius: 4, flexShrink: 0,
+        background: on ? '#EEF2FF' : '#ECFDF5', color: on ? '#4338CA' : '#047857',
+        border: `1px solid ${on ? '#C7D2FE' : '#A7F3D0'}`,
+      }}>{on ? 'Kommo' : 'Cloud'}</span>
+    );
+  };
 
   return (
     <IronShell
       title="Customer WhatsApp"
-      subtitle="OFFICIAL WHATSAPP · PRATIBHA + KALPANA"
-      onRefresh={loadConvos}
+      subtitle="UNIFIED INBOX · CLOUD + KOMMO"
+      onRefresh={() => loadConvos(search.trim())}
     >
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontFamily: T.headline, fontWeight: 700, fontSize: 17, color: T.iron900, display: 'flex', alignItems: 'center', gap: 8 }}>
           <MessageCircle size={18} color={T.orange} /> Customer WhatsApp Chats
         </div>
         <div style={{ fontSize: 12.5, color: T.iron500, marginTop: 3 }}>
-          What Pratibha &amp; Kalpana are saying to customers (official WhatsApp).
+          Every customer WhatsApp conversation in one place — <b>Cloud</b> (our official line, Pratibha&nbsp;+&nbsp;Kalpana) and <b>Kommo</b>-mirrored chats.
         </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,2fr)', gap: 14, height: 'calc(100vh - 210px)' }}>
         {/* Conversation list */}
-        <IronCard pad={0} style={{ overflowY: 'auto', minWidth: 0 }}>
+        <IronCard pad={0} style={{ overflowY: 'auto', minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ position: 'sticky', top: 0, zIndex: 1, padding: 10, background: T.white, borderBottom: `1px solid ${T.iron200}` }}>
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search name, phone or message…"
+              style={{ width: '100%', border: `1px solid ${T.iron200}`, borderRadius: 6, padding: '7px 10px', fontSize: 12.5, color: T.iron900, background: T.white, outline: 'none', boxSizing: 'border-box' }}
+            />
+          </div>
           {convos.length === 0 && !loading && (
             <div style={{ padding: 24, textAlign: 'center', color: T.iron400, fontSize: 12.5 }}>No customer conversations yet.</div>
           )}
@@ -114,7 +149,10 @@ export default function AdminWhatsAppChats() {
                 <span style={{ fontFamily: T.headline, fontWeight: 700, fontSize: 13, color: T.iron900, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name || c.phone}</span>
                 <span style={{ ...mono, fontSize: 10.5, color: T.iron400, flexShrink: 0 }}>{fmt(c.last_at).split(',').pop()}</span>
               </div>
-              <div style={{ ...mono, fontSize: 11, color: T.iron500, marginTop: 2 }}>{c.phone} · {c.messages} msgs</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 3 }}>
+                {(c.channels || []).map(chPill)}
+                <span style={{ ...mono, fontSize: 11, color: T.iron500 }}>{c.phone} · {c.messages} msgs</span>
+              </div>
               <div style={{ fontSize: 11.5, color: T.iron500, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {c.last_dir === 'outgoing' ? '↩ ' : ''}{c.last_text}
               </div>
@@ -161,6 +199,7 @@ export default function AdminWhatsAppChats() {
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
                           {out ? <Bot size={12} color={T.orange} /> : <User size={12} color={T.iron400} />}
                           {bl && <span style={{ ...badgeStyle(bl.tone), fontSize: 9, padding: '1px 6px' }}>{bl.name}</span>}
+                          {m.channel === 'kommo' && chPill('kommo')}
                           <span style={{ ...mono, fontSize: 9.5, color: T.iron400 }}>{fmt(m.received_at || m.ts)}</span>
                         </div>
                         {m.media_url && (

@@ -81,7 +81,7 @@ const presetRange = (preset) => {
   return { from: '', to: '' };
 };
 
-export default function AmazonRefunds() {
+export default function AmazonRefunds({ embedded }) {
   const { token } = useAuth();
   const headers = useMemo(() => ({ Authorization: `Bearer ${token}` }), [token]);
 
@@ -363,7 +363,7 @@ export default function AmazonRefunds() {
 
   const clearAllFilters = () => { setFirmId('all'); setRefundType('all'); setSource('all'); setFakeOnly(false); setDisputedOnly(false); setOrphanOnly(false); setFromDate(''); setToDate(''); setActivePreset(null); };
 
-  return (
+  const shell = (kids) => embedded ? kids : (
     <IronShell
       title="Amazon Refunds"
       subtitle="REFUNDS & A-Z CLAIMS · LOSS DEFENSE"
@@ -377,7 +377,9 @@ export default function AmazonRefunds() {
           </button>
           <button onClick={handleExport} style={outlineBtn}><Download size={14} /> CSV (E)</button>
         </div>
-      }>
+      }>{kids}</IronShell>
+  );
+  return shell(<>
 
       {/* Cron status banner */}
       {cronLastRun && (
@@ -795,8 +797,7 @@ export default function AmazonRefunds() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </IronShell>
-  );
+  </>);
 }
 
 // ─── Sub-components ───

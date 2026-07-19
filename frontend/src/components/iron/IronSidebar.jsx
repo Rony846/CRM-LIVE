@@ -18,7 +18,7 @@ const GROUP_ICON = {
 
 /* Reusable Iron Console dark sidebar with the COMPLETE grouped nav (nothing dropped vs the
    legacy menu). Collapsible groups; the group holding the active route auto-expands. */
-export default function IronSidebar({ nav, roleLabel }) {
+export default function IronSidebar({ nav, roleLabel, mobile = false }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
@@ -46,7 +46,7 @@ export default function IronSidebar({ nav, roleLabel }) {
   }, [location.pathname, location.search]);
 
   return (
-    <aside style={{ width: 226, flex: 'none', background: T.sidebar, color: '#fff', display: 'flex', flexDirection: 'column', padding: '18px 12px 14px', position: 'sticky', top: 0, height: '100vh' }}>
+    <aside style={{ width: 226, flex: 'none', background: T.sidebar, color: '#fff', display: 'flex', flexDirection: 'column', padding: '18px 12px 14px', position: mobile ? 'relative' : 'sticky', top: 0, height: '100vh' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '0 6px 16px', cursor: 'pointer', flex: 'none' }} onClick={() => navigate(home)}>
         <img src="/redesign/mg-monogram.png" alt="MG" style={{ width: 34, height: 34 }} />
         <div>

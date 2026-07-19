@@ -22,7 +22,7 @@ const STATUS_ROW_TONE = {
 const inputStyle = { border: `1px solid ${T.iron200}`, borderRadius: 6, padding: '7px 10px', fontSize: 12.5, color: T.iron900, background: T.white, fontFamily: T.body, outline: 'none' };
 const selectStyle = { ...inputStyle, cursor: 'pointer' };
 
-export default function AmazonRefundLosses() {
+export default function AmazonRefundLosses({ embedded }) {
   const { token } = useAuth();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -125,8 +125,10 @@ export default function AmazonRefundLosses() {
     </div>
   );
 
-  return (
-    <IronShell title="Refund Losses" subtitle="LEGAL RECOVERY · AMAZON" onRefresh={load} headerRight={headerRight}>
+  const shell = (kids) => embedded ? kids : (
+    <IronShell title="Refund Losses" subtitle="LEGAL RECOVERY · AMAZON" onRefresh={load} headerRight={headerRight}>{kids}</IronShell>
+  );
+  return shell(<>
       {/* Intro */}
       <div style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: T.headline, fontWeight: 700, fontSize: 15, color: T.iron900 }}>
@@ -257,6 +259,5 @@ export default function AmazonRefundLosses() {
           </div>
         )}
       </IronCard>
-    </IronShell>
-  );
+  </>);
 }

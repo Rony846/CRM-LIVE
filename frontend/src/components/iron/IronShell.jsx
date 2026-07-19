@@ -36,9 +36,9 @@ export default function IronShell({ title, subtitle, nav, roleLabel = 'Admin Con
         <>
           <div onClick={() => setDrawer(false)} style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(0,0,0,.5)',
             opacity: drawer ? 1 : 0, pointerEvents: drawer ? 'auto' : 'none', transition: 'opacity .2s' }} />
-          <div style={{ position: 'fixed', top: 0, left: 0, height: '100vh', zIndex: 61, boxShadow: drawer ? '4px 0 24px rgba(0,0,0,.4)' : 'none',
-            transform: drawer ? 'translateX(0)' : 'translateX(-100%)', transition: 'transform .22s ease' }}>
-            <IronSidebar nav={nav} roleLabel={roleLabel} />
+          <div style={{ position: 'fixed', top: 0, left: 0, width: 226, height: '100vh', overflow: 'hidden', zIndex: 61, boxShadow: drawer ? '4px 0 24px rgba(0,0,0,.4)' : 'none',
+            transform: drawer ? 'translateX(0)' : 'translateX(-100%)', transition: 'transform .22s ease', willChange: 'transform' }}>
+            <IronSidebar nav={nav} roleLabel={roleLabel} mobile />
           </div>
         </>
       ) : (

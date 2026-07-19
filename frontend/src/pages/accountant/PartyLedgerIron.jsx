@@ -34,11 +34,15 @@ export default function PartyLedger() {
   const [parties, setParties] = useState([]);
   const [selectedPartyId, setSelectedPartyId] = useState('');
   const [ledgerData, setLedgerData] = useState(null);
+  const [tally, setTally] = useState(null);  // authoritative Tally balances for the selected party
   const [dateRange, setDateRange] = useState({ from: '', to: '' });
   const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
     fetchParties();
+    // Deep-link from the Tally reconciliation view: ?party=<id> pre-selects & loads that party.
+    const pid = new URLSearchParams(window.location.search).get('party');
+    if (pid) { setSelectedPartyId(pid); fetchLedger(pid); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
@@ -69,6 +73,12 @@ export default function PartyLedger() {
         params
       });
       setLedgerData(res.data);
+      // Authoritative Tally balance (from the read-only synced mirror) for this party.
+      setTally(null);
+      try {
+        const t = await axios.get(`${API}/parties/${partyId}/tally`, { headers: { Authorization: `Bearer ${token}` } });
+        setTally(t.data?.tally_balances || []);
+      } catch { setTally([]); }
     } catch (error) {
       toast.error('Failed to load ledger');
     } finally {
@@ -95,6 +105,17 @@ export default function PartyLedger() {
            p.phone?.includes(search) ||
            p.gstin?.toLowerCase().includes(search);
   });
+
+  // CRM vs Tally reconciliation. CRM balance: +DR (receivable) / -CR (payable). Tally net =
+  // receivable - payable across matched firms. Flag when they disagree beyond a small tolerance.
+  let recon = null;
+  if (tally && tally.length && ledgerData) {
+    const tallyNet = tally.reduce((s, t) => s + (t.receivable || 0) - (t.payable || 0), 0);
+    const crmNet = ledgerData.current_balance || 0;
+    const diff = crmNet - tallyNet;
+    const tol = Math.max(1, 0.005 * Math.max(Math.abs(crmNet), Math.abs(tallyNet)));
+    recon = { crmNet, tallyNet, diff, mismatch: Math.abs(diff) > tol };
+  }
 
   const exportCSV = () => {
     if (!ledgerData?.entries?.length) {
@@ -224,6 +245,46 @@ export default function PartyLedger() {
                 </div>
               </IronCard>
             </div>
+          )}
+
+          {/* Authoritative Tally balance (read-only, from the synced books) */}
+          {tally && tally.length > 0 && (
+            <IronCard pad={14} style={{ marginBottom: 14, borderLeft: `3px solid ${T.blue}` }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+                <Caps size={9} color={T.blue}>Tally — authoritative books</Caps>
+                <span style={{ fontSize: 10, color: T.iron400 }}>
+                  read-only · synced {tally[0].synced_at ? new Date(tally[0].synced_at).toLocaleDateString() : ''}
+                </span>
+                {recon && (recon.mismatch ? (
+                  <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 5, background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c', borderRadius: 999, padding: '3px 10px', fontSize: 11, fontWeight: 800 }}>
+                    ⚠ CRM ≠ Tally · Δ ₹{inr(Math.abs(recon.diff))}
+                  </span>
+                ) : (
+                  <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 5, background: '#f0fdf4', border: '1px solid #bbf7d0', color: '#15803d', borderRadius: 999, padding: '3px 10px', fontSize: 11, fontWeight: 800 }}>
+                    ✓ Matches CRM
+                  </span>
+                ))}
+              </div>
+              {recon && recon.mismatch && (
+                <div style={{ marginBottom: 10, fontSize: 11.5, color: T.iron600 || T.iron500 }}>
+                  CRM says <b style={{ ...mono }}>₹{inr(Math.abs(recon.crmNet))} {recon.crmNet >= 0 ? 'DR' : 'CR'}</b>, Tally says <b style={{ ...mono }}>₹{inr(Math.abs(recon.tallyNet))} {recon.tallyNet >= 0 ? 'DR' : 'CR'}</b> — difference <b style={{ color: '#b91c1c' }}>₹{inr(Math.abs(recon.diff))}</b>. Review this party's entries.
+                </div>
+              )}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(230px,1fr))', gap: 10 }}>
+                {tally.map((t, i) => (
+                  <div key={i} style={{ border: `1px solid ${T.iron200}`, borderRadius: 8, padding: '10px 12px' }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: T.iron700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.company}</div>
+                    <div style={{ ...mono, fontSize: 22, fontWeight: 800, marginTop: 4, color: t.payable > 0 ? T.rose : T.green }}>
+                      ₹{inr(Math.abs(t.closing_balance || t.payable || t.receivable || 0))}
+                    </div>
+                    <Caps size={8.5} color={T.iron400}>
+                      {t.payable > 0 ? 'Payable (we owe)' : t.receivable > 0 ? 'Receivable' : (t.group || '')}
+                    </Caps>
+                    <div style={{ fontSize: 10, color: T.iron400, marginTop: 3 }}>{t.group} · matched by {t.matched_by}</div>
+                  </div>
+                ))}
+              </div>
+            </IronCard>
           )}
 
           {/* Ledger Entries */}

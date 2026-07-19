@@ -74,11 +74,10 @@ export default function CustomerDashboard() {
 
   const formatDate = (dateStr) => {
     if (!dateStr) return '-';
-    return new Date(dateStr).toLocaleDateString('en-IN', {
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric'
-    });
+    const s = String(dateStr).trim();
+    const d = /^\d+$/.test(s) ? new Date(Number(s) > 1e12 ? Number(s) : Number(s) * 1000) : new Date(s);
+    if (isNaN(d.getTime())) return '-'; // never render "Invalid Date"
+    return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
   };
 
   // Count quotations needing action

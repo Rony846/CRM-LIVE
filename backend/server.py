@@ -3,7 +3,7 @@ MuscleGrid CRM - Enterprise Grade Support System
 Version 2.0 - Full Featured Production Ready
 """
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, BackgroundTasks, Body, Header
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, BackgroundTasks, Body, Header, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, Response
@@ -561,6 +561,39 @@ async def create_indexes():
             replace_existing=True
         )
 
+        # Call recording archival — download real Smartflo recordings to our storage before
+        # TATA purges them (they serve a silent ~144-byte stub once a recording is gone).
+        scheduler.add_job(
+            scheduled_archive_call_recordings,
+            IntervalTrigger(minutes=int(os.environ.get("CALL_RECORDING_ARCHIVE_INTERVAL_MIN", "15"))),
+            id="call_recording_archive",
+            name="Call recording archival (Smartflo -> storage before purge)",
+            replace_existing=True,
+            misfire_grace_time=600,
+        )
+
+        # Office print-PC watchdog — WhatsApp the founder when the print computer goes offline
+        # (and when it recovers), so a dead printer is caught before staff hit failed prints.
+        scheduler.add_job(
+            scheduled_print_pc_watchdog,
+            IntervalTrigger(minutes=int(os.environ.get("PRINT_PC_WATCHDOG_MIN", "5"))),
+            id="print_pc_watchdog",
+            name="Office print-PC offline watchdog (WhatsApp alert)",
+            replace_existing=True,
+            misfire_grace_time=300,
+        )
+
+        # Tally read-only nightly sync — mirror the loaded company's ledgers/balances into the CRM.
+        # Best-effort: needs the laptop online + Tally open with a company loaded (else it skips).
+        scheduler.add_job(
+            scheduled_tally_sync,
+            CronTrigger(hour=int(os.environ.get("TALLY_SYNC_HOUR", "1")), minute=15),
+            id="tally_sync",
+            name="Tally read-only ledger sync (nightly)",
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
+
         # Bill of Entry (customs OOC copy) ingest — watches service@ for ICEGATE OOC emails,
         # parses each BoE PDF and books it as an import_shipment (customs IGST = ITC). Opt-in via
         # BOE_INGEST_ENABLED; cadence BOE_INGEST_INTERVAL_HOURS (default 6h).
@@ -605,6 +638,18 @@ async def create_indexes():
             name="RTO/returns reconcile (detect returns into worklist)",
             replace_existing=True,
             misfire_grace_time=1800,
+        )
+
+        # Reverse-pickup ↔ Bigship-warehouse reconcile — panel-booked reverse pickups create a warehouse at
+        # the customer's address but never sync to the CRM, so tickets look falsely "not picked up". Match
+        # open tickets to warehouses by phone and stamp the pickup on. Default every 12h.
+        scheduler.add_job(
+            reconcile_pickups_with_warehouses,
+            IntervalTrigger(hours=int(os.environ.get("PICKUP_WAREHOUSE_RECONCILE_HOURS", "12"))),
+            id="pickup_warehouse_reconcile",
+            name="Reverse-pickup ↔ Bigship-warehouse reconcile",
+            replace_existing=True,
+            misfire_grace_time=3600,
         )
 
         # Nightly Amazon sync — pulls fresh orders + refunds + A-Z claims for every
@@ -2961,8 +3006,10 @@ class GateScanCreate(BaseModel):
     scan_type: str  # inward or outward
     tracking_id: str
     courier: Optional[str] = None
+    channel: Optional[str] = None       # outward dispatch channel: Amazon / Delhivery / Flipkart / Others
     notes: Optional[str] = None
     serial: Optional[str] = None  # unit serial scanned at the gate (outward) — binds the real unit to the order
+    auto_complete: Optional[bool] = False  # batch outward: finish the scan in one call (no photo needed)
 
 
 class GateTrackingLookup(BaseModel):
@@ -10443,6 +10490,29 @@ async def admin_close_ticket(
     
     return {"message": "Ticket closed successfully"}
 
+
+@api_router.post("/admin/tickets/{ticket_id}/note")
+async def admin_add_ticket_note(
+    ticket_id: str,
+    payload: dict = Body(default={}),
+    user: dict = Depends(require_roles(["admin", "call_support", "supervisor", "service_agent", "dispatcher"]))
+):
+    """Append a free-text note to a ticket WITHOUT changing status — e.g. Angad jotting 'pickup done'.
+    Accepts the ticket id OR ticket_number. The note lands in the ticket history timeline."""
+    note = (payload.get("note") or "").strip()
+    if len(note) < 2:
+        raise HTTPException(status_code=400, detail="Note is required")
+    t = await db.tickets.find_one({"$or": [{"id": ticket_id}, {"ticket_number": ticket_id}]}, {"_id": 0, "id": 1})
+    if not t:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    now = datetime.now(timezone.utc).isoformat()
+    who = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or user.get("email")
+    await db.tickets.update_one({"id": t["id"]}, {
+        "$set": {"updated_at": now},
+        "$push": {"history": {"action": "Note", "note": note, "detail": note, "by": who, "at": now}}})
+    return {"ok": True, "message": "Note added"}
+
+
 class AdminChangeTicketStatus(BaseModel):
     new_status: str
     notes: str
@@ -11167,6 +11237,47 @@ async def create_sales_invoice_from_dispatch(dispatch_doc: dict, db):
 
 # ==================== DISPATCH ENDPOINTS ====================
 
+# On dispatch, WhatsApp the customer a "your order is on its way + activate warranty" message via the
+# Cloud API (the puppeteer bridge is whitelist-locked, so proactive customer msgs must use an approved
+# Meta template). No-op until an approved template name is set in DISPATCH_WA_TEMPLATE — so it stays dark
+# until the founder has the template live. Idempotent per dispatch; fire-and-forget.
+DISPATCH_WA_TEMPLATE = os.environ.get("DISPATCH_WA_TEMPLATE", "").strip()
+DISPATCH_WA_BASE_URL = os.environ.get("DISPATCH_WA_BASE_URL", "https://newcrm.musclegrid.in").rstrip("/")
+
+
+async def _notify_customer_dispatched(dispatch_doc: dict):
+    """Send the dispatch → warranty-activation WhatsApp to the customer. Guarded so it never breaks the
+    dispatch flow and only fires when a template is configured + Cloud API is enabled + phone is valid."""
+    try:
+        if not DISPATCH_WA_TEMPLATE or not whatsapp_cloud.enabled():
+            return
+        did = dispatch_doc.get("id")
+        phone = re.sub(r"\D", "", str(dispatch_doc.get("customer_phone") or dispatch_doc.get("phone") or ""))[-10:]
+        if not did or len(phone) != 10 or phone[0] in "012345":   # not a real Indian mobile (or masked)
+            return
+        if await db.dispatch_wa_log.find_one({"_id": did}):        # already messaged for this dispatch
+            return
+        serial = (dispatch_doc.get("serial_number")
+                  or (dispatch_doc.get("serial_numbers") or dispatch_doc.get("serials") or [None])[0] or "")
+        name = (dispatch_doc.get("customer_name") or "there").strip().split(" ")[0][:20] or "there"
+        order_ref = (dispatch_doc.get("order_id") or dispatch_doc.get("marketplace_order_id")
+                     or dispatch_doc.get("dispatch_number") or "your order")
+        components = [{"type": "body", "parameters": [
+            {"type": "text", "text": name},
+            {"type": "text", "text": str(order_ref)[:34]}]}]
+        # Dynamic URL button suffix = serial → opens /warranty/<serial> (the prefilled activation page).
+        if serial:
+            components.append({"type": "button", "sub_type": "url", "index": "0",
+                               "parameters": [{"type": "text", "text": str(serial)}]})
+        res = await whatsapp_cloud.send_template("91" + phone, DISPATCH_WA_TEMPLATE, components=components)
+        await db.dispatch_wa_log.insert_one({
+            "_id": did, "phone": phone, "serial": serial, "order_ref": order_ref,
+            "template": DISPATCH_WA_TEMPLATE, "sent_at": datetime.now(timezone.utc).isoformat(),
+            "ok": bool(res.get("ok")), "wamid": res.get("wamid"), "error": res.get("error")})
+    except Exception as e:
+        logger.warning(f"dispatch WhatsApp notify failed: {e}")
+
+
 @api_router.post("/dispatches", response_model=DispatchResponse)
 async def create_dispatch(
     dispatch_type: str = Form(...),
@@ -11514,7 +11625,10 @@ async def create_dispatch(
             asyncio.create_task(send_dispatch_email(dispatch_doc, ticket_for_email))
         else:
             asyncio.create_task(send_dispatch_email(dispatch_doc))
-    
+
+    # WhatsApp the customer: order dispatched + activate-warranty link (idempotent, template-gated).
+    asyncio.create_task(_notify_customer_dispatched(dispatch_doc))
+
     # Auto-create customer party if not exists (for sales invoice linking)
     await ensure_customer_party(
         customer_name=customer_name,
@@ -11795,6 +11909,9 @@ async def update_dispatch_status(
                     logger.info(f"Auto-registered {len(warranties)} warranties for dispatch {dispatch_id}")
             except Exception as e:
                 logger.error(f"Failed to auto-register warranty: {str(e)}")
+
+            # WhatsApp the customer on the actual scan-out: order dispatched + activate-warranty link.
+            asyncio.create_task(_notify_customer_dispatched(dispatch))
             
             # If this is an amazon_order, create a feedback call task for call support
             if dispatch.get("dispatch_type") == "amazon_order":
@@ -15202,11 +15319,15 @@ async def get_all_tickets_admin(
     query = {}
     
     if search:
+        _s = re.escape(search.strip())
         query["$or"] = [
-            {"ticket_number": {"$regex": search, "$options": "i"}},
-            {"customer_name": {"$regex": search, "$options": "i"}},
-            {"customer_phone": {"$regex": search, "$options": "i"}},
-            {"serial_number": {"$regex": search, "$options": "i"}}
+            {"ticket_number": {"$regex": _s, "$options": "i"}},
+            {"customer_name": {"$regex": _s, "$options": "i"}},
+            {"customer_phone": {"$regex": _s, "$options": "i"}},
+            {"serial_number": {"$regex": _s, "$options": "i"}},
+            {"product_name": {"$regex": _s, "$options": "i"}},
+            {"customer_email": {"$regex": _s, "$options": "i"}},
+            {"wa_contact_name": {"$regex": _s, "$options": "i"}},
         ]
     if status and status != "all":
         query["status"] = status
@@ -16951,7 +17072,12 @@ async def serve_file(
                     '.gif': 'image/gif',
                     '.heic': 'image/heic',
                     '.heif': 'image/heif',
-                    '.webp': 'image/webp'
+                    '.webp': 'image/webp',
+                    '.mp3': 'audio/mpeg',
+                    '.wav': 'audio/wav',
+                    '.ogg': 'audio/ogg',
+                    '.m4a': 'audio/mp4',
+                    '.mp4': 'video/mp4',
                 }
                 media_type = media_types.get(ext, 'application/octet-stream')
                 safe_name = filename.replace('"', '').replace('\r', '').replace('\n', '')
@@ -16980,7 +17106,12 @@ async def serve_file(
             '.doc': 'application/msword',
             '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             '.xls': 'application/vnd.ms-excel',
-            '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            '.mp3': 'audio/mpeg',
+            '.wav': 'audio/wav',
+            '.ogg': 'audio/ogg',
+            '.m4a': 'audio/mp4',
+            '.mp4': 'video/mp4',
         }
         media_type = media_types.get(ext, 'application/octet-stream')
         
@@ -20453,10 +20584,15 @@ async def _serial_label_pdf_bytes(serial_number: str, s: dict = None) -> bytes:
     # FIFO matched the order on, so the live SKU name is always the right product. (Fixes the MG62001
     # "INVERTER 6.2" on a 3KW order issue.)
     prod = str(s.get("master_sku_name") or "MuscleGrid Product")
+    _skucode = str(s.get("master_sku_code") or "")
     if s.get("master_sku_id"):
-        _lv = await db.master_skus.find_one({"id": s["master_sku_id"]}, {"_id": 0, "name": 1})
+        _lv = await db.master_skus.find_one({"id": s["master_sku_id"]}, {"_id": 0, "name": 1, "sku_code": 1, "brand": 1})
         if _lv and _lv.get("name"):
             prod = str(_lv["name"])
+        if _lv:
+            _skucode = str(_lv.get("sku_code") or _skucode)
+    # Brand identity for the sticker — Gootu units wear the Gootu wordmark + a small MuscleGrid endorsement.
+    brand = _brand_of(prod, _skucode, s.get("master_sku_name"), serial_number)
     bc_html = f'<img src="{bc}">' if bc else ""
     flag = _serial_origin_flag(s)
     # Component genealogy on the SAME sticker (founder 2026-07-13): a built battery shows its BMS, a built
@@ -20466,7 +20602,7 @@ async def _serial_label_pdf_bytes(serial_number: str, s: dict = None) -> bytes:
     if comps.get("bms"): _cbits.append(f"BMS: {comps['bms']}")
     if comps.get("motherboard"): _cbits.append(f"MB: {comps['motherboard']}")
     if comps.get("wifi"): _cbits.append(f"WiFi: {comps['wifi']}")
-    comp_html = f'<div class="comp">{_he(" &middot; ".join(_cbits))}</div>' if _cbits else ""
+    comp_html = f'<div class="comp">{" &middot; ".join(_he(b) for b in _cbits)}</div>' if _cbits else ""
     # Show the FULL product name (wrap, no mid-word cut) — shrink the font for long names so serial +
     # barcode always stay visible (founder 2026-07-13: names must not be cut off).
     _pl = len(prod)
@@ -20478,6 +20614,7 @@ async def _serial_label_pdf_bytes(serial_number: str, s: dict = None) -> bytes:
     .w{{width:100mm;height:50mm;padding:6mm 8mm;display:flex;flex-direction:column}}
     .top{{display:flex;align-items:center;justify-content:space-between;padding-bottom:1.4mm;border-bottom:1.5pt solid #000}}
     .brand{{font-size:16pt;font-weight:800;letter-spacing:.2pt}} .brand span{{font-weight:400}}
+    .par{{font-size:5.5pt;font-weight:600;letter-spacing:.3pt;margin-top:.2mm}}
     .gen{{font-size:8pt;font-weight:800;border:1.4pt solid #000;border-radius:3px;padding:1px 6px;letter-spacing:.5pt}}
     .body{{flex:1;display:flex;gap:3mm;padding-top:1.4mm;overflow:hidden}}
     .qr{{width:21mm;text-align:center}} .qr img{{width:21mm;height:21mm}} .qr div{{font-size:6pt;margin-top:.6mm}}
@@ -20487,20 +20624,20 @@ async def _serial_label_pdf_bytes(serial_number: str, s: dict = None) -> bytes:
     .snlabel{{font-size:6.5pt;letter-spacing:.5pt;text-transform:uppercase}}
     .serial{{font-family:'Courier New',monospace;font-size:13pt;font-weight:800;letter-spacing:.5pt;line-height:1}}
     .bc{{margin-top:1mm}} .bc img{{width:44mm;height:6mm}}
-    .comp{{font-size:6pt;font-weight:700;margin-top:1mm;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-top:.5pt dashed #000;padding-top:.8mm}}
+    .comp{{font-size:6pt;font-weight:700;margin-top:1mm;line-height:1.2;word-break:break-word;border-top:.5pt dashed #000;padding-top:.8mm}}
     .foot{{border-top:.75pt solid #000;padding-top:1mm;display:flex;justify-content:space-between;align-items:center;font-size:6pt}}
     .og{{font-size:6pt;font-weight:800;border:.75pt solid #000;border-radius:2px;padding:0 1.2mm;margin-left:1.6mm}}
     </style></head><body><div class="w">
-      <div class="top"><div class="brand">Muscle<span>Grid</span></div><div class="gen">GENUINE &#10003;</div></div>
+      <div class="top"><div><div class="brand">{brand['html']}</div>{('<div class="par">' + brand['parent'] + '</div>') if brand['parent'] else ''}</div><div class="gen">GENUINE &#10003;</div></div>
       <div class="body">
         <div class="qr"><img src="{qr}"><div>Scan to verify</div></div>
         <div class="right">
           <div class="plabel">Product</div><div class="pname">{_he(prod)}</div>
           <div class="snlabel">Serial No.</div><div class="serial">{_he(serial_number)}</div>
           <div class="bc">{bc_html}</div>
-          {comp_html}
         </div>
       </div>
+      {comp_html}
       <div class="foot"><span>Verify &middot; Register warranty &middot; Support</span><span>Mfg {mfg} &middot; wa.me/919999036254<span class="og">{flag}</span></span></div>
     </div></body></html>"""
     return HTML(string=html).write_pdf()
@@ -20517,6 +20654,26 @@ async def serial_label_pdf(serial_number: str, user: dict = Depends(require_role
     pdf = await _serial_label_pdf_bytes(serial_number, s)
     return _Resp(content=pdf, media_type="application/pdf",
                  headers={"Content-Disposition": f'inline; filename="serial_{serial_number}.pdf"'})
+
+
+@api_router.post("/finished-good-serials/{serial_number}/print")
+async def print_one_serial_label(serial_number: str, user: dict = Depends(require_roles(_SERIAL_ROLES))):
+    """Print ONE unit's thermal serial label on the office label printer (TSC) — without re-firing the
+    whole pack set (courier/invoice/QC/care). Operator-initiated, so it always prints, and stamps the
+    print so the batch idempotency guard knows it went out."""
+    s = await db.finished_good_serials.find_one({"serial_number": serial_number}, {"_id": 0})
+    if not s:
+        raise HTTPException(status_code=404, detail="Serial not found")
+    pdf = await _serial_label_pdf_bytes(serial_number, s)
+    if not pdf:
+        raise HTTPException(status_code=500, detail="Could not render serial label")
+    ok = await _office_print(pdf, OFFICE_LABEL_PRINTER, "landscape,fit", "serial")
+    if ok is True:
+        await db.finished_good_serials.update_one(
+            {"serial_number": serial_number},
+            {"$set": {"label_printed_at": datetime.now(timezone.utc).isoformat()},
+             "$inc": {"label_print_count": 1}})
+    return {"success": ok is True, "serial": serial_number, "printer": OFFICE_LABEL_PRINTER}
 
 
 async def _print_serial_labels_batch(serials: list, reprint: bool = False):
@@ -20609,6 +20766,66 @@ _PRODUCTION_ROLES = ["admin", "supervisor", "service_agent", "technician"]
 _COMPONENTS_BY_TYPE = {"battery": ["bms"], "inverter": ["motherboard", "wifi"]}
 _COMPONENT_LABEL = {"bms": "BMS", "motherboard": "Motherboard", "wifi": "WiFi board"}
 
+# Battery build inputs — Angad picks the cell chemistry + the BMS brand for every battery.
+_CELL_TYPES = ["Highstar 100Ah", "Highstar 314Ah", "GP 100Ah", "GP 320Ah"]
+_BMS_TYPES = ["JK", "XJ", "JBD", "TDT"]
+# ONLY the JK BMS carries its own printed serial (scanned in). For XJ / JBD / TDT the BMS has no serial,
+# so the CRM MINTS a BMS serial and prints its sticker itself.
+_BMS_SCANNED = {"JK"}
+_BMS_SELF_SERIAL = {"XJ", "JBD", "TDT"}
+
+
+async def _generate_bms_serial(bms_type: str) -> str:
+    """Mint a unique BMS serial for a BMS brand that ships without one (XJ / JBD / TDT).
+    Format: MGBMS<TYPE><YYMM><5-digit atomic seq>, e.g. MGBMSJBD2607 00042."""
+    t = re.sub(r"[^A-Z0-9]", "", (bms_type or "").upper())[:4] or "GEN"
+    yymm = datetime.now(timezone.utc).strftime("%y%m")
+    for _ in range(6):
+        c = await db.counters.find_one_and_update(
+            {"_id": "bms_seq"}, {"$inc": {"seq": 1}}, upsert=True, return_document=True)
+        seq = (c or {}).get("seq", 1)
+        sn = f"MGBMS{t}{yymm}{seq:05d}"
+        if not await db.finished_good_serials.find_one({"components.bms": sn}, {"_id": 1}):
+            return sn
+    return f"MGBMS{t}{yymm}{uuid.uuid4().hex[:6].upper()}"
+
+
+async def _bms_label_pdf_bytes(bms_serial: str, bms_type: str, unit_serial: str = "", cell_type: str = "") -> bytes:
+    """Small thermal sticker for a self-serialised BMS (XJ/JBD/TDT): brand + BMS serial + barcode,
+    plus the finished-unit serial it's built into (genealogy)."""
+    from weasyprint import HTML
+    bc = _serial_barcode_datauri(bms_serial)
+    bc_html = f'<img src="{bc}">' if bc else ""
+    # Show only the cell BRAND on the sticker (e.g. "Highstar" / "GP") — never the Ah capacity.
+    cell_brand = re.split(r"\s*\d", str(cell_type or ""))[0].strip()
+    html = f"""<html><head><meta charset="utf-8"><style>
+    @page{{size:100mm 50mm;margin:0}} *{{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;color:#000}}
+    .w{{width:100mm;height:50mm;padding:6mm 8mm;display:flex;flex-direction:column}}
+    .top{{display:flex;align-items:center;justify-content:space-between;padding-bottom:1.4mm;border-bottom:1.5pt solid #000}}
+    .brand{{font-size:15pt;font-weight:800;letter-spacing:.2pt}} .brand span{{font-weight:400}}
+    .badge{{font-size:8pt;font-weight:800;border:1.4pt solid #000;border-radius:3px;padding:1px 6px;letter-spacing:.5pt}}
+    .lbl{{font-size:6.5pt;letter-spacing:.5pt;text-transform:uppercase;margin-top:1.6mm}}
+    .sn{{font-family:'Courier New',monospace;font-size:14pt;font-weight:800;letter-spacing:.5pt;line-height:1;margin-top:.3mm}}
+    .bc{{margin-top:1.6mm}} .bc img{{width:66mm;height:8mm}}
+    .foot{{margin-top:auto;border-top:.75pt solid #000;padding-top:1mm;font-size:6pt;display:flex;justify-content:space-between}}
+    </style></head><body><div class="w">
+      <div class="top"><div class="brand">Muscle<span>Grid</span></div><div class="badge">BMS &middot; {_he(bms_type)}</div></div>
+      <div class="lbl">BMS Serial No.</div><div class="sn">{_he(bms_serial)}</div>
+      <div class="bc">{bc_html}</div>
+      <div class="foot"><span>Cell: {_he(cell_brand or '-')}</span><span>Unit: {_he(unit_serial or '-')}</span></div>
+    </div></body></html>"""
+    return HTML(string=html).write_pdf()
+
+
+async def _print_bms_label(bms_serial: str, bms_type: str, unit_serial: str = "", cell_type: str = ""):
+    """Fire-and-forget print of a self-serialised BMS sticker on the office thermal printer."""
+    try:
+        pdf = await _bms_label_pdf_bytes(bms_serial, bms_type, unit_serial, cell_type)
+        if pdf:
+            await _office_print(pdf, OFFICE_LABEL_PRINTER, "landscape,fit", "bms")
+    except Exception as ex:
+        logger.warning(f"BMS label print failed for {bms_serial}: {ex}")
+
 
 class ProductionBuildBody(BaseModel):
     product_type: str                       # "battery" | "inverter"
@@ -20617,6 +20834,8 @@ class ProductionBuildBody(BaseModel):
     bms_code: Optional[str] = None
     motherboard_code: Optional[str] = None
     wifi_code: Optional[str] = None
+    cell_type: Optional[str] = None          # battery: Highstar 100Ah / 314Ah / GP 100Ah / GP 320Ah
+    bms_type: Optional[str] = None           # battery: JK (scanned) / XJ / JBD / TDT (auto-serialised)
     skip_bms: bool = False                   # exception: build without scanning components (flag to backfill)
     count: Optional[int] = 1                 # exception only: mint N serials at once
 
@@ -20645,10 +20864,28 @@ async def production_build(body: ProductionBuildBody, background: BackgroundTask
     sku = await db.master_skus.find_one({"id": body.master_sku_id}, {"_id": 0, "id": 1, "name": 1, "sku_code": 1})
     if not sku:
         raise HTTPException(status_code=400, detail="Valid product (master_sku_id) is required")
+    # Battery: Angad must choose the cell chemistry + BMS brand.
+    cell_type = (body.cell_type or "").strip()
+    _bt = (body.bms_type or "").strip().upper()
+    bms_type = next((t for t in _BMS_TYPES if t.upper() == _bt), _bt)
+    bms_generated = False
+    skip_active = body.skip_bms and await _bms_exception_active()
+    if pt == "battery" and not skip_active:
+        if cell_type not in _CELL_TYPES:
+            raise HTTPException(status_code=400, detail=f"Select the cell type ({' / '.join(_CELL_TYPES)})")
+        if bms_type not in _BMS_TYPES:
+            raise HTTPException(status_code=400, detail=f"Select the BMS type ({' / '.join(_BMS_TYPES)})")
     codes = {"bms": (body.bms_code or "").strip(), "motherboard": (body.motherboard_code or "").strip(),
              "wifi": (body.wifi_code or "").strip()}
+    # Non-JK battery BMS (XJ / JBD / TDT) ships WITHOUT a serial → the CRM mints + prints one per unit,
+    # so we don't require a scanned bms_code for them.
+    if pt == "battery" and bms_type in _BMS_SELF_SERIAL:
+        codes["bms"] = ""
+        bms_generated = True
     components = {c: codes[c] for c in _COMPONENTS_BY_TYPE[pt] if codes[c]}
     missing = [c for c in _COMPONENTS_BY_TYPE[pt] if not codes[c]]
+    if bms_generated:                        # 'bms' is auto-minted, not "missing"
+        missing = [m for m in missing if m != "bms"]
     # EXCEPTION path (founder-granted, per-day): units already built, just need serial labels — allow a
     # build without the component scan when the exception window is open. Flagged bms_pending to backfill.
     exception = False
@@ -20672,24 +20909,80 @@ async def production_build(body: ProductionBuildBody, background: BackgroundTask
             count = 1
     now = datetime.now(timezone.utc).isoformat()
     serials = []
+    bms_minted = []
     for _ in range(count):
+        unit_components = dict(components)
+        this_bms = None
+        if bms_generated:                      # mint a fresh BMS serial for THIS unit (XJ/JBD/TDT)
+            this_bms = await _generate_bms_serial(bms_type)
+            unit_components["bms"] = this_bms
         sn = await _generate_serial({**sku, "product_type": pt})
         rec = {"id": str(uuid.uuid4()), "serial_number": sn, "master_sku_id": sku["id"],
                "master_sku_name": sku.get("name"), "master_sku_code": sku.get("sku_code"),
                "firm_id": body.firm_id, "status": "in_stock", "origin": "built", "source": "production_build",
-               "product_type": pt, "components": components,
+               "product_type": pt, "components": unit_components,
                "built_by": user.get("email") or user.get("name"), "built_at": now, "created_at": now}
+        if pt == "battery":
+            rec["cell_type"] = cell_type or None
+            rec["bms_type"] = bms_type or None
+            rec["bms_source"] = "generated" if bms_generated else ("scanned_jk" if bms_type == "JK" else "scanned")
         if exception:
             rec["bms_pending"] = True          # component(s) not scanned — backfill the genealogy later
             rec["component_exception"] = True
             rec["component_exception_by"] = user.get("email") or user.get("name")
         await db.finished_good_serials.insert_one(rec)
         serials.append(sn)
+        if this_bms:
+            bms_minted.append(this_bms)
+            if background is not None:
+                background.add_task(_print_bms_label, this_bms, bms_type, sn, cell_type)
     if background is not None:
         background.add_task(_print_serial_labels_batch, serials)
+    printed = ["serial_label"] + (["bms_label"] if bms_minted else [])
     return {"success": True, "serial": serials[0], "serials": serials, "count": len(serials),
             "product": sku.get("name"), "product_type": pt, "components": components,
-            "exception": exception, "bms_pending": exception, "printed": ["serial_label"]}
+            "cell_type": cell_type or None, "bms_type": bms_type or None,
+            "bms_generated": bms_generated, "bms_serials": bms_minted,
+            "exception": exception, "bms_pending": exception, "printed": printed}
+
+
+@api_router.get("/production/battery-options")
+async def battery_build_options(user: dict = Depends(require_roles(_PRODUCTION_ROLES))):
+    """Cell chemistries + BMS brands for the battery build panel. JK BMS is scanned (carries its own
+    serial); XJ / JBD / TDT have no serial, so the CRM mints + prints a BMS serial for them."""
+    return {"cell_types": _CELL_TYPES, "bms_types": _BMS_TYPES,
+            "bms_scanned": sorted(_BMS_SCANNED), "bms_auto_serial": sorted(_BMS_SELF_SERIAL)}
+
+
+@api_router.get("/production/genealogy")
+async def production_genealogy(q: str,
+                               user: dict = Depends(require_roles(_PRODUCTION_ROLES + ["accountant", "dispatcher"]))):
+    """Raw-material genealogy of a built unit — search by its SERIAL, an ORDER id, or a BMS serial.
+    Returns the cell type + BMS brand/serial + board components for each matching unit (batteries/inverters
+    carry a BOM; traded stabilizers won't have one)."""
+    q = (q or "").strip()
+    if not q:
+        return {"query": q, "count": 0, "units": []}
+    rx = re.escape(q)
+    query = {"$or": [
+        {"serial_number": {"$regex": rx, "$options": "i"}},
+        {"order_id": {"$regex": rx, "$options": "i"}},
+        {"amazon_order_id": {"$regex": rx, "$options": "i"}},
+        {"components.bms": {"$regex": rx, "$options": "i"}},
+    ]}
+    units = []
+    async for s in db.finished_good_serials.find(query, {"_id": 0}).sort("created_at", -1).limit(60):
+        comp = s.get("components") or {}
+        units.append({
+            "serial_number": s.get("serial_number"), "product": s.get("master_sku_name"),
+            "product_type": s.get("product_type"), "status": s.get("status"),
+            "order_id": s.get("order_id") or s.get("amazon_order_id"), "customer_name": s.get("customer_name"),
+            "cell_type": s.get("cell_type"), "bms_type": s.get("bms_type"), "bms_source": s.get("bms_source"),
+            "bms_serial": comp.get("bms"), "motherboard": comp.get("motherboard"), "wifi": comp.get("wifi"),
+            "origin": s.get("origin"), "built_by": s.get("built_by"),
+            "built_at": s.get("built_at") or s.get("created_at"), "dispatched_at": s.get("dispatched_at"),
+        })
+    return {"query": q, "count": len(units), "units": units}
 
 
 @api_router.post("/production/component-stock")
@@ -20825,6 +21118,135 @@ async def public_verify_serial(serial: str):
             "support": {"whatsapp": "919999036254", "email": "service@musclegrid.in"}}
 
 
+def _warranty_device_type(product_name: str, product_type: str = "") -> str:
+    """Map a product name / master-sku product_type to the warranty device_type bucket the form uses."""
+    n = f"{product_name or ''} {product_type or ''}".lower()
+    if "stabilizer" in n or "servo" in n or re.search(r"\d+\s*kva\b", n):
+        return "Stabilizer"
+    if "lithium" in n or "lifepo" in n or "battery" in n or re.search(r"\d+\s*ah\b", n):
+        return "Battery"
+    if "inverter" in n or "mppt" in n or "hybrid" in n or "ups" in n or re.search(r"\d+(?:\.\d+)?\s*kw\b", n):
+        return "Inverter"
+    return "Others"
+
+
+@api_router.get("/public/warranty/prefill/{serial}")
+async def public_warranty_prefill(serial: str):
+    """PUBLIC — given a serial (the label QR target), return everything we can pre-fill on the warranty
+    form: product, device type, and the buyer's name/phone/order from the dispatch record. Also flags
+    whether it's already registered and whether it's a battery (so the form can promise the app unlock)."""
+    sn = (serial or "").strip()
+    s = await db.finished_good_serials.find_one({"serial_number": sn}, {"_id": 0})
+    if not s:
+        return {"found": False, "serial": sn}
+    existing = (await db.warranties.find_one(
+        {"serial_number": sn, "status": {"$in": ["pending", "approved", "active"]}},
+        {"_id": 0, "warranty_number": 1, "status": 1})
+        or await db.warranty_registrations.find_one({"serial_number": sn}, {"_id": 0, "warranty_number": 1}))
+    dispatch = await db.dispatches.find_one(
+        {"$or": [{"serial_number": sn}, {"serial_numbers": sn}, {"serials": sn}]},
+        {"_id": 0, "order_id": 1, "customer_name": 1, "customer_phone": 1}) or {}
+    product = s.get("master_sku_name") or ""
+    dt = _warranty_device_type(product, s.get("product_type"))
+    cust = (dispatch.get("customer_name") or "").strip()
+    first, _, last = cust.partition(" ")
+    return {
+        "found": True, "serial": sn, "product_name": product, "device_type": dt,
+        "is_battery": dt == "Battery",
+        "mfg_date": str(s.get("created_at") or "")[:10],
+        "order_id": dispatch.get("order_id"),
+        "first_name": first, "last_name": last.strip(),
+        "phone": dispatch.get("customer_phone") or "",
+        "already_registered": bool(existing),
+        "warranty_number": (existing or {}).get("warranty_number"),
+    }
+
+
+@api_router.post("/public/warranty/register")
+async def public_warranty_register(
+    request: Request,
+    serial_number: str = Form(...),
+    first_name: str = Form(...),
+    last_name: str = Form(""),
+    phone: str = Form(...),
+    email: str = Form(""),
+    device_type: str = Form(...),
+    product_name: Optional[str] = Form(None),
+    order_id: str = Form(""),
+    invoice_date: Optional[str] = Form(None),
+    invoice_amount: float = Form(0),
+    product_photo: UploadFile = File(...),
+    geo_lat: Optional[float] = Form(None),
+    geo_lng: Optional[float] = Form(None),
+    geo_accuracy: Optional[float] = Form(None),
+    captured_at: Optional[str] = Form(None),
+    location_denied: bool = Form(False),
+):
+    """PUBLIC — activate a warranty from the website with a MANDATORY geo-tagged product photo. For a
+    battery it returns a one-time app-unlock link so the JK-BMS app can only be downloaded AFTER the
+    customer has registered + clicked the photo (founder rule 2026-07-16)."""
+    sn = (serial_number or "").strip()
+    if not sn:
+        raise HTTPException(status_code=422, detail="Serial number is required.")
+    photo_bytes = await product_photo.read()
+    if not photo_bytes:
+        raise HTTPException(status_code=422, detail="A photo of the product is required to activate the warranty.")
+    existing = await db.warranties.find_one(
+        {"serial_number": sn, "status": {"$in": ["pending", "approved", "active"]}},
+        {"_id": 0, "warranty_number": 1})
+    if existing:
+        raise HTTPException(status_code=409,
+                            detail=f"This product is already registered (Warranty {existing.get('warranty_number')}).")
+    warranty_id = str(uuid.uuid4())
+    warranty_number = await generate_warranty_number()
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        rel, _ = await storage_upload(file_data=photo_bytes, folder="warranty_activation",
+                                      original_filename=product_photo.filename or f"{sn}.jpg",
+                                      filename_prefix=warranty_id)
+        photo_path = f"/api/files/{rel}"
+    except StorageError as e:
+        logger.error(f"warranty activation photo upload failed: {e}")
+        raise HTTPException(status_code=500, detail="Could not save the photo. Please try again.")
+    dt = device_type or _warranty_device_type(product_name or "", "")
+    is_battery = (dt == "Battery") or ("batter" in dt.lower()) or ("lithium" in (product_name or "").lower())
+    app_unlock_token = secrets.token_urlsafe(16) if is_battery else None
+    geo = {"lat": geo_lat, "lng": geo_lng, "accuracy": geo_accuracy} if (geo_lat is not None and geo_lng is not None) else None
+    doc = {
+        "id": warranty_id, "warranty_number": warranty_number,
+        "customer_id": None,
+        "first_name": first_name, "last_name": last_name,
+        "phone": phone, "email": (email or "").lower(),
+        "device_type": dt, "product_name": product_name, "serial_number": sn,
+        "invoice_date": invoice_date, "invoice_amount": invoice_amount, "order_id": order_id,
+        "invoice_file": None,
+        "status": "pending",
+        "warranty_end_date": None, "admin_notes": None,
+        "extension_requested": False, "extension_status": None, "extension_review_file": None,
+        "registered_via": "public_web_activation",
+        "registered_at": now,
+        "registration_bonus_months": WARRANTY_REGISTRATION_BONUS_MONTHS,
+        "registration_bonus_applied": False,
+        "default_warranty_years": get_default_warranty_years(product_name or "", dt),
+        "suggested_warranty_end_date": _default_warranty_end(invoice_date, dt, product_name),
+        # proof-of-activation: geo-tagged product photo + time
+        "activation_photo": photo_path,
+        "activation_geo": geo,
+        "activation_captured_at": captured_at,     # client-reported time
+        "activation_server_time": now,             # authoritative server stamp
+        "location_denied": bool(location_denied),
+        "activation_ip": (request.client.host if request and request.client else None),
+        "app_unlock_token": app_unlock_token,
+        "created_at": now, "updated_at": now,
+    }
+    await db.warranties.insert_one(doc)
+    resp = {"ok": True, "warranty_number": warranty_number, "status": "pending",
+            "bonus_months": WARRANTY_REGISTRATION_BONUS_MONTHS, "is_battery": is_battery}
+    if app_unlock_token:
+        resp["app_unlock_url"] = f"/api/public/app/jk-bms?wk={app_unlock_token}"
+    return resp
+
+
 _CARE_TIPS = {
     "inverter": "Keep the vents clear and avoid overloading beyond the rated wattage.",
     "lifepo4": "Charge fully before first use and avoid deep discharge — it maximises battery life.",
@@ -20872,6 +21294,7 @@ async def customer_card_pdf(customer: str = None, serial: str = None, order_id: 
     _cl = len(cust)
     nm_size = 15 if _cl <= 11 else 13 if _cl <= 15 else 11 if _cl <= 20 else 9.5 if _cl <= 26 else 8.5
     product = product or "MuscleGrid Product"
+    brand = _brand_of(product, serial)          # Gootu care card wears the Gootu wordmark
     tip = _care_tip(product)
     qtarget = f"{SERIAL_VERIFY_BASE}/{serial}" if serial else "https://newcrm.musclegrid.in"
     qri = _serial_qr_datauri(qtarget)
@@ -20885,6 +21308,7 @@ async def customer_card_pdf(customer: str = None, serial: str = None, order_id: 
     .w{{width:100mm;height:50mm;padding:8mm;display:flex;flex-direction:column}}
     .h{{display:flex;align-items:center;justify-content:space-between;padding-bottom:1.2mm;border-bottom:1.5pt solid #000}}
     .brand{{font-size:13pt;font-weight:800;letter-spacing:.3pt}} .brand span{{font-weight:400}} .pc{{font-size:6.3pt;letter-spacing:1.2pt}}
+    .par{{font-size:5.3pt;font-weight:600;letter-spacing:.2pt}}
     .b{{flex:1;display:flex;padding-top:1.3mm;gap:2.2mm;overflow:hidden}}
     .l{{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;overflow:hidden}}
     .for{{font-size:6.6pt;font-style:italic;color:#333}}
@@ -20895,7 +21319,7 @@ async def customer_card_pdf(customer: str = None, serial: str = None, order_id: 
     .r img{{width:22mm;height:22mm}} .r div{{font-size:5.6pt;color:#333;margin-top:.6mm;line-height:1.1}}
     .f{{border-top:.75pt solid #000;font-size:6.3pt;text-align:center;padding-top:1mm;margin-top:.8mm}}
     </style></head><body><div class="w">
-      <div class="h"><div class="brand">Muscle<span>Grid</span></div><div class="pc">&#10022; PREMIUM CARE</div></div>
+      <div class="h"><div><div class="brand">{brand['html']}</div>{('<div class="par">' + brand['parent'] + '</div>') if brand['parent'] else ''}</div><div class="pc">&#10022; PREMIUM CARE</div></div>
       <div class="b">
         <div class="l">
           <div class="for">Specially crafted for</div>
@@ -21050,20 +21474,107 @@ async def _office_print(pdf_bytes: bytes, printer: str, settings: str = "fit", t
     return await _office_print_a4(pdf_bytes, printer, tag)
 
 
+# ── Office print-PC reachability (so a print never SILENTLY fails) ────────────
+# The office PC (Tailscale, drives the TSC/A4 printers) sometimes sleeps or drops
+# offline. Prints are fire-and-forget, so the CRM used to say "printed" while paper
+# never appeared. These helpers detect that: the print endpoints return a clear
+# "printer offline" instead of a fake success, and a watchdog WhatsApps the founder.
+_PRINT_PC_PROBE = {"ok": None, "at": 0.0}
+_PRINT_PC_ALERT = {"last": 0.0}
+_PRINT_PC_STATE = {"online": None}   # None = unknown (first watchdog run just records)
+
+
+async def _office_printer_reachable(force: bool = False) -> bool:
+    """Quick SSH liveness probe of the office print PC, cached ~20s so we don't probe every print."""
+    import time as _t
+    now = _t.monotonic()
+    if not force and _PRINT_PC_PROBE["ok"] is not None and (now - _PRINT_PC_PROBE["at"]) < 20:
+        return _PRINT_PC_PROBE["ok"]
+    ok = False
+    try:
+        p = await asyncio.create_subprocess_exec(
+            "ssh", "-i", OFFICE_PRINT_KEY, "-o", "BatchMode=yes", "-o", "ConnectTimeout=6",
+            "-o", "StrictHostKeyChecking=accept-new", OFFICE_PRINT_HOST, "echo ok",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await asyncio.wait_for(p.communicate(), timeout=12)
+        ok = (p.returncode == 0 and b"ok" in (out or b""))
+    except Exception:
+        ok = False
+    _PRINT_PC_PROBE["ok"] = ok
+    _PRINT_PC_PROBE["at"] = now
+    return ok
+
+
+async def _alert_print_pc(message: str, throttle_s: float = 0.0):
+    """WhatsApp the founder about the print PC. throttle_s>0 rate-limits repeat alerts."""
+    import time as _t
+    if throttle_s:
+        if (_t.monotonic() - _PRINT_PC_ALERT["last"]) < throttle_s:
+            return
+        _PRINT_PC_ALERT["last"] = _t.monotonic()
+    try:
+        for num in _founder_wa_numbers():
+            await send_whatsapp_message(num, message, force=True)
+    except Exception as e:
+        logger.warning(f"print-pc alert failed: {e}")
+
+
+async def scheduled_print_pc_watchdog():
+    """Every few minutes: probe the office print PC and WhatsApp the founder when it goes
+    offline (and again when it recovers), so a dead printer is caught before staff hit it."""
+    online = await _office_printer_reachable(force=True)
+    prev = _PRINT_PC_STATE["online"]
+    _PRINT_PC_STATE["online"] = online
+    if prev is None:
+        return  # first run — just record baseline, don't alert
+    if prev and not online:
+        await _alert_print_pc("⚠️ *Office print computer is OFFLINE* — prints will NOT come out. "
+                              "Please switch on / reconnect the print PC (desktop-k1rr60l): power on, "
+                              "check internet, and make sure Tailscale is connected.")
+    elif online and not prev:
+        await _alert_print_pc("✅ Office print computer is back ONLINE — printing is working again.")
+
+
 # Founder serial design (2026-07): MG<FAMILY><YYMM><seq>, e.g. MGLIB2604xxxxx = LIB family, 2026 April.
 # Family = explicit product_type first, else the BATTERY-AWARE classifier (_sku_family) — so an inverter
 # whose name says "Battery-Less" / "Support LiPO4 Battery" is NOT misread as the LIB (battery) family.
 # (A naive keyword list with "battery" before "inverter" gave inverters MGLIB serials — the fix.)
 def _serial_family_prefix(sku: dict) -> str:
+    # Gootu is our separate trademark brand — its units get their OWN family code (MGGTU…) so the Gootu
+    # line is tracked distinctly. Brand wins over product type.
+    _bt = " ".join(str(sku.get(k) or "") for k in ("name", "sku_code", "brand"))
+    if re.search(r"gootu", _bt, re.I):
+        return "GTU"
     pt = (sku.get("product_type") or "").strip().lower()
     if pt == "inverter": return "INV"
     if pt == "battery": return "LIB"
     if pt in ("stabilizer", "stabiliser"): return "STB"
     text = " ".join(str(sku.get(k) or "") for k in ("name", "category", "sku_code"))
-    if re.search(r"\bpcb\b", text, re.I): return "PCB"
+    low = text.lower()
+    if re.search(r"\bpcb\b", low): return "PCB"
+    # Keyword fallback: MANY SKUs have a blank product_type, which used to fall through to the raw SKU code
+    # and mint garbage serials like MGMG10KV… . Derive the family from the name/category instead. Order
+    # matters — battery signals first (a battery name can also say 'inverter'); then inverter; then
+    # stabilizer (KVA alone is ambiguous — inverters use it too — so it's the last resort).
+    if any(k in low for k in ("battery", "lithium", "lifepo", "cells")) or re.search(r"\d+\s*ah\b", low):
+        return "LIB"
+    if ("inverter" in low) or ("mppt" in low) or ("hybrid" in low and re.search(r"\d+\s*(kw|kva|va|w)\b", low)):
+        return "INV"
+    if any(k in low for k in ("stabilizer", "stabiliser", "servo")) or re.search(r"\d+\s*kva\b", low):
+        return "STB"
+    if "solar" in low and "panel" in low: return "SOL"
     fam = _sku_family(text)
     return {"inverter": "INV", "battery": "LIB", "stabilizer": "STB",
             "ev_charger": "EVC", "panel": "SOL", "controller": "CTL"}.get(fam, "")
+
+def _brand_of(*parts) -> dict:
+    """Which brand's identity a label should wear. Gootu is our separate registered trademark, so Gootu
+    products print with the Gootu wordmark + a discreet 'A MuscleGrid Industries brand' endorsement line.
+    Everything else is MuscleGrid. Pass any product text fields (name / sku_code / brand / category)."""
+    text = " ".join(str(p or "") for p in parts)
+    if re.search(r"gootu", text, re.I):
+        return {"name": "Gootu", "html": "Gootu", "parent": "A MuscleGrid Industries brand", "is_gootu": True}
+    return {"name": "MuscleGrid", "html": 'Muscle<span>Grid</span>', "parent": "", "is_gootu": False}
 
 async def _generate_serial(sku: dict) -> str:
     """Mint a fresh, unique serial number for ANY product (traded or manufactured) at dispatch.
@@ -21092,9 +21603,17 @@ async def _serials_for_line(sku_id: str, qty: int, firm_id: str, order_id: str, 
     fresh. Every item ends up with a serial; each record is tagged `origin` = stock | new."""
     sku = await db.master_skus.find_one(
         {"id": sku_id}, {"_id": 0, "product_type": 1, "is_manufactured": 1, "name": 1, "sku_code": 1,
-                         "combo_components": 1}) or {}
+                         "category": 1, "combo_components": 1}) or {}
     now = datetime.now(timezone.utc).isoformat()
     out = []
+    # Manufactured goods (battery / inverter) are assembled in-house and DO get a minted MuscleGrid serial.
+    # Traded goods (stabilizer, solar, etc.) already carry the SUPPLIER's own serial/label — minting a fresh
+    # MG serial + label for them would put two different serials on one unit. So for traded goods we ONLY
+    # consume a scanned-in stock serial; we never mint a new one (founder 2026-07-15).
+    _pt = (sku.get("product_type") or "").strip().lower()
+    _cat = (sku.get("category") or "").strip().lower()
+    is_manufactured = bool(sku.get("is_manufactured")) or _pt in ("battery", "inverter", "manufactured", "pcb") \
+        or any(k in _cat for k in ("inverter", "battery")) or any(k in (sku.get("name") or "").lower() for k in ("inverter", "lithium", "lifepo"))
     # 0) COMBO (policy b, 2026-07-13): a combo SKU serializes EACH serializable component (e.g. the
     # inverter AND the battery) rather than one serial for the bundle — so each unit gets its own
     # correct serial + label + genealogy, and both are booked. Recurse per component; lines flagged
@@ -21125,16 +21644,20 @@ async def _serials_for_line(sku_id: str, qty: int, firm_id: str, order_id: str, 
                       "reserved_for_order": order_id, "customer_name": customer, "dispatched_at": now}})
         if u.modified_count:                              # atomic guard against double-consuming
             out.append(s["serial_number"])
-    # 2) Generate NEW serials ('N') for whatever stock didn't cover.
-    while len(out) < qty:
-        serial = await _generate_serial(sku)
-        await db.finished_good_serials.insert_one({
-            "id": str(uuid.uuid4()), "serial_number": serial, "master_sku_id": sku_id,
-            "master_sku_name": sku.get("name"), "master_sku_code": sku.get("sku_code"),
-            "firm_id": firm_id, "status": "dispatched", "origin": "new", "order_id": order_id,
-            "customer_name": customer, "source": "generated_at_dispatch", "generated": True,
-            "created_at": now, "dispatched_at": now})
-        out.append(serial)
+    # 2) Generate NEW serials ('N') for whatever stock didn't cover — MANUFACTURED goods only.
+    # Traded goods (stabilizer/solar/...) already have the supplier's serial, so we don't mint one
+    # (avoids a mismatched second serial + label on the unit). They just ship without an MG serial label
+    # if none was scanned into stock.
+    if is_manufactured:
+        while len(out) < qty:
+            serial = await _generate_serial(sku)
+            await db.finished_good_serials.insert_one({
+                "id": str(uuid.uuid4()), "serial_number": serial, "master_sku_id": sku_id,
+                "master_sku_name": sku.get("name"), "master_sku_code": sku.get("sku_code"),
+                "firm_id": firm_id, "status": "dispatched", "origin": "new", "order_id": order_id,
+                "customer_name": customer, "source": "generated_at_dispatch", "generated": True,
+                "created_at": now, "dispatched_at": now})
+            out.append(serial)
     return out
 
 
@@ -21322,11 +21845,16 @@ async def _qc_label_pdf_bytes(order_id: str, serials: list, user: dict, customer
         nm = it.get("master_sku_name") or it.get("title") or it.get("product_name") or "Item"
         clines.append(f"{it.get('quantity', 1)} &times; {_he(str(nm))}")   # full name, wraps
     contents = "<br>".join(clines) or "&mdash;"
+    # Brand identity — if any packed item is a Gootu product, the carton wears the Gootu wordmark.
+    brand = _brand_of(" ".join(str(it.get("master_sku_name") or it.get("title") or it.get("product_name") or "") for it in items),
+                      (serials or [None])[0])
     sn_html = (f'<div>S/N <span class="sn">{_he(", ".join(serials)[:36])}</span></div>' if serials else "")
     sn_bc = _serial_barcode_datauri(str(serials[0])) if serials else ""
     ref = _he(str((pf or {}).get("order_id") or order_id)[:24])
     packed_by = _he(str((user or {}).get("name") or (user or {}).get("username")
                         or (user or {}).get("email", "").split("@")[0] or "Dispatch")[:16])
+    # Senior technician who signs off the QC — Gaurav by default (founder rule 2026-07-16).
+    qc_tech = _he(str(os.environ.get("QC_SENIOR_TECHNICIAN", "Gaurav"))[:16])
     date = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%d %b %Y")
     sn0 = serials[0] if serials else ""
     qri = _serial_qr_datauri(f"{SERIAL_VERIFY_BASE}/{sn0}" if sn0 else "https://newcrm.musclegrid.in")
@@ -21337,28 +21865,31 @@ async def _qc_label_pdf_bytes(order_id: str, serials: list, user: dict, customer
     .wrap{{width:100mm;height:50mm;padding:5mm 7mm;overflow:hidden;display:flex;flex-direction:column}}
     .hdr{{display:flex;justify-content:space-between;align-items:center;padding-bottom:1.2mm;border-bottom:1.5pt solid #000}}
     .brand{{font-size:14px;font-weight:800;letter-spacing:.3px}} .brand span{{font-weight:400}}
+    .par{{font-size:5.4px;font-weight:600;letter-spacing:.2px}}
     .qc{{font-size:9px;font-weight:800;border:1.4px solid #000;border-radius:4px;padding:1px 5px;letter-spacing:.3px}}
     .body{{flex:1;display:flex;padding-top:1.4mm;gap:2mm;min-height:0;overflow:hidden}}
     .left{{flex:1;font-size:9px;line-height:1.2;overflow:hidden}}
     .k{{font-size:7px;text-transform:uppercase;letter-spacing:.3px;margin-top:.8mm}}
     .k:first-child{{margin-top:0}} .v{{font-weight:700}}
-    .cont{{font-weight:700;font-size:8px;line-height:1.15;max-height:19px;overflow:hidden}}
+    .cont{{font-weight:700;font-size:8px;line-height:1.2;max-height:10px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}}
     .sn{{font-family:'Courier New',monospace;font-weight:800;font-size:11px}}
     .right{{width:20mm;text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:center}}
     .right img{{width:18mm;height:18mm}} .scan{{font-size:6.5px;margin-top:.5mm}}
     .bc{{text-align:center;padding-top:.6mm}} .bc img{{width:52mm;height:5mm}}
+    .meta{{border-top:.75pt solid #000;font-size:6.6px;font-weight:600;padding-top:.8mm;display:flex;justify-content:space-between;white-space:nowrap}}
+    .meta b{{font-weight:800}}
     .ftr{{border-top:.75pt solid #000;font-size:7px;text-align:center;padding-top:1mm}}
     </style></head><body><div class="wrap">
-      <div class="hdr"><div class="brand">Muscle<span>Grid</span></div><div class="qc">&#10003; QC PASSED &middot; SEALED</div></div>
+      <div class="hdr"><div><div class="brand">{brand['html']}</div>{('<div class="par">' + brand['parent'] + '</div>') if brand['parent'] else ''}</div><div class="qc">&#10003; QC PASSED &middot; SEALED</div></div>
       <div class="body">
         <div class="left">
           <div class="k">Order / Ref</div><div class="v">{ref}</div>
           <div class="k">Ship to</div><div class="v">{ship_to}</div>
           <div class="k">Contents</div><div class="cont">{contents}</div>{sn_html}
-          <div class="k">Packed by &middot; Date</div><div class="v">{packed_by} &middot; {date}</div>
         </div>
         <div class="right"><img src="{qri}"><div class="scan">Scan to verify</div></div>
       </div>
+      <div class="meta"><span>Packed: {packed_by} &middot; {date}</span><span>QC: <b>{qc_tech}</b> &middot; Sr. Technician</span></div>
       {(f'<div class="bc"><img src="{sn_bc}"></div>') if sn_bc else ''}
       <div class="ftr">Do not accept if seal is tampered &middot; Support wa.me/919999036254</div>
     </div></body></html>"""
@@ -21409,6 +21940,7 @@ async def _mrp_label_pdf_bytes(order_id: str, serials: list = None) -> Optional[
     if not mrp:
         return None
     product = str(sku.get("name") or rec.get("master_sku_name") or "MuscleGrid Product")
+    brand = _brand_of(product, serial)          # Gootu box labels wear the Gootu wordmark
     dt = str(rec.get("processed_at") or rec.get("created_at") or "")
     mfg = (dt[5:7] + "/" + dt[0:4]) if len(dt) >= 7 else (datetime.now(timezone.utc)).strftime("%m/%Y")
     # Scannable serial barcode on the BOX label so the sealed carton can be scanned at pack/gate
@@ -21422,6 +21954,7 @@ async def _mrp_label_pdf_bytes(order_id: str, serials: list = None) -> Optional[
     .w{{width:100mm;height:50mm;padding:5.5mm 8mm;display:flex;flex-direction:column;overflow:hidden}}
     .top{{display:flex;align-items:baseline;justify-content:space-between;padding-bottom:1mm;border-bottom:1.5pt solid #000}}
     .brand{{font-size:13pt;font-weight:800}} .brand span{{font-weight:400}} .tag{{font-size:6.5pt;letter-spacing:1pt;text-transform:uppercase}}
+    .par{{font-size:5.2pt;font-weight:600;letter-spacing:.2pt}}
     .pname{{font-size:{mp_size}pt;font-weight:700;line-height:1.12;margin:1mm 0 .8mm;max-height:8mm;overflow:hidden}}
     .mrpline{{display:flex;align-items:baseline;gap:2mm}}
     .mrpk{{font-size:9pt;font-weight:800;letter-spacing:.5pt}} .mrpv{{font-size:17pt;font-weight:800}} .incl{{font-size:6pt}}
@@ -21430,7 +21963,7 @@ async def _mrp_label_pdf_bytes(order_id: str, serials: list = None) -> Optional[
     .row{{display:flex;gap:4mm;font-size:6.3pt;margin-top:1mm}}
     .foot{{margin-top:auto;border-top:.75pt solid #000;padding-top:1mm;font-size:5.8pt;line-height:1.3}}
     </style></head><body><div class="w">
-      <div class="top"><div class="brand">Muscle<span>Grid</span></div><div class="tag">Retail Price Label</div></div>
+      <div class="top"><div><div class="brand">{brand['html']}</div>{('<div class="par">' + brand['parent'] + '</div>') if brand['parent'] else ''}</div><div class="tag">Retail Price Label</div></div>
       <div class="pname">{_he(product)}</div>
       <div class="mrpline"><span class="mrpk">M.R.P.</span><span class="mrpv">&#8377;{_inr_group(mrp)}</span><span class="incl">(incl. of all taxes)</span></div>
       {(f'<div class="sn"><b>Serial No.:</b> <span class="snv">{_he(str(serial))}</span></div>') if serial else ''}
@@ -21567,6 +22100,17 @@ async def print_pack_set(order_id: str, serial: str = None, customer: str = None
             return {"success": False, "already_packed": True, "order_id": order_id,
                     "message": f"Already printed/packed{(' on ' + when) if when else ''}"
                                f"{(' by ' + by) if by else ''}. Use Reprint to print it again."}
+    # Don't pretend to print into the void: if the office print PC is unreachable, tell the packer
+    # clearly (and nudge the founder) instead of returning a fake success — and DON'T mark it packed,
+    # so the order stays on the desk for a retry once the printer is back.
+    if not await _office_printer_reachable():
+        import asyncio as _asyncio
+        _asyncio.create_task(_alert_print_pc(
+            "⚠️ *Print PC offline* — staff just tried to print a pack set but nothing came out. "
+            "Please switch on / reconnect the office print computer (desktop-k1rr60l).", throttle_s=900))
+        return {"success": False, "printer_offline": True, "order_id": order_id,
+                "message": "⚠️ Office print computer is OFFLINE — nothing printed. Switch on the print PC "
+                           "(desktop-k1rr60l) and its internet/Tailscale, then try again."}
     if not customer and aop:
         customer = aop.get("customer_name")
     # serial-at-dispatch binding: auto-resolve (or reserve) the unit serial(s) — scanned `serial` wins.
@@ -23905,21 +24449,53 @@ from utils.dispatch_split import (classify_dispatch_split as _classify_dispatch_
                                   SPLIT_REST_ROLE, SPLIT_STATUS_AWAITING, FULFILLMENT_V2)
 
 
+def _title_dispatch_owner(title: str) -> str:
+    """Single-owner routing from a free-text product title (Bigship panel names, Amazon titles) via the
+    shared split classifier: 'inverter' (→Gaurav) when it reads as an inverter/combo, else 'rest' (→Angad).
+    Crucially catches inverter names that OMIT the word 'inverter' — e.g. 'MG 6.2KW TRUE HYBRID',
+    'Focus 5kW … MPPT' — which a plain `"inverter" in title` test misses (it sent them to Angad)."""
+    is_inv, is_combo, _ = _dispatch_item_class("", "", title or "")
+    return "inverter" if (is_inv or is_combo) else "rest"
+
+
 async def _order_dispatch_owners(entry: dict) -> set:
     """Which dispatcher desk(s) an order belongs to: 'inverter' (Gaurav/technician) and/or 'rest'
     (Angad/supervisor — battery/stabilizer/everything else). A combo shows on BOTH. Unmapped → rest."""
+    # SAFEGUARD: the accountant's explicit Ship-Desk category pick is authoritative and overrides catalog
+    # classification — so 'inverter' always routes to Gaurav even if a SKU's category is blank/wrong. This
+    # keeps board routing in lock-step with the split-task routing (both driven by the same pick).
+    ov = (entry.get("ship_desk_category") or entry.get("dispatch_category") or "").strip().lower()
+    if ov and ov not in ("auto",):
+        if ov == "inverter":
+            return {"inverter"}
+        if ov == "combo":
+            return {"inverter", "rest"}
+        return {"rest"}   # battery / stabilizer / solar / spare → supervisor
     items = entry.get("items") or []
     if not items and entry.get("master_sku_id"):
         items = [{"master_sku_id": entry["master_sku_id"]}]
+    if not items:
+        # Panel/courier entries (e.g. courier_shipments 'Pickup Scheduled') carry no SKU-mapped items —
+        # the product name lives at the top level or in panel_products. Synthesize a name-only line so the
+        # classifier can route by name; without this an inverter with a blank category defaults to Angad.
+        nm = (entry.get("product_title") or entry.get("master_sku_name") or entry.get("product_name")
+              or entry.get("title") or entry.get("name"))
+        if not nm:
+            pp = entry.get("panel_products") or []
+            if pp:
+                nm = pp[0].get("name")
+        if nm:
+            items = [{"product_name": nm}]
     sku_ids = [it.get("master_sku_id") for it in items if it.get("master_sku_id")]
     meta = {}
     if sku_ids:
-        async for s in db.master_skus.find({"id": {"$in": sku_ids}}, {"id": 1, "category": 1, "product_type": 1}):
-            meta[s["id"]] = (s.get("category"), s.get("product_type"))
+        async for s in db.master_skus.find({"id": {"$in": sku_ids}}, {"id": 1, "category": 1, "product_type": 1, "name": 1}):
+            meta[s["id"]] = (s.get("category"), s.get("product_type"), s.get("name"))
     owners = set()
     for it in items:
-        cat, ptype = meta.get(it.get("master_sku_id"), ("", ""))
-        is_inv, is_combo, _ = _dispatch_item_class(cat, ptype)
+        cat, ptype, nm = meta.get(it.get("master_sku_id"), ("", "", ""))
+        nm = nm or it.get("product_name") or it.get("master_sku_name") or it.get("title") or ""
+        is_inv, is_combo, _ = _dispatch_item_class(cat, ptype, nm)
         if is_combo:
             owners.update({"inverter", "rest"})
         elif is_inv:
@@ -24085,7 +24661,7 @@ async def dispatcher_pack_queue(user: dict = Depends(require_roles(["admin", "se
             if _delhivery_picked(cs.get("status") or "") or _delhivery_picked(cs.get("delhivery_status") or ""):
                 continue
             title = a.get("product_title") or (a.get("items") or [{}])[0].get("title") or ""
-            owner = "inverter" if "inverter" in title.lower() else "rest"  # battery/stabilizer/else → Angad
+            owner = _title_dispatch_owner(title)  # battery/stabilizer/else → Angad
             if want and want != owner:
                 continue
             ao = ao_map.get(oid, {})
@@ -24184,7 +24760,7 @@ async def dispatcher_pack_queue(user: dict = Depends(require_roles(["admin", "se
         if not amz_id and not (c.get("invoice_path") or c.get("invoice_url")):
             continue
         title = c.get("product_name") or (title_map.get(amz_id) if amz_id else "") or ""
-        owner = "inverter" if "inverter" in title.lower() else "rest"
+        owner = _title_dispatch_owner(title)
         if want and want != owner:
             continue
         seen_awbs.add(awb)
@@ -24260,7 +24836,7 @@ async def accountant_manual_bookings(user: dict = Depends(require_roles(["accoun
         ot = o.get("order_total"); val = float((ot.get("Amount") if isinstance(ot, dict) else ot) or 0)
         items = o.get("items") or []
         title = (items[0].get("title") or items[0].get("name") or "") if items else ""
-        owner = "inverter" if "inverter" in title.lower() else "rest"
+        owner = _title_dispatch_owner(title)
         out.append({
             "id": oid, "order_id": oid, "amazon_order_id": oid, "source": "amazon",
             "customer_name": o.get("buyer_name") or o.get("customer_name_manual") or "",
@@ -24373,7 +24949,7 @@ async def submit_amazon_manual_booking(amazon_order_id: str,
     await db.amazon_orders.update_one({"amazon_order_id": amazon_order_id},
         {"$set": {"bigship_awb": tracking_id, "updated_at": now}})
     title = (items[0].get("title") if items else "") or ""
-    routed = "Gaurav (inverter)" if "inverter" in title.lower() else "Angad (battery/stabilizer)"
+    routed = "Gaurav (inverter)" if _title_dispatch_owner(title) == "inverter" else "Angad (battery/stabilizer)"
     return {"success": True, "order_id": amazon_order_id, "routed_to": routed, "tracking_id": tracking_id}
 
 
@@ -24602,10 +25178,11 @@ _MODEL_CAP_RE = re.compile(r"(\d+(?:[.·,]\d+)?)\s*(kva|kwh|kw|va|ah|wh|w)\b", r
 
 def _ship_model_label(title: str) -> str:
     """Collapse a long product/Amazon title into a short, STABLE model bucket for pendency counts, e.g.
-    'MG 8KVA (90V–300V) Heavy Duty Mainline Voltage Stabilizer…' → '8KVA Stabilizer'. Keyed on
-    capacity + type only (no voltage) so the same model never splits across buckets. Type is inferred
-    from the capacity UNIT when the title omits the product word (KVA→Stabilizer, KW/VA/W→Inverter,
-    AH/WH→Battery). 'inverter' wins over 'battery' so a 'Battery Less' hybrid inverter isn't mis-bucketed."""
+    'MG 8KVA (90V–300V) Heavy Duty Mainline Voltage Stabilizer…' → '8KVA 90V Stabilizer'. Keyed on
+    capacity + VOLTAGE variant + type, so the SAME capacity at a different working-range start stays in
+    its OWN bucket (founder 2026-07-15: 4KVA 90V must NOT club with 4KVA 130V). Type is inferred from the
+    capacity UNIT when the title omits the product word (KVA→Stabilizer, KW/VA/W→Inverter, AH/WH→Battery).
+    'inverter' wins over 'battery' so a 'Battery Less' hybrid inverter isn't mis-bucketed."""
     t = str(title or "").strip()
     if not t:
         return "Other / unlabelled"
@@ -24615,19 +25192,29 @@ def _ship_model_label(title: str) -> str:
     if m:
         cap = m.group(1).replace("·", ".").replace(",", ".").upper()
         unit = m.group(2).upper()
-    # explicit product word first; 'inverter' before 'battery' (hybrid inverters say 'battery less')
+    # An AH / WH / KWH capacity is DEFINITIVELY a battery (its rating is amp-hours / watt-hours) — even
+    # when the title says 'for inverter' / 'solar inverter battery'. So the unit wins over the word
+    # 'inverter' (fixes MG 51.2V 120Ah / 314Ah Lithium Battery being bucketed as Inverter). A hybrid
+    # inverter is rated in kW/VA (not AH), so it still lands on Inverter below.
     if "stabiliz" in tl:
         typ = "Stabilizer"
-    elif "inverter" in tl:
-        typ = "Inverter"
+    elif unit in ("AH", "WH", "KWH"):
+        typ = "Battery"
     elif "pcb" in tl:
         typ = "PCB"
-    elif any(k in tl for k in ("lifepo4", "lithium")) or (unit in ("AH", "WH")) or "battery" in tl:
+    elif "inverter" in tl:
+        typ = "Inverter"
+    elif any(k in tl for k in ("lifepo4", "lithium")) or "battery" in tl:
         typ = "Battery"
     else:  # infer from the capacity unit
         typ = {"KVA": "Stabilizer", "KW": "Inverter", "W": "Inverter", "VA": "Inverter",
                "WH": "Battery", "AH": "Battery", "KWH": "Battery"}.get(unit, "")
-    label = " ".join(x for x in (f"{cap}{unit}" if cap else "", typ) if x).strip()
+    # Voltage variant: the LOWEST voltage in the title = the working-range start (stabilizer) / system
+    # voltage (battery/inverter) — the true model differentiator. Output 230V and the range's upper bound
+    # are always higher, so min() naturally picks the distinguishing value (90V vs 130V vs 70V …).
+    volts = [float(x) for x in re.findall(r"(\d{2,3}(?:\.\d+)?)\s*v\b", tl)]
+    volt = f"{min(volts):g}V" if volts else ""
+    label = " ".join(x for x in (f"{cap}{unit}" if cap else "", volt, typ) if x).strip()
     return label or t[:44]
 
 
@@ -24954,6 +25541,7 @@ async def ship_desk_board(user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROL
                 "sent_back_reason": d.get("sent_back_reason"),
                 "pi_number": d.get("pi_number"), "has_payment_proof": bool(d.get("payment_proof_path")),
                 "payment_amount": d.get("payment_amount"), "payment_ref": d.get("payment_ref"),
+                "packed_at": d.get("packed_at"), "packed_by": d.get("packed_by"),
                 "items": d.get("items") or [], "qty": _sum_item_qty(d.get("items"))}
         if with_gaps:
             out["label_gaps"] = await _label_data_gaps(d)
@@ -25022,17 +25610,28 @@ async def ship_desk_pending_by_model(
     can see, at a glance, 'how many of what' is still to go out. Role-scoped like the board."""
     board = await ship_desk_board(user)
     ready = board.get("ready_to_ship") or []
+    # The order/card title is often a SHORT Amazon/panel title that dropped the voltage. Prefer the
+    # master-SKU's canonical name (which carries the voltage) so bare "10KVA Stabilizer" buckets resolve
+    # to "10KVA 90V Stabilizer". Batch-resolve the SKU names once.
+    sku_ids = {it.get("master_sku_id") for c in ready for it in (c.get("items") or []) if it.get("master_sku_id")}
+    sku_names = {}
+    if sku_ids:
+        async for s in db.master_skus.find({"id": {"$in": list(sku_ids)}}, {"_id": 0, "id": 1, "name": 1}):
+            sku_names[s["id"]] = s.get("name")
     buckets: Dict[str, Any] = {}
     for c in ready:
-        title = c.get("product") or c.get("master_sku_name") or ""
-        if not title:
-            items = c.get("items") or []
-            title = (items[0].get("title") or items[0].get("name") or items[0].get("master_sku_name")) if items else ""
+        items = c.get("items") or []
+        sid = items[0].get("master_sku_id") if items else None
+        title = (sku_names.get(sid) if sid else None) or c.get("product") or c.get("master_sku_name") or ""
+        if not title and items:
+            title = items[0].get("title") or items[0].get("name") or items[0].get("master_sku_name") or ""
         label = _ship_model_label(title)
         qty = c.get("qty") or _sum_item_qty(c.get("items")) or 1
-        b = buckets.setdefault(label, {"model": label, "count": 0, "orders": 0, "examples": []})
+        b = buckets.setdefault(label, {"model": label, "count": 0, "orders": 0, "examples": [], "order_ids": []})
         b["count"] += qty
         b["orders"] += 1
+        if c.get("order_id"):
+            b["order_ids"].append(c.get("order_id"))
         if len(b["examples"]) < 3 and c.get("customer_name"):
             b["examples"].append(c.get("customer_name"))
     models = sorted(buckets.values(), key=lambda x: (-x["count"], x["model"]))
@@ -25188,23 +25787,23 @@ async def ship_desk_slip(order_id: str,
                  headers={"Content-Disposition": f'inline; filename="slip_{str(order_id)[-8:]}.pdf"'})
 
 
-@api_router.post("/quotations/{quotation_number}/to-ship-desk")
-async def quotation_to_ship_desk(quotation_number: str, payment_proof: UploadFile = File(...),
-                                 payment_ref: str = Form(None), payment_amount: str = Form(None),
-                                 user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROLES))):
-    """Call support pushes a PAID Proforma Invoice to the Ship Desk: attach the customer's payment proof
-    and snapshot the PI's items/customer into a ship-desk order (awaiting_accountant). The accountant then
-    reviews the payment proof and uploads the tax invoice + shipping label to release it to Gaurav/Angad."""
-    q = await db.quotations.find_one({"quotation_number": quotation_number}, {"_id": 0})
-    if not q:
-        raise HTTPException(status_code=404, detail="PI / quotation not found")
-    if q.get("ship_desk_order_id"):
-        raise HTTPException(status_code=400, detail=f"This PI is already on the Ship Desk ({q['ship_desk_order_id']})")
-    data = await payment_proof.read()
-    if not data:
-        raise HTTPException(status_code=400, detail="Empty payment-proof file")
-    from utils.storage import upload_file as _up
-    proof_path, _ = await _up(data, "ship_desk_docs", payment_proof.filename or "payment_proof.pdf", filename_prefix="payment_proof")
+# ===================== PI PAYMENT-APPROVAL WORKFLOW =====================
+# Modeled on warranty approval. A PI only reaches the Ship Desk once payment is CONFIRMED:
+#   Sales agent creates PI → customer (CX) approves it → sales agent uploads the payment screenshot
+#   → it lands in the ADMIN approval queue → admin verifies the money is in and approves (or records a
+#   partial payment / reduces the quantity, and waits) → only then does it snapshot to the Ship Desk for
+#   the accountant. EXCEPTION (founder rule): a PI paid on its own Razorpay link is auto-verified and moves
+#   to the Ship Desk immediately — no manual admin step. Field `pi_payment_state` drives the machine:
+#   (unset) → pending_admin → approved | partial(hold) | rejected. Razorpay path jumps straight to approved.
+PI_PAYMENT_APPROVER_ROLES = ["admin"]
+
+
+async def _pi_push_to_ship_desk(q: dict, proof_path: str, payment_ref, payment_amount, user: dict,
+                                auto_via: str = None, approved_by: str = None):
+    """Snapshot a PAYMENT-CONFIRMED PI into a ship-desk order (awaiting_accountant). Shared by the admin
+    approve action and the Razorpay auto-move path. Caller must have checked ship_desk_order_id first.
+    Returns (order_id, invoice_value, first_item_name)."""
+    quotation_number = q.get("quotation_number")
     items = []
     for it in (q.get("items") or []):
         items.append({"master_sku_id": it.get("master_sku_id"),
@@ -25229,22 +25828,255 @@ async def quotation_to_ship_desk(quotation_number: str, payment_proof: UploadFil
         "pincode": re.sub(r"\D", "", str(q.get("customer_pincode") or "")),
         "items": items, "master_sku_id": items[0].get("master_sku_id"), "master_sku_name": items[0].get("master_sku_name"),
         "quantity": sum(i["quantity"] for i in items), "invoice_value": val,
-        "payment_proof_path": proof_path, "payment_ref": (payment_ref or "").strip() or None,
+        "payment_proof_path": proof_path, "payment_ref": (str(payment_ref).strip() or None) if payment_ref else None,
         "payment_amount": float(payment_amount) if payment_amount else val,
-        "payment_proof_by": user.get("email") or user.get("name"), "payment_proof_at": now,
-        "order_id_generated": False, "invoice_number": None,
-        "created_at": now, "created_by": user.get("email") or user.get("name"), "created_by_role": user.get("role")}
+        "payment_proof_by": q.get("payment_submitted_by"), "payment_proof_at": q.get("payment_submitted_at"),
+        "payment_approved_by": approved_by or (user.get("email") or user.get("name") if user else None),
+        "payment_auto_via": auto_via, "order_id_generated": False, "invoice_number": None,
+        "created_at": now, "created_by": (user.get("email") or user.get("name")) if user else "razorpay-webhook",
+        "created_by_role": (user.get("role") if user else "system")}
     await db.pending_fulfillment.insert_one(doc)
     await db.quotations.update_one({"quotation_number": quotation_number}, {"$set": {
         "status": "converted", "conversion_type": "ship_desk", "conversion_reference_id": order_id,
-        "converted_at": now, "ship_desk_order_id": order_id, "payment_proof_path": proof_path, "paid_at": now}})
+        "converted_at": now, "ship_desk_order_id": order_id, "payment_proof_path": proof_path, "paid_at": now,
+        "pi_payment_state": "approved", "payment_amount": (float(payment_amount) if payment_amount else val),
+        "payment_approved_by": approved_by or ((user.get("email") or user.get("name")) if user else "razorpay-auto"),
+        "payment_approved_at": now, "payment_auto_via": auto_via}})
     try:
-        await create_notification(title="💰 Paid PI → Ship Desk — review payment",
-            message=f"{q.get('customer_name')} — {items[0].get('master_sku_name')} · ₹{val:,.0f} ({quotation_number}). Review the payment proof, then upload the invoice + shipping label.",
+        tag = " (Razorpay auto-verified)" if auto_via == "razorpay" else ""
+        await create_notification(title="💰 Paid PI → Ship Desk — upload invoice + label",
+            message=f"{q.get('customer_name')} — {items[0].get('master_sku_name')} · ₹{val:,.0f} ({quotation_number}){tag}. Payment is confirmed — upload the tax invoice + shipping label to release it.",
             notification_type="ship_desk", link="/ship-desk", target_roles=["accountant", "admin"], priority="high")
     except Exception:
         pass
-    return {"success": True, "order_id": order_id, "stage": "awaiting_accountant"}
+    # Incentive parity with the direct-convert on-ramp: book the sales incentive here too so a PI routed via
+    # the Ship Desk isn't skipped. create_incentive_record self-gates on eligibility + INCENTIVE_AUTO, and each
+    # PI only ever takes ONE on-ramp, so there is no double-booking.
+    try:
+        await create_incentive_record(q, "ship_desk", user)
+    except Exception as e:
+        logger.warning(f"PI {quotation_number} ship-desk incentive skipped: {e}")
+    return order_id, val, items[0].get("master_sku_name")
+
+
+async def _pi_razorpay_link_paid(q: dict) -> bool:
+    """Is this PI's own Razorpay payment link marked paid? Live fetch (best-effort)."""
+    if not (RAZORPAY_ENABLED and q.get("payment_link_id")):
+        return False
+    try:
+        link = await asyncio.to_thread(razorpay_client.payment_link.fetch, q["payment_link_id"])
+        return (link or {}).get("status") == "paid"
+    except Exception as e:
+        logger.warning(f"PI {q.get('quotation_number')} razorpay link fetch failed: {e}")
+        return False
+
+
+@api_router.post("/quotations/{quotation_number}/to-ship-desk")
+async def quotation_to_ship_desk(quotation_number: str, payment_proof: UploadFile = File(...),
+                                 payment_ref: str = Form(None), payment_amount: str = Form(None),
+                                 payment_method: str = Form("screenshot"),
+                                 user: dict = Depends(require_roles(SHIP_DESK_ENTRY_ROLES))):
+    """Sales agent submits the customer's payment proof for a CX-approved PI. This no longer ships straight
+    to the Ship Desk — it parks in the ADMIN payment-approval queue (/admin/pi-approvals). Admin confirms the
+    money landed and approves → only then does it snapshot to the Ship Desk for the accountant.
+    EXCEPTION: if this PI was paid on its Razorpay link, payment is auto-verified and it moves to the Ship
+    Desk immediately with no manual approval."""
+    q = await db.quotations.find_one({"quotation_number": quotation_number}, {"_id": 0})
+    if not q:
+        raise HTTPException(status_code=404, detail="PI / quotation not found")
+    if q.get("ship_desk_order_id"):
+        raise HTTPException(status_code=400, detail=f"This PI is already on the Ship Desk ({q['ship_desk_order_id']})")
+    # A PI must have been shared with the customer before you can collect payment on it (the founder's flow
+    # is: create → CX approves → take payment). Paying the Razorpay link counts as approval, so we don't hard-
+    # require status=="approved", but a never-sent draft or a dead PI can't take payment.
+    st = (q.get("status") or "").lower()
+    if st == "draft":
+        raise HTTPException(status_code=400, detail="Send this PI to the customer first — you can't collect payment on a draft.")
+    if st in ("rejected", "cancelled", "expired"):
+        raise HTTPException(status_code=400, detail=f"This PI is {st} — it can't be pushed for payment.")
+    data = await payment_proof.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty payment-proof file")
+    from utils.storage import upload_file as _up
+    proof_path, _ = await _up(data, "ship_desk_docs", payment_proof.filename or "payment_proof.png", filename_prefix="payment_proof")
+    now = datetime.now(timezone.utc).isoformat()
+    amt = float(payment_amount) if payment_amount else float(q.get("grand_total") or q.get("total_amount") or 0)
+    method = (payment_method or "screenshot").strip().lower()
+
+    # --- Razorpay auto-verify: if the PI's own payment link is PAID, skip admin and ship now. ---
+    if await _pi_razorpay_link_paid(q):
+        # store the operator's screenshot too, but the link status is the source of truth
+        order_id, val, nm = await _pi_push_to_ship_desk(q, proof_path, payment_ref, amt, user, auto_via="razorpay")
+        return {"success": True, "auto": True, "order_id": order_id, "stage": "awaiting_accountant",
+                "message": f"Razorpay payment verified — {quotation_number} moved to Ship Desk automatically."}
+
+    # --- Otherwise: park in the admin approval queue. No ship-desk order is created yet. ---
+    # Keep a full history of every proof submitted (never silently overwrite — a re-submitted screenshot
+    # must not erase the earlier one; the admin/fraud review needs the whole chain).
+    proof_entry = {"proof_path": proof_path, "payment_ref": (payment_ref or "").strip() or None,
+                   "amount": amt, "method": method, "by": user.get("email") or user.get("name"),
+                   "by_id": user.get("id"), "at": now}
+    await db.quotations.update_one({"quotation_number": quotation_number}, {
+        "$set": {
+            "pi_payment_state": "pending_admin", "payment_proof_path": proof_path,
+            "payment_ref": (payment_ref or "").strip() or None, "payment_amount": amt,
+            "payment_method": method, "payment_submitted_by": user.get("email") or user.get("name"),
+            "payment_submitted_by_id": user.get("id"),
+            "payment_submitted_by_role": user.get("role"), "payment_submitted_at": now,
+            "payment_rejected_reason": None, "payment_partial_amount": None},
+        "$push": {"payment_proof_history": proof_entry}})
+    try:
+        await create_notification(title="🧾 PI payment proof — needs admin approval",
+            message=f"{q.get('customer_name')} — ₹{amt:,.0f} ({quotation_number}) submitted by {user.get('first_name') or user.get('name') or user.get('email')}. Verify the payment landed, then approve to release to Ship Desk.",
+            notification_type="pi_payment_approval", link="/admin/pi-approvals",
+            target_roles=["admin"], priority="high")
+    except Exception:
+        pass
+    return {"success": True, "auto": False, "pending_admin": True, "pi_payment_state": "pending_admin",
+            "message": f"Payment proof submitted for {quotation_number} — waiting for admin approval before Ship Desk."}
+
+
+@api_router.get("/admin/pi-payment-approvals")
+async def pi_payment_approvals(user: dict = Depends(require_roles(PI_PAYMENT_APPROVER_ROLES))):
+    """Admin queue: CX-approved PIs whose payment proof is awaiting admin sign-off (or on partial hold)."""
+    rows = await db.quotations.find(
+        {"pi_payment_state": {"$in": ["pending_admin", "partial"]}, "ship_desk_order_id": {"$in": [None]}},
+        {"_id": 0}).sort("payment_submitted_at", -1).to_list(500)
+    out = []
+    for q in rows:
+        out.append({
+            "id": q.get("id"), "quotation_number": q.get("quotation_number"),
+            "firm_name": q.get("firm_name"), "customer_name": q.get("customer_name"),
+            "customer_phone": q.get("customer_phone"), "customer_city": q.get("customer_city"),
+            "grand_total": q.get("grand_total") or q.get("total_amount") or 0,
+            "items": [{"name": it.get("name") or it.get("master_sku_name"),
+                       "quantity": it.get("quantity"), "rate": it.get("rate")} for it in (q.get("items") or [])],
+            "pi_payment_state": q.get("pi_payment_state"),
+            "payment_method": q.get("payment_method"), "payment_ref": q.get("payment_ref"),
+            "payment_amount": q.get("payment_amount"), "payment_partial_amount": q.get("payment_partial_amount"),
+            "payment_note": q.get("payment_note"),
+            "payment_submitted_by": q.get("payment_submitted_by"), "payment_submitted_at": q.get("payment_submitted_at"),
+            "has_proof": bool(q.get("payment_proof_path")),
+            "payment_proof_url": f"/api/quotations/{q.get('quotation_number')}/payment-proof" if q.get("payment_proof_path") else None,
+            "phone_reuse_alert": q.get("phone_reuse_alert"),
+            "razorpay_link": q.get("payment_link_url"),
+        })
+    return {"approvals": out, "count": len(out)}
+
+
+@api_router.get("/quotations/{quotation_number}/payment-proof")
+async def pi_payment_proof(quotation_number: str,
+                           user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Stream the payment screenshot/proof attached to a PI (for the admin approval queue)."""
+    q = await db.quotations.find_one({"quotation_number": quotation_number}, {"_id": 0, "payment_proof_path": 1})
+    path = (q or {}).get("payment_proof_path")
+    if not path:
+        raise HTTPException(status_code=404, detail="No payment proof on this PI")
+    from utils.storage import download_file as _dl
+    from fastapi.responses import Response as _Resp
+    data = await _dl(path)
+    if not data:
+        raise HTTPException(status_code=404, detail="Payment proof file missing")
+    ext = (path.rsplit(".", 1)[-1] or "").lower()
+    mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp",
+            "gif": "image/gif", "pdf": "application/pdf"}.get(ext, "application/octet-stream")
+    return _Resp(content=data, media_type=mime,
+                 headers={"Content-Disposition": f'inline; filename="proof_{quotation_number}.{ext or "bin"}"'})
+
+
+class PIApprovalAction(BaseModel):
+    action: str  # approve | partial | modify | reject
+    amount_received: Optional[float] = None
+    note: Optional[str] = None
+    items: Optional[List[dict]] = None  # for modify: [{index|master_sku_id, quantity}]
+
+
+@api_router.post("/quotations/{quotation_number}/payment-approve")
+async def pi_payment_approve(quotation_number: str, body: PIApprovalAction,
+                             user: dict = Depends(require_roles(PI_PAYMENT_APPROVER_ROLES))):
+    """Admin decision on a PI payment proof. Actions:
+       • approve → payment confirmed, snapshot to Ship Desk (accountant).
+       • partial → record the part-payment received, hold in the queue for the rest.
+       • modify  → reduce quantities (customer paid for less), recompute totals, keep waiting.
+       • reject  → payment not received / bad proof, send it back to the sales agent.
+    """
+    q = await db.quotations.find_one({"quotation_number": quotation_number}, {"_id": 0})
+    if not q:
+        raise HTTPException(status_code=404, detail="PI / quotation not found")
+    if q.get("ship_desk_order_id"):
+        raise HTTPException(status_code=400, detail=f"This PI is already on the Ship Desk ({q['ship_desk_order_id']})")
+    if q.get("pi_payment_state") not in ("pending_admin", "partial"):
+        raise HTTPException(status_code=400, detail="This PI has no payment proof awaiting approval")
+    action = (body.action or "").strip().lower()
+    now = datetime.now(timezone.utc).isoformat()
+    approver = user.get("email") or user.get("name")
+    submitter = q.get("payment_submitted_by_id") or q.get("created_by")
+
+    if action == "approve":
+        order_id, val, nm = await _pi_push_to_ship_desk(
+            q, q.get("payment_proof_path"), q.get("payment_ref"),
+            q.get("payment_amount") or q.get("grand_total"), user, approved_by=approver)
+        if body.note:
+            await db.quotations.update_one({"quotation_number": quotation_number}, {"$set": {"payment_note": body.note}})
+        if submitter:
+            await create_notification(title="✅ PI approved → Ship Desk",
+                message=f"Admin approved payment for {q.get('customer_name')} ({quotation_number}). It's now on the Ship Desk.",
+                notification_type="pi_payment_approved", link="/quotations", target_user_ids=[submitter], priority="normal")
+        return {"success": True, "action": "approve", "order_id": order_id, "stage": "awaiting_accountant"}
+
+    if action == "partial":
+        part = float(body.amount_received or 0)
+        if part <= 0:
+            raise HTTPException(status_code=400, detail="Enter the partial amount received")
+        total = float(q.get("grand_total") or q.get("total_amount") or 0)
+        await db.quotations.update_one({"quotation_number": quotation_number}, {"$set": {
+            "pi_payment_state": "partial", "payment_partial_amount": part,
+            "payment_balance_due": round(max(0.0, total - part), 2),
+            "payment_note": body.note or f"Partial ₹{part:,.0f} received; awaiting balance",
+            "payment_reviewed_by": approver, "payment_reviewed_at": now}})
+        if submitter:
+            await create_notification(title="⏳ PI on partial-payment hold",
+                message=f"{q.get('customer_name')} ({quotation_number}): ₹{part:,.0f} of ₹{total:,.0f} received. Collect the balance, then re-submit proof.",
+                notification_type="pi_payment_partial", link="/quotations", target_user_ids=[submitter], priority="normal")
+        return {"success": True, "action": "partial", "partial_amount": part,
+                "balance_due": round(max(0.0, total - part), 2)}
+
+    if action == "modify":
+        if not body.items:
+            raise HTTPException(status_code=400, detail="Send the updated line quantities")
+        existing = q.get("items") or []
+        # apply quantity changes by index (0-based) or by master_sku_id
+        by_idx = {int(i["index"]): i for i in body.items if i.get("index") is not None}
+        by_sku = {i["master_sku_id"]: i for i in body.items if i.get("master_sku_id")}
+        new_items = []
+        for idx, it in enumerate(existing):
+            chg = by_idx.get(idx) or by_sku.get(it.get("master_sku_id"))
+            newq = int(chg["quantity"]) if (chg and chg.get("quantity") is not None) else int(it.get("quantity") or 1)
+            if newq <= 0:
+                continue  # dropping a line the customer didn't pay for
+            new_items.append({**it, "quantity": newq})
+        if not new_items:
+            raise HTTPException(status_code=400, detail="Modification would leave the PI empty")
+        totals = calculate_quotation_totals(new_items, bool(q.get("is_inter_state")))
+        await db.quotations.update_one({"quotation_number": quotation_number}, {"$set": {
+            "items": totals["items"], **{k: v for k, v in totals.items() if k != "items"},
+            "payment_note": body.note or "Quantity reduced by admin at payment approval",
+            "modified_by": approver, "modified_at": now}})
+        updated = await db.quotations.find_one({"quotation_number": quotation_number}, {"_id": 0})
+        return {"success": True, "action": "modify", "grand_total": updated.get("grand_total"),
+                "items": [{"name": it.get("name") or it.get("master_sku_name"), "quantity": it.get("quantity")} for it in updated.get("items", [])]}
+
+    if action == "reject":
+        await db.quotations.update_one({"quotation_number": quotation_number}, {"$set": {
+            "pi_payment_state": "rejected", "payment_rejected_reason": body.note or "Payment not confirmed",
+            "payment_reviewed_by": approver, "payment_reviewed_at": now}})
+        if submitter:
+            await create_notification(title="❌ PI payment rejected",
+                message=f"Admin could not confirm payment for {q.get('customer_name')} ({quotation_number}): {body.note or 'not received'}. Re-check with the customer.",
+                notification_type="pi_payment_rejected", link="/quotations", target_user_ids=[submitter], priority="high")
+        return {"success": True, "action": "reject"}
+
+    raise HTTPException(status_code=400, detail="action must be approve, partial, modify or reject")
 
 
 # ===================== RETURN DESK — reverse-pickup pipeline =====================
@@ -30232,6 +31064,85 @@ async def discard_wa_purchase_draft(
         {"$set": {"status": "discarded", "discarded_by": user.get("email"),
                   "discarded_at": datetime.now(timezone.utc).isoformat()}})
     return {"message": "Draft discarded"}
+
+
+@api_router.post("/purchases/draft-from-agent")
+async def create_purchase_draft_from_agent(data: dict, user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Create a purchase DRAFT from an external accountant agent (e.g. ChatGPT that parsed a supplier
+    invoice PDF/image). Lands in the SAME accountant review queue as WhatsApp captures
+    (db.purchase_drafts, status pending_review) and shows in the Purchase Register 'drafts' panel,
+    where the accountant one-click prefills the New Purchase form and posts it.
+
+    Accounting guardrails: NOTHING is posted to the books or marked paid here. GST / totals are
+    stored exactly as the agent read them off the document — never invent values. The accountant
+    verifies against the attached invoice before finalizing (GST only from a real tax document)."""
+    supplier = (data.get("supplier_name") or "").strip()
+    invoice_no = (data.get("invoice_number") or "").strip()
+    if not supplier and not invoice_no:
+        return {"success": False, "error": "Provide at least supplier_name or invoice_number."}
+    # Resolve the buying firm (one of the group entities) if a name was given.
+    firm_id = data.get("firm_id")
+    firm_name = data.get("firm_name")
+    if not firm_id and firm_name:
+        f = await db.firms.find_one({"name": {"$regex": re.escape(firm_name), "$options": "i"}},
+                                    {"_id": 0, "id": 1, "name": 1})
+        if f:
+            firm_id, firm_name = f["id"], f["name"]
+    # Normalize line items to the shape the Purchase Register form reads (item_id left blank —
+    # the accountant maps each line to a CRM SKU; the raw description is kept for that).
+    items = []
+    for it in (data.get("items") or []):
+        if not isinstance(it, dict):
+            continue
+        items.append({
+            "item_type": it.get("item_type") or "raw_material",
+            "item_id": "",
+            "description": it.get("description") or it.get("name") or it.get("item") or "",
+            "hsn": it.get("hsn") or it.get("hsn_code"),
+            "quantity": it.get("quantity") if it.get("quantity") is not None else it.get("qty"),
+            "rate": it.get("rate"),
+            "amount": it.get("amount") or it.get("taxable_value"),
+            "gst_rate": it.get("gst_rate"),
+        })
+    # Optionally store the source invoice (base64 image/PDF) so the accountant can verify against it.
+    invoice_url = None
+    b64 = data.get("invoice_base64")
+    if b64:
+        try:
+            import base64 as _b64
+            raw = _b64.b64decode(str(b64).split(",", 1)[-1])
+            fn = data.get("invoice_filename") or f"invoice_{invoice_no or 'agent'}.pdf"
+            rel, _st = await storage_upload(file_data=raw, folder="purchases/agent_invoices", original_filename=fn)
+            invoice_url = os.environ.get("FRONTEND_URL", "https://newcrm.musclegrid.in").rstrip("/") + \
+                make_signed_file_url(rel, ttl_seconds=7 * 24 * 3600)
+        except Exception as _e:
+            logger.warning(f"agent purchase invoice store failed: {_e}")
+    draft = {
+        "id": str(uuid.uuid4()),
+        "source": "chatgpt_accountant",
+        "status": "pending_review",
+        "firm_id": firm_id, "firm_name": firm_name,
+        "supplier_name": supplier or None,
+        "supplier_gstin": (data.get("supplier_gstin") or "").strip() or None,
+        "invoice_number": invoice_no or None, "invoice_date": data.get("invoice_date"),
+        "items": items,
+        "subtotal": data.get("subtotal") if data.get("subtotal") is not None else data.get("taxable_value"),
+        "total_gst": data.get("total_gst"),
+        "cgst": data.get("cgst"), "sgst": data.get("sgst"), "igst": data.get("igst"),
+        "grand_total": data.get("grand_total") if data.get("grand_total") is not None else data.get("total"),
+        "invoice_file": invoice_url,
+        "missing_source": not bool(invoice_url),  # accountant should chase the source doc if true
+        "read_by": "chatgpt", "confidence": data.get("confidence"),
+        "notes": data.get("notes"),
+        "captured_by": f"agent:{user.get('email', 'chatgpt')}",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.purchase_drafts.insert_one(draft)
+    return {"success": True, "draft_id": draft["id"], "status": "pending_review",
+            "firm": firm_name or "(unassigned — accountant will set)", "supplier": supplier,
+            "invoice_number": invoice_no, "grand_total": draft["grand_total"], "line_items": len(items),
+            "invoice_attached": bool(invoice_url),
+            "message": "Draft queued for the accountant. Review & finalize in Purchase Register → WhatsApp/agent drafts panel. Nothing posted to books or paid."}
 
 
 @api_router.get("/purchases/{purchase_id}")
@@ -43071,6 +43982,141 @@ async def create_legal_case_from_loss(order_id: str, user: dict = Depends(requir
     return {"success": True, "created": True, "case": {"id": case["id"], "serial": serial, "status": "notice_pending"}}
 
 
+# ============== Refund-Recovery board (persistent) ==============
+# Every refunded Amazon order, classified by whether it was DELIVERED and actually RETURNED —
+# using deduped refund amounts (amazon_refunds double-stores each refund) and Amazon's authoritative
+# return_delivery_date from the uploaded Returns-Report XMLs. Confirmed leaks feed SAFE-T + legal.
+_REFUND_REASON_MAP = {
+    "CR-DEFECTIVE": "Defective / doesn't work", "CR-QUALITY_UNACCEPTABLE": "Performance/quality not adequate",
+    "CR-SWITCHEROO": "Different from ordered (switcheroo)", "CR-MISSING_PARTS": "Missing parts",
+    "CR-ORDERED_WRONG_ITEM": "Ordered wrong item", "CR-DAMAGED_BY_FC": "Damaged (packaging)",
+    "CR-NOT_COMPATIBLE": "Not compatible", "CR-UNWANTED_ITEM": "No longer needed",
+    "AMZ-PG-BAD-DESC": "Inaccurate description", "CR-DAMAGED_BY_CARRIER": "Damaged in delivery",
+    "UND-UNKNOWN": "Undeliverable/unknown"}
+
+
+async def _rebuild_refund_recovery() -> dict:
+    """Recompute the whole board from source and upsert db.refund_recovery. Idempotent."""
+    import glob as _glob
+    import xml.etree.ElementTree as _ET
+    from collections import defaultdict as _dd
+    # 1) returns reports (return_delivery_date is authoritative for "did it come back")
+    ret = {}
+    for path in _glob.glob(str(UPLOAD_DIR / "claude_files" / "*report-*.xml")):
+        try:
+            root = _ET.parse(path).getroot()
+        except Exception:
+            continue
+        if (root.findtext("MessageType") or "").strip() != "Returns-Report":
+            continue
+        msg = root.find("Message")
+        if msg is None:
+            continue
+        for rd in msg.findall("return_details"):
+            oid = (rd.findtext("order_id") or "").strip()
+            if not oid:
+                continue
+            rdd = (rd.findtext("return_delivery_date") or "").strip()
+            it = rd.find("item_details")
+            ld = rd.find("label_details")
+            if oid not in ret or rdd:
+                ret[oid] = {"rdd": rdd,
+                            "code": (it.findtext("return_reason_code") if it is not None else "") or "",
+                            "trk": (ld.findtext("tracking_id") if ld is not None else "") or ""}
+    # 2) deduped refunds (distinct amount+date)
+    refund = _dd(lambda: {"amt": 0.0, "seen": set(), "types": set(), "firm": None})
+    async for d in db.amazon_refunds.find({}, {"_id": 0, "amazon_order_id": 1, "refund_amount": 1, "refund_date": 1, "refund_type": 1, "firm_id": 1}):
+        o = d.get("amazon_order_id")
+        if not o:
+            continue
+        k = (round(d.get("refund_amount") or 0, 2), str(d.get("refund_date"))[:10])
+        r = refund[o]
+        if k not in r["seen"]:
+            r["seen"].add(k); r["amt"] += k[0]
+        if d.get("refund_type"):
+            r["types"].add(d["refund_type"])
+        r["firm"] = r["firm"] or d.get("firm_id")
+    # 3) delivery status from courier_shipments
+    fwd, rto, shipped = set(), set(), set()
+    async for cs in db.courier_shipments.find({"amazon_order_id": {"$ne": None}}, {"_id": 0, "amazon_order_id": 1, "status": 1}):
+        o = cs["amazon_order_id"]; s = (cs.get("status") or "").strip().lower(); shipped.add(o)
+        if "rto" in s:
+            rto.add(o)
+        elif s == "delivered":
+            fwd.add(o)
+    firmname = {}
+    async for f in db.firms.find({}, {"_id": 0, "id": 1, "name": 1}):
+        firmname[f["id"]] = f["name"]
+    legal = {}
+    async for c in db.legal_cases.find({"order_id": {"$ne": None}}, {"_id": 0, "order_id": 1, "serial": 1}):
+        legal[c["order_id"]] = c.get("serial")
+    now = datetime.now(timezone.utc).isoformat()
+    docs = []
+    for o, r in refund.items():
+        types = r["types"]
+        is_az = types == {"a_to_z_claim"}
+        rr = ret.get(o); in_report = o in ret
+        returned_amazon = bool(rr and rr.get("rdd"))
+        returned = returned_amazon or (o in rto)
+        delivered = o in fwd
+        if is_az:
+            v = "a_to_z"
+        elif returned:
+            v = "returned"
+        elif delivered and in_report and not returned_amazon:
+            v = "confirmed_leak"
+        elif delivered and not in_report:
+            v = "return_unknown"
+        elif o not in shipped:
+            v = "no_shipment"
+        else:
+            v = "in_transit"
+        docs.append({"id": str(uuid.uuid4()), "order_id": o, "firm_name": firmname.get(r["firm"], "?"),
+                     "refund_amount": round(r["amt"], 2), "refund_types": sorted(types), "verdict": v,
+                     "in_return_report": in_report,
+                     "return_reason": _REFUND_REASON_MAP.get((rr or {}).get("code", ""), (rr or {}).get("code", "")),
+                     "return_tracking": (rr or {}).get("trk", ""), "return_delivered_back": returned_amazon,
+                     "legal_case_serial": legal.get(o), "updated_at": now})
+    await db.refund_recovery.delete_many({})
+    if docs:
+        await db.refund_recovery.insert_many(docs)
+    await db.app_meta.update_one({"key": "refund_recovery_build"},
+                                 {"$set": {"key": "refund_recovery_build", "built_at": now, "total": len(docs)}}, upsert=True)
+    return {"built": len(docs), "built_at": now}
+
+
+@api_router.get("/admin/refund-recovery")
+async def get_refund_recovery(verdict: Optional[str] = None, firm: Optional[str] = None,
+                              q: Optional[str] = None, limit: int = 500,
+                              user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Refund-recovery board: summary tiles + filtered order list. Amounts are deduplicated; the
+    'confirmed_leak' bucket = delivered + Amazon Returns Report shows it was never returned."""
+    match = {"order_id": {"$ne": "_meta"}}
+    summary = {}
+    async for r in db.refund_recovery.aggregate([{"$match": match},
+            {"$group": {"_id": "$verdict", "n": {"$sum": 1}, "amt": {"$sum": "$refund_amount"}}}]):
+        summary[r["_id"]] = {"orders": r["n"], "amount": round(r["amt"], 2)}
+    firms = sorted([f for f in await db.refund_recovery.distinct("firm_name", match) if f])
+    query = dict(match)
+    if verdict:
+        query["verdict"] = verdict
+    if firm:
+        query["firm_name"] = firm
+    if q:
+        query["order_id"] = {"$regex": re.escape(q), "$options": "i"}
+    lim = max(1, min(limit, 2000))
+    rows = await db.refund_recovery.find(query, {"_id": 0}).sort("refund_amount", -1).limit(lim).to_list(lim)
+    meta = await db.app_meta.find_one({"key": "refund_recovery_build"}, {"_id": 0})
+    return {"summary": summary, "firms": firms, "rows": rows,
+            "built_at": (meta or {}).get("built_at"), "total": (meta or {}).get("total", len(rows))}
+
+
+@api_router.post("/admin/refund-recovery/rebuild")
+async def rebuild_refund_recovery_endpoint(user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Recompute the board from the latest data — run this after uploading new Returns-Report XMLs."""
+    return await _rebuild_refund_recovery()
+
+
 # ============== Legal cases (imported from the old legal-panel website) ==============
 LEGAL_CASE_STATUS = ["pending", "draft_uploaded", "notice_pending", "notice_sent",
                      "notice_delivered", "pending_legal_case", "case_filed", "closed_recovered", "closed_dropped"]
@@ -44182,7 +45228,14 @@ async def get_receivables_report(
     age_buckets = {"0-30": 0, "31-60": 0, "61-90": 0, "90+": 0}
     
     for inv in invoices:
-        inv_date = datetime.fromisoformat(inv["invoice_date"].replace("Z", "+00:00")).date() if "T" in inv["invoice_date"] else datetime.strptime(inv["invoice_date"], "%Y-%m-%d").date()
+        _raw = str(inv.get("invoice_date") or "").strip().replace("Z", "+00:00")
+        try:
+            inv_date = datetime.fromisoformat(_raw).date()  # handles 'YYYY-MM-DD', 'T...' and ' 00:00:00'
+        except (ValueError, TypeError):
+            try:
+                inv_date = datetime.strptime(_raw[:10], "%Y-%m-%d").date()
+            except (ValueError, TypeError):
+                continue  # skip an un-parseable date rather than 500 the whole report
         days = (today - inv_date).days
         balance = inv.get("balance_due", 0)
         
@@ -45837,6 +46890,104 @@ async def log_quotation_event(quotation_id: str, event_type: str, details: dict,
 
 # ============= PI / QUOTATION API ENDPOINTS =============
 
+def _norm_nm(s) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(s or "").lower())
+
+
+def _names_similar(a: str, b: str) -> bool:
+    """True if two customer names are plausibly the SAME party (typo, firm-vs-proprietor) rather than
+    two different people — used to suppress false positives in the phone-reuse fraud alert."""
+    na, nb = _norm_nm(a), _norm_nm(b)
+    if not na or not nb:
+        return True
+    if na == nb or na in nb or nb in na:
+        return True
+    ta = {w for w in re.split(r"\s+", str(a or "").lower()) if len(w) >= 4}
+    tb = {w for w in re.split(r"\s+", str(b or "").lower()) if len(w) >= 4}
+    return bool(ta & tb)   # share a ≥4-char word → same party (e.g. "Chaudhary Electricals" / "VIJAY CHOUDHARY" won't, but typos will)
+
+
+def _distinct_people(names) -> list:
+    """Collapse a list of names into distinct-party clusters; returns one representative name per cluster.
+    2+ clusters on one phone = the fraud tell (same number, unrelated names)."""
+    reps = []
+    for nm in names:
+        if not any(_names_similar(nm, r) for r in reps):
+            reps.append(nm)
+    return reps
+
+
+async def _phone_reuse_check(phone: str, name: str, exclude_id: str = None) -> dict:
+    """FRAUD GUARD (Barmer-ring tell): has this phone been used before under a DIFFERENT customer name?
+    A phone appearing under multiple names is the classic fake-order signature. Returns the other names +
+    which reps raised them so the operator sees it BEFORE booking. Read-only; never blocks."""
+    p = re.sub(r"\D", "", str(phone or ""))[-10:]
+    if len(p) != 10:
+        return {"alert": False, "other_names": []}
+    my = _norm_nm(name)
+    seen = {}
+    async for q in db.quotations.find(
+            {"customer_phone": {"$regex": p}},
+            {"_id": 0, "quotation_number": 1, "customer_name": 1, "id": 1, "created_by_name": 1, "grand_total": 1}):
+        if exclude_id and q.get("id") == exclude_id:
+            continue
+        onm = (q.get("customer_name") or "").strip()
+        k = _norm_nm(onm)
+        if k and not _names_similar(onm, name):
+            e = seen.setdefault(k, {"name": onm, "pis": [], "reps": set(), "value": 0.0})
+            e["pis"].append(q.get("quotation_number"))
+            e["value"] += float(q.get("grand_total") or 0)
+            if q.get("created_by_name"):
+                e["reps"].add(q["created_by_name"])
+    others = [{"name": v["name"], "pi_count": len(v["pis"]), "reps": sorted(v["reps"]),
+               "value": round(v["value"])} for v in seen.values()]
+    return {"alert": len(others) > 0, "phone": p, "distinct_other_names": len(others),
+            "other_names": sorted(others, key=lambda x: -x["value"])}
+
+
+@api_router.get("/quotations/phone-reuse-check")
+async def quotation_phone_reuse_check(phone: str, name: str = "",
+                                      user: dict = Depends(require_roles(["call_support", "admin", "accountant"]))):
+    """Live pre-check the UI can call while typing a new PI — warns if the phone already exists under a
+    different customer name (returns the other names + which reps raised them)."""
+    return await _phone_reuse_check(phone, name)
+
+
+@api_router.get("/admin/duplicate-phone-alerts")
+async def duplicate_phone_alerts(min_names: int = 2,
+                                 user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Fraud-watch board: every phone number used on PIs under 2+ DIFFERENT customer names — the
+    fake-order signature that ran the Barmer ring. Sorted by risk (name count, then total value)."""
+    by_phone = {}
+    async for q in db.quotations.find(
+            {"customer_phone": {"$nin": [None, ""]}},
+            {"_id": 0, "quotation_number": 1, "customer_name": 1, "customer_phone": 1,
+             "created_by_name": 1, "grand_total": 1, "created_at": 1}):
+        p = re.sub(r"\D", "", str(q.get("customer_phone") or ""))[-10:]
+        if len(p) != 10:
+            continue
+        d = by_phone.setdefault(p, {"phone": p, "names": {}, "reps": set(), "pis": 0, "value": 0.0, "first": None, "last": None})
+        nm = (q.get("customer_name") or "?").strip()
+        d["names"].setdefault(_norm_nm(nm), nm)
+        if q.get("created_by_name"):
+            d["reps"].add(q["created_by_name"])
+        d["pis"] += 1
+        d["value"] += float(q.get("grand_total") or 0)
+        dt = str(q.get("created_at"))[:10]
+        d["first"] = min(d["first"], dt) if d["first"] else dt
+        d["last"] = max(d["last"], dt) if d["last"] else dt
+    rows = []
+    for d in by_phone.values():
+        people = _distinct_people(list(d["names"].values()))   # collapse typos / firm-vs-proprietor
+        if len(people) >= min_names:
+            rows.append({"phone": d["phone"], "distinct_names": len(people),
+                         "names": sorted(people), "reps": sorted(d["reps"]),
+                         "pi_count": d["pis"], "total_value": round(d["value"]),
+                         "first_pi": d["first"], "last_pi": d["last"]})
+    rows.sort(key=lambda r: (-r["distinct_names"], -r["total_value"]))
+    return {"count": len(rows), "min_names": min_names, "alerts": rows}
+
+
 @api_router.post("/quotations")
 async def create_quotation(
     quotation: QuotationCreate,
@@ -45980,6 +47131,17 @@ async def create_quotation(
     
     await db.quotations.insert_one(quotation_doc)
     quotation_doc.pop("_id", None)
+
+    # FRAUD GUARD: flag if this phone was already used under a different customer name (Barmer-ring tell).
+    try:
+        reuse = await _phone_reuse_check(quotation.customer_phone, quotation.customer_name, exclude_id=quotation_id)
+        if reuse.get("alert"):
+            quotation_doc["phone_reuse_alert"] = reuse
+            await db.quotations.update_one({"id": quotation_id}, {"$set": {"phone_reuse_alert": reuse}})
+            logger.warning(f"PHONE-REUSE ALERT on PI {quotation_number}: phone {reuse['phone']} also used by "
+                           f"{[o['name'] for o in reuse['other_names']]} (created by {user.get('first_name')})")
+    except Exception as e:
+        logger.warning(f"phone-reuse check failed for {quotation_number}: {e}")
 
     # Auto-create an MGIPL-Razorpay payment link on every SENT PI so the customer can pay online.
     if status == "sent" and RAZORPAY_ENABLED:
@@ -46959,6 +48121,7 @@ async def convert_quotation_to_fulfillment(
     phone: Optional[str] = Form(None),
     carrier_name: Optional[str] = Form(None),
     notes: Optional[str] = Form(None),
+    payment_received: Optional[str] = Form(None),
     user: dict = Depends(require_roles(["admin", "accountant"]))
 ):
     """Convert approved PI to pending fulfillment with mandatory fields enforced"""
@@ -46968,10 +48131,32 @@ async def convert_quotation_to_fulfillment(
     
     if quotation["status"] != "approved":
         raise HTTPException(status_code=400, detail="Only approved quotations can be converted")
-    
+
     if quotation.get("converted_at"):
         raise HTTPException(status_code=400, detail="This quotation has already been converted")
-    
+
+    # ---- PAYMENT GATE (founder rule: admin approves once payment is received; only then can a PI dispatch).
+    # This direct-dispatch path is the second on-ramp to fulfillment, so it enforces the same gate as the
+    # Ship Desk. Payment is "evident" if admin already approved it (pi_payment_state == "approved") or the
+    # Razorpay link is paid. A non-admin MUST have that. An admin without it may still proceed — they are the
+    # payment authority — but only by ticking `payment_received` (an explicit, logged attestation), so the
+    # bypass can never be an accident.
+    pstate = quotation.get("pi_payment_state")
+    if pstate == "rejected":
+        raise HTTPException(status_code=400, detail="Payment was rejected on this PI — resolve it in PI Payment Approvals before dispatching.")
+    if pstate == "partial":
+        raise HTTPException(status_code=400, detail="This PI is on a partial-payment hold — collect the balance and get admin approval before dispatching.")
+    is_admin = (user.get("role") or "") == "admin"
+    razor_ok = await _pi_razorpay_link_paid(quotation) if pstate != "approved" else False
+    payment_evident = (pstate == "approved") or razor_ok
+    _attested = str(payment_received or "").strip().lower() in ("1", "true", "yes", "on")
+    if not payment_evident:
+        if not is_admin:
+            raise HTTPException(status_code=400, detail="Payment isn't confirmed yet. An admin must approve payment (PI Payment Approvals) or the Razorpay link must be paid before this PI can be dispatched.")
+        if not _attested:
+            raise HTTPException(status_code=400, detail="No payment proof on this PI. Tick 'Payment received' to confirm you've verified the money before dispatching — or take payment via the Razorpay link / PI Payment Approvals.")
+    pi_cleared_via = "prior_approval" if pstate == "approved" else ("razorpay" if razor_ok else "admin_attested")
+
     # Validate mandatory fields
     if not customer_first_name.strip() or not customer_last_name.strip():
         raise HTTPException(status_code=400, detail="Customer first and last name are required")
@@ -47062,15 +48247,24 @@ async def convert_quotation_to_fulfillment(
             "gst_rate": master_sku.get("gst_rate", 18) if master_sku else 18
         })
     
+    # Unified shape: this direct on-ramp now produces the SAME pending_fulfillment record the Ship Desk path
+    # does — a "ship_desk_order" with stage/pack_stage/source and docs stored under the canonical *_path field
+    # names (invoice_path / shipping_label_path) that _ship_desk_present and the doc-download endpoint read.
+    # The only difference from the Ship Desk path is that docs arrive up-front here (admin/accountant supplied
+    # them), so it lands straight in the "ready_to_ship" lane instead of waiting at "awaiting_accountant".
     fulfillment_doc = {
         "id": fulfillment_id,
-        "type": "pi_conversion",
+        "order_id": invoice_number.strip(),  # invoice number is the order reference on the direct path
+        "type": "ship_desk_order",
         "order_source": "direct",
+        "source": "ship_desk",
+        "from_pi": True,
+        "pi_number": quotation.get("quotation_number"),
+        "dispatch_type": "new_order",
         "quotation_id": quotation_id,
         "quotation_number": quotation.get("quotation_number"),
         "firm_id": quotation.get("firm_id"),
         "firm_name": firm.get("name") if firm else quotation.get("firm_name"),
-        "order_id": invoice_number,  # Use invoice number as order ID
         "customer_name": customer_full_name,
         "customer_first_name": customer_first_name.strip(),
         "customer_last_name": customer_last_name.strip(),
@@ -47080,19 +48274,40 @@ async def convert_quotation_to_fulfillment(
         "state": state.strip(),
         "pincode": pincode.strip(),
         "items": items,
+        "master_sku_id": items[0].get("master_sku_id") if items else None,
+        "master_sku_name": items[0].get("master_sku_name") if items else None,
+        "quantity": sum(int(i.get("quantity") or 1) for i in items),
         "tracking_id": tracking_id.strip(),
         "carrier_name": carrier_name or "Manual",
+        "courier": carrier_name or "Delhivery",
         "invoice_number": invoice_number.strip(),
+        # docs under BOTH the canonical ship-desk names and the legacy *_url names, so every reader resolves them
+        "invoice_path": invoice_path,
         "invoice_url": invoice_url,
+        "shipping_label_path": shipping_label_path,
         "shipping_label_url": shipping_label_url,
         "invoice_value": quotation.get("grand_total"),
+        "required_docs": _ship_desk_required(quotation.get("grand_total")),
+        # docs are complete up-front → ready to pack & ship immediately
+        "stage": "ready_to_ship",
         "status": "ready_to_dispatch",
+        "pack_stage": "ready_to_pack",
+        "docs_completed_at": now.isoformat(),
+        # payment audit (how this dispatch was cleared)
+        "pi_payment_state": "approved",
+        "payment_cleared_via": pi_cleared_via,
+        "payment_approved_by": quotation.get("payment_approved_by") or (user.get("email") or user.get("id")),
         "notes": notes,
         "created_by": user["id"],
         "created_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
         "created_at": now.isoformat()
     }
-    
+    # Route to Gaurav (inverter) / Angad (rest) exactly like the Ship Desk path does.
+    try:
+        fulfillment_doc["dispatch_owners"] = sorted(await _order_dispatch_owners(fulfillment_doc))
+    except Exception:
+        fulfillment_doc["dispatch_owners"] = ["rest"]
+
     await db.pending_fulfillment.insert_one(fulfillment_doc)
     
     # Update quotation status
@@ -47106,6 +48321,11 @@ async def convert_quotation_to_fulfillment(
             "converted_by": user["id"],
             "converted_by_name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
             "updated_at": now.isoformat(),
+            # Payment was cleared to reach here (admin authority or prior approval / Razorpay) — record it.
+            "pi_payment_state": "approved",
+            "payment_approved_by": quotation.get("payment_approved_by") or (user.get("email") or user.get("id")),
+            "payment_approved_at": quotation.get("payment_approved_at") or now.isoformat(),
+            "payment_cleared_via": pi_cleared_via,
             # Update customer details from form
             "customer_name": customer_full_name,
             "customer_address": address.strip(),
@@ -59794,6 +61014,99 @@ async def smartflo_webhook(request: Request):
         return {"status": "error", "message": str(e)}
 
 
+# ── Call recording archival ──────────────────────────────────────────────────
+# TATA Smartflo purges recordings after a retention window and, once a recording is
+# gone (or was never captured), serves a ~144-byte silent MP3 placeholder. This job
+# downloads every REAL recording to our own storage the moment it's available, so
+# recordings survive TATA's purge and play from the CRM. Calls whose recording is the
+# silent stub are flagged recording_empty so the UI can show "not captured by Smartflo"
+# instead of a dead, silent player.
+CALL_RECORDING_MIN_BYTES = 300  # anything <= this is TATA's silent placeholder, not audio
+
+
+async def _archive_one_call_recording(call: dict) -> str:
+    """Download a call's recording to storage if it's real audio. Returns a status string."""
+    ru = (call.get("raw_data") or {}).get("recording_url") or call.get("recording_url")
+    cid = call.get("id")
+    if not (ru and str(ru).startswith("http")) or not cid:
+        return "no_url"
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+            r = await client.get(ru)
+        if r.status_code != 200:
+            await db.smartflo_calls.update_one({"id": cid}, {"$set": {
+                "recording_archive_status": "error", "recording_archive_at": now}})
+            return f"http_{r.status_code}"
+        content = r.content
+        if len(content) <= CALL_RECORDING_MIN_BYTES:
+            await db.smartflo_calls.update_one({"id": cid}, {"$set": {
+                "recording_empty": True, "recording_archive_status": "empty",
+                "recording_archive_at": now}})
+            return "empty"
+        rel, _st = await storage_upload(file_data=content, folder="call_recordings",
+                                        original_filename=f"call_{cid}.mp3")
+        await db.smartflo_calls.update_one({"id": cid}, {"$set": {
+            "archived_recording_path": rel, "recording_empty": False,
+            "recording_archive_status": "archived", "recording_archive_at": now}})
+        return "archived"
+    except Exception as e:
+        logger.warning(f"call recording archive failed ({cid}): {str(e)[:120]}")
+        await db.smartflo_calls.update_one({"id": cid}, {"$set": {
+            "recording_archive_status": "error", "recording_archive_at": now}})
+        return "error"
+
+
+async def scheduled_archive_call_recordings():
+    """Sweep recent calls that have a recording_url but aren't archived yet (newest first).
+    Skips ones already resolved (archived/empty); retries errors. Batch-limited + throttled
+    to be gentle on TATA. Opt-out via CALL_RECORDING_ARCHIVE_ENABLED=0."""
+    import asyncio as _asyncio
+    if os.environ.get("CALL_RECORDING_ARCHIVE_ENABLED", "true").strip().lower() not in ("1", "true", "yes", "on"):
+        return
+    cutoff = (datetime.now(timezone.utc) - timedelta(
+        days=int(os.environ.get("CALL_RECORDING_ARCHIVE_DAYS", "50")))).isoformat()
+    q = {
+        "received_at": {"$gte": cutoff},
+        "archived_recording_path": {"$exists": False},
+        "recording_archive_status": {"$nin": ["empty", "archived"]},
+        "$or": [{"recording_url": {"$ne": None}}, {"raw_data.recording_url": {"$ne": None}}],
+    }
+    batch = int(os.environ.get("CALL_RECORDING_ARCHIVE_BATCH", "120"))
+    calls = await db.smartflo_calls.find(q, {"_id": 0}).sort("received_at", -1).limit(batch).to_list(batch)
+    archived = empty = other = 0
+    for c in calls:
+        st = await _archive_one_call_recording(c)
+        if st == "archived":
+            archived += 1
+        elif st == "empty":
+            empty += 1
+        else:
+            other += 1
+        await _asyncio.sleep(0.3)
+    if calls:
+        logger.info(f"[call_archive] swept {len(calls)}: archived={archived} empty={empty} other={other}")
+
+
+def _attach_archived_recording(call: dict) -> dict:
+    """Add a playable archived-recording URL (from our storage) + empty flag to a call dict.
+    The frontend prefers archived_recording_url so recordings keep playing after TATA purges."""
+    if call.get("archived_recording_path"):
+        call["archived_recording_url"] = (
+            os.environ.get("FRONTEND_URL", "https://newcrm.musclegrid.in").rstrip("/")
+            + make_signed_file_url(call["archived_recording_path"], ttl_seconds=24 * 3600))
+    return call
+
+
+@api_router.post("/smartflo/calls/archive-recordings")
+async def trigger_archive_recordings(user: dict = Depends(require_roles(["admin"]))):
+    """Manually kick a recording-archival sweep (also runs on a schedule)."""
+    await scheduled_archive_call_recordings()
+    archived = await db.smartflo_calls.count_documents({"recording_archive_status": "archived"})
+    empty = await db.smartflo_calls.count_documents({"recording_archive_status": "empty"})
+    return {"success": True, "archived_total": archived, "empty_total": empty}
+
+
 @api_router.get("/smartflo/calls")
 async def get_smartflo_calls(
     limit: int = 50,
@@ -59804,12 +61117,13 @@ async def get_smartflo_calls(
     query = {}
     if phone:
         query["caller_phone"] = {"$regex": phone}
-    
+
     calls = await db.smartflo_calls.find(
-        query, 
+        query,
         {"_id": 0}
     ).sort("received_at", -1).limit(limit).to_list(limit)
-    
+    for c in calls:
+        _attach_archived_recording(c)
     return {"calls": calls, "total": len(calls)}
 
 
@@ -59951,7 +61265,9 @@ async def get_my_smartflo_calls(
         query,
         {"_id": 0}
     ).sort("received_at", -1).limit(limit).to_list(limit)
-    
+    for c in calls:
+        _attach_archived_recording(c)
+
     # Calculate stats
     answered = len([c for c in calls if c.get("raw_data", {}).get("event_type") == "answered" or c.get("raw_data", {}).get("duration")])
     missed = len([c for c in calls if c.get("raw_data", {}).get("event_type") == "missed"])
@@ -60173,7 +61489,7 @@ async def get_smartflo_dashboard(
         },
         "agent_stats": list(agent_stats.values()),
         "department_stats": dept_stats,
-        "recent_calls": processed_calls[:20]
+        "recent_calls": [_attach_archived_recording(c) for c in processed_calls[:20]]
     }
 
 
@@ -68140,6 +69456,75 @@ async def get_courier_warehouses(
         }
 
 
+async def _bigship_warehouse_phone_index():
+    """Pull ALL Bigship warehouses and index them by contact phone (last-10). A reverse pickup registers the
+    CUSTOMER's address as a Bigship warehouse, so this map tells us which customers actually have a pickup
+    arranged — even when the panel booking never synced into the CRM's courier_shipments."""
+    token = await get_bigship_token()
+    idx = {}
+    async with httpx.AsyncClient(timeout=40.0) as client:
+        page = 1
+        while page <= 60:
+            r = await client.get(f"{BIGSHIP_API_URL}/warehouse/get/list",
+                                 params={"page_index": page, "page_size": 100},
+                                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
+            d = r.json()
+            if not d.get("success"):
+                break
+            rows = (d.get("data") or {}).get("result_data") or []
+            for w in rows:
+                for k in ("warehouse_contact_number_primary", "warehouse_contact_number_secondary"):
+                    ph = re.sub(r"\D", "", str(w.get(k) or ""))[-10:]
+                    if len(ph) == 10:
+                        idx.setdefault(ph, []).append(w)
+            if len(rows) < 100:
+                break
+            page += 1
+    return idx
+
+
+async def reconcile_pickups_with_warehouses():
+    """Match OPEN tickets to Bigship warehouses by phone → stamp 'reverse pickup arranged' onto the ticket
+    (panel bookings don't otherwise sync into the CRM, so cases look falsely 'not picked up'), and flag
+    tickets that are in a pickup-pending status but have NO warehouse (= genuinely not booked)."""
+    idx = await _bigship_warehouse_phone_index()
+    terminal = ["closed", "resolved", "delivered", "cancelled"]
+    pickup_pending = {"awaiting_label", "label_uploaded", "pickup_scheduled"}
+    stamped, already, missing = 0, 0, []
+    now = datetime.now(timezone.utc).isoformat()
+    async for t in db.tickets.find({"status": {"$nin": terminal}},
+                                   {"_id": 0, "id": 1, "customer_phone": 1, "status": 1, "ticket_number": 1,
+                                    "customer_name": 1, "bigship_warehouse_id": 1}):
+        ph = re.sub(r"\D", "", str(t.get("customer_phone") or ""))[-10:]
+        whs = idx.get(ph) if len(ph) == 10 else None
+        if whs:
+            if t.get("bigship_warehouse_id"):
+                already += 1
+                continue
+            w = sorted(whs, key=lambda x: str(x.get("create_date") or ""), reverse=True)[0]
+            await db.tickets.update_one({"id": t["id"]}, {
+                "$set": {"bigship_warehouse_id": w.get("warehouse_id"), "reverse_pickup_arranged": True,
+                         "reverse_pickup_warehouse_created": w.get("create_date"), "updated_at": now},
+                "$push": {"history": {"action": f"Reverse pickup arranged (Bigship warehouse #{w.get('warehouse_id')})",
+                                      "by": "Warehouse reconciliation", "at": now,
+                                      "note": (f"Matched Bigship warehouse '{w.get('warehouse_name')}' @ "
+                                               f"{w.get('address_city')} {w.get('address_pincode')}, created "
+                                               f"{w.get('create_date')}. Pickup was set up in the Bigship panel "
+                                               f"(not previously synced to the CRM).")}}})
+            stamped += 1
+        elif t.get("status") in pickup_pending:
+            missing.append({"ticket_number": t.get("ticket_number"), "customer_name": t.get("customer_name"),
+                            "phone": ph, "status": t.get("status")})
+    return {"warehouse_phones": len(idx), "stamped": stamped, "already_stamped": already,
+            "pickup_pending_no_warehouse": len(missing), "missing_sample": missing[:20]}
+
+
+@api_router.post("/admin/tickets/reconcile-pickups")
+async def admin_reconcile_pickups(user: dict = Depends(require_roles(["admin"]))):
+    """Reconcile open tickets against Bigship warehouses (stamps 'pickup arranged' + flags genuinely-unbooked)."""
+    return await reconcile_pickups_with_warehouses()
+
+
 @api_router.post("/courier/calculate-rates")
 async def calculate_courier_rates(
     request: dict = Body(...),
@@ -68974,6 +70359,163 @@ async def list_consignments(importer_id: str = None,
     }
     sign_file_urls_deep(rows, user["id"])   # BoE/doc links open via plain browser link
     return {"consignments": rows, "summary": summary}
+
+
+@api_router.get("/importer/ledger")
+async def importer_ledger(importer_id: str = None,
+                          user: dict = Depends(require_roles(["importer", "admin", "accountant"]))):
+    """The importer's running account with MGIPL — the full China-import → resell-to-MGIPL flow:
+    PURCHASE (what KNB imported: supplier payment + customs = landed cost), SALE (what KNB billed MGIPL:
+    landed + commission), PAYMENTS (what MGIPL has transferred to KNB, from the party ledger), and the
+    BALANCE = how much MGIPL still owes KNB in rupees."""
+    iid = await _importer_for_user(user) or importer_id
+    if not iid:
+        raise HTTPException(status_code=400, detail="importer_id required")
+    imp = await db.importers.find_one({"id": iid}, {"_id": 0})
+    if not imp:
+        raise HTTPException(status_code=404, detail="Importer not found")
+    cons = await db.importer_consignments.find({"importer_id": iid}, {"_id": 0}).sort("date", 1).to_list(1000)
+    sales, purchases = [], []
+    total_sale = total_purchase = total_customs_igst = total_sale_igst = 0.0
+    # SALE side = KNB's ACTUAL tax invoices to MGIPL (KNB EX, 18% IGST) when recorded — that's the real,
+    # GST-inclusive amount MGIPL owes. Falls back to each consignment's computed bill if no invoices are in.
+    sale_docs = await db.importer_sales.find({"importer_id": iid}, {"_id": 0}).sort("invoice_date", 1).to_list(500)
+    if sale_docs:
+        for sdoc in sale_docs:
+            total_sale += sdoc.get("total") or 0
+            total_sale_igst += sdoc.get("igst_amount") or 0
+            sales.append({"date": sdoc.get("invoice_date"), "sale_invoice": sdoc.get("invoice_number"),
+                          "against_supplier_invoice": sdoc.get("description"),
+                          "taxable": round(sdoc.get("taxable_value") or 0, 2), "igst": round(sdoc.get("igst_amount") or 0, 2),
+                          "amount": round(sdoc.get("total") or 0, 2), "status": "invoiced"})
+    for c in cons:
+        landed = c.get("landed_cost") or 0
+        total_purchase += landed; total_customs_igst += c.get("customs_igst") or 0
+        if not sale_docs:   # fallback sale line from the consignment's computed bill
+            total_sale += c.get("total_billed") or 0
+            sales.append({"date": c.get("date"), "sale_invoice": c.get("knb_sale_invoice") or c.get("consignment_number"),
+                          "against_supplier_invoice": c.get("invoice_number"), "amount": round(c.get("total_billed") or 0, 2),
+                          "status": c.get("status")})
+        purchases.append({"date": c.get("date"), "supplier_invoice": c.get("invoice_number"),
+                          "boe_number": c.get("boe_number"), "supplier": c.get("supplier_name"),
+                          "supplier_paid": round(c.get("supplier_payment_inr") or 0, 2),
+                          "customs": round(c.get("customs_total") or 0, 2),
+                          "shipping": round(c.get("shipping_charges") or 0, 2), "landed": round(landed, 2),
+                          "commission": round(c.get("commission_amount") or 0, 2)})
+    # Payments MGIPL -> KNB (auto-captured from MGIPL's bank statement into the KNB party ledger).
+    payments, total_paid = [], 0.0
+    knb_party = await db.parties.find_one({"name": {"$regex": "knb", "$options": "i"}}, {"_id": 0, "id": 1})
+    pq = {"$or": [{"party_name": {"$regex": "knb", "$options": "i"}}]}
+    if knb_party:
+        pq["$or"].append({"party_id": knb_party["id"]})
+    async for l in db.party_ledger.find(pq, {"_id": 0}).sort("date", 1):
+        amt = float(l.get("debit") or 0)
+        if amt > 0:
+            total_paid += amt
+            payments.append({"date": (l.get("date") or str(l.get("created_at")))[:10],
+                             "narration": l.get("narration") or l.get("description"), "amount": round(amt, 2),
+                             "ref": l.get("reference_id")})
+    balance = round(total_sale - total_paid, 2)
+    return {
+        "importer": {"id": iid, "name": imp.get("name"), "commission_percent": imp.get("default_commission_percent")},
+        "sales": sales, "purchases": purchases, "payments": payments,
+        "summary": {
+            "total_sale": round(total_sale, 2),          # KNB billed MGIPL (landed + commission)
+            "total_purchase": round(total_purchase, 2),  # KNB's landed import cost
+            "gross_margin": round(total_sale - total_purchase, 2),
+            "total_paid": round(total_paid, 2),          # MGIPL -> KNB transfers
+            "balance_due": balance,                      # MGIPL still owes KNB (₹)
+            "customs_igst_itc": round(total_customs_igst, 2),   # KNB's ITC on imports
+            "sale_igst": round(total_sale_igst, 2),             # KNB's output GST = MGIPL's ITC
+            "sale_invoice_count": len(sale_docs),
+            "consignments": len(cons),
+        },
+    }
+
+
+@api_router.get("/importer/statement.pdf")
+async def importer_statement_pdf(importer_id: str = None,
+                                 user: dict = Depends(require_roles(["importer", "admin", "accountant"]))):
+    """Self-service: the importer (KNB) downloads/prints his own running statement with MGIPL —
+    sale, purchase (landed), payments received, and the balance — as a clean A4 PDF for his records."""
+    data = await importer_ledger(importer_id=importer_id, user=user)   # direct call reuses the exact ledger figures
+    s = data.get("summary", {})
+    imp = data.get("importer", {})
+    from fastapi.responses import Response
+
+    def inr(n):
+        try:
+            x = int(round(float(n or 0)))
+        except Exception:
+            return "₹0"
+        neg = x < 0
+        s = str(abs(x))
+        if len(s) > 3:
+            s = re.sub(r"(\d)(?=(\d\d)+$)", r"\1,", s[:-3]) + "," + s[-3:]
+        return ("−₹" if neg else "₹") + s
+
+    ist = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%d %b %Y")
+
+    def table(title, cols, rows, cells):
+        head = "".join(f"<th{(' class=\"r\"' if c.get('r') else '')}>{_he(c['t'])}</th>" for c in cols)
+        body = ""
+        for rw in rows:
+            body += "<tr>" + "".join(f"<td{(' class=\"r\"' if c.get('r') else '')}>{cells(rw, c)}</td>" for c in cols) + "</tr>"
+        if not rows:
+            body = f'<tr><td colspan="{len(cols)}" class="empty">Nothing recorded.</td></tr>'
+        return f'<h2>{_he(title)}</h2><table><tr>{head}</tr>{body}</table>'
+
+    pay_rows = table("Payments received from MGIPL", [
+        {"t": "Date"}, {"t": "Narration"}, {"t": "Amount", "r": True}],
+        data.get("payments", []),
+        lambda rw, c: (_he(str(rw.get("date") or "")) if c["t"] == "Date"
+                       else (f'<span class="n">{_he(str(rw.get("narration") or "")[:70])}</span>' if c["t"] == "Narration"
+                             else f'<b>{inr(rw.get("amount"))}</b>')))
+    sale_rows = table("Sales billed to MGIPL", [
+        {"t": "Date"}, {"t": "Invoice"}, {"t": "Taxable", "r": True}, {"t": "IGST", "r": True}, {"t": "Total", "r": True}],
+        data.get("sales", []),
+        lambda rw, c: {"Date": _he(str(rw.get("date") or "")), "Invoice": f'<span class="mono">{_he(str(rw.get("sale_invoice") or ""))}</span>',
+                       "Taxable": inr(rw.get("taxable")), "IGST": inr(rw.get("igst")), "Total": f'<b>{inr(rw.get("amount"))}</b>'}[c["t"]])
+    pur_rows = table("Purchases (imported from China — landed cost)", [
+        {"t": "Date"}, {"t": "Supplier Inv"}, {"t": "BoE"}, {"t": "Supplier", "r": True}, {"t": "Customs", "r": True}, {"t": "Landed", "r": True}],
+        data.get("purchases", []),
+        lambda rw, c: {"Date": _he(str(rw.get("date") or "")), "Supplier Inv": f'<span class="mono">{_he(str(rw.get("supplier_invoice") or ""))}</span>',
+                       "BoE": f'<span class="mono">{_he(str(rw.get("boe_number") or "—"))}</span>', "Supplier": inr(rw.get("supplier_paid")),
+                       "Customs": inr(rw.get("customs")), "Landed": f'<b>{inr(rw.get("landed"))}</b>'}[c["t"]])
+
+    html = f"""<html><head><meta charset="utf-8"><style>
+    @page{{size:A4;margin:16mm}} *{{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a}}
+    h1{{font-size:19px;margin:0}} .sub{{color:#555;font-size:12px;margin:3px 0}} .meta{{color:#888;font-size:11px;margin-bottom:14px}}
+    h2{{font-size:13px;margin:18px 0 4px;border-bottom:1px solid #ddd;padding-bottom:3px}}
+    table{{width:100%;border-collapse:collapse;font-size:11.5px;margin-top:4px}}
+    th,td{{border:1px solid #e2e2e2;padding:6px 8px;text-align:left}} th{{background:#0a0a0a;color:#fff;font-size:10.5px}}
+    td.r,th.r{{text-align:right}} .r{{text-align:right}} .mono,.n{{font-family:'Courier New',monospace;font-size:10.5px}} .n{{font-family:Arial;color:#555}}
+    .empty{{text-align:center;color:#aaa;padding:12px}}
+    .kpis{{display:flex;gap:8px;margin:6px 0 2px;flex-wrap:wrap}}
+    .kpi{{flex:1;min-width:120px;border:1px solid #e2e2e2;border-radius:8px;padding:9px 11px}}
+    .kpi .l{{font-size:9.5px;color:#888;text-transform:uppercase;letter-spacing:.4px}} .kpi .v{{font-size:16px;font-weight:800;margin-top:2px}}
+    .bal{{margin-top:8px;background:#0b7d3e;color:#fff;border-radius:8px;padding:11px 15px;display:flex;justify-content:space-between;font-size:15px;font-weight:800}}
+    .ft{{margin-top:18px;color:#999;font-size:10px;border-top:1px solid #eee;padding-top:7px}}
+    </style></head><body>
+    <h1>Statement of Account</h1>
+    <div class="sub"><b>{_he(imp.get('name') or 'Importer')}</b> &nbsp;·&nbsp; running account with MuscleGrid Industries Pvt Ltd (MGIPL)</div>
+    <div class="meta">Generated {ist} · for your records</div>
+    <div class="kpis">
+      <div class="kpi"><div class="l">Total Sales (billed)</div><div class="v">{inr(s.get('total_sale'))}</div></div>
+      <div class="kpi"><div class="l">Total Received</div><div class="v">{inr(s.get('total_paid'))}</div></div>
+      <div class="kpi"><div class="l">Purchases (landed)</div><div class="v">{inr(s.get('total_purchase'))}</div></div>
+    </div>
+    <div class="bal"><span>Balance MGIPL owes you</span><span>{inr(s.get('balance_due'))}</span></div>
+    {pay_rows}
+    {sale_rows}
+    {pur_rows}
+    <div class="ft">Figures reconciled against MGIPL's bank statements &amp; tax invoices. Customs IGST of {inr(s.get('customs_igst_itc'))} on your imports is your input tax credit. This is a computer-generated statement.</div>
+    </body></html>"""
+    from weasyprint import HTML
+    pdf = HTML(string=html).write_pdf()
+    fname = f"MuscleGrid_Statement_{(imp.get('name') or 'importer').replace(' ', '_')[:20]}.pdf"
+    return Response(content=pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'inline; filename="{fname}"'})
 
 
 @api_router.get("/importer/consignments/{cid}")
@@ -72267,6 +73809,30 @@ async def ca_download_file(number: int, user: dict = Depends(require_roles(["ca"
     raw_mime = (record.get("mime_type") or "").lower().strip()
     media_type = raw_mime or "application/octet-stream"
     return FileResponse(path=str(disk_path), media_type=media_type, filename=safe_name)
+
+
+@api_router.post("/claude-files/{number}/print")
+async def print_claude_file(number: int, target: str = "doc", disk: str = None,
+                            user: dict = Depends(require_roles(["admin", "accountant", "dispatcher", "supervisor", "gate"]))):
+    """Print a Files-for-Claude (FOC) PDF at the office bridge. target=doc -> Samsung A4 (invoice / e-way /
+    courier label sheet); target=label -> TSC thermal. Pass `disk` to disambiguate if two files share a
+    number. Fire-and-forget: a down printer never raises."""
+    q = {"number": number, "deleted_at": None}
+    if disk:
+        q["disk_filename"] = disk
+    record = await db.claude_files.find_one(q, {"_id": 0})
+    if not record:
+        raise HTTPException(status_code=404, detail=f"File #{number} not found")
+    disk_filename = (record.get("disk_filename") or "").strip()
+    if not disk_filename or "/" in disk_filename or "\\" in disk_filename or ".." in disk_filename:
+        raise HTTPException(status_code=400, detail="Invalid stored filename")
+    disk_path = UPLOAD_DIR / "claude_files" / disk_filename
+    if not disk_path.exists():
+        raise HTTPException(status_code=410, detail=f"File #{number} bytes missing on disk")
+    pdf = disk_path.read_bytes()
+    printer = OFFICE_LABEL_PRINTER if target == "label" else OFFICE_COURIER_PRINTER
+    ok = await _office_print(pdf, printer, "fit", f"foc-{number}")
+    return {"success": ok is True, "number": number, "file": record.get("filename"), "printer": printer}
 
 
 def _norm_inv2b(s) -> str:
@@ -78467,6 +80033,53 @@ async def _pratibha_book_shipback(dest: dict, product_name: str, weight_kg, paym
     return await _pratibha_book_shipment(fields, ctx or {})
 
 
+@api_router.post("/admin/book-pcb-dispatch")
+async def admin_book_pcb_dispatch(body: dict = Body(...),
+                                  user: dict = Depends(require_roles(["admin", "supervisor", "call_support"]))):
+    """Book a forward Bigship PCB dispatch: from the Meerut warehouse TO the customer (stabilizer PCB-first
+    resolution). Small prepaid parcel (5×5×5cm / 0.1kg). Books a REAL shipment, stamps the ticket, and moves
+    it off the pickup queue. product_name should carry the stabilizer's KVA + voltage (e.g. '10KVA 90-300V
+    Stabilizer PCB')."""
+    wid = await _bigship_meerut_warehouse_id()
+    if not wid:
+        raise HTTPException(status_code=400, detail="Could not register the Meerut warehouse on Bigship")
+    phone = re.sub(r"\D", "", str(body.get("phone") or ""))[-10:]
+    if len(phone) != 10:
+        raise HTTPException(status_code=400, detail="A valid 10-digit phone is required")
+    if not (body.get("address_line1") and body.get("pincode")):
+        raise HTTPException(status_code=400, detail="address_line1 and pincode are required")
+    cf, cl = _bigship_consignee_name(body.get("first_name"), body.get("last_name", ""))
+    product = (body.get("product_name") or "Stabilizer PCB").strip()
+    ref = (body.get("invoice_number") or f"PCB-{uuid.uuid4().hex[:8].upper()}")[:25]
+    fields = {
+        "shipment_type": "b2c", "warehouse_id": wid,
+        "first_name": cf, "last_name": cl, "phone": phone,
+        "address_line1": (body.get("address_line1") or "")[:50], "address_line2": (body.get("address_line2") or "")[:50],
+        "city": body.get("city") or "", "state": body.get("state") or "", "pincode": str(body.get("pincode") or ""),
+        "product_name": product, "quantity": 1,
+        "invoice_amount": float(body.get("declared_value") or 500), "payment_type": "Prepaid", "cod_amount": 0,
+        "invoice_number": ref, "weight_kg": float(body.get("weight_kg") or 0.1),
+        "length_cm": int(body.get("length_cm") or 5), "width_cm": int(body.get("width_cm") or 5),
+        "height_cm": int(body.get("height_cm") or 5),
+    }
+    resp = await _pratibha_book_shipment(fields, {"from_addr": f"pcb:{user.get('email')}"})
+    awb = getattr(resp, "awb_number", None)
+    tn = body.get("ticket_number")
+    if tn and awb:
+        now = datetime.now(timezone.utc).isoformat()
+        who = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or "Admin"
+        await db.tickets.update_one({"ticket_number": tn}, {
+            "$set": {"pcb_dispatched": True, "pcb_awb": awb, "pcb_product": product,
+                     "status": "in_progress", "updated_at": now},
+            "$push": {"history": {"action": f"PCB dispatched — {product} (AWB {awb})", "by": who, "at": now,
+                                  "note": (f"Stabilizer PCB-first: {product} shipped Meerut→customer via Bigship "
+                                           f"({getattr(resp, 'courier_name', None)}), prepaid. Awaiting customer to "
+                                           f"swap the board; reverse-pickup only if this doesn't fix it.")}}})
+    return {"success": bool(awb), "awb": awb, "courier": getattr(resp, "courier_name", None),
+            "label_url": getattr(resp, "label_url", None), "message": getattr(resp, "message", None),
+            "product": product, "ref": ref}
+
+
 def _pr_thread_subject(orig_subject: str, ref: str) -> str:
     """Keep approval emails INSIDE the original conversation: 'Re: <original subject> [Pratibha
     approval REF]'. The REF marker lets us match the founder's reply; threading itself is by the
@@ -78559,6 +80172,53 @@ def _ca_draft_summary(d: dict) -> str:
     L += ["", f"Review & approve in the CRM (Accounting Drafts), ref {d['id'][:8]}.",
           "", "Pratibha (Accounts), MuscleGrid"]
     return "\n".join(L)
+
+
+# --- Hybrid email drafting: local 32B handles most (incl. general complaints); Claude only for the
+# genuinely risky set below, where a weak draft is dangerous even though the founder reviews every reply. ---
+_EMAIL_CLAUDE_ONLY_RX = re.compile(
+    r"\b(refund|money back|paisa wapas|compensation|charge ?back|"          # money
+    r"legal|lawyer|advocate|consumer court|notice|court case|fraud|cheat|scam|"  # legal
+    r"burn|burning|smoke|smoking|blast|explode|explosion|fire|spark|leak|leaking|"  # safety
+    r"swollen|swelling|phool ke|garam ho|overheat|shock lag)\b", re.I)      # safety
+
+
+def _email_difficulty(subject: str, body: str, c360: dict, has_images: bool) -> str:
+    """Route to 'easy' (local 32B) by default — including general complaints — and only 'hard' (Claude) for
+    photos (32B is text-only) or the money/legal/safety set where a wrong-toned draft is risky even in
+    draft-review mode. Founder can widen the 32B's remit further via env EMAIL_32B_ALL=1."""
+    if os.environ.get("EMAIL_32B_ALL", "0") in ("1", "true", "yes", "on"):
+        return "easy" if not has_images else "hard"   # 32B everything except image emails
+    text = f"{subject}\n{body}"
+    if has_images:
+        return "hard"                          # photos need vision → Claude
+    if _EMAIL_CLAUDE_ONLY_RX.search(text):
+        return "hard"                          # money / legal / safety → Claude
+    return "easy"                              # everything else (complaints included) → local 32B
+
+
+async def _draft_email_local_32b(sender: str, subject: str, body: str, context: str) -> dict:
+    """Draft a customer email reply with the local 32B (jasmine), grounded with the SAME context Claude gets.
+    Returns {'reply','model_ok'} like pratibha_brain.draft_customer. Slow on CPU (~30-60s) but fine for a
+    reviewed draft; on failure returns model_ok False so the caller can fall back to Claude."""
+    from utils.brain_registry import complete as brain_complete
+    system = (
+        "You are Pratibha, MuscleGrid's email support agent (inverters, LiFePO4 batteries, stabilizers). "
+        "Write a SHORT, warm, professional reply in natural Hinglish (Roman script) to the customer's email. "
+        "Use ONLY the CONTEXT below for any order/warranty/ticket facts — never invent order numbers, dates, "
+        "prices, or promises. NEVER promise a refund, replacement, free repair, or a firm delivery date — say "
+        "the team will confirm. 3-5 sentences, no marketing fluff. Sign off as 'Pratibha, MuscleGrid Support'.\n\n"
+        f"CONTEXT:\n{context or '(no CRM record found for this sender)'}")
+    user = f"From: {sender}\nSubject: {subject}\n\n{body}"
+    try:
+        r = await brain_complete("jasmine", system=system,
+                                 messages=[{"role": "user", "content": user[:4000]}],
+                                 max_tokens=320, timeout=90.0)
+        txt = (r.get("text") or "").strip()
+        return {"reply": txt, "model_ok": bool(r.get("model_ok") and txt)}
+    except Exception as e:
+        logger.warning(f"local 32B email draft failed: {e}")
+        return {"reply": "", "model_ok": False}
 
 
 async def process_email_agent_inbox() -> dict:
@@ -79072,30 +80732,44 @@ async def process_email_agent_inbox() -> dict:
 
         # --- Customer reply: draft, and AUTO-SEND ONLY a simple acknowledgement;
         #     anything substantive (specifics, promises) is held for a human. ---
-        if use_claude:
-            # Give her the customer's 360 (no finance in a customer-facing draft) so she
-            # replies with real context when the sender is a known customer.
+        # Build the customer's 360 + house-style + history ONCE — whichever brain drafts gets the same grounding.
+        ctx360 = ""
+        c360 = {}
+        try:
+            c360 = await _pratibha_customer_360(sender, allow_finance=False)
+            # Fall back to any phone written in the email body when the sender's address isn't on file.
+            if not c360.get("found"):
+                for _p in _pr_email_phones(f"{m.get('subject','')}\n{m.get('body','')}"):
+                    c360 = await _pratibha_customer_360(_p, allow_finance=False)
+                    if c360.get("found"):
+                        break
+            if c360.get("found"):
+                ctx360 = "CRM context: " + json.dumps(c360, default=str)[:3000]
+        except Exception:
+            c360 = {}
             ctx360 = ""
-            try:
-                c360 = await _pratibha_customer_360(sender, allow_finance=False)
-                # Fall back to any phone written in the email body when the sender's address isn't on file.
-                if not c360.get("found"):
-                    for _p in _pr_email_phones(f"{m.get('subject','')}\n{m.get('body','')}"):
-                        c360 = await _pratibha_customer_360(_p, allow_finance=False)
-                        if c360.get("found"):
-                            break
-                if c360.get("found"):
-                    ctx360 = "CRM context: " + json.dumps(c360, default=str)[:3000]
-            except Exception:
-                ctx360 = ""
-            # House style + lessons learned from past human corrections.
-            guide = await _pratibha_guidance(m.get("subject", ""), m.get("body", ""), doc.get("category"))
-            # Observe the customer's full email history (mailbox + observed) before replying.
-            hist = await _pratibha_email_history(sender)
-            context = "\n\n".join([p for p in [guide, ctx360, hist] if p])[:6000]
+        guide = await _pratibha_guidance(m.get("subject", ""), m.get("body", ""), doc.get("category"))
+        hist = await _pratibha_email_history(sender)
+        context = "\n\n".join([p for p in [guide, ctx360, hist] if p])[:6000]
+
+        # HYBRID brain: EASY emails → local 32B (free, ~30-60s), HARD → Claude (strong reasoning).
+        # It's draft mode (founder approves every send), so a misroute is harmless.
+        _local_on = os.environ.get("LOCAL_BRAINS_ENABLED", "0") in ("1", "true", "yes", "on")
+        has_imgs = bool(m.get("images") or m.get("attachments"))
+        difficulty = _email_difficulty(m.get("subject", ""), m.get("body", ""), c360, has_imgs)
+        draft_brain = None
+        if _local_on and difficulty == "easy":
+            ans = await _draft_email_local_32b(sender, m.get("subject", ""), m.get("body", ""), context)
+            draft_brain = "local32b"
+            if not ans.get("model_ok") and use_claude:      # 32B down/failed → fall back to Claude
+                ans = await pratibha_brain.draft_customer(sender, m.get("subject", ""), m.get("body", ""), context=context)
+                draft_brain = "claude"
+        elif use_claude:
             ans = await pratibha_brain.draft_customer(sender, m.get("subject", ""), m.get("body", ""), context=context)
+            draft_brain = "claude"
         else:
             ans = await email_agent.answer(sender, m.get("subject", ""), m.get("body", ""))
+            draft_brain = "local3b"
         simple = email_agent.is_simple_ack(ans["reply"])
         # Customer-facing reply goes to the customer ALONE on TO, with only EXTERNAL extras on CC
         # (their own colleagues) — never internal @musclegrid.in addresses. service@ is added as the
@@ -79107,7 +80781,7 @@ async def process_email_agent_inbox() -> dict:
             if a and a.lower() != custl and not a.lower().endswith("@musclegrid.in")))
         doc.update({"draft_reply": ans["reply"], "model_ok": ans["model_ok"],
                     "reply_to": to_cust, "reply_cc": cc_cust,
-                    "auto_eligible": simple})
+                    "auto_eligible": simple, "draft_brain": draft_brain, "difficulty": difficulty})
         if c["auto_send"] and ans["model_ok"] and (ans["reply"] or "").strip() and simple:
             try:
                 _mid = await email_agent.send_reply_all(
@@ -80089,7 +81763,8 @@ app.add_middleware(
     allow_origins=_cors_origins,
     allow_credentials=_cors_allow_credentials,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Requested-With", "Accept", "Origin"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With", "Accept", "Origin",
+                   "X-API-Key", "X-Omnidim-Token"],
 )
 
 
@@ -82656,6 +84331,30 @@ async def _bigship_serviceable(pincode: str) -> dict:
         return {"serviceable": True, "cod": True, "checked": False}   # never block a sale on our API failing
 
 
+async def _pincode_geo(pin: str) -> dict:
+    """Best-effort city/state for an Indian PIN via the free India Post API (no key). Falls back to the
+    internal PIN->state map for the state when the API is unavailable."""
+    city, state = None, _pincode_to_state(pin)
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.get(f"https://api.postalpincode.in/pincode/{pin}")
+            arr = r.json() if r.status_code == 200 else []
+        if arr and arr[0].get("Status") == "Success":
+            po = arr[0].get("PostOffice") or []
+            if po:
+                city = po[0].get("District") or po[0].get("Block") or po[0].get("Name")
+                state = po[0].get("State") or state
+    except Exception as e:
+        logger.warning(f"pincode geo lookup failed for {pin}: {e}")
+    return {"city": city, "state": state}
+
+
+def _delivery_eta(state: str) -> str:
+    """A realistic pan-India delivery window. Origin is Meerut (UP), so the north belt is quicker."""
+    near = {"Uttar Pradesh", "Delhi", "Haryana", "Uttarakhand", "Punjab", "Rajasthan", "Himachal Pradesh", "Chandigarh"}
+    return "2–4 business days" if (state or "") in near else "3–6 business days"
+
+
 @api_router.get("/shop/serviceability")
 async def shop_serviceability(pincode: str):
     pin = re.sub(r"\D", "", pincode or "")
@@ -82663,14 +84362,859 @@ async def shop_serviceability(pincode: str):
         raise HTTPException(status_code=400, detail="Enter a valid 6-digit pincode")
     now = datetime.now(timezone.utc)
     cached = await db.shop_serviceability.find_one({"pincode": pin}, {"_id": 0})
-    if cached and cached.get("expires_at") and now.isoformat() < cached["expires_at"]:
-        return {"pincode": pin, "serviceable": cached.get("serviceable"), "cod": cached.get("cod"), "rate_from": cached.get("rate_from")}
+    if cached and cached.get("expires_at") and now.isoformat() < cached["expires_at"] and cached.get("city"):
+        return {"pincode": pin, "serviceable": cached.get("serviceable"), "cod": cached.get("cod"),
+                "rate_from": cached.get("rate_from"), "city": cached.get("city"), "state": cached.get("state"),
+                "eta": cached.get("eta")}
     res = await _bigship_serviceable(pin)
-    if res.get("checked"):
+    geo = await _pincode_geo(pin)
+    eta = _delivery_eta(geo.get("state")) if res["serviceable"] else None
+    if res.get("checked") or geo.get("city"):
         await db.shop_serviceability.update_one({"pincode": pin}, {"$set": {
             "pincode": pin, "serviceable": res["serviceable"], "cod": res["cod"], "rate_from": res.get("rate_from"),
+            "city": geo.get("city"), "state": geo.get("state"), "eta": eta,
             "expires_at": (now + timedelta(days=7)).isoformat(), "updated_at": now.isoformat()}}, upsert=True)
-    return {"pincode": pin, "serviceable": res["serviceable"], "cod": res["cod"], "rate_from": res.get("rate_from")}
+    return {"pincode": pin, "serviceable": res["serviceable"], "cod": res["cod"], "rate_from": res.get("rate_from"),
+            "city": geo.get("city"), "state": geo.get("state"), "eta": eta}
+
+
+# ===================== LOCAL CRM ANALYST (`qq` terminal) + CLAUDE TASK QUEUE =====================
+# `qq` on the VPS chats with the local qwen 32B, grounded on the CRM via the read-only QUERY_TOOLS. It can
+# also queue work for Claude Code (queue_task). Token-gated (LOCAL_BRAIN_TOKEN in .env) since it exposes data
+# without a user session — the token is the boundary (a bare localhost check is unsafe behind the nginx proxy).
+@api_router.post("/brain/local-ask")
+async def brain_local_ask(request: Request, body: dict = Body(...)):
+    tok = (os.environ.get("LOCAL_BRAIN_TOKEN") or "").strip()
+    if not tok or request.headers.get("X-Local-Token") != tok:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    q = (body.get("question") or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="empty question")
+
+    async def _exec(name, params, af=True):
+        if name == "queue_task":
+            task = (params.get("task") or "").strip()
+            if not task:
+                return {"error": "empty task"}
+            seq = await db.claude_task_queue.count_documents({}) + 1
+            doc = {"id": str(uuid.uuid4()), "seq": seq, "task": task,
+                   "priority": (params.get("priority") or "normal"), "status": "pending", "source": "qq",
+                   "created_at": datetime.now(timezone.utc).isoformat()}
+            await db.claude_task_queue.insert_one(doc)
+            return {"queued": True, "position": seq, "task": task}
+        return await _pratibha_tool_exec(name, params, allow_finance=True)
+
+    res = await pratibha_brain.answer_data_local(q, _exec)
+    return {"reply": res.get("reply") or "", "model_ok": res.get("model_ok"), "tool_calls": res.get("tool_calls")}
+
+
+@api_router.get("/brain/queue")
+async def brain_queue_list(status: str = "pending", user: dict = Depends(require_roles(["admin"]))):
+    """Claude Code's task queue (what qq/founder handed off). Default: pending, oldest first."""
+    query = {} if status == "all" else {"status": status}
+    rows = await db.claude_task_queue.find(query, {"_id": 0}).sort("seq", 1).to_list(500)
+    return {"tasks": rows, "count": len(rows),
+            "pending": await db.claude_task_queue.count_documents({"status": "pending"})}
+
+
+@api_router.post("/brain/queue/{task_id}/status")
+async def brain_queue_set_status(task_id: str, body: dict = Body(...),
+                                 user: dict = Depends(require_roles(["admin"]))):
+    st = (body.get("status") or "").strip().lower()
+    if st not in ("pending", "in_progress", "done", "failed", "skipped"):
+        raise HTTPException(status_code=400, detail="status must be pending|in_progress|done|failed|skipped")
+    await db.claude_task_queue.update_one({"id": task_id}, {"$set": {
+        "status": st, "result": body.get("result"), "updated_at": datetime.now(timezone.utc).isoformat()}})
+    return {"ok": True}
+
+
+# ===================== PUBLIC APP DOWNLOADS (QR-shareable, no login) =====================
+# Customer-facing Android app downloads. A QR/link points at the landing page; the page has a big
+# Download button + sideload instructions and streams the signed APK with the correct MIME so Android
+# offers to install it. Files live in uploads/public_apps/ (stable names, decoupled from FOC numbering).
+_PUBLIC_APPS = {
+    "jk-bms": {
+        "file": "jk-bms-app.apk",
+        "title": "MuscleGrid Battery Monitor",
+        "subtitle": "JK BMS · Bluetooth battery monitoring app for Android",
+        "blurb": "Monitor your MuscleGrid lithium battery — charge %, voltage, temperature and health — over Bluetooth.",
+        # Gated: downloadable ONLY with an unlock token issued at warranty activation (founder rule 2026-07-16).
+        "gated": True,
+    },
+}
+_APP_GATE_ENABLED = os.environ.get("PUBLIC_APP_GATE_ENABLED", "1") in ("1", "true", "True")
+
+
+async def _app_unlock_ok(slug: str, wk: str) -> bool:
+    """A gated app (JK-BMS) may only be downloaded with a valid unlock token — i.e. only AFTER the
+    customer registered the warranty AND uploaded the geo-tagged product photo."""
+    meta = _PUBLIC_APPS.get(slug) or {}
+    if not meta.get("gated") or not _APP_GATE_ENABLED:
+        return True
+    wk = (wk or "").strip()
+    if not wk:
+        return False
+    w = await db.warranties.find_one({"app_unlock_token": wk}, {"_id": 0, "activation_photo": 1})
+    return bool(w and w.get("activation_photo"))
+
+
+@api_router.get("/public/app/{slug}/file")
+async def public_app_file(slug: str, wk: str = ""):
+    """Stream a public APK with the Android package MIME so the phone offers to install it. No auth —
+    but a gated app requires a valid warranty-activation unlock token (?wk=)."""
+    meta = _PUBLIC_APPS.get(slug)
+    if not meta:
+        raise HTTPException(status_code=404, detail="App not found")
+    if not await _app_unlock_ok(slug, wk):
+        raise HTTPException(status_code=403, detail="Register your product's warranty to unlock this app.")
+    p = UPLOAD_DIR / "public_apps" / meta["file"]
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="App file is not available")
+    try:
+        await db.public_download_log.update_one(
+            {"slug": slug}, {"$inc": {"count": 1},
+                             "$set": {"last_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    except Exception:
+        pass
+    return FileResponse(str(p), media_type="application/vnd.android.package-archive",
+                        filename=meta["file"],
+                        headers={"Content-Disposition": f'attachment; filename="{meta["file"]}"',
+                                 "X-Content-Type-Options": "nosniff"})
+
+
+@api_router.get("/public/app/{slug}")
+async def public_app_landing(slug: str, wk: str = ""):
+    """Branded public landing page for an app download (the QR points here). No auth — but a gated app
+    shows a 'register to unlock' page unless a valid warranty-activation token (?wk=) is supplied."""
+    from fastapi.responses import HTMLResponse
+    meta = _PUBLIC_APPS.get(slug)
+    if not meta:
+        raise HTTPException(status_code=404, detail="App not found")
+    if not await _app_unlock_ok(slug, wk):
+        # Locked — send the customer to activate their warranty first.
+        locked = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>{meta['title']} — Locked</title>
+<style>*{{box-sizing:border-box}}body{{margin:0;font-family:-apple-system,Segoe UI,Roboto,Inter,sans-serif;background:#0f0f10;color:#f4f4f5;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:22px}}
+.card{{background:#18181b;border:1px solid #2a2a2e;border-radius:18px;max-width:420px;width:100%;padding:28px;text-align:center}}
+.logo{{font-weight:800;font-size:22px}}.logo span{{color:#F58220}} h1{{font-size:20px;margin:16px 0 6px}}
+.blurb{{color:#c7c7cc;font-size:13.5px;line-height:1.55;margin:0 0 20px}}
+.btn{{display:block;background:#F58220;color:#fff;text-decoration:none;font-weight:800;font-size:16px;padding:15px;border-radius:12px}}
+.lock{{font-size:46px}}</style></head><body><div class="card">
+<div class="logo">Muscle<span>Grid</span></div><div class="lock">🔒</div>
+<h1>Activate your warranty to unlock the app</h1>
+<p class="blurb">The {meta['title']} unlocks after you register your battery's warranty and add a quick photo of the product. It takes under a minute.</p>
+<a class="btn" href="/warranty">Register warranty & unlock →</a></div></body></html>"""
+        return HTMLResponse(content=locked)
+    p = UPLOAD_DIR / "public_apps" / meta["file"]
+    size_mb = f"{p.stat().st_size / 1e6:.1f} MB" if p.exists() else ""
+    dl = f"/api/public/app/{slug}/file" + (f"?wk={wk}" if wk else "")
+    html = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{meta['title']} — Download</title>
+<style>
+  *{{box-sizing:border-box}} body{{margin:0;font-family:-apple-system,Segoe UI,Roboto,Inter,sans-serif;background:#0f0f10;color:#f4f4f5;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:22px}}
+  .card{{background:#18181b;border:1px solid #2a2a2e;border-radius:18px;max-width:420px;width:100%;padding:28px;text-align:center}}
+  .logo{{font-weight:800;font-size:22px;letter-spacing:.02em}} .logo span{{color:#F58220}}
+  h1{{font-size:21px;margin:18px 0 4px}} .sub{{color:#a1a1aa;font-size:13.5px;margin:0 0 16px}}
+  .blurb{{color:#c7c7cc;font-size:13.5px;line-height:1.55;margin:0 0 20px}}
+  .btn{{display:block;background:#F58220;color:#fff;text-decoration:none;font-weight:800;font-size:16px;padding:15px;border-radius:12px;margin:6px 0}}
+  .meta{{color:#71717a;font-size:12px;margin-top:10px}}
+  .steps{{text-align:left;background:#0f0f10;border:1px solid #2a2a2e;border-radius:12px;padding:14px 16px;margin-top:20px;font-size:12.5px;color:#a1a1aa;line-height:1.7}}
+  .steps b{{color:#e4e4e7}}
+</style></head><body>
+  <div class="card">
+    <div class="logo">Muscle<span>Grid</span></div>
+    <h1>{meta['title']}</h1>
+    <p class="sub">{meta['subtitle']}</p>
+    <p class="blurb">{meta['blurb']}</p>
+    <a class="btn" href="{dl}" download>⬇  Download App {('· ' + size_mb) if size_mb else ''}</a>
+    <div class="meta">Android only · {size_mb}</div>
+    <div class="steps">
+      <b>How to install:</b><br>
+      1. Tap <b>Download App</b> above.<br>
+      2. Open the downloaded <b>.apk</b> file.<br>
+      3. If asked, allow <b>“Install unknown apps”</b> for your browser — this is normal for apps not from the Play Store.<br>
+      4. Tap <b>Install</b>, then open the app and connect your battery over Bluetooth.
+    </div>
+  </div>
+  <script>setTimeout(function(){{try{{window.location.href="{dl}";}}catch(e){{}}}}, 900);</script>
+</body></html>"""
+    return HTMLResponse(content=html)
+
+
+# ===================== OMNIDIM VOICE-AGENT WEBHOOKS =====================
+# Actions the Omnidim voice agent ("Ria") calls mid-call. Token-gated (OMNIDIM_WEBHOOK_TOKEN) since
+# Omnidim is an external service, not a logged-in user. Token via X-Omnidim-Token header or body "token".
+OMNIDIM_WEBHOOK_TOKEN = os.environ.get("OMNIDIM_WEBHOOK_TOKEN", "").strip()
+
+
+def _omnidim_auth(token: str, api_key: str = None):
+    """Accept EITHER the webhook token (X-Omnidim-Token) OR the Omnidim API key (X-API-Key) — the latter
+    unifies auth with the older /omnidim voice-agent integrations so every Omnidim action uses one header."""
+    tok = (token or "").strip()
+    ak = (api_key or "").strip()
+    if OMNIDIM_WEBHOOK_TOKEN and tok == OMNIDIM_WEBHOOK_TOKEN:
+        return
+    if OMNIDIM_API_KEY and ak == OMNIDIM_API_KEY:
+        return
+    raise HTTPException(status_code=401, detail="Invalid Omnidim token")
+
+
+def _phone10(p) -> str:
+    return re.sub(r"\D", "", str(p or ""))[-10:]
+
+
+@api_router.post("/omnidim/check-warranty")
+async def omnidim_check_warranty(payload: dict = Body(default={}), x_omnidim_token: str = Header(None), x_api_key: str = Header(None, alias="X-API-Key")):
+    """Voice action: product + warranty status by serial number."""
+    _omnidim_auth(x_omnidim_token or payload.get("token"), x_api_key)
+    sn = (payload.get("serial") or payload.get("serial_number") or "").strip()
+    if not sn:
+        return {"found": False, "message": "Please provide the serial number from the product label."}
+    s = await db.finished_good_serials.find_one({"serial_number": sn}, {"_id": 0})
+    if not s:
+        return {"found": False, "serial": sn, "message": "This serial is not in our records — please re-check the number."}
+    w = (await db.warranty_registrations.find_one({"serial_number": sn}, {"_id": 0})
+         or await db.warranties.find_one({"serial_number": sn}, {"_id": 0}))
+    status, valid_till = "not_registered", None
+    if w:
+        end = w.get("warranty_end_date") or w.get("warranty_expires")
+        valid_till = str(end)[:10] if end else None
+        status = "registered"
+        if valid_till:
+            try:
+                status = "active" if datetime.fromisoformat(valid_till).date() >= _ist_today() else "expired"
+            except Exception:
+                pass
+    return {"found": True, "serial": sn, "product": s.get("master_sku_name"),
+            "device_type": _warranty_device_type(s.get("master_sku_name") or "", s.get("product_type")),
+            "mfg_date": str(s.get("created_at") or "")[:10],
+            "warranty_status": status, "valid_till": valid_till,
+            "registration_url": f"https://newcrm.musclegrid.in/warranty/{sn}"}
+
+
+@api_router.post("/omnidim/lookup-order")
+async def omnidim_lookup_order(payload: dict = Body(default={}), x_omnidim_token: str = Header(None), x_api_key: str = Header(None, alias="X-API-Key")):
+    """Voice action: dispatch/delivery status by order id or phone."""
+    _omnidim_auth(x_omnidim_token or payload.get("token"), x_api_key)
+    oid = (payload.get("order_id") or "").strip()
+    ph = _phone10(payload.get("phone"))
+    if oid:
+        q = {"$or": [{"amazon_order_id": oid}, {"order_id": oid}, {"panel_order_ref": oid}]}
+    elif ph:
+        q = {"phone": {"$regex": ph + "$"}}
+    else:
+        return {"found": False, "message": "Please provide an order number or the phone used on the order."}
+    cs = await db.courier_shipments.find_one(q, {"_id": 0}, sort=[("created_at", -1)])
+    if not cs and ph:
+        cs = await db.pending_fulfillment.find_one({"customer_phone": {"$regex": ph + "$"}}, {"_id": 0}, sort=[("created_at", -1)])
+    if not cs:
+        return {"found": False, "message": "No order found for that detail."}
+    return {"found": True, "order_id": cs.get("amazon_order_id") or cs.get("order_id"),
+            "customer_name": cs.get("customer_name"),
+            "status": cs.get("status") or cs.get("delhivery_status") or "processing",
+            "courier": cs.get("courier_name") or cs.get("courier"),
+            "tracking": cs.get("awb_number") or cs.get("tracking_id"),
+            "city": cs.get("consignee_city")}
+
+
+@api_router.post("/omnidim/create-ticket")
+async def omnidim_create_ticket(payload: dict = Body(default={}), x_omnidim_token: str = Header(None), x_api_key: str = Header(None, alias="X-API-Key")):
+    """Voice action: log a support ticket / escalation into the CRM support queue."""
+    _omnidim_auth(x_omnidim_token or payload.get("token"), x_api_key)
+    ph = _phone10(payload.get("phone"))
+    if not ph:
+        return {"ok": False, "message": "A phone number is required to create a ticket."}
+    now = datetime.now(timezone.utc)
+    tid = str(uuid.uuid4())
+    tn = await generate_ticket_number()
+    sla = calculate_sla_due("phone", now)
+    doc = {"id": tid, "ticket_number": tn, "firm_id": None, "customer_id": None,
+           "customer_name": (payload.get("name") or payload.get("customer_name") or "Caller").strip(),
+           "customer_phone": ph, "customer_email": payload.get("email"), "customer_city": payload.get("city"),
+           "device_type": payload.get("device_type") or payload.get("product_type") or "Inverter",
+           "product_name": payload.get("model") or payload.get("product_name"),
+           "serial_number": payload.get("serial") or payload.get("serial_number"),
+           "order_id": payload.get("order_id"),
+           "issue_description": payload.get("issue") or payload.get("issue_description") or "Voice call — issue not specified",
+           "support_type": "phone", "status": "new_request", "source": "omnidim_voice",
+           "category": payload.get("category"), "diagnosis": None, "agent_notes": payload.get("agent_notes"),
+           "sla_due": sla.isoformat(), "sla_breached": False,
+           "created_by": "omnidim", "created_at": now.isoformat(), "updated_at": now.isoformat(),
+           "history": [{"status": "new_request", "timestamp": now.isoformat(),
+                        "by": "Omnidim voice agent", "note": "Created from a voice call"}]}
+    await db.tickets.insert_one(doc)
+    return {"ok": True, "ticket_number": tn, "message": f"Ticket {tn} raised — the team will follow up on WhatsApp."}
+
+
+@api_router.post("/omnidim/send-whatsapp")
+async def omnidim_send_whatsapp(payload: dict = Body(default={}), x_omnidim_token: str = Header(None), x_api_key: str = Header(None, alias="X-API-Key")):
+    """Voice action: text the caller a link/message (Cloud API). Free-form delivers inside the 24h
+    customer-service window; otherwise use an approved template."""
+    _omnidim_auth(x_omnidim_token or payload.get("token"), x_api_key)
+    ph = _phone10(payload.get("phone"))
+    msg = (payload.get("message") or "").strip()
+    if not ph or not msg:
+        return {"ok": False, "message": "Both phone and message are required."}
+    if not whatsapp_cloud.enabled():
+        return {"ok": False, "message": "WhatsApp is not configured."}
+    res = await whatsapp_cloud.send_text("91" + ph, msg)
+    ok = bool(res.get("ok")) if isinstance(res, dict) else bool(res)
+    return {"ok": ok, "detail": str(res)[:200]}
+
+
+async def _omnidim_caller_name(phone: str):
+    """Best-effort first name for the caller (for a personalised greeting). Returns None if unknown."""
+    ph = _phone10(phone)
+    if not ph:
+        return None
+    rx = {"$regex": ph + "$"}
+    try:
+        for coll, fld in ((db.courier_shipments, "phone"), (db.tickets, "customer_phone"),
+                          (db.warranty_registrations, "phone"), (db.pending_fulfillment, "customer_phone")):
+            doc = await coll.find_one({fld: rx}, {"_id": 0, "customer_name": 1}, sort=[("created_at", -1)])
+            if doc and doc.get("customer_name"):
+                return str(doc["customer_name"]).strip().split()[0]   # first name only
+    except Exception:
+        pass
+    return None
+
+
+@api_router.post("/omnidim/whoami")
+async def omnidim_whoami(payload: dict = Body(default={}), x_omnidim_token: str = Header(None), x_api_key: str = Header(None, alias="X-API-Key")):
+    """Voice: resolve the caller's first name from their phone for a personalised greeting."""
+    _omnidim_auth(x_omnidim_token or payload.get("token"), x_api_key)
+    name = await _omnidim_caller_name(payload.get("caller_phone") or payload.get("phone") or "")
+    return {"name": name}
+
+
+async def _omnidim_caller_context(phone: str) -> str:
+    """Look the CALLER up by phone and build a short context block so Ria knows who she's talking to and can
+    answer 'where's my order / am I under warranty / my ticket status' without a separate tool round-trip.
+    Best-effort + fast — never raises into the call."""
+    ph = _phone10(phone)
+    if not ph:
+        return ""
+    rx = {"$regex": ph + "$"}
+    try:
+        name = None
+        lines = []
+        # Latest order / dispatch
+        cs = await db.courier_shipments.find_one({"phone": rx}, {"_id": 0}, sort=[("created_at", -1)])
+        if not cs:
+            cs = await db.pending_fulfillment.find_one({"customer_phone": rx}, {"_id": 0}, sort=[("created_at", -1)])
+        if cs:
+            name = name or cs.get("customer_name")
+            oid = cs.get("amazon_order_id") or cs.get("order_id")
+            st = cs.get("status") or cs.get("delhivery_status") or "processing"
+            awb = cs.get("awb_number") or cs.get("tracking_id")
+            lines.append(f"Latest order {oid or ''}: status={st}" + (f", AWB={awb}" if awb else "") +
+                         (f", courier={cs.get('courier_name') or cs.get('courier')}" if cs.get('courier_name') or cs.get('courier') else ""))
+        # Open support tickets
+        opent = await db.tickets.find({"customer_phone": rx,
+                                       "status": {"$nin": ["closed", "resolved", "delivered", "cancelled"]}},
+                                      {"_id": 0, "ticket_number": 1, "status": 1, "device_type": 1, "customer_name": 1}
+                                      ).sort("created_at", -1).limit(2).to_list(2)
+        for t in opent:
+            name = name or t.get("customer_name")
+            lines.append(f"Open ticket {t.get('ticket_number')}: {t.get('device_type') or ''} — status={t.get('status')}")
+        # Registered warranties (by phone on the registration)
+        warr = await db.warranty_registrations.find({"$or": [{"phone": rx}, {"customer_phone": rx}]},
+                                                    {"_id": 0, "serial_number": 1, "warranty_end_date": 1,
+                                                     "product_name": 1, "customer_name": 1}
+                                                    ).sort("created_at", -1).limit(3).to_list(3)
+        for w in warr:
+            name = name or w.get("customer_name")
+            end = str(w.get("warranty_end_date") or "")[:10]
+            act = "active" if (end and end >= str(_ist_today())) else "expired/unknown"
+            lines.append(f"Warranty: {w.get('product_name') or w.get('serial_number')} — till {end or '?'} ({act})")
+        if not (name or lines):
+            return f"\n\nCALLER: phone ends {ph[-4:]}, no prior records found (likely a new customer — be welcoming)."
+        head = f"CALLER: {name}" if name else "CALLER (name unknown)"
+        return "\n\n" + head + " — phone ends " + ph[-4:] + ".\n" + ("\n".join(f"- {l}" for l in lines) if lines else "- no orders/tickets/warranty on record") + \
+               "\nUse this to answer their order/warranty/ticket questions directly. Confirm the name once if unsure. Do NOT read out the full phone number."
+    except Exception:
+        return ""
+
+
+_OMNIDIM_BRAIN = os.environ.get("OMNIDIM_BRAIN", "riya").strip()          # default voice brain: riya=Sonnet 4.6 (fast)
+_OMNIDIM_ESCALATE_BRAIN = os.environ.get("OMNIDIM_ESCALATE_BRAIN", "kalpana").strip()   # hard turns: kalpana=Opus 4.8
+
+_OMNIDIM_ASK_SYS = (
+    "You are Ria, MuscleGrid's voice support agent, answering a LIVE phone call. MuscleGrid makes hybrid "
+    "solar inverters, LiFePO4 lithium batteries and voltage stabilizers.\n"
+    "TONE (MANDATORY, never break this): You are a FEMALE agent — ALWAYS use feminine Hindi verb forms "
+    "('kar rahi hoon', 'bata rahi hoon', 'dekh rahi hoon', 'karungi'); NEVER masculine ('kar raha hoon', "
+    "'karke deta hoon', 'karunga'). Address EVERY customer respectfully as 'Sir' or 'Ma'am' (or add 'ji'). "
+    "NEVER say 'bhai' or any casual / slang word. Stay polite and professional at all times.\n"
+    "LANGUAGE: ALWAYS speak Hindi. Even if the customer speaks or mixes in English, Punjabi, Tamil or any "
+    "other language, YOU keep replying in Hindi — switch languages ONLY if the customer explicitly asks you "
+    "to (e.g. 'English mein baat karo'). Never mirror the customer's language automatically.\n"
+    "ANSWER STYLE: ONE sentence, at most TWO, and UNDER 30 words total — this is a live call, keep it snappy. "
+    "No markdown, no lists, "
+    "no long explanations. Speak SHORT fault/error codes digit-by-digit (e.g. 'zero seven'), but NEVER read a "
+    "long order ID, AWB/tracking number, or full phone number aloud — just say the status in plain words and "
+    "offer to have the team send the details on WhatsApp.\n"
+    "ERROR CODES / FAULTS: if the customer reports an error or fault code (or describes a clear symptom) that "
+    "IS in the KNOWLEDGE below, immediately tell them in simple words what it means AND the first fix step — "
+    "do NOT just re-ask for the code or model. Only ask for the code/model if you genuinely have nothing to "
+    "match; ask at most ONE short question, then give the best general guidance you can.\n"
+    "DEVICE TYPES: 'Titan', 'Heavy Duty', 'Focus' and 'MG6500' are INVERTER / battery series — NEVER ask for "
+    "these on a STABILIZER call. A stabilizer is identified by its kVA / ampere rating (e.g. '4 kVA', 'Digital "
+    "5 kVA'), not by those series names. First figure out WHICH product the caller has (inverter, battery, or "
+    "stabilizer) and only ask model details that fit that product.\n"
+    "RESOLUTION: for a confirmed INTERNAL stabilizer fault, the team sends a replacement PCB (control board) by "
+    "courier to the customer — do NOT offer a full-unit pickup for a stabilizer. Full-unit reverse pickup is only "
+    "for inverters/batteries when genuinely needed. Always frame the final action as 'the team will follow up on "
+    "WhatsApp' (a human confirms the actual pickup/PCB/repair) — never promise it as done.\n"
+    "GROUNDING: use ONLY the KNOWLEDGE below for codes/settings/specs. If it's not there, say you'll confirm "
+    "the exact detail and have the team follow up — never invent a code, setting or spec.\n"
+    "HARD RULES: never promise a refund/replacement/free repair or a final price (the team decides). For smoke, "
+    "burning smell, or a swollen/hot battery, tell them to switch off and disconnect safely and treat it as urgent. "
+    "The battery app unlocks only after warranty registration + product photo at musclegrid.in/warranty.")
+
+
+# Topic keyword → decision_playbook slugs. Lets the live brain (voice + chat) answer WITH the judgment we
+# taught it from real cases (PCB-first, never-promise-refund, dealer=king, reverse-pickup autonomy, etc.).
+_PLAYBOOK_TOPIC_SLUGS = {
+    "stabilizer": ["stabilizer-send-pcb-first"], "stabiliser": ["stabilizer-send-pcb-first"],
+    "स्टेबलाइज": ["stabilizer-send-pcb-first"], "pcb": ["stabilizer-send-pcb-first"],
+    "battery": ["lithium-battery-safety-and-wire-gauge", "inverter-warranty-autonomous-reverse-pickup"],
+    "बैटरी": ["lithium-battery-safety-and-wire-gauge"], "lithium": ["lithium-battery-safety-and-wire-gauge"],
+    "bms": ["lithium-battery-safety-and-wire-gauge"],
+    "trip": ["inverter-trips-on-load-start-check-solar-array"],
+    "refund": ["refund-replacement-never-promised-channel-aware", "never-confirm-return-received-or-authentic"],
+    "replace": ["refund-replacement-never-promised-channel-aware"],
+    "return": ["refund-replacement-never-promised-channel-aware", "reverse-pickup-followup-retry"],
+    "wapas": ["refund-replacement-never-promised-channel-aware"], "रिफंड": ["refund-replacement-never-promised-channel-aware"],
+    "paisa": ["refund-replacement-never-promised-channel-aware"], "पैसा": ["refund-replacement-never-promised-channel-aware"],
+    "dealer": ["dealer-king-treatment-same-day-full-authority"],
+    "pickup": ["reverse-pickup-followup-retry", "inverter-warranty-autonomous-reverse-pickup"],
+    "call": ["repeated-call-request-book-callback"], "phone": ["repeated-call-request-book-callback"],
+    "legal": ["critical-decisions-admin-surface", "be-most-senior-deescalator-with-calling"],
+    "court": ["critical-decisions-admin-surface"], "rating": ["be-most-senior-deescalator-with-calling"],
+    "review": ["be-most-senior-deescalator-with-calling"], "warna": ["be-most-senior-deescalator-with-calling"],
+    "buy": ["buying-intent-always-create-sales-lead"], "khareed": ["buying-intent-always-create-sales-lead"],
+    "price": ["buying-intent-always-create-sales-lead"], "quote": ["buying-intent-always-create-sales-lead"],
+}
+
+
+async def _playbook_guidance(text: str, is_dealer: bool = False, limit: int = 3) -> str:
+    """Retrieve the decision_playbook rules relevant to this turn and format a compact block for the brain."""
+    low = (text or "").lower()
+    slugs = ["dealer-king-treatment-same-day-full-authority"] if is_dealer else []
+    for kw, sl in _PLAYBOOK_TOPIC_SLUGS.items():
+        if kw in low:
+            slugs.extend(sl)
+    seen = set()
+    ordered = [s for s in slugs if not (s in seen or seen.add(s))][:limit]
+    if not ordered:
+        return ""
+    rules = await db.decision_playbook.find(
+        {"slug": {"$in": ordered}, "status": "active"},
+        {"_id": 0, "slug": 1, "title": 1, "action": 1, "guardrails": 1}).to_list(limit)
+    rules.sort(key=lambda r: ordered.index(r["slug"]) if r.get("slug") in ordered else 99)
+    lines = []
+    for r in rules:
+        a = (r.get("action") or [""])[0]
+        g = (r.get("guardrails") or [])
+        lines.append(f"- {r.get('title')}. DO: {a}" + (f" NEVER: {g[0]}" if g else ""))
+    return "MUSCLEGRID DECISION RULES (apply these — they come from real cases):\n" + "\n".join(lines)
+
+
+@api_router.post("/omnidim/ask")
+async def omnidim_ask(payload: dict = Body(default={}), x_omnidim_token: str = Header(None), x_api_key: str = Header(None, alias="X-API-Key")):
+    """Voice 'brain': Omnidim sends the customer's question (+ optional history), we answer with Opus 4.8
+    (brain 'kalpana') grounded in the MuscleGrid KB, and Omnidim speaks the reply. Falls back to the local
+    brain if Opus is unavailable so a call never dead-ends."""
+    _omnidim_auth(x_omnidim_token or payload.get("token"), x_api_key)
+    q = (payload.get("question") or payload.get("query") or payload.get("message") or "").strip()
+    if not q:
+        return {"answer": "Sorry, main aapki baat theek se sun nahi payi — dobara boliye?", "model": None}
+    series = (payload.get("series") or "").strip()
+    # Ground on the KB (product knowledge + inverter manuals). The manual articles live in title/content
+    # (not question/answer), so retrieve by fault-code number + keywords + series — not a whole-sentence regex.
+    try:
+        # Retrieve against the current turn PLUS recent user turns: on a live call the error CODE ("52") and
+        # the SERIES ("Titan") often arrive in different sentences, so a current-turn-only match misses.
+        recent_user = " ".join(str(m.get("content", "")) for m in (payload.get("history") or [])[-4:]
+                               if m.get("role", "user") == "user")
+        ql = (recent_user + " " + q).lower()
+        # If the customer named a series in the conversation, use it to prefer the right manual.
+        if not series:
+            for _s in ("titan", "heavy duty", "focus", "mg6500"):
+                if _s in ql:
+                    series = "Titan" if _s == "titan" else ("Heavy Duty" if _s == "heavy duty" else "MG6500")
+                    break
+        codes = re.findall(r"\b(\d{1,3})\b", ql)
+        _stop = {"mera", "meri", "hai", "raha", "rahi", "kya", "karu", "karo", "inverter", "battery",
+                 "dikha", "the", "and", "showing", "error", "fault", "code", "what", "how", "does",
+                 "problem", "issue", "help", "please", "kaise", "kaisae", "titan", "focus", "heavy",
+                 "duty", "series", "muscle", "musclegrid", "kaise", "set", "karna"}
+        terms = [w for w in re.findall(r"[a-zA-Z]{4,}", ql) if w not in _stop][:6]
+        # Hindi/Hinglish symptom → search-concept map, so a pure-Devanagari question (no Latin words) still
+        # retrieves the right troubleshooting playbook. Maps to specific symptom concepts, not generic nouns.
+        _HINTS = {"चार्ज": "charging", "चार्जिंग": "charging", "charge": "charging",
+                  "स्टेबलाइज़र": "stabilizer", "स्टेबलाइजर": "stabilizer", "stabiliser": "stabilizer",
+                  "क्लिक": "clicking", "click": "clicking", "बीप": "beeping", "beep": "beeping",
+                  "ओवरलोड": "overload", "overload": "overload", "बैकअप": "backup", "backup": "backup",
+                  "सोलर": "solar", "पैनल": "solar", "solar": "solar", "panel": "solar",
+                  "डिस्प्ले": "display", "display": "display", "ऐप": "app connecting", "app": "app connecting",
+                  "ब्लूटूथ": "app connecting", "bluetooth": "app connecting",
+                  "स्विच": "switching", "बंद": "dead", "गरम": "temperature", "गर्म": "temperature"}
+        for _k, _v in _HINTS.items():
+            if _k in ql and _v not in terms:
+                terms.append(_v)
+        # 'series' is a stopword (inverter *Series* names) but is safety-critical for BATTERY questions
+        # ("can I connect in series?" → NEVER). Re-add series/parallel as terms so those articles retrieve.
+        for _w in ("series", "parallel", "warranty", "install"):
+            if _w in ql and _w not in terms:
+                terms.append(_w)
+        terms = terms[:8]
+        sfil = {"title": {"$regex": re.escape(series.split()[0]), "$options": "i"}} if series else None
+        proj = {"_id": 0, "title": 1, "content": 1}
+        # DEVICE type from the query → prefer that device's manual. A BATTERY "fault 9" (Drop string) must NOT
+        # collide with an INVERTER "Fault 09" — the manuals share code numbers.
+        _dev = None
+        if any(k in ql for k in ("battery", "battary", "बैटरी", "बैट्री", "bms", "lifepo", "lithium", "lfp", "cell")):
+            _dev = "Battery"
+        elif any(k in ql for k in ("stabilizer", "stabiliser", "stablizer", "स्टेबलाइज")):
+            _dev = "Stabilizer"
+        elif series or any(k in ql for k in ("inverter", "इन्वर्टर", "इनवर्टर")):
+            _dev = "Inverter"
+        dfil = {"device_type": {"$regex": f"^{re.escape(_dev)}$", "$options": "i"}} if _dev else None
+
+        def _andq(*parts):
+            parts = [p for p in parts if p]
+            return {"$and": parts} if len(parts) > 1 else (parts[0] if parts else {})
+
+        async def _kb_find(content_filter, limit=4):
+            # Most-specific first (device+series), then relax — the right device wins but we never dead-end.
+            combos = []
+            if dfil and sfil:
+                combos.append(_andq(dfil, sfil, content_filter))
+            if dfil:
+                combos.append(_andq(dfil, content_filter))
+            if sfil:
+                combos.append(_andq(sfil, content_filter))
+            combos.append(content_filter)
+            for combo in combos:
+                res = await db.kb_articles.find(combo, proj).limit(limit).to_list(limit)
+                if res:
+                    return res
+            return []
+
+        arts = []
+        # 1) HIGHEST SIGNAL: an exact fault/alarm/code number match wins (e.g. "fault 07"), device-scoped.
+        if codes:
+            cf = {"$or": [{"title": {"$regex": rf"(fault|alarm|warning|bms\s*code|code)\s*0*{c}\b", "$options": "i"}} for c in codes]}
+            arts = await _kb_find(cf, 4)
+        # 2) RELEVANCE-RANKED text search for settings/troubleshooting/spec questions. Uses the kb_articles
+        # text index + textScore sort — far better than substring matching (which returned insertion order,
+        # burying the authoritative article, e.g. answering 'connect in series?' wrong). Device-scoped first.
+        if not arts:
+            search_str = " ".join(terms) if terms else " ".join(re.findall(r"[a-zA-Z]{3,}", ql))
+            if search_str.strip():
+                tproj = {"_id": 0, "title": 1, "content": 1, "score": {"$meta": "textScore"}}
+                base = {"$text": {"$search": search_str}}
+                for extra in ([dfil] if dfil else []) + [None]:
+                    mq = {**base, **extra} if extra else base   # NB: not `q` — that's the user's question!
+                    try:
+                        arts = await db.kb_articles.find(mq, tproj).sort(
+                            [("score", {"$meta": "textScore"})]).limit(5).to_list(5)
+                    except Exception:
+                        arts = []
+                    if arts:
+                        break
+        ctx = "\n".join(f"- {a.get('title')}: {(a.get('content') or '')[:280]}" for a in arts[:3])
+    except Exception:
+        ctx = ""
+    system = _OMNIDIM_ASK_SYS + (f"\n\nKNOWLEDGE:\n{ctx}" if ctx else "\n\n(No specific KB match — answer generally and offer to have the team confirm.)")
+    # Inject the decision-playbook judgment we taught from real cases (PCB-first, never-promise-refund, etc.)
+    try:
+        _dealer = bool(await db.dealers.find_one({"phone": {"$regex": re.escape(re.sub(r"\D", "", str(payload.get("caller_phone") or ""))[-10:]) + "$"}}, {"_id": 1})) if payload.get("caller_phone") else False
+        _pg = await _playbook_guidance((recent_user + " " + q), is_dealer=_dealer)
+        if _pg:
+            system = system + "\n\n" + _pg
+    except Exception as _e:
+        logger.warning(f"playbook guidance failed: {_e}")
+    # Caller identification: if the voice bot passed the caller's phone, look them up and inject their
+    # name / last order / open ticket / warranty so Ria answers 'where's my order' etc. directly.
+    caller_phone = payload.get("caller_phone") or payload.get("from")
+    if caller_phone:
+        try:
+            system += await _omnidim_caller_context(caller_phone)
+        except Exception:
+            pass
+    # Voice agents with a Hindi TTS need Devanagari (romanised Hindi is mispronounced).
+    if (payload.get("script") or "").lower() in ("devanagari", "hindi"):
+        system += ("\n\nSCRIPT: Reply in DEVANAGARI (शुद्ध बोलचाल की हिंदी) — ALWAYS Hindi, never Punjabi, "
+                   "Malayalam, Tamil or any other language, no matter what language the customer's words came "
+                   "in as (speech-to-text sometimes mis-detects the language — ignore that and answer in Hindi). "
+                   "Switch away from Hindi ONLY if the customer explicitly asks for another language. This is "
+                   "read aloud by a Hindi voice, so DO NOT use romanised Hindi. Keep only product model names, "
+                   "error/fault codes, and website/app names in English (e.g. Titan, Fault 07, musclegrid.in).")
+    # Build the turn(s): support a short rolling history for multi-turn coherence.
+    hist = payload.get("history") or []
+    msgs = [{"role": m.get("role", "user"), "content": str(m.get("content", ""))[:600]}
+            for m in hist if m.get("content")][-6:]
+    msgs.append({"role": "user", "content": q})
+    from utils.brain_registry import complete as brain_complete
+    fb = os.environ.get("OMNIDIM_FALLBACK_BRAIN", "pratibha").strip()   # faster 14B local, keeps voice latency sane
+    # Router: Sonnet (riya) by default; Opus (kalpana) when Omnidim flags a hard turn (escalate/hard=true).
+    primary = _OMNIDIM_ESCALATE_BRAIN if (payload.get("escalate") or payload.get("hard")) else _OMNIDIM_BRAIN
+    used = primary
+    r = await brain_complete(primary, system=system, messages=msgs,
+                             max_tokens=int(os.environ.get("OMNIDIM_PRIMARY_MAX_TOKENS", "130")),
+                             timeout=float(os.environ.get("OMNIDIM_PRIMARY_TIMEOUT", "18")))
+    if not r.get("model_ok") and fb and primary != fb:
+        used = fb                              # primary down/capped → fast local brain keeps the call alive
+        r = await brain_complete(fb, system=system, messages=msgs, max_tokens=200, timeout=15.0)
+    answer = (r.get("text") or "").strip() or "Main aapki request team ko bhej rahi hoon, wo aapko WhatsApp par update karenge."
+    return {"answer": answer, "model": r.get("model") if r.get("model_ok") else "fallback",
+            "brain": used, "grounded": len(ctx.split(chr(10))) if ctx else 0}
+
+
+def _founder_wa_numbers():
+    """Founder WhatsApp number(s) for approvals, as 12-digit MSISDNs (91XXXXXXXXXX)."""
+    raw = os.environ.get("FOUNDER_WA_PHONE") or os.environ.get("PRATIBHA_FOUNDER_WA", "919560377363")
+    out = []
+    for x in raw.split(","):
+        d = re.sub(r"\D", "", x)
+        if len(d) == 10:
+            d = "91" + d
+        if len(d) == 12 and d.startswith("91"):
+            out.append(d)
+    return list(dict.fromkeys(out)) or ["919560377363"]
+
+
+async def _voice_raise_decision_cloud(customer_phone: str, customer_name: str, product: str,
+                                      ticket_number: str, issue: str, suggested: str):
+    """Voice-agent human-approval ask over the official Cloud API (bridge-independent). Stores the decision
+    and DMs the founder a [REF] + reply options. The founder's Cloud reply is caught in the cloud webhook
+    (`_voice_decision_cloud_reply`), which then messages the customer + fires the staff action."""
+    ph = _phone10(customer_phone)
+    if not ph:
+        return {"raised": False, "reason": "no customer phone"}
+    if not whatsapp_cloud.enabled():
+        return {"raised": False, "reason": "cloud api not configured"}
+    if await db.repair_decisions.find_one({"customer_phone": {"$regex": ph + "$"}, "status": "open",
+                                           "voice_channel": "cloud"}, {"_id": 1}):
+        return {"raised": False, "reason": "already open for this customer"}
+    ref = uuid.uuid4().hex[:4].upper()
+    did = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    await db.repair_decisions.insert_one({
+        "id": did, "ref": ref, "customer_phone": ph, "customer_name": customer_name, "product": product,
+        "ticket_number": ticket_number, "issue": issue, "suggested": suggested, "status": "open",
+        "voice_channel": "cloud", "source": "omnidim_voice", "created_at": now})
+    hint = {"pcb": "send a replacement PCB (stabilizer)", "replace": "start a replacement",
+            "repair": "arrange a repair pickup"}.get(suggested, "")
+    opts = (f"• *pcb {ref}* — send replacement PCB\n• *replace {ref}* — start replacement\n"
+            f"• *repair {ref}* — arrange pickup & repair\n• *reject {ref}* — no action")
+    msg = (f"\U0001f4de *Voice call — decision needed* [{ref}]\n"
+           f"{customer_name} ({ph})\nProduct: {product}\nIssue: {issue}\n"
+           + (f"Ria's read: likely {hint}.\n" if hint else "") + f"\nReply one:\n{opts}")
+    sent_any = False
+    for fn in _founder_wa_numbers():
+        r = await whatsapp_cloud.send_text(fn, msg)
+        if isinstance(r, dict) and r.get("ok"):
+            sent_any = True
+    await db.repair_decisions.update_one({"id": did}, {"$set": {"founder_notified": sent_any}})
+    return {"raised": sent_any, "ref": ref}
+
+
+async def _voice_decision_cloud_reply(wa_from: str, text: str) -> bool:
+    """Founder's Cloud-API reply to a voice decision → resolve it, message the customer, fire staff action.
+    Returns True if this message was a decision reply (so the webhook skips the customer autoreply)."""
+    if not _wa_reply_allowed(wa_from):
+        return False
+    t = (text or "").strip().lower()
+    if "pcb" in t:
+        choice = "pcb"
+    elif "replace" in t or "replacement" in t:
+        choice = "replace"
+    elif "repair" in t:
+        choice = "repair"
+    elif "reject" in t or "no action" in t:
+        choice = "reject"
+    else:
+        return False
+    open_decs = await db.repair_decisions.find({"status": "open", "voice_channel": "cloud"}
+                                               ).sort("created_at", -1).to_list(50)
+    if not open_decs:
+        return False
+    dec = None
+    m = re.search(r"\b([0-9a-f]{4})\b", t)
+    if m:
+        rf = m.group(1).upper()
+        dec = next((d for d in open_decs if (d.get("ref") or "").upper() == rf), None)
+        if not dec:
+            for fn in _founder_wa_numbers():
+                await whatsapp_cloud.send_text(fn, f"⚠️ Ref {rf} se koi open voice decision match nahi hui.")
+            return True
+    if dec is None:
+        if len(open_decs) == 1:
+            dec = open_decs[0]
+        else:
+            lst = "\n".join(f"• [{d.get('ref')}] {d.get('customer_name') or '?'} — {d.get('product') or '?'}"
+                            for d in open_decs[:10])
+            for fn in _founder_wa_numbers():
+                await whatsapp_cloud.send_text(fn, f"⚠️ {len(open_decs)} decisions open — ref ke saath reply "
+                                               f"karein, jaise '{open_decs[0].get('ref')} {choice}':\n{lst}")
+            return True
+    now = datetime.now(timezone.utc).isoformat()
+    await db.repair_decisions.update_one(
+        {"id": dec["id"]}, {"$set": {"status": "resolved", "decision": choice,
+                                     "decided_by": re.sub(r"\D", "", wa_from), "resolved_at": now}})
+    ph = _phone10(dec.get("customer_phone"))
+    name = dec.get("customer_name") or "Customer"
+    product = dec.get("product") or "product"
+    tkn = dec.get("ticket_number") or ""
+    if tkn and choice in ("pcb", "replace", "repair"):
+        try:
+            await db.tickets.update_one({"ticket_number": tkn},
+                                        {"$set": {"status": "awaiting_label", "updated_at": now}})
+        except Exception:
+            pass
+    await create_notification(
+        title=f"\U0001f527 Voice decision: {choice}",
+        message=f"{name} ({ph}) — {product} — {choice.upper()} approved via WhatsApp. Ticket {tkn}.",
+        notification_type="service", link="/operations/courier-shipping",
+        target_roles=["admin", "supervisor", "accountant"], priority="high")
+    cust_msg = {
+        "pcb": f"नमस्ते {name} जी, MuscleGrid से। आपके {product} के लिए हम replacement PCB कूरियर से भेज रहे हैं — "
+               f"मिलने पर उसे लगवाकर बताइए, आमतौर पर इससे समस्या ठीक हो जाती है।",
+        "replace": f"नमस्ते {name} जी, MuscleGrid से। आपके {product} का replacement approve हो गया है — "
+                   f"हमारी टीम आगे की जानकारी जल्द भेजेगी।",
+        "repair": f"नमस्ते {name} जी, MuscleGrid से। हम आपके {product} की repair के लिए pickup arrange कर रहे हैं — "
+                  f"कृपया अपना पूरा पता और पिनकोड भेज दीजिए।",
+        "reject": f"नमस्ते {name} जी, MuscleGrid से। आपकी request हमारी टीम review कर रही है, जल्द अपडेट देंगे।",
+    }.get(choice, "")
+    cust_ok = False
+    if ph:
+        # Prefer an approved TEMPLATE (delivers even outside the 24h window); fall back to free-form text
+        # (works if the customer is in-window) while templates are still pending approval.
+        dec_template = {"pcb": "service_pcb_dispatch", "replace": "service_replacement_approved",
+                        "repair": "service_repair_pickup_request"}.get(choice)
+        if dec_template:
+            comp = [{"type": "body", "parameters": [{"type": "text", "text": name},
+                                                    {"type": "text", "text": product}]}]
+            tr = await whatsapp_cloud.send_template("91" + ph, template=dec_template, components=comp)
+            cust_ok = isinstance(tr, dict) and bool(tr.get("wamid"))
+        if not cust_ok and cust_msg:
+            r = await whatsapp_cloud.send_text("91" + ph, cust_msg)
+            cust_ok = isinstance(r, dict) and r.get("ok")
+    ack = (f"✅ Noted: *{choice}* for {name} ({ph}). "
+           + ("Customer ko WhatsApp bhej diya. \U0001f44d" if cust_ok
+              else "⚠️ Customer ko message nahi gaya (unhone 24h me message nahi kiya — template chahiye)."))
+    for fn in _founder_wa_numbers():
+        await whatsapp_cloud.send_text(fn, ack)
+    return True
+
+
+_OMNIDIM_FINALIZE_SYS = (
+    "You triage a finished MuscleGrid support CALL (inverters, LiFePO4 batteries, voltage stabilizers). "
+    "Read the transcript and decide if it needs a HUMAN DECISION/ACTION — i.e. a product could NOT be fully "
+    "fixed on the call and likely needs a repair, a replacement, or a stabilizer PCB dispatch. "
+    "Reply ONLY with compact JSON, no prose: "
+    '{"needs_human": true|false, "device_type": "Inverter|Battery|Stabilizer|Other", '
+    '"product": "<model or kVA rating if stated, else empty>", "issue": "<one short line>", '
+    '"suggested": "repair|replace|pcb|none"}. '
+    "For a STABILIZER internal fault use suggested='pcb'. If the caller's question was simply answered, or it "
+    "was chit-chat / a status query, set needs_human=false.")
+
+
+@api_router.post("/omnidim/finalize")
+async def omnidim_finalize(payload: dict = Body(default={}), x_omnidim_token: str = Header(None), x_api_key: str = Header(None, alias="X-API-Key")):
+    """Called when a voice call ENDS. Classify whether it needs a human decision (repair/replace/PCB). If so,
+    open a ticket and raise the Gate-1 WhatsApp decision-ask to the FOUNDER (DM, invoice attached). The founder's
+    one-word reply (existing handler) then messages the customer + triggers the action. Gated by
+    VOICE_ACTIONS_ENABLED so nothing fires until the founder switches it on."""
+    _omnidim_auth(x_omnidim_token or payload.get("token"), x_api_key)
+    if os.environ.get("VOICE_ACTIONS_ENABLED", "0") not in ("1", "true", "yes", "on"):
+        return {"raised": False, "reason": "VOICE_ACTIONS_ENABLED off"}
+    ph = _phone10(payload.get("caller_phone") or payload.get("phone") or "")
+    hist = payload.get("history") or []
+    if not ph or not hist:
+        return {"raised": False, "reason": "no caller phone or empty transcript"}
+    transcript = "\n".join(f"{m.get('role', 'user')}: {str(m.get('content', ''))[:300]}"
+                           for m in hist if m.get("content"))[:3000]
+    if len(transcript) < 20:
+        return {"raised": False, "reason": "transcript too short"}
+    from utils.brain_registry import complete as brain_complete
+    import json as _json
+    try:
+        r = await brain_complete(_OMNIDIM_BRAIN, system=_OMNIDIM_FINALIZE_SYS,
+                                 messages=[{"role": "user", "content": transcript}], max_tokens=150, timeout=15.0)
+        mt = re.search(r"\{.*\}", (r.get("text") or ""), re.S)
+        data = _json.loads(mt.group(0)) if mt else {}
+    except Exception as e:
+        logger.warning(f"omnidim finalize classify failed: {e}")
+        data = {}
+    if not data.get("needs_human"):
+        return {"raised": False, "classification": data}
+    device = data.get("device_type") or "Inverter"
+    product = (data.get("product") or "").strip()
+    issue = (data.get("issue") or "Voice call — needs a decision").strip()
+    suggested = (data.get("suggested") or "none").lower()
+    name = await _omnidim_caller_name(ph) or "Caller"
+    # Open a ticket for the call
+    now = datetime.now(timezone.utc)
+    tid = str(uuid.uuid4())
+    tn = await generate_ticket_number()
+    await db.tickets.insert_one({
+        "id": tid, "ticket_number": tn, "firm_id": None, "customer_id": None,
+        "customer_name": name, "customer_phone": ph, "device_type": device,
+        "product_name": product or None, "issue_description": issue,
+        "support_type": "phone", "status": "new_request", "source": "omnidim_voice",
+        "sla_due": calculate_sla_due("phone", now).isoformat(), "sla_breached": False,
+        "created_by": "omnidim", "created_at": now.isoformat(), "updated_at": now.isoformat(),
+        "history": [{"status": "new_request", "timestamp": now.isoformat(),
+                     "by": "Ria voice agent", "note": f"Voice call — {issue}"}]})
+    # Raise the founder decision-ask over the CLOUD API (bridge-independent; founder DM only).
+    prod_label = (device + (" " + product if product else "")).strip()
+    res = await _voice_raise_decision_cloud(ph, name, prod_label, tn, issue, suggested)
+    return {"raised": bool(res.get("raised")), "ref": res.get("ref"), "ticket": tn,
+            "device": device, "product": product, "suggested": suggested, "detail": res.get("reason")}
+
+
+@api_router.post("/omnidim/handoff-to-whatsapp")
+async def omnidim_handoff_whatsapp(payload: dict = Body(default={}), x_omnidim_token: str = Header(None), x_api_key: str = Header(None, alias="X-API-Key")):
+    """Voice → WhatsApp handoff. Ria calls this when moving the customer to WhatsApp (better for photos +
+    continuity). Saves the call context so the WhatsApp agent continues the SAME conversation, and best-effort
+    sends an opener. Returns the WhatsApp number + a line for Ria to say on the call."""
+    _omnidim_auth(x_omnidim_token or payload.get("token"), x_api_key)
+    ph = _phone10(payload.get("phone"))
+    if not ph:
+        return {"ok": False, "message": "A phone number is required."}
+    now = datetime.now(timezone.utc)
+    sess = {
+        "id": str(uuid.uuid4()), "phone": ph, "active": True,
+        "name": (payload.get("name") or payload.get("customer_name") or "").strip(),
+        "product": payload.get("product") or payload.get("model"),
+        "serial": payload.get("serial") or payload.get("serial_number"),
+        "issue": payload.get("issue") or payload.get("issue_description"),
+        "call_summary": (payload.get("summary") or payload.get("call_summary") or "").strip()[:800],
+        "channel_from": "omnidim_voice", "created_at": now.isoformat(), "updated_at": now.isoformat(),
+    }
+    # supersede any earlier open session for this phone, then open the new one
+    await db.cross_channel_sessions.update_many({"phone": ph, "active": True}, {"$set": {"active": False}})
+    await db.cross_channel_sessions.insert_one(sess)
+    wa_number = os.environ.get("SUPPORT_WA_NUMBER", "919999036254")
+    # Best-effort opener (delivers only inside the 24h window / via template) — Ria's verbal ask is the primary path.
+    sent = False
+    try:
+        if whatsapp_cloud.enabled():
+            opener = (f"Namaste{(' ' + sess['name']) if sess['name'] else ''} 🙏 MuscleGrid support yahan hai. "
+                      "Aap yahin apne product/setup ki ek clear photo bhej dijiye — main aapka issue yahin solve karti hoon.")
+            res = await whatsapp_cloud.send_text("91" + ph, opener)
+            sent = bool(res.get("ok")) if isinstance(res, dict) else bool(res)
+    except Exception:
+        sent = False
+    return {"ok": True, "whatsapp_number": wa_number, "opener_sent": sent,
+            "say_to_customer": f"Main aapko WhatsApp par {wa_number} par continue karti hoon — wahan aap photo bhej "
+                               "sakte hain aur main same baat aage badhaungi. Aap abhi ek 'Hi' bhej dijiye."}
 
 
 @api_router.get("/shop/track")
@@ -82710,6 +85254,31 @@ async def shop_track(order: str, phone: str = ""):
         "courier": pf.get("courier") or pf.get("courier_name") or (cs or {}).get("courier_name"),
         "tracking_id": tracking_id, "courier_status": courier_status,
     }
+
+
+async def _pi_autopay_from_razorpay(payload: dict, pay: dict):
+    """A PI's own Razorpay payment link was paid → snapshot the PI to the Ship Desk automatically
+    (founder rule: Razorpay payments skip the manual admin-approval step). Idempotent via ship_desk_order_id."""
+    link = ((payload.get("payment_link") or {}).get("entity")) or {}
+    ref = link.get("reference_id") or ""
+    notes = link.get("notes") or pay.get("notes") or {}
+    quotation_number = notes.get("pi_number") if isinstance(notes, dict) else None
+    qid = notes.get("quotation_id") if isinstance(notes, dict) else None
+    if not quotation_number and ref.startswith("PI-"):
+        quotation_number = ref[3:]
+    q = None
+    if quotation_number:
+        q = await db.quotations.find_one({"quotation_number": quotation_number}, {"_id": 0})
+    if not q and qid:
+        q = await db.quotations.find_one({"id": qid}, {"_id": 0})
+    if not q and link.get("id"):
+        q = await db.quotations.find_one({"payment_link_id": link["id"]}, {"_id": 0})
+    if not q or q.get("ship_desk_order_id"):
+        return
+    amt = (float(pay["amount"]) / 100.0) if pay.get("amount") else float(q.get("grand_total") or 0)
+    await _pi_push_to_ship_desk(q, q.get("payment_proof_path"), pay.get("id"), amt, None,
+                                auto_via="razorpay", approved_by="razorpay-webhook")
+    logger.info(f"PI {q.get('quotation_number')} auto-moved to Ship Desk via Razorpay webhook")
 
 
 @api_router.post("/razorpay/webhook")
@@ -82760,6 +85329,12 @@ async def razorpay_webhook(request: Request):
                     {"razorpay_payment_id": ref["payment_id"]},
                     {"$set": {"payment_status": "refunded", "refund_id": ref.get("id"),
                               "refund_amount": (ref.get("amount") or 0) / 100.0, "updated_at": now}})
+        # A PI payment link being paid auto-advances that PI to the Ship Desk (independent of marketplace orders).
+        if event in ("payment_link.paid", "payment.captured", "order.paid"):
+            try:
+                await _pi_autopay_from_razorpay(payload, pay)
+            except Exception as e:
+                logger.error(f"PI Razorpay auto-move failed: {e}")
     except Exception as e:
         logger.error(f"Razorpay webhook handling error ({event}): {e}")
     await db.razorpay_webhook_log.insert_one({
@@ -84949,28 +87524,93 @@ async def admin_omnidim_backfill_actions(days: int = 30, dry_run: bool = True,
             "tickets_created": tickets, "leads_created_or_updated": leads, "skipped": skipped}
 
 
+def _wa_epoch(val) -> float:
+    """Normalize a WhatsApp timestamp to float epoch-seconds for correct cross-channel sorting.
+    Handles ISO-8601 strings (our outgoing/Kommo) AND unix-epoch strings/ints (Cloud incoming,
+    seconds or milliseconds). Returns 0.0 on anything unparseable so it sorts oldest."""
+    if val is None:
+        return 0.0
+    if isinstance(val, (int, float)):
+        v = float(val)
+        return v / 1000.0 if v > 1e12 else v
+    s = str(val).strip()
+    if not s:
+        return 0.0
+    if s.isdigit():
+        v = float(s)
+        return v / 1000.0 if v > 1e12 else v
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        try:
+            return datetime.strptime(s[:19], "%Y-%m-%dT%H:%M:%S").timestamp()
+        except Exception:
+            return 0.0
+
+
 @api_router.get("/admin/whatsapp-chats")
-async def admin_whatsapp_chats(limit: int = 200, current_user: dict = Depends(get_current_user)):
-    """Customer WhatsApp conversations (the Cloud-API threads where Pratibha/Kalpana talk to customers),
-    grouped by phone with the latest message — newest conversation first."""
+async def admin_whatsapp_chats(limit: int = 200, search: str = "", current_user: dict = Depends(get_current_user)):
+    """Unified customer WhatsApp inbox — merges the Cloud-API threads (Pratibha/Kalpana) with the
+    Kommo-mirrored chats, grouped by phone with the latest message, newest conversation first.
+    Each conversation is tagged with the channel(s) it appears on ('cloud' and/or 'kommo')."""
     if current_user.get("role") not in ("admin", "call_support"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
-    rows = await db.whatsapp_cloud_messages.aggregate([
+    # Per-phone rollup from both stores, keyed by phone → merged conversation.
+    convo: dict = {}
+
+    def _absorb(phone, count, last_text, last_at, last_dir, channel, name=None):
+        if not phone:
+            return
+        ep = _wa_epoch(last_at)
+        c = convo.get(phone)
+        if not c:
+            c = convo[phone] = {"phone": phone, "name": name or "", "messages": 0,
+                                "last_text": last_text, "last_at": last_at, "last_dir": last_dir,
+                                "_ep": ep, "channels": []}
+        c["messages"] += count
+        if channel not in c["channels"]:
+            c["channels"].append(channel)
+        if name and not c["name"]:
+            c["name"] = name
+        if ep >= c["_ep"]:  # keep the genuinely newest message across channels
+            c.update({"last_text": last_text, "last_at": last_at, "last_dir": last_dir, "_ep": ep})
+
+    cloud = await db.whatsapp_cloud_messages.aggregate([
         {"$addFields": {"_when": {"$ifNull": ["$received_at", "$ts"]}}},
         {"$sort": {"_when": 1}},
         {"$group": {"_id": "$phone", "messages": {"$sum": 1}, "last_text": {"$last": "$text"},
                     "last_at": {"$last": "$_when"}, "last_dir": {"$last": "$direction"}}},
-        {"$sort": {"last_at": -1}}, {"$limit": max(1, min(limit, 500))},
-    ]).to_list(500)
-    out = []
-    for r in rows:
-        ph = r["_id"]
-        lead = await db.leads.find_one({"phone": {"$regex": re.escape(ph or "") + "$"}},
-                                       {"_id": 0, "name": 1, "customer_name": 1})
-        out.append({"phone": ph, "name": (lead or {}).get("name") or (lead or {}).get("customer_name") or "",
-                    "messages": r["messages"], "last_text": r.get("last_text"),
-                    "last_at": r.get("last_at"), "last_dir": r.get("last_dir")})
-    return {"count": len(out), "conversations": out}
+    ]).to_list(5000)
+    for r in cloud:
+        _absorb(r["_id"], r["messages"], r.get("last_text"), r.get("last_at"), r.get("last_dir"), "cloud")
+
+    kommo = await db.kommo_messages.aggregate([
+        {"$match": {"phone": {"$nin": [None, ""]}}},
+        {"$sort": {"ts": 1}},
+        {"$group": {"_id": "$phone", "messages": {"$sum": 1}, "last_text": {"$last": "$text"},
+                    "last_at": {"$last": "$ts"}, "last_dir": {"$last": "$direction"},
+                    "name": {"$last": "$contact_name"}}},
+    ]).to_list(5000)
+    for r in kommo:
+        _absorb(r["_id"], r["messages"], r.get("last_text"), r.get("last_at"), r.get("last_dir"),
+                "kommo", name=r.get("name"))
+
+    rows = sorted(convo.values(), key=lambda c: c["_ep"], reverse=True)
+    q = (search or "").strip().lower()
+    qd = re.sub(r"\D", "", q)
+    if q:
+        rows = [c for c in rows if q in (c.get("name") or "").lower()
+                or (qd and qd in (c.get("phone") or ""))
+                or q in (c.get("last_text") or "").lower()]
+    rows = rows[:max(1, min(limit, 500))]
+    # Enrich the page with a customer name where the message store didn't carry one.
+    for c in rows:
+        if not c.get("name"):
+            lead = await db.leads.find_one({"phone": {"$regex": re.escape(c["phone"]) + "$"}},
+                                           {"_id": 0, "name": 1, "customer_name": 1})
+            c["name"] = (lead or {}).get("name") or (lead or {}).get("customer_name") or ""
+        c.pop("_ep", None)
+    return {"count": len(rows), "conversations": rows}
 
 
 @api_router.get("/admin/whatsapp-chats/{phone}")
@@ -84981,16 +87621,31 @@ async def admin_whatsapp_chat_thread(phone: str, current_user: dict = Depends(ge
     digits = re.sub(r"\D", "", phone)[-10:]
     msgs = await db.whatsapp_cloud_messages.find(
         {"phone": digits}, {"_id": 0, "direction": 1, "text": 1, "received_at": 1, "ts": 1, "kind": 1,
-                            "brain": 1, "tier": 1, "msg_type": 1, "media_url": 1, "media_type": 1}).sort("received_at", 1).to_list(800)
-    # Sign media URLs so the browser can load them in <img>/<video> without a bearer token.
+                            "brain": 1, "tier": 1, "msg_type": 1, "media_url": 1, "media_type": 1,
+                            "contact_name": 1}).to_list(800)
     for m in msgs:
+        m["channel"] = "cloud"
+        # Sign media URLs so the browser can load them in <img>/<video> without a bearer token.
         if m.get("media_url"):
             rel = m["media_url"].split("/api/files/", 1)[-1]
             m["media_url"] = make_signed_file_url(rel)
+    # Fold in the Kommo-mirrored messages for this phone (customer line still on Kommo).
+    kmsgs = await db.kommo_messages.find(
+        {"phone": digits}, {"_id": 0, "direction": 1, "text": 1, "ts": 1, "received_at": 1,
+                            "contact_name": 1}).to_list(800)
+    kname = ""
+    for m in kmsgs:
+        m["channel"] = "kommo"
+        m["kind"] = "human"  # a person typed it in Kommo (bot vs agent unknown from the mirror)
+        m.setdefault("msg_type", "text")
+        kname = kname or (m.get("contact_name") or "")
+    msgs = sorted(msgs + kmsgs, key=lambda m: _wa_epoch(m.get("received_at") or m.get("ts")))
     lead = await db.leads.find_one({"phone": {"$regex": re.escape(digits) + "$"}},
                                    {"_id": 0, "name": 1, "customer_name": 1})
-    return {"phone": digits, "name": (lead or {}).get("name") or (lead or {}).get("customer_name") or "",
-            "messages": msgs, "bot_paused": await _wa_agent_paused(digits)}
+    name = (lead or {}).get("name") or (lead or {}).get("customer_name") or kname or ""
+    return {"phone": digits, "name": name, "messages": msgs,
+            "channels": sorted({m["channel"] for m in msgs}),
+            "bot_paused": await _wa_agent_paused(digits)}
 
 
 WHATSAPP_TAKEOVER_HOURS = int(os.environ.get("WHATSAPP_TAKEOVER_HOURS", "6"))
@@ -85042,6 +87697,259 @@ async def admin_whatsapp_bot_toggle(phone: str, payload: dict = Body(default={})
     await db.whatsapp_control.update_one({"phone": digits}, {"$set": {
         "phone": digits, "paused_until": until, "updated_at": now}}, upsert=True)
     return {"ok": True, "paused": paused}
+
+
+# ============================ Critical Decisions ============================
+# The founder's red-flag queue. The support decision-maker (and the bots) push anything that needs an
+# IMMEDIATE human/founder call here — legal threats, review warnings, refund/replacement decisions,
+# "is this returned unit authentic?", ultimatums. A center popup surfaces these while the admin works.
+CRITICAL_DECISION_TYPES = {
+    "refund_replacement": "Refund / Replacement",
+    "return_authenticity": "Returned-unit authenticity",
+    "legal_threat": "Legal threat",
+    "review_warning": "Negative-review warning",
+    "ultimatum": "Customer ultimatum",
+    "money_gate": "Money decision",
+    "other": "Other",
+}
+
+
+async def raise_critical_decision(*, type: str, title: str, summary: str = "", customer_name: str = "",
+                                  customer_phone: str = "", ticket_number: str = "", options=None,
+                                  severity: str = "critical", source: str = "decision_maker",
+                                  context=None, dedup_key: str = None):
+    """Insert a PENDING critical decision for the founder. If dedup_key is given and an open one with the
+    same key exists, skip (avoid duplicates). Returns the id, or None if deduped."""
+    if dedup_key:
+        if await db.critical_decisions.find_one({"dedup_key": dedup_key, "status": "pending"}, {"_id": 1}):
+            return None
+    doc = {
+        "id": str(uuid.uuid4()),
+        "type": type if type in CRITICAL_DECISION_TYPES else "other",
+        "title": title, "summary": summary,
+        "customer_name": customer_name, "customer_phone": customer_phone, "ticket_number": ticket_number,
+        "options": options or [{"key": "handled", "label": "Mark handled"}],
+        "severity": severity if severity in ("high", "critical") else "critical",
+        "status": "pending", "source": source, "context": context or {}, "dedup_key": dedup_key,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.critical_decisions.insert_one(doc)
+    return doc["id"]
+
+
+@api_router.get("/admin/critical-decisions")
+async def list_critical_decisions(status: str = "pending", limit: int = 100,
+                                  user: dict = Depends(require_roles(["admin"]))):
+    """List critical decisions (pending by default). Newest first."""
+    q = {} if status == "all" else {"status": status}
+    rows = await db.critical_decisions.find(q, {"_id": 0}).sort("created_at", -1).to_list(min(max(limit, 1), 300))
+    return {"count": len(rows), "decisions": rows, "type_labels": CRITICAL_DECISION_TYPES}
+
+
+@api_router.get("/admin/critical-decisions/pending-count")
+async def critical_decisions_pending_count(user: dict = Depends(require_roles(["admin"]))):
+    """Cheap poll for the center popup / nav badge."""
+    return {"pending": await db.critical_decisions.count_documents({"status": "pending"})}
+
+
+@api_router.post("/admin/critical-decisions")
+async def create_critical_decision(payload: dict = Body(default={}), user: dict = Depends(require_roles(["admin"]))):
+    """Manually raise a critical decision (also used internally via raise_critical_decision)."""
+    cid = await raise_critical_decision(
+        type=payload.get("type", "other"), title=payload.get("title", "Critical decision"),
+        summary=payload.get("summary", ""), customer_name=payload.get("customer_name", ""),
+        customer_phone=payload.get("customer_phone", ""), ticket_number=payload.get("ticket_number", ""),
+        options=payload.get("options"), severity=payload.get("severity", "critical"),
+        source="manual", context=payload.get("context"), dedup_key=payload.get("dedup_key"))
+    return {"ok": True, "id": cid}
+
+
+async def _cd_ticket_note(ticket_number, note):
+    if ticket_number:
+        await db.tickets.update_one({"ticket_number": ticket_number}, {"$push": {"history": {
+            "at": datetime.now(timezone.utc).isoformat(), "action": "Critical decision", "by": "Founder", "note": note}}})
+
+
+async def _cd_ops_task(kind, title, dec, note, assignee_role):
+    """A simple actionable task the team picks up (db.ops_tasks) — how a resolved decision reaches ops."""
+    await db.ops_tasks.insert_one({
+        "id": str(uuid.uuid4()), "kind": kind, "title": title, "status": "open",
+        "customer_name": dec.get("customer_name"), "customer_phone": dec.get("customer_phone"),
+        "ticket_number": dec.get("ticket_number"), "assignee_role": assignee_role, "note": note,
+        "source": "critical_decision", "created_at": datetime.now(timezone.utc).isoformat()})
+
+
+async def _lookup_purchase_channel(phone):
+    """Best-effort: is this an Amazon or a direct purchase? (Refund policy depends on it.)"""
+    digits = re.sub(r"\D", "", str(phone or ""))[-10:]
+    if len(digits) != 10:
+        return "Unknown"
+    o = await db.orders.find_one({"$or": [{"phone": {"$regex": digits + "$"}}, {"customer_phone": {"$regex": digits + "$"}}]},
+                                 {"_id": 0, "source": 1, "channel": 1, "marketplace": 1})
+    if o:
+        s = " ".join(str(o.get(k, "")) for k in ("source", "channel", "marketplace")).lower()
+        if "amazon" in s:
+            return "Amazon"
+        if s.strip():
+            return o.get("source") or o.get("channel") or "Direct"
+    if await db.whatsapp_cloud_messages.find_one({"phone": digits, "kind": "amazon_feedback"}, {"_id": 1}):
+        return "Amazon (from chat feedback template)"
+    return "Direct / CRM (no Amazon signal found)"
+
+
+async def _place_ria_call(phone, opener):
+    """Outbound Plivo call so Ria speaks `opener` to the customer (reuses the /var/www/voice-agent agent)."""
+    import httpx as _httpx
+    digits = re.sub(r"\D", "", str(phone or ""))[-10:]
+    aid, tok, frm = os.environ.get("PLIVO_AUTH_ID"), os.environ.get("PLIVO_AUTH_TOKEN"), os.environ.get("PLIVO_FROM_NUMBER")
+    if not (aid and tok and frm and len(digits) == 10):
+        return {"ok": False, "reason": "plivo not configured or bad number"}
+    try:  # stage the one-shot opener for the voice agent
+        p = "/var/www/voice-agent/outbound_openers.json"
+        try:
+            with open(p) as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+        data[digits] = opener
+        with open(p, "w") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception as e:
+        logger.warning(f"stage opener failed: {e}")
+    to = "91" + digits
+    try:
+        async with _httpx.AsyncClient(timeout=20) as c:
+            r = await c.post(f"https://api.plivo.com/v1/Account/{aid}/Call/", auth=(aid, tok),
+                             json={"from": frm, "to": to, "answer_method": "POST",
+                                   "answer_url": f"https://newcrm.musclegrid.in/voice/plivo/answer?caller={to}"})
+        return {"ok": r.status_code in (200, 201), "status": r.status_code}
+    except Exception as e:
+        return {"ok": False, "reason": str(e)[:120]}
+
+
+async def _execute_critical_decision_action(dec, key, note, who):
+    """Run the REAL downstream action for a resolved critical decision."""
+    tkt = dec.get("ticket_number"); name = dec.get("customer_name") or "the customer"; phone = dec.get("customer_phone")
+    if key in ("approve_refund", "approve_replacement"):
+        kind = "refund" if key == "approve_refund" else "replacement"
+        await _cd_ticket_note(tkt, f"Founder APPROVED {kind} for {name}. {note}")
+        await _cd_ops_task(kind, f"Process {kind} — {name}", dec, note, "accountant" if kind == "refund" else "dispatcher")
+        return {"done": f"{kind.title()} approved · ops task created · ticket noted"}
+    if key == "deescalate":
+        await _cd_ticket_note(tkt, f"Founder: DE-ESCALATE — arrange reverse pickup (priority). {note}")
+        await _cd_ops_task("reverse_pickup", f"Priority reverse pickup — {name}", dec, note, "dispatcher")
+        return {"done": "Priority pickup task created · ticket noted"}
+    if key == "call_customer":
+        first = (name.split()[0] if name and name != "the customer" else "")
+        opener = ((f"नमस्ते {first} जी, " if first else "नमस्ते, ") +
+                  "MuscleGrid से रिया बोल रही हूँ। मैं यह बताने के लिए कॉल कर रही हूँ कि आपका केस अब हमारी सीनियर टीम "
+                  "खुद देख रही है। देरी के लिए हमें सच में खेद है। हम आपको जल्द से जल्द resolution देंगे और अपडेट करते "
+                  "रहेंगे। आपके धैर्य के लिए धन्यवाद।")
+        res = await _place_ria_call(phone, opener)
+        await _cd_ticket_note(tkt, f"Founder triggered a de-escalation call to {name}. Result: {res}")
+        return {"done": "Calling the customer (Ria de-escalation)" if res.get("ok") else f"Call failed: {res.get('reason') or res.get('status')}"}
+    await _cd_ticket_note(tkt, f"Founder will handle personally. {note}")
+    return {"done": "Marked handled"}
+
+
+@api_router.post("/admin/critical-decisions/{cid}/resolve")
+async def resolve_critical_decision(cid: str, payload: dict = Body(default={}),
+                                    user: dict = Depends(require_roles(["admin"]))):
+    """Founder acts on a decision — records it AND fires the real downstream action (refund/replacement task,
+    priority pickup, de-escalation call, or a channel lookup that keeps it pending)."""
+    dec = await db.critical_decisions.find_one({"id": cid, "status": "pending"}, {"_id": 0})
+    if not dec:
+        raise HTTPException(status_code=404, detail="Decision not found or already resolved")
+    key = payload.get("decision"); note = payload.get("note") or ""
+    now = datetime.now(timezone.utc).isoformat()
+    who = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or user.get("email")
+    # Non-terminal: verify channel → enrich + keep PENDING so the founder can then decide.
+    if key == "verify_channel":
+        channel = await _lookup_purchase_channel(dec.get("customer_phone"))
+        await db.critical_decisions.update_one({"id": cid}, {"$set": {
+            "channel_checked": channel, "summary": (dec.get("summary", "") + f"\n\n📦 Purchase channel: {channel}")}})
+        return {"ok": True, "pending": True, "message": f"Purchase channel: {channel}"}
+    action = await _execute_critical_decision_action(dec, key, note, who)
+    await db.critical_decisions.update_one({"id": cid, "status": "pending"}, {"$set": {
+        "status": "resolved", "decision": key, "decision_label": payload.get("decision_label"),
+        "decision_note": note, "resolved_by": who, "resolved_by_id": user.get("id"),
+        "resolved_at": now, "action_result": action}})
+    return {"ok": True, "action": action, "message": action.get("done")}
+
+
+# Deterministic red-flag detector — runs on every inbound customer message (free, no LLM) and pushes
+# CRITICAL DECISIONS to the founder's queue, deduped per phone+type so it never spams.
+CRITICAL_AUTODETECT_ENABLED = os.environ.get("CRITICAL_AUTODETECT_ENABLED", "1") not in ("0", "false", "off")
+_CRIT_PATTERNS = [
+    ("legal_threat", "critical", re.compile(
+        r"(legal\s*(action|notice)|\blawyer\b|\badvocate\b|consumer\s*(court|forum|complaint)|"
+        r"\bcourt\b|\bfir\b|police\s*(complaint|me|station)|case\s*(kar|file|daal)|"
+        r"क़ानून|कानून|वकील|उपभोक्ता|अदालत|मुक़दमा|मुकदमा)", re.I)),
+    ("review_warning", "critical", re.compile(
+        r"(rating\s*(gira|kam|kharab|down|niche)|(negative|bad|worst|1|one|कम|खराब)\s*(review|rating|star)|"
+        r"(review|rating|star)\s*(kar|de|gira)\s*(dunga|doonga|dena|denge|dega|d[ei]nge)|"
+        r"रेटिंग\s*(गिरा|खराब|कम|डाल)|bad\s*review|negative\s*(review|feedback))", re.I)),
+    ("ultimatum", "critical", re.compile(
+        r"(\bwarna\b|nahi\s*to\b|otherwise|or\s*else|final\s*(warning|chance|bol)|last\s*(warning|chance)|"
+        r"kal\s*(tak|ke\s*andar).{0,25}(nahi|warna|final)|ya\s*paisa\s*ya|ya\s*to\b.{0,30}\bya\s*to\b|"
+        r"वरना|नहीं\s*तो|कल\s*तक)", re.I)),
+    ("refund_replacement", "high", re.compile(
+        r"(\brefund\b|paisa\s*wapas|paise\s*wapas|money\s*back|replacement|replace\s*(kar|karo|kardo)|"
+        r"badal\s*(kar\s*)?do|badalna\s*hai|return\s*kar(na|do)?|"
+        r"रिफंड|पैसा\s*वापस|पैसे\s*वापस|बदल\s*कर|वापस\s*कर)", re.I)),
+]
+_CRIT_TITLE = {
+    "legal_threat": "Legal threat flagged in a customer chat",
+    "review_warning": "Rating / review threat in a customer chat",
+    "ultimatum": "Customer ultimatum in a chat",
+    "refund_replacement": "Refund / replacement demand — your decision",
+}
+_CRIT_ESCALATE_OPTS = [{"key": "i_will_handle", "label": "I'll handle it"},
+                       {"key": "deescalate", "label": "De-escalate (arrange pickup)"},
+                       {"key": "call_customer", "label": "Call the customer"}]
+_CRIT_OPTIONS = {
+    "legal_threat": _CRIT_ESCALATE_OPTS, "review_warning": _CRIT_ESCALATE_OPTS, "ultimatum": _CRIT_ESCALATE_OPTS,
+    "refund_replacement": [{"key": "approve_refund", "label": "Approve refund"},
+                           {"key": "approve_replacement", "label": "Approve replacement"},
+                           {"key": "verify_channel", "label": "Verify channel first"},
+                           {"key": "call_customer", "label": "Call the customer"}],
+}
+
+
+async def _wa_detect_critical_decision(phone: str, text: str, contact_name: str = ""):
+    """Scan an inbound customer message for red-flags; push a critical decision (deduped per phone+type)."""
+    if not CRITICAL_AUTODETECT_ENABLED:
+        return
+    try:
+        if not text or not text.strip():
+            return
+        digits = re.sub(r"\D", "", str(phone))[-10:]
+        if len(digits) != 10:
+            return
+        hits = [(t, sev) for (t, sev, rx) in _CRIT_PATTERNS if rx.search(text)]
+        if not hits:
+            return
+        name = contact_name or ""
+        if not name:
+            lead = await db.leads.find_one({"phone": {"$regex": re.escape(digits) + "$"}},
+                                           {"_id": 0, "name": 1, "customer_name": 1})
+            name = (lead or {}).get("name") or (lead or {}).get("customer_name") or ""
+        tk = await db.tickets.find_one({"customer_phone": {"$regex": re.escape(digits) + "$"}},
+                                       {"_id": 0, "ticket_number": 1}, sort=[("created_at", -1)])
+        ticket_number = (tk or {}).get("ticket_number", "")
+        snippet = text.strip().replace("\n", " ")[:160]
+        for (typ, sev) in hits:
+            guidance = ("Never promise refund/replacement — verify the purchase channel (Amazon has its own "
+                        "policy), collect invoice + reason, then you decide." if typ == "refund_replacement"
+                        else "Per the doctrine: de-escalate immediately (arrange pickup if applicable) and you "
+                             "decide — don't let it escalate or the rating drop.")
+            await raise_critical_decision(
+                type=typ, severity=sev, title=_CRIT_TITLE.get(typ, "Critical decision"),
+                summary=f'Customer said: "{snippet}". {guidance}',
+                customer_name=name, customer_phone=digits, ticket_number=ticket_number,
+                options=_CRIT_OPTIONS.get(typ), source="pratibha_auto", dedup_key=f"{typ}:{digits}")
+    except Exception as e:
+        logger.warning(f"critical-decision detect failed for {phone}: {e}")
 
 
 @api_router.get("/leads")
@@ -85279,7 +88187,7 @@ async def _shopify_resolve_item(title, sku):
     return {"resolved_sku": None, "resolved_name": None, "match": "unmatched"}
 
 
-async def _shopify_upsert_order(raw: dict, source: str = "webhook") -> dict:
+async def _shopify_upsert_order(raw: dict, source: str = "webhook", store: str = "in") -> dict:
     """Normalize + upsert a Shopify order into `shopify_orders` (idempotent by shopify_order_id)."""
     norm = shopify_service.normalize_order(raw)
     if not norm.get("shopify_order_id"):
@@ -85302,8 +88210,8 @@ async def _shopify_upsert_order(raw: dict, source: str = "webhook") -> dict:
     initial_status = "ingested"
 
     doc = {**norm, "party_id": party_id, "ingest_source": source, "updated_at": now,
-           "shipping_provider_hint": provider,
-           "firm_id": shopify_service.cfg().get("default_firm_id"), "raw": raw}
+           "shipping_provider_hint": provider, "store": store,
+           "firm_id": shopify_service.cfg(store).get("default_firm_id"), "raw": raw}
     await db.shopify_orders.update_one(
         {"shopify_order_id": norm["shopify_order_id"]},
         {"$set": doc,
@@ -85315,12 +88223,15 @@ async def _shopify_upsert_order(raw: dict, source: str = "webhook") -> dict:
 
 @api_router.post("/webhooks/shopify")
 async def shopify_webhook(request: Request):
-    """Inbound Shopify order webhook — HMAC-verified with the custom app secret.
-    Reads the RAW body (no declared params) so the signature check is exact."""
-    if not shopify_service.cfg().get("webhook_secret"):
+    """Inbound Shopify order webhook — HMAC-verified with the custom app secret. Multi-store: the sending
+    store is identified by X-Shopify-Shop-Domain and the HMAC is checked with THAT store's secret, so India
+    and HK (and any future store) share one callback URL. Reads the RAW body so the signature check is exact."""
+    shop_domain = request.headers.get("X-Shopify-Shop-Domain", "")
+    store = shopify_service.store_for_domain(shop_domain) or "in"
+    if not shopify_service.cfg(store).get("webhook_secret"):
         raise HTTPException(status_code=503, detail="Shopify webhook secret not configured")
     raw = await request.body()
-    if not shopify_service.verify_webhook(raw, request.headers.get("X-Shopify-Hmac-Sha256", "")):
+    if not shopify_service.verify_webhook(raw, request.headers.get("X-Shopify-Hmac-Sha256", ""), store=store):
         raise HTTPException(status_code=401, detail="Invalid Shopify HMAC signature")
     topic = request.headers.get("X-Shopify-Topic", "")
     try:
@@ -85328,76 +88239,102 @@ async def shopify_webhook(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Malformed JSON body")
     try:
-        res = await _shopify_upsert_order(payload, source=f"webhook:{topic or '?'}")
+        res = await _shopify_upsert_order(payload, source=f"webhook:{topic or '?'}", store=store)
     except Exception as e:
-        logger.error(f"Shopify webhook upsert failed ({topic}): {e}")
+        logger.error(f"Shopify webhook upsert failed ({topic}, store={store}): {e}")
         raise HTTPException(status_code=500, detail="Order upsert failed")
-    logger.info(f"Shopify webhook {topic}: {res}")
-    return {"success": True, "topic": topic}
+    logger.info(f"Shopify webhook {topic} [{store}]: {res}")
+    return {"success": True, "topic": topic, "store": store}
 
 
 async def scheduled_shopify_reconcile():
-    """Nightly catch-up: pull orders updated since the last successful sync and upsert them,
-    in case any webhook was missed. Idempotent."""
-    if not shopify_service.is_configured():
+    """Nightly catch-up: for EVERY configured store, pull orders updated since that store's last successful
+    sync and upsert them, in case any webhook was missed. Idempotent. Per-store sync cursor."""
+    stores = shopify_service.configured_stores()
+    if not stores:
         return
-    try:
-        st = await db.shopify_sync_state.find_one({"id": "reconcile"}, {"_id": 0, "last_updated_at": 1})
-        since = (st or {}).get("last_updated_at") or (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-        orders = await shopify_service.fetch_orders(updated_at_min=since)
-        n, maxts = 0, since
-        for o in orders:
-            await _shopify_upsert_order(o, source="reconcile")
-            n += 1
-            if (o.get("updated_at") or "") > maxts:
-                maxts = o["updated_at"]
-        await db.shopify_sync_state.update_one(
-            {"id": "reconcile"},
-            {"$set": {"last_updated_at": maxts, "last_run_at": datetime.now(timezone.utc).isoformat(),
-                      "last_count": n}}, upsert=True)
-        logger.info(f"Shopify reconcile: upserted {n} orders updated since {since}")
-    except Exception as e:
-        logger.error(f"Shopify reconcile failed: {e}")
+    for store in stores:
+        try:
+            sid = f"reconcile:{store}"
+            st = await db.shopify_sync_state.find_one({"id": sid}, {"_id": 0, "last_updated_at": 1})
+            if not st and store == "in":
+                st = await db.shopify_sync_state.find_one({"id": "reconcile"}, {"_id": 0, "last_updated_at": 1})  # legacy key
+            since = (st or {}).get("last_updated_at") or (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            orders = await shopify_service.fetch_orders(updated_at_min=since, store=store)
+            n, maxts = 0, since
+            for o in orders:
+                await _shopify_upsert_order(o, source="reconcile", store=store)
+                n += 1
+                if (o.get("updated_at") or "") > maxts:
+                    maxts = o["updated_at"]
+            await db.shopify_sync_state.update_one(
+                {"id": sid},
+                {"$set": {"store": store, "last_updated_at": maxts,
+                          "last_run_at": datetime.now(timezone.utc).isoformat(), "last_count": n}}, upsert=True)
+            logger.info(f"Shopify reconcile [{store}]: upserted {n} orders updated since {since}")
+        except Exception as e:
+            logger.error(f"Shopify reconcile failed [{store}]: {e}")
 
 
 @api_router.get("/admin/shopify/status")
 async def shopify_status(user: dict = Depends(require_roles(["admin"]))):
-    """Integration health: configured?, order count, last reconcile."""
-    c = shopify_service.cfg()
-    st = await db.shopify_sync_state.find_one({"id": "reconcile"}, {"_id": 0})
-    return {
-        "configured": shopify_service.is_configured(),
-        "store": c.get("store"), "api_version": c.get("api_version"),
-        "webhook_secret_set": bool(c.get("webhook_secret")),
-        "default_firm_id": c.get("default_firm_id"),
-        "orders_in_crm": await db.shopify_orders.count_documents({}),
-        "last_reconcile": st,
-    }
+    """Integration health per store: configured?, order count, last reconcile."""
+    stores = []
+    for s in shopify_service.STORE_ENV:
+        c = shopify_service.cfg(s)
+        if not c.get("store"):
+            continue
+        st = await db.shopify_sync_state.find_one({"id": f"reconcile:{s}"}, {"_id": 0}) \
+            or (await db.shopify_sync_state.find_one({"id": "reconcile"}, {"_id": 0}) if s == "in" else None)
+        stores.append({
+            "store_key": s, "store": c.get("store"), "api_version": c.get("api_version"),
+            "configured": shopify_service.is_configured(s),
+            "webhook_secret_set": bool(c.get("webhook_secret")),
+            "default_firm_id": c.get("default_firm_id"),
+            "orders_in_crm": await db.shopify_orders.count_documents({"store": s}),
+            "last_reconcile": st,
+        })
+    return {"stores": stores, "configured_stores": shopify_service.configured_stores(),
+            "total_orders_in_crm": await db.shopify_orders.count_documents({})}
 
 
 @api_router.post("/admin/shopify/register-webhooks")
-async def shopify_register_webhooks(user: dict = Depends(require_roles(["admin"]))):
-    """Register the order webhooks with Shopify, pointing at this CRM. Run once after setting the token."""
-    if not shopify_service.is_configured():
-        raise HTTPException(status_code=400, detail="Shopify not configured (set SHOPIFY_STORE + SHOPIFY_ADMIN_TOKEN)")
+async def shopify_register_webhooks(store: Optional[str] = None, user: dict = Depends(require_roles(["admin"]))):
+    """Register the order webhooks with Shopify for every configured store (or one via ?store=hk),
+    all pointing at this CRM's single callback. Run once after setting a store's token."""
     base = (os.environ.get("SHOPIFY_WEBHOOK_CALLBACK", "").strip()
             or f"{os.environ.get('FRONTEND_URL', '').rstrip('/')}/api/webhooks/shopify")
     if not base.startswith("https://"):
         raise HTTPException(status_code=400, detail="Need an HTTPS callback URL (set FRONTEND_URL or SHOPIFY_WEBHOOK_CALLBACK)")
-    res = await shopify_service.register_webhooks(base)
-    return {"callback": base, "result": res}
+    targets = [store] if store else shopify_service.configured_stores()
+    if not targets:
+        raise HTTPException(status_code=400, detail="No Shopify store configured (set SHOPIFY_STORE / SHOPIFY_HK_STORE + admin tokens)")
+    out = {}
+    for s in targets:
+        if not shopify_service.is_configured(s):
+            out[s] = {"error": "not configured"}
+            continue
+        out[s] = {"domain": shopify_service.cfg(s).get("store"), "result": await shopify_service.register_webhooks(base, store=s)}
+    return {"callback": base, "stores": out}
 
 
 @api_router.post("/admin/shopify/backfill")
-async def shopify_backfill(days: int = 90, user: dict = Depends(require_roles(["admin"]))):
-    """Manual one-off pull of the last N days of orders (idempotent)."""
-    if not shopify_service.is_configured():
+async def shopify_backfill(days: int = 90, store: Optional[str] = None, user: dict = Depends(require_roles(["admin"]))):
+    """Manual one-off pull of the last N days of orders (idempotent). Defaults to all configured stores."""
+    targets = [store] if store else shopify_service.configured_stores()
+    if not targets:
         raise HTTPException(status_code=400, detail="Shopify not configured")
     since = (datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))).isoformat()
-    orders = await shopify_service.fetch_orders(updated_at_min=since)
-    for o in orders:
-        await _shopify_upsert_order(o, source="backfill")
-    return {"success": True, "pulled": len(orders), "since": since}
+    out = {}
+    for s in targets:
+        if not shopify_service.is_configured(s):
+            out[s] = {"error": "not configured"}
+            continue
+        orders = await shopify_service.fetch_orders(updated_at_min=since, store=s)
+        for o in orders:
+            await _shopify_upsert_order(o, source="backfill", store=s)
+        out[s] = {"pulled": len(orders)}
+    return {"success": True, "since": since, "stores": out}
 
 
 @api_router.post("/admin/pratibha/backlog-sweep")
@@ -85472,6 +88409,631 @@ async def create_public_lead(
         target_roles=["call_support", "admin"], created_by_name="Storefront",
         data={"lead_id": lead_id}))
     return {"success": True, "lead_id": lead_id}
+
+
+# ── Dealer prospecting (Google Places) ───────────────────────────────────────
+# Finds REAL, unmasked dealer phone numbers from Google Business listings (the
+# number a shop publishes for customers) — e.g. "Luminous solar dealer Jaipur".
+# IndiaMART/JustDial mask numbers, so we don't use them. Results are deduped and
+# filed into db.dealer_prospects for the sales agent to outreach via dealer_intro_v1.
+GOOGLE_PLACES_API_KEY = os.environ.get("GOOGLE_PLACES_API_KEY", "").strip()
+
+
+async def _dealer_dedupe_hit(digits: str, place_id: str = None) -> bool:
+    """True if we already know this number (as a prospect, party, dealer, or lead) — skip it."""
+    if place_id and await db.dealer_prospects.find_one({"place_id": place_id}, {"_id": 1}):
+        return True
+    if not digits:
+        return False
+    rx = {"$regex": re.escape(digits) + "$"}
+    for coll in (db.dealer_prospects, db.parties, db.dealers, db.leads):
+        if await coll.find_one({"phone": rx}, {"_id": 1}):
+            return True
+    return False
+
+
+async def _places_find_dealers(brand: str, city: str, limit: int = 20) -> dict:
+    """Google Places text search + details → real dealer contacts. Returns {ok, dealers, error}."""
+    if not GOOGLE_PLACES_API_KEY:
+        return {"ok": False, "error": "GOOGLE_PLACES_API_KEY not set", "dealers": []}
+    query = f"{brand} dealer {city}".strip()
+    dealers = []
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.get("https://maps.googleapis.com/maps/api/place/textsearch/json",
+                                 params={"query": query, "key": GOOGLE_PLACES_API_KEY})
+            data = r.json()
+            if data.get("status") not in ("OK", "ZERO_RESULTS"):
+                return {"ok": False, "error": f"{data.get('status')}: {data.get('error_message', '')}", "dealers": []}
+            for res in (data.get("results") or [])[:limit]:
+                pid = res.get("place_id")
+                # Place Details for the real phone number.
+                dr = await client.get("https://maps.googleapis.com/maps/api/place/details/json",
+                                      params={"place_id": pid, "fields": "name,formatted_phone_number,"
+                                              "formatted_address,international_phone_number,website",
+                                              "key": GOOGLE_PLACES_API_KEY})
+                det = (dr.json() or {}).get("result") or {}
+                phone_raw = det.get("formatted_phone_number") or det.get("international_phone_number") or ""
+                digits = re.sub(r"\D", "", phone_raw)[-10:]
+                dealers.append({
+                    "name": det.get("name") or res.get("name"),
+                    "phone": digits, "phone_display": phone_raw,
+                    "address": det.get("formatted_address") or res.get("formatted_address"),
+                    "website": det.get("website"), "place_id": pid,
+                })
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200], "dealers": dealers}
+    return {"ok": True, "dealers": dealers, "error": None}
+
+
+@api_router.post("/sales/find-dealers")
+async def find_dealers(data: dict, user: dict = Depends(require_roles(["admin"]))):
+    """Discover real competitor-brand dealers via Google Places and file them as prospects.
+    Body: {brand, city, limit?}. Dedupes against existing prospects/parties/dealers/leads.
+    Needs GOOGLE_PLACES_API_KEY. Nothing is messaged here — the sales agent outreaches separately."""
+    brand = (data.get("brand") or "").strip()
+    city = (data.get("city") or "").strip()
+    limit = max(1, min(int(data.get("limit") or 20), 20))
+    if not brand or not city:
+        return {"success": False, "error": "brand and city are required"}
+    res = await _places_find_dealers(brand, city, limit)
+    if not res["ok"]:
+        return {"success": False, "error": res["error"], "hint":
+                "Set GOOGLE_PLACES_API_KEY (Google Cloud → enable Places API + billing)." }
+    now = datetime.now(timezone.utc).isoformat()
+    new, dups, no_phone = [], 0, 0
+    for d in res["dealers"]:
+        if not d.get("phone") or len(d["phone"]) < 10:
+            no_phone += 1
+            continue
+        if await _dealer_dedupe_hit(d["phone"], d.get("place_id")):
+            dups += 1
+            continue
+        doc = {"id": str(uuid.uuid4()), "source": "google_places", "status": "new",
+               "brand_query": brand, "city": city, "name": d["name"], "phone": d["phone"],
+               "phone_display": d["phone_display"], "address": d["address"],
+               "website": d.get("website"), "place_id": d.get("place_id"),
+               "found_by": user.get("email"), "created_at": now}
+        await db.dealer_prospects.insert_one(doc)
+        new.append({"name": d["name"], "phone": d["phone"], "city": city})
+    return {"success": True, "brand": brand, "city": city,
+            "new_prospects": len(new), "duplicates_skipped": dups, "no_phone_skipped": no_phone,
+            "prospects": new,
+            "message": f"Filed {len(new)} new dealer prospect(s) for {brand} in {city}. "
+                       f"They are in db.dealer_prospects (status=new) for outreach via dealer_intro_v1."}
+
+
+@api_router.get("/sales/dealer-prospects")
+async def list_dealer_prospects(status: str = "new", limit: int = 200,
+                                user: dict = Depends(require_roles(["admin"]))):
+    """List filed dealer prospects (for review / the sales agent)."""
+    q = {} if status == "all" else {"status": status}
+    rows = await db.dealer_prospects.find(q, {"_id": 0}).sort("created_at", -1).limit(min(limit, 500)).to_list(min(limit, 500))
+    return {"success": True, "count": len(rows), "prospects": rows}
+
+
+# ── Phase 2: dealer-locator scraping (Playwright renders, local 32B parses) ───
+# Competitor "find a dealer" pages (UTL/Luminous/V-Guard etc.) publish real dealer
+# contacts. Playwright loads the page deterministically (headless, best-effort city
+# fill); the FREE local 32B (Jasmine) extracts {name, phone, address} from the text.
+# No paid API — the 32B is text-only, so we never rely on it to "see" the page.
+async def _scrape_locator_page(url: str, area: str = "", wait_ms: int = 3500) -> dict:
+    from playwright.async_api import async_playwright
+    UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True,
+                                              args=["--no-sandbox", "--disable-dev-shm-usage"])
+            ctx = await browser.new_context(user_agent=UA, locale="en-IN")
+            page = await ctx.new_page()
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            if area:  # best-effort: type the area into a likely search box and submit
+                for sel in ['input[placeholder*="pin" i]', 'input[name*="pin" i]',
+                            'input[placeholder*="city" i]', 'input[name*="city" i]',
+                            'input[placeholder*="search" i]', 'input[type="search"]']:
+                    try:
+                        el = await page.query_selector(sel)
+                        if el:
+                            await el.fill(area)
+                            await el.press("Enter")
+                            break
+                    except Exception:
+                        continue
+            await page.wait_for_timeout(wait_ms)
+            text = await page.inner_text("body")
+            try:
+                tels = await page.eval_on_selector_all(
+                    'a[href^="tel:"]', "els => els.map(e => e.getAttribute('href'))")
+            except Exception:
+                tels = []
+            await browser.close()
+            return {"ok": True, "text": (text or "")[:8000], "tels": tels[:60]}
+    except Exception as e:
+        logger.warning(f"locator scrape failed ({url}): {str(e)[:150]}")
+        return {"ok": False, "error": str(e)[:200], "text": "", "tels": []}
+
+
+_IN_PHONE_RX = re.compile(r"(?:\+?91[\-\s]?)?(?:0)?([6-9]\d{9})\b")
+
+
+def _extract_dealers_deterministic(page_text: str, tels: list) -> list:
+    """Fast, free, no-LLM extraction: find Indian mobile numbers in the page text and take the
+    surrounding lines as the dealer name/address. Good enough for locator listings, and instant."""
+    # Numbers are often printed with spaces/hyphens ("9250 885 885"); collapse separators that sit
+    # BETWEEN two digits so a phone becomes contiguous, without touching line structure or names.
+    norm = re.sub(r"(?<=\d)[ \t\-\.](?=\d)", "", page_text or "")
+    lines = [ln.strip() for ln in norm.splitlines()]
+    out, seen = [], set()
+
+    def _add(digits, name, addr):
+        # WhatsApp outreach needs a MOBILE (Indian mobiles start 6-9); this also drops landlines
+        # and malformed tel: fragments.
+        if len(digits) == 10 and digits[0] in "6789" and digits not in seen:
+            seen.add(digits)
+            out.append({"name": (name or "").strip()[:120] or None, "phone": digits,
+                        "address": (addr or "").strip()[:200] or None})
+
+    for i, ln in enumerate(lines):
+        for m in _IN_PHONE_RX.finditer(ln):
+            digits = m.group(1)
+            # name = this line minus the number, else the nearest prior non-empty line
+            name = _IN_PHONE_RX.sub("", ln).strip(" ,-:|").strip()
+            if len(name) < 3:
+                for j in range(i - 1, max(-1, i - 3), -1):
+                    if j >= 0 and lines[j] and not _IN_PHONE_RX.search(lines[j]):
+                        name = lines[j]
+                        break
+            addr = lines[i + 1] if i + 1 < len(lines) and "," in (lines[i + 1] or "") else ""
+            _add(digits, name, addr)
+    for t in (tels or []):
+        digits = re.sub(r"\D", "", str(t))[-10:]
+        _add(digits, None, None)
+    return out
+
+
+async def _parse_dealers(page_text: str, tels: list, brand: str, city: str) -> dict:
+    """Deterministic extraction (instant, free). Optionally clean names via the local 32B when
+    LOCATOR_USE_32B=1 — off by default because the 32B cold-loads ~20GB and infers at ~5.7 tok/s
+    on this VPS (>2min/page), which is too slow for interactive use. Enable it on faster hardware."""
+    dealers = _extract_dealers_deterministic(page_text, tels)
+    if os.environ.get("LOCATOR_USE_32B", "0").strip().lower() in ("1", "true", "yes", "on") and dealers:
+        from utils import brain_registry
+        if brain_registry.available("jasmine"):
+            try:
+                sysmsg = ('Clean this dealer list. Return ONLY a JSON array of {"name","phone","address"} '
+                          'with tidy names; keep the phone digits exactly. No prose.')
+                res = await brain_registry.complete("jasmine", system=sysmsg,
+                                                    prompt=json.dumps(dealers)[:6000], max_tokens=1200, timeout=240)
+                if res.get("model_ok"):
+                    mm = re.search(r"\[.*\]", res.get("text") or "", re.S)
+                    if mm:
+                        cleaned = json.loads(mm.group(0))
+                        fixed = []
+                        for d in cleaned:
+                            dg = re.sub(r"\D", "", str(d.get("phone", "")))[-10:]
+                            if len(dg) == 10:
+                                fixed.append({"name": d.get("name"), "phone": dg, "address": d.get("address")})
+                        if fixed:
+                            dealers = fixed
+            except Exception as e:
+                logger.warning(f"32B name-clean skipped: {str(e)[:100]}")
+    return {"ok": True, "dealers": dealers}
+
+
+@api_router.post("/sales/scrape-locator")
+async def scrape_dealer_locator(data: dict, user: dict = Depends(require_roles(["admin"]))):
+    """Scrape a competitor dealer-locator page for real dealer contacts (Playwright + free 32B).
+    Body: {url, brand?, area?/city?}. Files new dealers into db.dealer_prospects (source=locator)."""
+    url = (data.get("url") or "").strip()
+    brand = (data.get("brand") or "").strip()
+    area = (data.get("area") or data.get("city") or "").strip()
+    if not url.startswith("http"):
+        return {"success": False, "error": "a valid http(s) url is required (the locator/results page)"}
+    sc = await _scrape_locator_page(url, area)
+    if not sc["ok"]:
+        return {"success": False, "error": sc["error"]}
+    pr = await _parse_dealers(sc["text"], sc["tels"], brand or "dealer", area)
+    if not pr["ok"]:
+        return {"success": False, "error": pr.get("error"), "raw": pr.get("raw")}
+    now = datetime.now(timezone.utc).isoformat()
+    new, dups, no_phone = [], 0, 0
+    for d in pr["dealers"]:
+        if not d.get("phone") or len(d["phone"]) < 10:
+            no_phone += 1
+            continue
+        if await _dealer_dedupe_hit(d["phone"]):
+            dups += 1
+            continue
+        doc = {"id": str(uuid.uuid4()), "source": "locator", "status": "new",
+               "brand_query": brand, "city": area, "name": d.get("name"), "phone": d["phone"],
+               "address": d.get("address"), "source_url": url,
+               "found_by": user.get("email"), "created_at": now}
+        await db.dealer_prospects.insert_one(doc)
+        new.append({"name": d.get("name"), "phone": d["phone"]})
+    return {"success": True, "brand": brand, "area": area, "source": "locator",
+            "new_prospects": len(new), "duplicates_skipped": dups, "no_phone_skipped": no_phone,
+            "prospects": new,
+            "message": f"Scraped {url}: filed {len(new)} new dealer prospect(s) (browser + fast extractor). "
+                       f"In db.dealer_prospects (status=new) for dealer_intro_v1 outreach."}
+
+
+# ── Tally read-only sync ──────────────────────────────────────────────────────
+# Mirrors party ledgers + balances from TallyPrime (over Tailscale, port 9000) into
+# db.tally_ledgers so the CRM can show REAL, authoritative outstanding. READ-ONLY:
+# only Export requests — nothing is ever written back to Tally here.
+async def _tally_balances_for(gstin: str = None, name: str = None) -> list[dict]:
+    """Find a CRM party's Tally balance(s) across firms — by GSTIN (authoritative) then EXACT name.
+    Returns one entry per firm the party appears in. Read-only; never modifies anything."""
+    matches = {}
+    if gstin:
+        g = re.sub(r"\s", "", str(gstin)).upper()
+        if len(g) >= 15:
+            async for d in db.tally_ledgers.find({"gstin": g}, {"_id": 0}):
+                matches[(d.get("company"), d.get("ledger_name"))] = d
+    if name and not matches:  # exact (case-insensitive) name — avoids false positives
+        async for d in db.tally_ledgers.find(
+                {"ledger_name": {"$regex": f"^{re.escape(name.strip())}$", "$options": "i"}}, {"_id": 0}):
+            matches[(d.get("company"), d.get("ledger_name"))] = d
+    out = []
+    for d in matches.values():
+        out.append({
+            "company": d.get("company"), "ledger_name": d.get("ledger_name"),
+            "group": d.get("parent"), "closing_balance": d.get("closing_balance"),
+            "payable": d.get("payable"), "receivable": d.get("receivable"),
+            "gstin": d.get("gstin"), "matched_by": "gstin" if (gstin and d.get("gstin")) else "name",
+            "synced_at": d.get("synced_at"),
+        })
+    return out
+
+
+@api_router.get("/parties/{party_id}/tally")
+async def party_tally_balance(party_id: str, user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Authoritative Tally balance(s) for a CRM party (read-only, from the synced mirror)."""
+    party = await db.parties.find_one({"id": party_id}, {"_id": 0, "gstin": 1, "name": 1})
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+    bals = await _tally_balances_for(party.get("gstin"), party.get("name"))
+    return {"success": True, "tally_balances": bals, "matched": len(bals)}
+
+
+# Group firms → GSTIN + how to spot their Tally company + how their ledger is named in OTHER books.
+_IC_FIRMS = [
+    {"key": "MGIPL", "name": "MGIPL", "gstin": "07AATCM1213F1ZM",
+     "company_rx": r"MUSCLEGRID INDUSTRIES PRIVATE", "name_rx": r"musclegrid industries private|mgipl"},
+    {"key": "MGIG", "name": "MuscleGrid Gurgaon", "gstin": "06BCSPR2468A1ZF",
+     "company_rx": r"MuscleGrid Industries 20", "name_rx": r"musclegrid.*(gurgaon|gurugram)"},
+    {"key": "EBAY", "name": "Electronics Bay", "gstin": "07BLDPR5944R3Z5",
+     "company_rx": r"Electronics Bay", "name_rx": r"electronics bay|ebay"},
+    {"key": "SPV", "name": "SPV Industries", "gstin": "09BPRPR2164D1ZK",
+     "company_rx": r"SPV Industries", "name_rx": r"\bspv\b"},
+]
+
+
+async def _ic_firm_companies() -> dict:
+    """Resolve each group firm to its actual Tally company name (from the synced data)."""
+    companies = await db.tally_ledgers.distinct("company")
+    out = {}
+    for f in _IC_FIRMS:
+        for c in companies:
+            if re.search(f["company_rx"], c or "", re.I):
+                out[f["key"]] = c
+                break
+    return out
+
+
+async def _ic_ledger_for(company: str, other: dict) -> dict | None:
+    """In `company`'s book, the `other` firm's ledger(s) — by GSTIN or name. A firm is sometimes
+    split across several ledgers in another's book, so aggregate them all into one net position."""
+    if not company:
+        return None
+    docs = await db.tally_ledgers.find(
+        {"company": company, "$or": [{"gstin": other["gstin"]},
+         {"ledger_name": {"$regex": other["name_rx"], "$options": "i"}}]}, {"_id": 0}).to_list(50)
+    if not docs:
+        return None
+    return {
+        "ledger_name": "; ".join(sorted({d.get("ledger_name") for d in docs if d.get("ledger_name")})),
+        "parent": docs[0].get("parent"),
+        "payable": round(sum(d.get("payable", 0) or 0 for d in docs), 2),
+        "receivable": round(sum(d.get("receivable", 0) or 0 for d in docs), 2),
+        "n_ledgers": len(docs),
+    }
+
+
+# Bank accounts → group firm (from the statements' TPT narrations + founder confirmation).
+# Lets us attribute every inter-firm transfer by ACCOUNT NUMBER (reliable) — no name ambiguity.
+_IC_ACCT_FIRM = {
+    "50200066783236": "EBAY",   # Electronics Bay (Delhi) HDFC
+    "10192292486":    "EBAY",   # Electronics Bay IDFC (EBAY-Delhi pre-Mar-2026, EBAY-UP from Mar-2026)
+    "50200083582520": "MGIG",   # MuscleGrid Industries HDFC (mom's co — Delhi entity, kept on move to Gurgaon/MGIG)
+    "10192131041":    "MGIG",   # MuscleGrid Industries Gurgaon IDFC First
+    "84684684600":    "MGIPL",  # MGIPL IDFC First
+    "50200090171743": "SPV",    # SPV Industries HDFC
+    "89800008226":    "SPV",    # SPV Industries IDFC
+    "50100237418758": "SPV",    # Vivek Rathi (SPV proprietor personal a/c)
+}
+
+
+def _ic_firm_key(firm_name: str) -> str | None:
+    n = (firm_name or "").lower()
+    if "electronics bay" in n:
+        return "EBAY"
+    if "spv" in n or "vivek rathi" in n:
+        return "SPV"
+    if "private" in n or "mgipl" in n:
+        return "MGIPL"
+    if "gurgaon" in n or "gurugram" in n:
+        return "MGIG"
+    if "musclegrid" in n:   # "MuscleGrid Industries" (mom's co, incl. Delhi-GST legacy) = MGIG, not MGIPL
+        return "MGIG"
+    return None
+
+
+def _ic_counterparty(desc: str, me: str) -> str | None:
+    """Which group firm a transfer's counterparty is — account number (definitive) first, then an
+    UNAMBIGUOUS firm name. A bare 'MuscleGrid Industries' with no account/qualifier stays ambiguous."""
+    for acct, fk in _IC_ACCT_FIRM.items():          # account number wins
+        if fk != me and acct in desc:
+            return fk
+    d = desc.lower()
+    if me != "EBAY" and re.search(r"electronic\s*s?\s*bay|\bebay\b", d):
+        return "EBAY"
+    if me != "SPV" and re.search(r"\bspv\b", d):
+        return "SPV"
+    if "musclegrid" in d or "muscle grid" in d:     # ambiguous unless qualified
+        if me != "MGIG" and ("gurgaon" in d or "gurugram" in d):
+            return "MGIG"
+        if me != "MGIPL" and ("private" in d or "pvt" in d):
+            return "MGIPL"
+    return None
+
+
+async def _ic_bank_flows() -> dict:
+    """Net cash actually moved between group firms, from bank statements. Debits only (money leaving
+    a statement's firm) so each transfer is counted once."""
+    flow = {}
+    async for s in db.bank_statements.find({}, {"_id": 0, "firm_name": 1, "transactions": 1}):
+        me = _ic_firm_key(s.get("firm_name"))
+        if not me:
+            continue
+        for t in (s.get("transactions") or []):
+            try:
+                deb = float(str(t.get("debit") or 0).replace(",", ""))
+            except (ValueError, TypeError):
+                deb = 0.0
+            if deb <= 0:
+                continue
+            cp = _ic_counterparty(t.get("description") or "", me)
+            if cp:
+                flow[(me, cp)] = round(flow.get((me, cp), 0) + deb, 2)
+    return flow
+
+
+@api_router.get("/admin/tally/intercompany")
+async def tally_intercompany(user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Intercompany reconciliation: for each pair of group firms, compare what Firm A's books say
+    about Firm B against the mirror in Firm B's books, and flag where the two sides disagree.
+    'A owes B' per each book = payable_for_counterparty - receivable_for_counterparty (Cr = owe)."""
+    comp = await _ic_firm_companies()
+    bank = await _ic_bank_flows()
+    firms = {f["key"]: f for f in _IC_FIRMS}
+    pairs = []
+    keys = [f["key"] for f in _IC_FIRMS if f["key"] in comp]
+
+    def aowesb(ledger):  # from a book, signed "the counterparty is a creditor (we owe them)"
+        if not ledger:
+            return None
+        return round((ledger.get("payable", 0) or 0) - (ledger.get("receivable", 0) or 0), 2)
+
+    for i in range(len(keys)):
+        for j in range(i + 1, len(keys)):
+            A, B = keys[i], keys[j]
+            lA = await _ic_ledger_for(comp[A], firms[B])   # A's book: B's ledger
+            lB = await _ic_ledger_for(comp[B], firms[A])   # B's book: A's ledger
+            # "A owes B" from each book. In A's book: B a creditor => A owes B (+). In B's book:
+            # A a creditor => B owes A, so A owes B = -(that).
+            a_owes_b_perA = aowesb(lA)
+            a_owes_b_perB = (-aowesb(lB)) if lB is not None else None
+            if lA is None and lB is None:
+                continue
+            if a_owes_b_perA is None or a_owes_b_perB is None:
+                status, diff = "one_sided", None
+            else:
+                diff = round(a_owes_b_perA - a_owes_b_perB, 2)
+                tol = max(1000.0, 0.005 * max(abs(a_owes_b_perA), abs(a_owes_b_perB)))
+                if abs(diff) <= tol:
+                    status = "matched"
+                elif (a_owes_b_perA > 0) == (a_owes_b_perB > 0):
+                    status = "mismatch"
+                else:
+                    status = "direction_conflict"  # each book says the OTHER owes them
+            pairs.append({
+                "firm_a": firms[A]["name"], "firm_b": firms[B]["name"],
+                "a_book": {"has": lA is not None, "ledger": (lA or {}).get("ledger_name"),
+                           "group": (lA or {}).get("parent"), "a_owes_b": a_owes_b_perA},
+                "b_book": {"has": lB is not None, "ledger": (lB or {}).get("ledger_name"),
+                           "group": (lB or {}).get("parent"), "a_owes_b_mirror": a_owes_b_perB},
+                "difference": diff, "abs_diff": abs(diff) if diff is not None else None,
+                "status": status,
+                "bank": {"a_to_b": bank.get((A, B), 0.0), "b_to_a": bank.get((B, A), 0.0),
+                         "net": round(bank.get((A, B), 0.0) - bank.get((B, A), 0.0), 2)},
+            })
+    pairs.sort(key=lambda x: -(x["abs_diff"] or 0))
+    total_gap = round(sum(x["abs_diff"] or 0 for x in pairs), 2)
+    return {"success": True, "firms_synced": keys, "pairs": pairs,
+            "mismatched": sum(1 for p in pairs if p["status"] in ("mismatch", "direction_conflict")),
+            "total_gap": total_gap}
+
+
+@api_router.get("/admin/tally/mismatches")
+async def tally_mismatches(min_diff: float = 100.0, limit: int = 500,
+                           user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Reconciliation worklist: every party whose CRM balance disagrees with its Tally balance,
+    across all firms, sorted by the biggest gap. GSTIN-matched (authoritative). Read-only."""
+    # 1) Tally side: net position per GSTIN (a party can appear in several firms' books).
+    by_gstin: dict = {}
+    async for d in db.tally_ledgers.find(
+            {"gstin": {"$ne": None}, "$or": [{"payable": {"$gt": 0}}, {"receivable": {"$gt": 0}}]},
+            {"_id": 0, "gstin": 1, "ledger_name": 1, "company": 1, "payable": 1, "receivable": 1}):
+        g = (d.get("gstin") or "").strip().upper()
+        if len(g) < 15:
+            continue
+        e = by_gstin.setdefault(g, {"gstin": g, "tally_net": 0.0, "name": d.get("ledger_name"), "firms": []})
+        e["tally_net"] += (d.get("receivable", 0) or 0) - (d.get("payable", 0) or 0)
+        e["firms"].append({"company": d.get("company"),
+                           "amount": (d.get("payable") or d.get("receivable") or 0),
+                           "side": "payable" if d.get("payable", 0) > 0 else "receivable"})
+    if not by_gstin:
+        return {"success": True, "count": 0, "mismatches": []}
+    # 2) CRM side: find the matching parties in one shot, then their current balances.
+    parties = {}
+    async for p in db.parties.find({"gstin": {"$in": list(by_gstin.keys())}},
+                                   {"_id": 0, "id": 1, "name": 1, "gstin": 1, "opening_balance": 1}):
+        parties[(p.get("gstin") or "").strip().upper()] = p
+    out = []
+    for g, tinfo in by_gstin.items():
+        p = parties.get(g)
+        if not p:
+            continue  # in Tally but no CRM party — not a "mismatch", it's a gap (could list separately)
+        last = await db.party_ledger.find_one({"party_id": p["id"]}, sort=[("created_at", -1)])
+        crm_net = (last.get("running_balance") if last else p.get("opening_balance", 0)) or 0
+        diff = crm_net - tinfo["tally_net"]
+        if abs(diff) <= min_diff:
+            continue
+        out.append({
+            "party_id": p["id"], "party_name": p.get("name"), "gstin": g,
+            "crm_balance": round(crm_net, 2), "tally_balance": round(tinfo["tally_net"], 2),
+            "difference": round(diff, 2), "abs_diff": round(abs(diff), 2),
+            "firms": tinfo["firms"],
+        })
+    out.sort(key=lambda x: -x["abs_diff"])
+    total_gap = round(sum(x["abs_diff"] for x in out), 2)
+    return {"success": True, "count": len(out), "total_gap": total_gap, "mismatches": out[:min(limit, 1000)]}
+
+
+@api_router.get("/admin/dealers/{dealer_id}/tally")
+async def dealer_tally_balance(dealer_id: str, user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Authoritative Tally balance(s) for a dealer (read-only, from the synced mirror)."""
+    dealer = await db.dealers.find_one({"id": dealer_id}, {"_id": 0, "gst_number": 1, "firm_name": 1, "party_id": 1})
+    if not dealer:
+        raise HTTPException(status_code=404, detail="Dealer not found")
+    gstin = dealer.get("gst_number")
+    name = dealer.get("firm_name")
+    # If the dealer is linked to a party, use the party's GSTIN/name as a fallback too.
+    if dealer.get("party_id"):
+        p = await db.parties.find_one({"id": dealer["party_id"]}, {"_id": 0, "gstin": 1, "name": 1})
+        if p:
+            gstin = gstin or p.get("gstin")
+            name = name or p.get("name")
+    bals = await _tally_balances_for(gstin, name)
+    return {"success": True, "tally_balances": bals, "matched": len(bals)}
+
+
+async def _tally_do_sync(company: str | None, by: str) -> dict:
+    from utils import tally
+    cmp_name, ledgers = await tally.fetch_ledgers(company)
+    if cmp_name is None or not ledgers:
+        return {"ok": False, "company": cmp_name}
+    now = datetime.now(timezone.utc).isoformat()
+    for lg in ledgers:
+        await db.tally_ledgers.update_one(
+            {"company": cmp_name, "ledger_name": lg["ledger_name"]},
+            {"$set": {**lg, "company": cmp_name, "synced_at": now, "source": "tally"}}, upsert=True)
+    await db.tally_sync_log.insert_one({"id": str(uuid.uuid4()), "company": cmp_name,
+                                        "ledgers": len(ledgers), "synced_at": now, "by": by})
+    return {"ok": True, "company": cmp_name, "ledgers": ledgers, "count": len(ledgers)}
+
+
+async def scheduled_tally_sync():
+    """Best-effort nightly refresh of whatever company is loaded in Tally. Silently skips if the
+    laptop/Tally is offline or no company is loaded — never errors the scheduler."""
+    from utils import tally
+    if not tally.enabled():
+        return
+    try:
+        r = await _tally_do_sync(None, "scheduler")
+        if r["ok"]:
+            logger.info(f"[tally_sync] {r['company']}: {r['count']} ledgers")
+    except Exception as e:
+        logger.warning(f"scheduled tally sync failed: {str(e)[:120]}")
+
+
+@api_router.post("/admin/tally/sync")
+async def tally_sync(data: dict = None, user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Pull the currently-loaded (or named) Tally company's ledgers into db.tally_ledgers."""
+    from utils import tally
+    if not tally.enabled():
+        return {"success": False, "error": "Tally sync is disabled (set TALLY_SYNC_ENABLED=1)."}
+    company = (data or {}).get("company")
+    # Guard: with >1 company loaded, Tally MERGES their ledgers into one export (their data would
+    # be co-mingled under one firm). Refuse unless the caller explicitly forces it.
+    loaded = await tally.loaded_companies()
+    if len(loaded) > 1 and not (data or {}).get("force"):
+        return {"success": False, "multiple_loaded": True, "loaded_companies": loaded,
+                "error": f"{len(loaded)} companies are loaded in Tally, which would merge their "
+                         f"ledgers. Keep ONLY the one firm you want loaded (unload the others), then sync."}
+    cmp_name, ledgers = await tally.fetch_ledgers(company)
+    if cmp_name is None:
+        return {"success": False, "error": "Tally not reachable — is the laptop online (Tailscale), "
+                                           "Tally open with the data server ON (port 9000)?"}
+    if not ledgers:
+        return {"success": False, "company": cmp_name,
+                "error": "No ledgers returned — is a company loaded in Tally? (Select/Load Company)"}
+    now = datetime.now(timezone.utc).isoformat()
+    n = 0
+    for lg in ledgers:
+        await db.tally_ledgers.update_one(
+            {"company": cmp_name, "ledger_name": lg["ledger_name"]},
+            {"$set": {**lg, "company": cmp_name, "synced_at": now, "source": "tally"}}, upsert=True)
+        n += 1
+    await db.tally_sync_log.insert_one({"id": str(uuid.uuid4()), "company": cmp_name,
+                                        "ledgers": n, "synced_at": now, "by": user.get("email")})
+    payable = sum(lg["payable"] for lg in ledgers)
+    receivable = sum(lg["receivable"] for lg in ledgers)
+    return {"success": True, "company": cmp_name, "ledgers_synced": n, "synced_at": now,
+            "total_payable": round(payable, 2), "total_receivable": round(receivable, 2),
+            "message": f"Synced {n} ledgers from Tally company '{cmp_name}' (read-only)."}
+
+
+@api_router.get("/admin/tally/ledgers")
+async def tally_ledgers_view(company: str = None, search: str = None, group: str = None,
+                             limit: int = 300, user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """View mirrored Tally ledgers/balances (does not hit Tally — reads db.tally_ledgers)."""
+    q = {}
+    if company:
+        q["company"] = company
+    if group:
+        q["parent"] = {"$regex": re.escape(group), "$options": "i"}
+    if search:
+        q["ledger_name"] = {"$regex": re.escape(search), "$options": "i"}
+    rows = await db.tally_ledgers.find(q, {"_id": 0}).sort("closing_balance", 1).limit(min(limit, 1000)).to_list(min(limit, 1000))
+    return {"success": True, "count": len(rows), "ledgers": rows}
+
+
+@api_router.get("/admin/tally/summary")
+async def tally_summary(company: str = None, user: dict = Depends(require_roles(["admin", "accountant"]))):
+    """Per-company rollup + how many Tally parties match an existing CRM party (by GSTIN/name)."""
+    q = {"company": company} if company else {}
+    rows = await db.tally_ledgers.find(q, {"_id": 0}).to_list(5000)
+    companies = {}
+    for r in rows:
+        c = companies.setdefault(r["company"], {"company": r["company"], "ledgers": 0,
+                                                "total_payable": 0.0, "total_receivable": 0.0,
+                                                "matched_crm_parties": 0, "last_synced": None})
+        c["ledgers"] += 1
+        c["total_payable"] += r.get("payable", 0)
+        c["total_receivable"] += r.get("receivable", 0)
+        c["last_synced"] = r.get("synced_at") or c["last_synced"]
+    # cheap CRM-match count by GSTIN (authoritative) for parties with a balance
+    for r in rows:
+        if (r.get("payable") or r.get("receivable")) and r.get("gstin"):
+            if await db.parties.find_one({"gstin": r["gstin"]}, {"_id": 1}):
+                companies[r["company"]]["matched_crm_parties"] += 1
+    for c in companies.values():
+        c["total_payable"] = round(c["total_payable"], 2)
+        c["total_receivable"] = round(c["total_receivable"], 2)
+    return {"success": True, "companies": list(companies.values())}
 
 
 @api_router.post("/leads/manual")
@@ -86553,12 +90115,18 @@ async def kommo_webhook(request: Request):
         lead = await db.leads.find_one({"phone": phone}, {"_id": 0, "id": 1})
         if lead:
             rec["lead_id"] = lead.get("id")
-    await db.kommo_webhook_log.insert_one(rec)
-
-    # If this payload is a chat message, store it as a structured, readable record
-    # in db.kommo_messages (the raw log is kept for debugging unrecognized shapes).
+    # Extract a chat message if present (needed both to store it and to decide whether the raw
+    # payload is worth keeping).
     stored_msg = False
     msg = _kommo_extract_message(body)
+    # Don't bloat the debug log with Kommo's native lead/contact event firehose (leads[add]…,
+    # thousands of them) — those carry no message text. Keep only message-bearing or genuinely
+    # unrecognized payloads for debugging.
+    _native_event = isinstance(body, dict) and any(
+        str(k).startswith(("leads[", "contacts[", "companies[", "customers[", "catalogs[", "account["))
+        for k in body)
+    if msg or not _native_event or os.environ.get("KOMMO_DEBUG_LOG_ALL") == "1":
+        await db.kommo_webhook_log.insert_one(rec)
     if msg:
         msg_phone = msg.get("phone") or phone
         digits = _re.sub(r"\D", "", str(msg_phone))[-10:] if msg_phone else None
@@ -86753,6 +90321,28 @@ async def _wa_customer_info(digits: str) -> dict:
             {"invoice_number": {"$nin": [None, "", "None"]}}, {"invoice_file": {"$nin": [None, ""]}},
             {"service_invoice": {"$nin": [None, ""]}}]}, {"_id": 1}))
     info["has_invoice"] = has_inv
+    # Repeat-reporter signal: how many past tickets, and whether the customer is on the return-abuse
+    # watchlist (serial refund/return abusers). High counts → help thoroughly but do NOT offer a free
+    # replacement/refund; escalate money decisions to the team.
+    try:
+        tkt_count = await db.tickets.count_documents({"customer_phone": rgx})
+        watch = await db.return_abuse_watchlist.find_one(
+            {"phone": rgx}, {"_id": 0, "refund_count": 1, "unreturned_count": 1, "risk_score": 1})
+        flags = []
+        if tkt_count >= 3:
+            flags.append(f"{tkt_count} past support tickets")
+        if watch:
+            rc = watch.get("refund_count") or 0
+            un = watch.get("unreturned_count") or 0
+            flags.append("on return-abuse watchlist (" + str(rc) + " refunds" +
+                         (", " + str(un) + " not returned" if un else "") + ")")
+        info["repeat_reporter"] = bool(flags)
+        if flags:
+            info["repeat_reporter_note"] = ("REPEAT REPORTER — " + "; ".join(flags) +
+                ". Help thoroughly and diagnose properly, but do NOT offer or promise a free replacement "
+                "or refund; escalate any money/replacement decision to the team.")
+    except Exception:
+        pass
     return info
 
 
@@ -87420,16 +91010,23 @@ async def _wa_capture_support_ticket(digits: str, text: str, name: str = ""):
             return
         tn = await generate_ticket_number()
         dev = _wa_device_type(t)
+        # Auto-assign an owner (least-loaded call_support agent) — same as normal tickets. Without this,
+        # WhatsApp safety-net tickets were born ownerless and silently breached SLA.
+        assignee_id, assignee_name = await _auto_assign_agent("call_support")
+        hist = [{"action": "Ticket opened from WhatsApp (auto safety-net)", "detail": t[:400],
+                 "by": "WhatsApp", "at": now}]
+        if assignee_id:
+            hist.append({"action": f"Auto-assigned to {assignee_name}", "by": "System", "at": now})
         ticket = {
             "id": str(uuid.uuid4()), "ticket_number": tn,
             "customer_name": name or "", "customer_phone": ph,
             "device_type": dev, "support_type": "hardware" if dev != "Others" else "general",
             "issue_description": t[:1000], "status": "new_request",
             "source": "whatsapp", "channel": "whatsapp",
+            "assigned_to": assignee_id, "assigned_to_name": assignee_name, "auto_assigned": bool(assignee_id),
             "created_by": None, "created_at": now, "updated_at": now,
             "sla_due": (now_dt + timedelta(hours=24)).isoformat(),
-            "history": [{"action": "Ticket opened from WhatsApp (auto safety-net)", "detail": t[:400],
-                         "by": "WhatsApp", "at": now}],
+            "history": hist,
         }
         await db.tickets.insert_one(ticket)
         await db.whatsapp_ticket_audit.insert_one({
@@ -87552,6 +91149,26 @@ def _wa_support_executor(digits: str, name: str):
 async def _wa_build_situation(digits: str, name: str) -> str:
     info = await _wa_customer_info(digits)
     parts = [f"Customer phone: {digits}" + (f", name: {name}" if name else " (name unknown)")]
+    # Cross-channel continuity: if this customer was JUST on a voice call (Ria/Omnidim) and was moved to
+    # WhatsApp, pick up that same conversation — don't restart. The call context is the source of truth.
+    _sess_cutoff = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    sess = await db.cross_channel_sessions.find_one(
+        {"phone": digits, "active": True, "created_at": {"$gte": _sess_cutoff}}, sort=[("created_at", -1)])
+    if sess:
+        ctx = []
+        if sess.get("product"):
+            ctx.append(f"product: {sess['product']}")
+        if sess.get("serial"):
+            ctx.append(f"serial: {sess['serial']}")
+        if sess.get("issue"):
+            ctx.append(f"issue: {sess['issue']}")
+        parts.append(
+            "CONTINUATION OF A VOICE CALL: This customer just spoke to our voice agent and was asked to move "
+            "to WhatsApp to continue. Do NOT start over or re-ask what was already covered. On the call: "
+            + (sess.get("call_summary") or "(no summary)")
+            + (f" [{'; '.join(ctx)}]" if ctx else "")
+            + ". Continue helping from here — if a photo of the unit/setup would help diagnose, ask for it now.")
+        # keep the session for a short window so a follow-up photo still lands in-context; close after ~2h.
     if info.get("warranty"):
         parts.append(f"Warranty: {json.dumps(info['warranty'], default=str)}")
     if info.get("recent_ticket"):
@@ -87580,6 +91197,37 @@ async def _wa_build_situation(digits: str, name: str) -> str:
             else:
                 parts.append("STATE: Manager APPROVED a REPAIR. If you don't yet have the pickup address, ask for it "
                              "(with pincode) + a contact number; once you have it, call arrange_pickup.")
+    # Repeat-reporter flag — always surface it so the agent helps but doesn't over-give free things.
+    if info.get("repeat_reporter_note"):
+        parts.append(info["repeat_reporter_note"])
+    # AUTO-GROUND: pull the manual/KB answer for the customer's LATEST message and inject it, so the agent
+    # never says "I don't know" a fault code that IS in our manuals (don't rely on it choosing to call a tool).
+    try:
+        last_in = await db.whatsapp_cloud_messages.find_one(
+            {"phone": digits, "direction": "incoming"}, {"_id": 0, "text": 1}, sort=[("received_at", -1)])
+        mt = (last_in or {}).get("text") or ""
+        if mt and re.search(r"\b(fault|error|err|alarm|code|trip|voltage|charg|display|beep|dead|kharab|band|"
+                            r"nahi\s*chal|problem|issue|setting|warranty|series|inverter|battery|stabiliz)\b|\b\d{1,3}\b",
+                            mt, re.I):
+            # Series from the CURRENT message wins over the stale ticket (customer may ask about a different product).
+            _ml = mt.lower()
+            _msg_series = None
+            for _s, _kw in (("titan", ("titan",)), ("focus", ("focus", "mg6500")),
+                            ("heavy_duty", ("heavy duty", "heavy-duty", "heavyduty")),
+                            ("lithium", ("lifepo", "lithium", "51.2v", "48v", "battery pack"))):
+                if any(k in _ml for k in _kw):
+                    _msg_series = _s
+                    break
+            kb = await _wa_tool_search_knowledge(mt, _msg_series or info.get("series") or "")
+            arts = (kb.get("kb") or [])[:3]
+            if arts:
+                grounded = "\n".join(
+                    f"- {a.get('title') or a.get('question')}: {(a.get('content') or a.get('answer') or '')[:320]}"
+                    for a in arts)
+                parts.append("RELEVANT MANUAL / KB for what the customer just asked — GROUND your reply in this. "
+                             "Do NOT say you don't know if the answer is here:\n" + grounded)
+    except Exception:
+        pass
     return "\n".join(parts)
 
 
@@ -87626,6 +91274,16 @@ async def _wa_agent_respond(digits: str, contact_name: str = "", manager_note: s
         if not conv:
             return
         situation = await _wa_build_situation(digits, name)
+        # Inject the decision-playbook judgment (same rules as the voice brain) for THIS customer's latest
+        # message — so WhatsApp chat answers with the learned rules too (PCB-first, never-promise-refund…).
+        try:
+            _last_user = next((m.get("content", "") for m in reversed(conv) if m.get("role") == "user"), "")
+            _dealer = bool(await db.dealers.find_one({"phone": {"$regex": re.escape(digits) + "$"}}, {"_id": 1}))
+            _pg = await _playbook_guidance(str(_last_user), is_dealer=_dealer)
+            if _pg:
+                situation = (situation or "") + "\n\n" + _pg
+        except Exception as _e:
+            logger.warning(f"chat playbook guidance failed: {_e}")
         # Router: keep the expensive Opus brain for the turns that need it — a photo to read (vision),
         # a manager re-invoke (escalation), or a message triage flags as a real problem. Everything else
         # (greetings, acks, status, address capture) runs on cheap Haiku. Same agent, same tools — just the brain.
@@ -88383,6 +92041,15 @@ async def _wa_resolve_firm(bill_to_gstin: str | None):
     return None
 
 
+def _wa_spec_set(text: str) -> set:
+    """Rating specs that DISTINGUISH otherwise-similar products: KVA / kW / Ah / VA.
+    '5 KVA 50-280V' -> {'5kva'}. Voltage ranges are ignored (not a product identity)."""
+    out = set()
+    for num, unit in re.findall(r"(\d+(?:\.\d+)?)\s*(kva|kwh|kw|ah|va)\b", (text or "").lower()):
+        out.add(f"{float(num):g}{unit}")
+    return out
+
+
 async def _wa_match_item(desc: str, hsn: str | None):
     """Fuzzy-match an invoice line to an existing raw_material / master_sku. Returns
     (item_type, item_id, name) or (None, None, None). Word-overlap scoring — conservative:
@@ -88390,10 +92057,16 @@ async def _wa_match_item(desc: str, hsn: str | None):
     words = [w for w in re.findall(r"[a-zA-Z0-9]{3,}", (desc or "").lower())]
     if not words:
         return (None, None, None)
+    # Founder rule (2026-07-18): a stabilizer invoice line marked "AL"/"Aluminium" is an ALUMINIUM-
+    # winding unit = a MuscleGrid model. "Misterwatt" is our 100% COPPER series, so an AL line can
+    # NEVER be a Misterwatt SKU. Exclude Misterwatt candidates when the line says aluminium.
+    is_aluminium = bool(re.search(r"\b(al|alu|aluminium|aluminum)\b", (desc or ""), re.I))
     best = None  # (word_score, hsn_bonus, itype, id, name)
     for coll, itype in (("master_skus", "master_sku"), ("raw_materials", "raw_material")):
         async for it in db[coll].find({}, {"_id": 0, "id": 1, "name": 1, "sku_code": 1, "hsn_code": 1}):
             name = (it.get("name") or "").lower()
+            if is_aluminium and "misterwatt" in name:
+                continue
             sku = (it.get("sku_code") or "").lower()
             word_score = sum(1 for w in words if w in name or w in sku)
             sku_exact = bool(sku and sku in [w for w in words])
@@ -88407,6 +92080,13 @@ async def _wa_match_item(desc: str, hsn: str | None):
     # HSN). When unsure we return no match → the line is flagged ⚠️ and routed to the
     # accountant rather than risk auto-booking the wrong item.
     if best and best[0] >= 2:
+        # Rating guard: if the invoice line names a KVA/kW/Ah rating that the matched SKU
+        # does NOT carry, it's a wrong-rating fuzzy hit (e.g. '5 KVA' matched to a 4kVA SKU) —
+        # reject it so the line is flagged ⚠️ and routed to the accountant instead of being
+        # auto-booked to the wrong product. (This is exactly the BLUESUN 2026-07-18 mis-book.)
+        dspec = _wa_spec_set(desc)
+        if dspec and not dspec.issubset(_wa_spec_set(best[4])):
+            return (None, None, None)
         return (best[2], best[3], best[4])
     return (None, None, None)
 
@@ -88437,7 +92117,7 @@ async def _wa_purchase_capture(digits: str):
         lines.append({**it, "item_type": itype, "item_id": iid, "matched_name": mname})
 
     clean = bool(firm and data.get("invoice_number") and data.get("items") and all_matched
-                 and data.get("grand_total"))
+                 and data.get("grand_total") and (data.get("confidence") or "").lower() != "low")
     pending = {
         "doc_ref": True, "data": data, "lines": lines,
         "firm_id": firm.get("id") if firm else None, "firm_name": firm.get("name") if firm else None,
@@ -88809,6 +92489,8 @@ async def _maybe_missed_call_opener(digits: str, customer_text: str = "", contac
               "battery/stabilizer brand). The customer gave us a missed call and has now replied on WhatsApp. "
               "Write ONE short friendly opener (1-2 sentences, Hinglish, at most one emoji). Apologise for "
               "missing their call and ask how you can help. Do NOT invent order details, prices, or promises. "
+              "TONE (mandatory): address the customer as 'Sir' or 'Ma'am'; NEVER use 'bhai'/'yaar'/'bro' or slang; "
+              "you are FEMALE so use feminine verb forms ('kar rahi hoon', NOT 'kar raha hoon'). "
               "Output ONLY the message text, nothing else.")
     prompt = (f"Customer's name: {name or 'unknown'}\n"
               f"Customer's WhatsApp message: \"{(customer_text or '').strip()[:300]}\"\n\n"
@@ -88910,7 +92592,7 @@ async def _pratibha_wa_autoreply(phone: str, text: str, contact_name: str = ""):
     await _wa_agent_respond(digits, contact_name)
 
 
-async def _pratibha_raise_repair_decision(customer_phone: str, customer_name: str = "", product: str = "", ticket_number: str = "", _gated: bool = False, prefix_note: str = ""):
+async def _pratibha_raise_repair_decision(customer_phone: str, customer_name: str = "", product: str = "", ticket_number: str = "", _gated: bool = False, prefix_note: str = "", founder_only: bool = False):
     """Gate 1: ask the internal WhatsApp group whether to repair / replace / ask Angad.
     Single-in-flight PER CUSTOMER (no spam) — if a decision is already open for this
     customer, do nothing. Sends ONE message to the main group, then waits for a reply."""
@@ -88942,8 +92624,9 @@ async def _pratibha_raise_repair_decision(customer_phone: str, customer_name: st
     # During business hours → ask the GROUP. Off-hours → DM the founder directly so we
     # don't ping the whole group at night (the reply handler accepts DM replies too).
     off_hours = _pratibha_wa_quiet_now()
-    target = _pr_founder_wa_target() if off_hours else await _pr_wa_target(_pr_founder_wa_target())
-    asked_via = "founder_dm" if off_hours else "group"
+    dm_only = founder_only or off_hours          # voice-agent asks the founder DM only (no team-group spam)
+    target = _pr_founder_wa_target() if dm_only else await _pr_wa_target(_pr_founder_wa_target())
+    asked_via = "founder_dm" if dm_only else "group"
     # Resilient send: the bridge can briefly be unreachable. Retry, and if it still
     # fails, DON'T leave a silent dead-end — alert staff in-app so the escalation isn't lost.
     res = None
@@ -89725,7 +93408,8 @@ async def whatsapp_cloud_webhook(request: Request):
                 doc = {
                     "id": str(uuid.uuid4()), "direction": "incoming", "wa_from": wa_from,
                     "phone": digits, "contact_name": names.get(wa_from), "text": text,
-                    "msg_type": mtype, "media_id": media_id, "wamid": m.get("id"), "ts": m.get("timestamp") or now,
+                    "msg_type": mtype, "media_id": media_id, "media_mime": media_mime,
+                    "wamid": m.get("id"), "ts": m.get("timestamp") or now,
                     "received_at": now, "source": "whatsapp_cloud",
                 }
                 if digits:
@@ -89743,17 +93427,34 @@ async def whatsapp_cloud_webhook(request: Request):
                     # Real Claude reply (guardrailed) — fire async so we still 200 fast.
                     import asyncio
                     if text and mtype in ("text", "button", "interactive"):
+                        # Founder approving a voice-call decision? Handle it and DON'T also run the customer autoreply.
+                        handled_decision = False
+                        try:
+                            handled_decision = await _voice_decision_cloud_reply(wa_from, text)
+                        except Exception as e:
+                            logger.warning(f"voice decision cloud reply failed: {e}")
+                        if handled_decision:
+                            continue
                         asyncio.create_task(_pratibha_wa_autoreply(digits, text, names.get(wa_from)))
                         # Deterministic sales/dealer lead safety-net + audit (runs regardless of autoreply gate).
                         asyncio.create_task(_wa_capture_lead_intent(digits, text, names.get(wa_from)))
                         # Deterministic SUPPORT-ticket safety-net + audit (so support chats become trackable tickets).
                         asyncio.create_task(_wa_capture_support_ticket(digits, text, names.get(wa_from)))
+                        # Red-flag detector → founder's Critical Decisions queue (legal/review/ultimatum/refund).
+                        asyncio.create_task(_wa_detect_critical_decision(digits, text, names.get(wa_from)))
                     elif mtype in ("image", "document", "video", "audio", "voice", "sticker") and media_id:
                         asyncio.create_task(_wa_handle_media(digits, names.get(wa_from), media_id, media_mime or "", mtype))
             for s in (val.get("statuses") or []):
+                _supd = {"status": s.get("status"), "status_at": s.get("timestamp") or now}
+                _errs = s.get("errors") or []
+                if _errs:
+                    _e0 = _errs[0] or {}
+                    _supd["status_error"] = (_e0.get("title") or _e0.get("message")
+                                             or (_e0.get("error_data") or {}).get("details")
+                                             or str(_e0))[:300]
+                    _supd["status_error_code"] = _e0.get("code")
                 await db.whatsapp_cloud_messages.update_one(
-                    {"wamid": s.get("id")},
-                    {"$set": {"status": s.get("status"), "status_at": s.get("timestamp") or now}},
+                    {"wamid": s.get("id")}, {"$set": _supd},
                 )
     return {"ok": True, "stored": stored}
 
@@ -91253,13 +94954,35 @@ def _pratibha_wa_quiet_now() -> bool:
         return False
 
 
-async def send_whatsapp_message(to: str, message: str, force: bool = False):
-    """Send a WhatsApp message via the bridge.
+def _wa_to_msisdn(to: str):
+    """Map a legacy bridge target (phone / @c.us / @lid / @g.us) to a Cloud-API MSISDN (91XXXXXXXXXX),
+    or None if it can't be sent via Cloud (group, or an @lid we can't resolve to a phone)."""
+    if not to:
+        return None
+    s = str(to)
+    if s.endswith("@g.us"):          # Cloud API has no group send
+        return None
+    if "@lid" in s:                  # only the founder's @lid is mappable (to his phone)
+        lid = re.sub(r"\D", "", s.split("@")[0])
+        fl = re.sub(r"\D", "", os.environ.get("PRATIBHA_FOUNDER_WA_TARGET", "33165771059423@lid").split("@")[0])
+        return _founder_wa_numbers()[0] if lid == fl else None
+    digits = re.sub(r"\D", "", s.split("@")[0])
+    if len(digits) == 10:
+        return "91" + digits
+    if len(digits) >= 11:
+        return digits
+    return None
 
-    Pratibha's PROACTIVE messages are held outside India business hours (IST) and auto-flushed at
-    the start of the next business day, so she doesn't ping the team at night / on Sunday. Pass
-    force=True for transactional or interactive sends that must go regardless of the hour —
-    customer-facing messages, admin manual sends, replies, and the morning flush itself."""
+
+async def send_whatsapp_message(to: str, message: str, force: bool = False):
+    """Send a WhatsApp message. The old puppeteer bridge send is retired (whatsapp-web.js 1.34.7 can no
+    longer send with current WA Web) — this now goes through the official WhatsApp Cloud API. Set
+    WA_USE_BRIDGE=1 to fall back to the legacy bridge.
+
+    Pratibha's PROACTIVE messages are held outside India business hours (IST) and auto-flushed next
+    business morning. Pass force=True for transactional/interactive sends (customer replies, admin sends).
+    NOTE: Cloud free-form only delivers inside the 24h customer window; group sends aren't possible on
+    Cloud, so a group target is redirected to the founder DM."""
     if not force and _pratibha_wa_quiet_now():
         try:
             import hashlib
@@ -91275,17 +94998,47 @@ async def send_whatsapp_message(to: str, message: str, force: bool = False):
             return {"held": True, "queued": True}
         except Exception as e:
             logger.error(f"WA outbox queue failed, sending anyway: {e}")
-    import httpx
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{WHATSAPP_BRIDGE_URL}/send",
-                json={"to": to, "message": message}
-            )
-            return response.json()
-    except Exception as e:
-        logger.error(f"WhatsApp send error: {e}")
-        return {"error": str(e)}
+    # Legacy bridge (opt-in only; retired by default because its send path is broken).
+    if os.environ.get("WA_USE_BRIDGE", "0") in ("1", "true", "yes", "on"):
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                r = await client.post(f"{WHATSAPP_BRIDGE_URL}/send", json={"to": to, "message": message})
+                return r.json()
+        except Exception as e:
+            logger.error(f"WhatsApp bridge send error: {e}")
+            return {"error": str(e)}
+    # Cloud API path.
+    if not whatsapp_cloud.enabled():
+        return {"error": "whatsapp cloud not configured"}
+    msisdn = _wa_to_msisdn(to)
+    if not msisdn:
+        if str(to).endswith("@g.us"):     # group → can't; redirect to founder so nothing is silently lost
+            r = await whatsapp_cloud.send_text(
+                _founder_wa_numbers()[0], "👥 _(group update — group-send unavailable, sent to you)_\n\n" + message)
+            ok = isinstance(r, dict) and r.get("ok")
+            return {"success": ok, "ok": ok, "redirected_to_founder": True,
+                    "error": None if ok else str(r.get("response"))[:200]}
+        logger.warning(f"WA cloud send: cannot map target {to!r} to a phone number")
+        return {"error": f"unsendable target {to}"}
+    r = await whatsapp_cloud.send_text(msisdn, message)
+    ok = isinstance(r, dict) and r.get("ok")
+    if not ok:
+        logger.warning(f"WA cloud send to {msisdn} failed: {str(r)[:200]}")
+    wamid = (r or {}).get("wamid")
+    # Log the outbound in the conversation table so it shows up in get_whatsapp_conversation
+    # (agent reply paths store their own rows via send_text directly; this covers raw/MCP sends).
+    if ok and wamid:
+        try:
+            _now = datetime.now(timezone.utc).isoformat()
+            await db.whatsapp_cloud_messages.insert_one({
+                "id": str(uuid.uuid4()), "direction": "outgoing", "phone": re.sub(r"\D", "", str(to))[-10:],
+                "text": message, "msg_type": "text", "wamid": wamid, "ts": _now, "received_at": _now,
+                "source": "whatsapp_cloud", "kind": "api_send"})
+        except Exception as _e:
+            logger.warning(f"WA outbound store failed: {_e}")
+    return {"success": ok, "ok": ok, "message_id": wamid,
+            "error": None if ok else str((r or {}).get("response"))[:200]}
 
 
 async def scheduled_wa_outbox_flush():
@@ -91315,22 +95068,49 @@ async def scheduled_wa_outbox_flush():
 
 
 async def send_whatsapp_media(to: str, caption: str, attachment: dict):
-    """Send a WhatsApp message with a file (e.g. a label PDF) via the bridge. `attachment` is
-    {filename, content(base64), media_type} as returned by _pratibha_fetch_label."""
-    import httpx
-    to = to if "@" in (to or "") else f"{re.sub(r'[^0-9]', '', to or '')}@c.us"
+    """Send a WhatsApp message with a file (e.g. a label / invoice PDF). Cloud API by default (bridge
+    retired); set WA_USE_BRIDGE=1 for the legacy bridge. `attachment` is {filename, content(base64),
+    media_type} as returned by _pratibha_fetch_label."""
+    if os.environ.get("WA_USE_BRIDGE", "0") in ("1", "true", "yes", "on"):
+        import httpx
+        legacy_to = to if "@" in (to or "") else f"{re.sub(r'[^0-9]', '', to or '')}@c.us"
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{WHATSAPP_BRIDGE_URL}/send",
+                    json={"to": legacy_to, "message": caption,
+                          "media": {"mimetype": attachment.get("media_type", "application/pdf"),
+                                    "data": attachment.get("content"),
+                                    "filename": attachment.get("filename", "label.pdf")}})
+                return response.json()
+        except Exception as e:
+            logger.error(f"WhatsApp media bridge send error: {e}")
+            return {"error": str(e)}
+    if not whatsapp_cloud.enabled():
+        return {"error": "whatsapp cloud not configured"}
+    msisdn = _wa_to_msisdn(to)
+    if not msisdn:
+        if str(to).endswith("@g.us"):     # group doc → redirect to founder
+            msisdn = _founder_wa_numbers()[0]
+            caption = "👥 _(group doc — sent to you)_\n" + (caption or "")
+        else:
+            return {"error": f"unsendable target {to}"}
+    import base64
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                f"{WHATSAPP_BRIDGE_URL}/send",
-                json={"to": to, "message": caption,
-                      "media": {"mimetype": attachment.get("media_type", "application/pdf"),
-                                "data": attachment.get("content"),
-                                "filename": attachment.get("filename", "label.pdf")}})
-            return response.json()
-    except Exception as e:
-        logger.error(f"WhatsApp media send error: {e}")
-        return {"error": str(e)}
+        fb = base64.b64decode(attachment.get("content") or "")
+    except Exception:
+        fb = b""
+    if not fb:                            # no file bytes → at least deliver the caption
+        r = await whatsapp_cloud.send_text(msisdn, caption or "")
+        ok = isinstance(r, dict) and r.get("ok")
+        return {"success": ok, "ok": ok, "error": None if ok else str(r)[:200]}
+    r = await whatsapp_cloud.send_document(msisdn, fb, attachment.get("filename", "document.pdf"),
+                                           attachment.get("media_type", "application/pdf"), caption=caption or "")
+    ok = isinstance(r, dict) and r.get("ok")
+    if not ok:
+        logger.warning(f"WA cloud media send to {msisdn} failed: {str(r)[:200]}")
+    return {"success": ok, "ok": ok, "message_id": (r or {}).get("wamid"),
+            "error": None if ok else str((r or {}).get("response"))[:200]}
 
 
 @api_router.get("/whatsapp/status")
@@ -92287,6 +96067,210 @@ async def whatsapp_send(
 
     result = await send_whatsapp_message(to, message, force=True)  # explicit admin action — send now
     return {"success": "error" not in result, **result}
+
+
+@api_router.post("/whatsapp/send-template")
+async def whatsapp_send_template(data: dict, user: dict = Depends(require_roles(["admin"]))):
+    """Send an APPROVED WhatsApp template — the ONLY way to message a customer OUTSIDE the 24h window
+    (cold first-touch). `params` fills the {{1}},{{2}} body variables in order."""
+    to = data.get("to")
+    template = data.get("template")
+    params = data.get("params") or []
+    if not to or not template:
+        return {"success": False, "error": "Missing 'to' or 'template'"}
+    # ── Anti-ban throttle for COLD outreach (templates) ──────────────────────────
+    # Cold template blasts from the support number are what get a WhatsApp number
+    # spam-banned. Cap per-hour volume + enforce a minimum gap between sends. This
+    # does NOT touch customer-support replies (those are free-form, in-window).
+    _now_dt = datetime.now(timezone.utc)
+    _max_ph = int(os.environ.get("WA_OUTREACH_MAX_PER_HOUR", "30"))
+    _min_gap = int(os.environ.get("WA_OUTREACH_MIN_GAP_SEC", "30"))
+    _hour_ago = (_now_dt - timedelta(hours=1)).isoformat()
+    _recent = await db.whatsapp_cloud_messages.count_documents(
+        {"direction": "outgoing", "kind": "api_template", "received_at": {"$gte": _hour_ago}})
+    if _recent >= _max_ph:
+        return {"success": False, "rate_limited": True,
+                "error": f"Hourly outreach cap reached ({_recent}/{_max_ph} in the last hour). "
+                         f"Wait before sending more — this protects the WhatsApp number from a spam ban.",
+                "retry_after_min": 60}
+    _last = await db.whatsapp_cloud_messages.find_one(
+        {"direction": "outgoing", "kind": "api_template"}, sort=[("received_at", -1)])
+    if _last and _last.get("received_at"):
+        try:
+            _gap = (_now_dt - datetime.fromisoformat(_last["received_at"])).total_seconds()
+            if _gap < _min_gap:
+                return {"success": False, "rate_limited": True,
+                        "error": f"Sending too fast — space outreach out. Wait {int(_min_gap - _gap)}s "
+                                 f"and retry (anti-ban throttle).",
+                        "retry_after_sec": int(_min_gap - _gap)}
+        except (ValueError, TypeError):
+            pass
+    comps = ([{"type": "body", "parameters": [{"type": "text", "text": str(p)} for p in params]}]
+             if params else None)
+    res = await whatsapp_cloud.send_template(to, template=template, components=comps)
+    ok = bool(res.get("wamid")) if isinstance(res, dict) else False
+    if ok:
+        try:
+            _now = datetime.now(timezone.utc).isoformat()
+            await db.whatsapp_cloud_messages.insert_one({
+                "id": str(uuid.uuid4()), "direction": "outgoing", "phone": re.sub(r"\D", "", str(to))[-10:],
+                "text": f"[template: {template}] " + " | ".join(str(p) for p in params), "msg_type": "template",
+                "template": template, "wamid": res.get("wamid"), "ts": _now, "received_at": _now,
+                "source": "whatsapp_cloud", "kind": "api_template"})
+        except Exception as _e:
+            logger.warning(f"WA template store failed: {_e}")
+    return {"success": ok, **(res if isinstance(res, dict) else {"result": res})}
+
+
+# ── WhatsApp live-chat read/handle API (used by MCP + external support agents) ──────────────
+def _wa_msg_public(d: dict) -> dict:
+    """Normalize a whatsapp_cloud_messages doc for the agent conversation API (stable field names)."""
+    incoming = d.get("direction") == "incoming"
+    mtype = d.get("msg_type")
+    out = {
+        "message_id": d.get("wamid") or d.get("id"),
+        "internal_id": d.get("id"),
+        "direction": "inbound" if incoming else "outbound",
+        "phone": d.get("phone"),
+        "text": d.get("text") or "",
+        "media_type": (mtype if mtype not in (None, "text") else None),
+        "media_mime": d.get("media_mime"),
+        "timestamp": d.get("received_at") or d.get("ts"),
+        "status": d.get("status") or ("received" if incoming else "sent"),
+        "status_at": d.get("status_at"),
+        "read_by_agent": bool(d.get("agent_read")),
+        "kind": d.get("kind"),
+        "brain": d.get("brain"),
+        "contact_name": d.get("contact_name"),
+    }
+    if d.get("media_id"):
+        out["media"] = {"media_id": d.get("media_id"), "mime": d.get("media_mime"),
+                        "type": mtype, "fetch_with": "get_whatsapp_media(media_id_or_url=<media_id>)"}
+    else:
+        out["media"] = None
+    if d.get("status_error"):
+        out["error"] = d.get("status_error")
+    return out
+
+
+@api_router.get("/whatsapp/conversation")
+async def whatsapp_get_conversation(phone: str, limit: int = 50,
+                                    user: dict = Depends(require_roles(["admin"]))):
+    """Recent inbound/outbound messages for one customer, ordered OLDEST → NEWEST."""
+    digits = re.sub(r"\D", "", phone or "")[-10:]
+    if len(digits) < 10:
+        return {"success": False, "error": "invalid phone", "messages": []}
+    limit = max(1, min(int(limit or 50), 200))
+    docs = await db.whatsapp_cloud_messages.find(
+        {"phone": digits}, {"_id": 0}).sort("received_at", -1).limit(limit).to_list(limit)
+    docs.reverse()  # oldest → newest
+    return {"success": True, "phone": digits, "count": len(docs),
+            "messages": [_wa_msg_public(d) for d in docs]}
+
+
+@api_router.get("/whatsapp/unread")
+async def whatsapp_get_unread(phone: str = None, limit: int = 50,
+                              user: dict = Depends(require_roles(["admin"]))):
+    """Inbound customer messages still awaiting an agent reply — i.e. arrived after our last
+    outbound to that number AND not yet marked read via mark_whatsapp_messages_read.
+    Scoped to the last 30 days so the whole history isn't dredged up."""
+    limit = max(1, min(int(limit or 50), 200))
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    match = {"received_at": {"$gte": cutoff}}
+    if phone:
+        match["phone"] = re.sub(r"\D", "", phone)[-10:]
+    docs = await db.whatsapp_cloud_messages.find(match, {"_id": 0}).sort("received_at", 1).to_list(5000)
+    by_phone = {}
+    for d in docs:
+        by_phone.setdefault(d.get("phone"), []).append(d)
+    unread = []
+    for ph, msgs in by_phone.items():
+        last_out = ""
+        for m in msgs:
+            if m.get("direction") == "outgoing":
+                last_out = m.get("received_at") or last_out
+        for m in msgs:
+            if m.get("direction") != "incoming" or m.get("agent_read"):
+                continue
+            if last_out and (m.get("received_at") or "") <= last_out:
+                continue  # already answered
+            unread.append(m)
+    unread.sort(key=lambda x: x.get("received_at") or "")
+    unread = unread[-limit:]
+    return {"success": True, "count": len(unread),
+            "messages": [_wa_msg_public(d) for d in unread]}
+
+
+@api_router.post("/whatsapp/mark-read")
+async def whatsapp_mark_read(data: dict, user: dict = Depends(require_roles(["admin"]))):
+    """Mark inbound messages as handled/read by the agent (by wamid or internal id)."""
+    ids = data.get("message_ids") or []
+    if isinstance(ids, str):
+        ids = [ids]
+    ids = [str(x) for x in ids if x]
+    if not ids:
+        return {"success": False, "error": "no message_ids", "modified": 0}
+    now = datetime.now(timezone.utc).isoformat()
+    res = await db.whatsapp_cloud_messages.update_many(
+        {"direction": "incoming", "$or": [{"wamid": {"$in": ids}}, {"id": {"$in": ids}}]},
+        {"$set": {"agent_read": True, "agent_read_at": now}})
+    return {"success": True, "modified": res.modified_count, "message_ids": ids}
+
+
+@api_router.get("/whatsapp/message-status")
+async def whatsapp_message_status(message_id: str, user: dict = Depends(require_roles(["admin"]))):
+    """Delivery status of a sent message: sent / delivered / read / failed (+ provider error)."""
+    d = await db.whatsapp_cloud_messages.find_one(
+        {"$or": [{"wamid": message_id}, {"id": message_id}]}, {"_id": 0})
+    if not d:
+        return {"success": False, "error": "message not found", "message_id": message_id}
+    incoming = d.get("direction") == "incoming"
+    return {"success": True, "message_id": d.get("wamid") or d.get("id"),
+            "direction": "inbound" if incoming else "outbound", "phone": d.get("phone"),
+            "status": d.get("status") or ("received" if incoming else "sent"),
+            "status_at": d.get("status_at"),
+            "error": d.get("status_error"), "error_code": d.get("status_error_code"),
+            "timestamp": d.get("received_at") or d.get("ts")}
+
+
+@api_router.get("/whatsapp/media")
+async def whatsapp_get_media(media_id_or_url: str, user: dict = Depends(require_roles(["admin"]))):
+    """Resolve a WhatsApp media_id (or an existing stored path/url) to a downloadable signed URL
+    (+ inline base64 for small images) so an agent can inspect a customer's photo/video/document."""
+    import base64 as _b64
+    ref = (media_id_or_url or "").strip()
+    if not ref:
+        return {"success": False, "error": "missing media_id_or_url"}
+    base = os.environ.get("FRONTEND_URL", "https://newcrm.musclegrid.in").rstrip("/")
+    # Already a stored CRM file → just sign & return.
+    if "/api/files/" in ref or "/api/uploads/" in ref:
+        rel = ref.split("/api/files/", 1)[-1].split("/api/uploads/", 1)[-1].split("?", 1)[0]
+        return {"success": True, "url": base + make_signed_file_url(rel, ttl_seconds=6 * 3600), "path": rel}
+    # Cached copy from a previous fetch of this media_id?
+    cached = await db.whatsapp_cloud_messages.find_one(
+        {"media_id": ref, "media_stored_path": {"$exists": True}}, {"_id": 0, "media_stored_path": 1, "media_mime": 1})
+    if cached and cached.get("media_stored_path"):
+        rel = cached["media_stored_path"]
+        return {"success": True, "media_id": ref, "mime": cached.get("media_mime"),
+                "url": base + make_signed_file_url(rel, ttl_seconds=6 * 3600), "path": rel, "cached": True}
+    # Otherwise treat as a WhatsApp media_id → two-hop download → store → sign.
+    media = await whatsapp_cloud.download_media(ref)
+    if not media or not media.get("bytes"):
+        return {"success": False, "error": "media not found or download failed", "media_id": ref}
+    data_bytes = media["bytes"]
+    mime = media.get("mime") or "application/octet-stream"
+    ext = _WA_MEDIA_EXT.get(mime.split(";")[0], ".bin")
+    rel, _st = await storage_upload(file_data=data_bytes, folder="whatsapp_media",
+                                    original_filename=f"wa_{ref}{ext}")
+    await db.whatsapp_cloud_messages.update_many(
+        {"media_id": ref}, {"$set": {"media_stored_path": rel, "media_mime": mime}})
+    out = {"success": True, "media_id": ref, "mime": mime, "type": mime.split("/")[0],
+           "size_bytes": len(data_bytes), "url": base + make_signed_file_url(rel, ttl_seconds=6 * 3600),
+           "path": rel}
+    if mime.startswith("image/") and len(data_bytes) <= 5 * 1024 * 1024:
+        out["base64"] = _b64.b64encode(data_bytes).decode()
+        out["base64_data_uri"] = f"data:{mime};base64,{out['base64']}"
+    return out
 
 
 @api_router.post("/whatsapp/restart")

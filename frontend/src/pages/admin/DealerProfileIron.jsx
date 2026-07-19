@@ -70,6 +70,7 @@ export default function DealerProfile() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('ledger');
+  const [tally, setTally] = useState(null);  // authoritative Tally balances (read-only)
 
   const fetchDealer = () => {
     setLoading(true);
@@ -77,6 +78,9 @@ export default function DealerProfile() {
       .then((r) => setData(r.data))
       .catch(() => toast.error('Failed to load dealer'))
       .finally(() => setLoading(false));
+    axios.get(`${API}/admin/dealers/${dealerId}/tally`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => setTally(r.data?.tally_balances || []))
+      .catch(() => setTally([]));
   };
 
   useEffect(() => {
@@ -222,6 +226,23 @@ export default function DealerProfile() {
               </div>
               {!unlimited && <div style={{ marginTop: 8, fontSize: 11, color: T.iron400 }}>Credit limit {inr(creditLimit)}</div>}
             </IronCard>
+
+            {/* Tally — authoritative books (read-only) */}
+            {tally && tally.length > 0 && (
+              <IronCard style={{ borderLeft: `3px solid ${T.blue}` }}>
+                <Caps size={9} color={T.blue} style={{ display: 'block', marginBottom: 8 }}>Tally — authoritative books</Caps>
+                {tally.map((t, i) => (
+                  <div key={i} style={{ marginBottom: i < tally.length - 1 ? 10 : 0, paddingBottom: i < tally.length - 1 ? 10 : 0, borderBottom: i < tally.length - 1 ? `1px solid ${T.iron200}` : 'none' }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: T.iron700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.company}</div>
+                    <div style={{ ...mono, fontSize: 20, fontWeight: 800, marginTop: 3, color: t.payable > 0 ? T.rose : T.green }}>
+                      ₹{inr(Math.abs(t.closing_balance || t.payable || t.receivable || 0))}
+                    </div>
+                    <Caps size={8.5} color={T.iron400}>{t.payable > 0 ? 'Payable (we owe)' : t.receivable > 0 ? 'Receivable' : (t.group || '')}</Caps>
+                  </div>
+                ))}
+                <div style={{ marginTop: 8, fontSize: 10, color: T.iron400 }}>read-only · synced from Tally</div>
+              </IronCard>
+            )}
 
             {/* Logistics & Contact */}
             <IronCard>

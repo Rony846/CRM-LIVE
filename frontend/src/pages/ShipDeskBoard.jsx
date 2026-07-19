@@ -18,7 +18,7 @@ const btnPrimary = { border: 'none', background: T.orange, color: '#fff', border
 const L = ({ children }) => <div style={{ fontSize: 10.5, color: '#888', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 3, fontWeight: 700 }}>{children}</div>;
 const DOC_LABEL = { invoice: 'Invoice', tracking: 'Tracking', label: 'Label', eway: 'E-way' };
 
-function PendencyModal({ data, loading, onClose }) {
+function PendencyModal({ data, loading, onClose, onPick }) {
   const models = data?.models || [];
   const max = models.reduce((m, x) => Math.max(m, x.count || 0), 0) || 1;
   return (
@@ -28,7 +28,7 @@ function PendencyModal({ data, loading, onClose }) {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
             <div>
               <div style={{ fontFamily: T.headline, fontWeight: 800, fontSize: 18, letterSpacing: 0.3 }}>Model-wise pendency</div>
-              <div style={{ fontSize: 11.5, opacity: 0.75, marginTop: 2 }}>Pieces awaiting dispatch in the Ready-to-ship queue</div>
+              <div style={{ fontSize: 11.5, opacity: 0.75, marginTop: 2 }}>Tap a model to show only its orders in Ready-to-ship</div>
             </div>
             <button onClick={onClose} style={{ border: 'none', background: 'rgba(255,255,255,.15)', color: '#fff', borderRadius: 8, width: 28, height: 28, cursor: 'pointer', fontSize: 15, lineHeight: 1 }}>✕</button>
           </div>
@@ -46,7 +46,9 @@ function PendencyModal({ data, loading, onClose }) {
           ) : models.length === 0 ? (
             <div style={{ textAlign: 'center', padding: 44, color: T.iron400, fontSize: 13 }}>Nothing pending in the ready-to-ship queue 🎉</div>
           ) : models.map((m, i) => (
-            <div key={m.model} style={{ background: T.white, border: '1px solid ' + T.iron200, borderRadius: 10, padding: '11px 13px', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div key={m.model} onClick={() => onPick && onPick(m)}
+              title={`Show only ${m.model} orders in Ready-to-ship`}
+              style={{ background: T.white, border: '1px solid ' + T.iron200, borderRadius: 10, padding: '11px 13px', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 12, cursor: onPick ? 'pointer' : 'default' }}>
               <div style={{ width: 22, textAlign: 'center', fontFamily: mono.fontFamily, fontSize: 11, color: T.iron400, fontWeight: 700 }}>{i + 1}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontFamily: T.headline, fontWeight: 700, fontSize: 13.5, color: T.iron900 }}>{m.model}</div>
@@ -77,7 +79,9 @@ export default function ShipDeskBoard() {
   const [track, setTrack] = useState({});  // order_id -> tracking text
   const [pend, setPend] = useState(null);  // model-wise pendency modal data (null = closed)
   const [pendLoading, setPendLoading] = useState(false);
+  const [modelFilter, setModelFilter] = useState(null);  // {model, ids:Set} — filters the Ready-to-ship lane to one model
   const [packScan, setPackScan] = useState(null);  // order being packed → scan its unit serial
+  const [printed, setPrinted] = useState(() => new Set());  // order_ids printed this session → green "Printed ✓"
   const [scanVal, setScanVal] = useState('');
   const [showBuild, setShowBuild] = useState(false);  // build-unit popup (build + pack same station)
 
@@ -130,13 +134,19 @@ export default function ShipDeskBoard() {
     setBusy((b) => ({ ...b, [key]: true }));
     try {
       const { data } = await axios.post(`${API}/orders/${encodeURIComponent(o.order_id)}/print-pack-set`, null, { headers: H, params: { serial: serial || '', customer: o.customer_name || '', reprint } });
-      if (data?.already_packed) {
+      if (data?.printer_offline) {
+        // The office print PC is unreachable — nothing came out. Tell Gaurav clearly; don't fake success.
+        toast.error(data.message || 'Office print computer is offline — nothing printed.', { duration: 9000 });
+        setPackScan(null); setScanVal('');
+      } else if (data?.already_packed) {
         // Server refused a duplicate print. Offer an explicit reprint.
         if (window.confirm(`${data.message}\n\nReprint anyway?`)) { await printPack(o, serial, true); return; }
       } else {
         toast.success(serial ? `Printed — unit serial ${serial} bound` : 'Printed — serial auto-assigned');
         setPackScan(null); setScanVal('');
-        load();  // refresh so the packed order drops off the lane (can't be re-clicked)
+        // Mark it printed so the button turns GREEN in place ("Printed ✓") — clear confirmation for
+        // Gaurav/Angad. We keep the row visible instead of dropping it off; a manual refresh reorganizes.
+        setPrinted((p) => new Set(p).add(o.order_id));
       }
     } catch (e) { toast.error(e?.response?.data?.detail || 'Print pack failed'); }
     finally { setBusy((b) => ({ ...b, [key]: false })); }
@@ -287,7 +297,17 @@ export default function ShipDeskBoard() {
           {canEnter && <button ref={tourRefs.start} onClick={openNew} style={btnPrimary}>+ New dispatch</button>}
         </div>
       </div>
-      {pend && <PendencyModal data={pend} loading={pendLoading} onClose={() => setPend(null)} />}
+      {pend && <PendencyModal data={pend} loading={pendLoading} onClose={() => setPend(null)}
+        onPick={(m) => { setModelFilter({ model: m.model, ids: new Set(m.order_ids || []) }); setPend(null); }} />}
+      {modelFilter && (
+        <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 9, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '8px 12px' }}>
+          <span style={{ fontSize: 11, color: '#1e40af', textTransform: 'uppercase', letterSpacing: 0.4, fontWeight: 800 }}>Filtered</span>
+          <span style={{ fontFamily: T.headline, fontWeight: 800, fontSize: 13, color: T.iron900 }}>{modelFilter.model}</span>
+          <span style={{ fontSize: 11.5, color: T.iron500 }}>· showing {modelFilter.ids.size} order(s) in Ready-to-ship</span>
+          <button onClick={() => setModelFilter(null)}
+            style={{ marginLeft: 'auto', border: '1px solid #bfdbfe', background: T.white, color: '#1e40af', borderRadius: 7, padding: '5px 12px', fontSize: 11.5, fontWeight: 800, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 }}>✕ Clear filter</button>
+        </div>
+      )}
       {showBuild && (
         <div onClick={() => setShowBuild(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,15,15,.5)', zIndex: 120, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 40, overflowY: 'auto' }}>
           <div onClick={(e) => e.stopPropagation()} style={{ background: T.iron50, border: '1px solid ' + T.iron200, borderRadius: 14, width: 'min(560px,94%)', padding: 18, boxShadow: '0 24px 70px rgba(0,0,0,.3)', marginBottom: 40 }}>
@@ -361,7 +381,8 @@ export default function ShipDeskBoard() {
               )}
             </Card>
           )} />
-          <Lane title="Ready to ship" tint="#eff6ff" items={board.ready_to_ship || []} render={(o) => (
+          <Lane title={modelFilter ? `Ready to ship · ${modelFilter.model}` : 'Ready to ship'} tint="#eff6ff"
+            items={(board.ready_to_ship || []).filter((o) => !modelFilter || modelFilter.ids.has(o.order_id))} render={(o) => (
             <Card key={o.order_id} o={o}>
               {(o.label_gaps || []).length > 0 && (
                 <div style={{ marginTop: 6, fontSize: 10.5, color: '#92400e', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 4, padding: '4px 7px' }}>
@@ -376,8 +397,16 @@ export default function ShipDeskBoard() {
               )}
               {isDispatch && (
                 <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  <button onClick={() => { setScanVal(''); setPackScan(o); }} disabled={busy[`${o.order_id}::pack`]} style={{ ...btnPrimary, display: 'inline-flex', gap: 4, alignItems: 'center', opacity: busy[`${o.order_id}::pack`] ? 0.6 : 1 }}>
-                    <Printer size={13} />{busy[`${o.order_id}::pack`] ? '…' : 'Print pack'}</button>
+                  {(() => {
+                    const isPrinted = printed.has(o.order_id) || !!o.packed_at;
+                    return (
+                      <button onClick={() => { setScanVal(''); setPackScan(o); }} disabled={busy[`${o.order_id}::pack`]}
+                        title={isPrinted ? 'Already printed — click to reprint' : 'Print the pack set'}
+                        style={{ ...btnPrimary, background: isPrinted ? '#15803d' : btnPrimary.background, display: 'inline-flex', gap: 4, alignItems: 'center', opacity: busy[`${o.order_id}::pack`] ? 0.6 : 1 }}>
+                        {isPrinted ? <Check size={13} /> : <Printer size={13} />}
+                        {busy[`${o.order_id}::pack`] ? '…' : (isPrinted ? 'Printed ✓' : 'Print pack')}</button>
+                    );
+                  })()}
                   {(o.present || []).includes('label') && <button onClick={() => download(o.order_id, 'file/label', `label_${o.order_id}.pdf`, { awb: o.tracking_id })} style={ghostBtn}><Download size={12} />Label</button>}
                   <button onClick={() => download(o.order_id, 'slip.pdf', `slip_${o.order_id}.pdf`)} style={ghostBtn}><Download size={12} />Slip</button>
                   <button onClick={() => sendBack(o)} style={{ ...ghostBtn, color: '#b91c1c', borderColor: '#fecaca' }}>↩ Back</button>

@@ -29,6 +29,14 @@ const STATUS_TONES = {
 
 const primaryBtn = { border: 'none', background: T.orange, color: '#fff', borderRadius: 6, padding: '8px 14px', fontFamily: T.headline, fontWeight: 700, fontSize: 12, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 };
 
+// Never render "Invalid Date" — a missing/malformed timestamp (or a unix-epoch string) shows "—".
+const safeDate = (v) => {
+  if (!v) return '—';
+  const s = String(v).trim();
+  const d = /^\d+$/.test(s) ? new Date(Number(s) > 1e12 ? Number(s) : Number(s) * 1000) : new Date(s);
+  return isNaN(d.getTime()) ? '—' : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+};
+
 export default function DealerTickets() {
   const { token } = useAuth();
   const [loading, setLoading] = useState(true);
@@ -182,7 +190,7 @@ export default function DealerTickets() {
                     </div>
                     <div style={{ textAlign: 'right', flexShrink: 0 }}>
                       <span style={{ ...mono, fontSize: 11, color: T.iron400 }}>
-                        {ticket.created_at ? new Date(ticket.created_at).toLocaleDateString() : '-'}
+                        {safeDate(ticket.created_at)}
                       </span>
                     </div>
                   </div>

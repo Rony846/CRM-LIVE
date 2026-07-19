@@ -61,21 +61,24 @@ export default function QuotationList() {
   const [proofFile, setProofFile] = useState(null);
   const [payRef, setPayRef] = useState('');
   const [payAmt, setPayAmt] = useState('');
+  const [payMethod, setPayMethod] = useState('screenshot');
   const canShipDesk = ['call_support', 'admin', 'accountant', 'supervisor', 'service_agent'].includes(user?.role);
-  const openShipDlg = (q) => { setShipQ(q); setProofFile(null); setPayRef(''); setPayAmt(q.grand_total ? Math.round(q.grand_total) : ''); setShipDlgOpen(true); };
+  const openShipDlg = (q) => { setShipQ(q); setProofFile(null); setPayRef(''); setPayMethod('screenshot'); setPayAmt(q.grand_total ? Math.round(q.grand_total) : ''); setShipDlgOpen(true); };
   const handleSendToShipDesk = async () => {
     if (!proofFile) { toast.error('Attach the payment proof'); return; }
     setActionLoading(true);
     try {
       const fd = new FormData();
       fd.append('payment_proof', proofFile);
+      fd.append('payment_method', payMethod);
       if (payRef.trim()) fd.append('payment_ref', payRef.trim());
       if (payAmt) fd.append('payment_amount', String(payAmt));
       const { data } = await axios.post(`${API}/quotations/${encodeURIComponent(shipQ.quotation_number)}/to-ship-desk`, fd,
         { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' } });
-      toast.success(`Sent to Ship Desk (${data.order_id}) — accountant will review payment & upload invoice/label`);
+      if (data.auto) toast.success(`Razorpay verified — sent straight to Ship Desk (${data.order_id})`);
+      else toast.success('Payment proof submitted — waiting for admin approval before Ship Desk');
       setShipDlgOpen(false); fetchQuotations();
-    } catch (e) { toast.error(e?.response?.data?.detail || 'Could not send to Ship Desk'); }
+    } catch (e) { toast.error(e?.response?.data?.detail || 'Could not submit'); }
     finally { setActionLoading(false); }
   };
 
@@ -450,7 +453,7 @@ export default function QuotationList() {
                             {['approved', 'sent', 'viewed'].includes(q.status) && !q.ship_desk_order_id && !q.converted_at && canShipDesk && (
                               <>
                                 <button onClick={() => navigate(`/quotations/edit/${q.id}`)} title="Edit the PI before sending" style={rowOutlineOrange}>Edit PI</button>
-                                <button onClick={() => openShipDlg(q)} title="Attach payment proof & send to Ship Desk" style={rowPrimaryStyle}><Truck size={13} /> To Ship Desk</button>
+                                <button onClick={() => openShipDlg(q)} title="Upload payment proof for admin approval → Ship Desk" style={rowPrimaryStyle}><Truck size={13} /> Submit payment</button>
                               </>
                             )}
                             {q.ship_desk_order_id && (
@@ -726,15 +729,24 @@ export default function QuotationList() {
       <Dialog open={shipDlgOpen} onOpenChange={setShipDlgOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2"><Truck className="w-5 h-5" style={{ color: T.orange }} /> Send to Ship Desk</DialogTitle>
+            <DialogTitle className="flex items-center gap-2"><Truck className="w-5 h-5" style={{ color: T.orange }} /> Submit payment for approval</DialogTitle>
           </DialogHeader>
           <div style={{ fontSize: 13, color: T.iron600, marginBottom: 8 }}>
             {shipQ && <>PI <b>{shipQ.quotation_number}</b> — {shipQ.customer_name}{shipQ.grand_total ? ` · ₹${Math.round(shipQ.grand_total).toLocaleString('en-IN')}` : ''}.</>}
-            <div style={{ marginTop: 4 }}>Attach the customer's payment proof. The accountant then reviews it and uploads the invoice + shipping label to release the order.</div>
+            <div style={{ marginTop: 4 }}>Upload the payment screenshot you took from the customer. <b>Admin approves it once the money is confirmed</b> — only then does it go to the accountant's Ship Desk. (Razorpay-link payments are auto-verified and skip approval.)</div>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div>
-              <Label style={{ fontSize: 11, color: T.iron500 }}>Payment proof (PDF / image) *</Label>
+              <Label style={{ fontSize: 11, color: T.iron500 }}>How was it paid?</Label>
+              <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                {[['screenshot', 'UPI / Bank screenshot'], ['cash', 'Cash'], ['razorpay', 'Razorpay link']].map(([v, l]) => (
+                  <button key={v} type="button" onClick={() => setPayMethod(v)}
+                    style={{ flex: 1, border: `1px solid ${payMethod === v ? T.orange : T.iron200}`, background: payMethod === v ? T.orange : '#fff', color: payMethod === v ? '#fff' : T.iron700, borderRadius: 6, padding: '7px 4px', fontSize: 11.5, fontWeight: 700, cursor: 'pointer' }}>{l}</button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <Label style={{ fontSize: 11, color: T.iron500 }}>Payment proof (screenshot / PDF) *</Label>
               <input type="file" accept="application/pdf,image/*" onChange={(e) => setProofFile(e.target.files?.[0] || null)} style={{ fontSize: 13, marginTop: 4 }} />
               {proofFile && <div style={{ fontSize: 11, color: T.iron500, marginTop: 3 }}>{proofFile.name}</div>}
             </div>
@@ -748,7 +760,7 @@ export default function QuotationList() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setShipDlgOpen(false)}>Cancel</Button>
             <Button onClick={handleSendToShipDesk} disabled={actionLoading || !proofFile} style={{ background: T.orange, color: '#fff' }}>
-              {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Truck className="w-4 h-4" />} Send to Ship Desk
+              {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Truck className="w-4 h-4" />} Submit for approval
             </Button>
           </DialogFooter>
         </DialogContent>

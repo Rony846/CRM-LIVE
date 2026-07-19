@@ -59,6 +59,8 @@ BASE_FOLDERS = [
     "chat",
     # Customs Bill of Entry (OOC copy) PDFs auto-ingested from ICEGATE emails.
     "import_boe",
+    # Smartflo call recordings archived to our storage before TATA purges them.
+    "call_recordings",
 ]
 
 # Folder mapping for backwards compatibility with existing code

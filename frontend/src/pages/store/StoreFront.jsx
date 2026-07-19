@@ -32,10 +32,26 @@ const loadRzp = () => new Promise((res) => {
   s.onload = () => res(true); s.onerror = () => res(false); document.body.appendChild(s);
 });
 
+// Inline-styled component can't use CSS media queries, so track viewport width in state instead.
+const useIsMobile = (bp = 760) => {
+  const [m, setM] = useState(typeof window !== 'undefined' ? window.innerWidth < bp : false);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const on = () => setM(window.innerWidth < bp);
+    on(); window.addEventListener('resize', on);
+    return () => window.removeEventListener('resize', on);
+  }, [bp]);
+  return m;
+};
+const ERR = '#C0392B';
+
 export default function StoreFront() {
+  const isMobile = useIsMobile();
   const [products, setProducts] = useState([]);
   const [cats, setCats] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [errs, setErrs] = useState({});      // per-field checkout errors (inline, not alerts)
+  const [notice, setNotice] = useState('');  // order-level message (payment failed, gateway error, etc.)
   const _path = typeof window !== 'undefined' ? window.location.pathname : '/';
   const _initSlug = (_path.match(/^\/policies\/([a-z]+)/) || [])[1] || '';
   const _initProduct = (_path.match(/^\/product\/([^/]+)/) || [])[1] || '';
@@ -107,7 +123,11 @@ export default function StoreFront() {
     if (p.length !== 6) { setSvc(null); return; }
     setSvcLoading(true);
     const t = setTimeout(() => {
-      checkPincode(p).then((d) => setSvc(d)).catch(() => setSvc(null)).finally(() => setSvcLoading(false));
+      checkPincode(p).then((d) => {
+        setSvc(d);
+        // Auto-fill city from the pincode (only if the buyer hasn't already typed one).
+        if (d && d.city) setForm((f) => (f.city && f.city.trim() ? f : { ...f, city: d.city }));
+      }).catch(() => setSvc(null)).finally(() => setSvcLoading(false));
     }, 450);
     return () => clearTimeout(t);
   }, [form.pincode, checkPincode]);
@@ -160,13 +180,13 @@ export default function StoreFront() {
   }, [sel]);
 
   const submitReview = async () => {
-    if (!rev.name.trim()) return alert('Please enter your name');
-    setRev((s) => ({ ...s, busy: true }));
+    if (!rev.name.trim()) return setRev((s) => ({ ...s, err: 'Please enter your name' }));
+    setRev((s) => ({ ...s, busy: true, err: '' }));
     try {
       await axios.post(`${API}/shop/product/${sel.id}/review`, { name: rev.name.trim(), rating: rev.rating, title: rev.title, comment: rev.comment, phone: rev.phone || undefined });
       const { data } = await axios.get(`${API}/shop/product/${sel.id}/reviews`);
       setReviews(data); setRev((s) => ({ ...s, busy: false, done: true, comment: '', title: '' }));
-    } catch (e) { alert(e.response?.data?.detail || 'Could not submit review'); setRev((s) => ({ ...s, busy: false })); }
+    } catch (e) { setRev((s) => ({ ...s, busy: false, err: e.response?.data?.detail || 'Could not submit review' })); }
   };
 
   const applyCoupon = async () => {
@@ -208,9 +228,21 @@ export default function StoreFront() {
 
   const placeOrder = async () => {
     const phone = (form.phone || '').replace(/\D/g, '').slice(-10);
-    if (!form.name.trim()) return alert('Please enter your name');
-    if (phone.length !== 10) return alert('Please enter a valid 10-digit phone number');
-    if (!form.address.trim() || !form.city.trim() || form.pincode.replace(/\D/g, '').length !== 6) return alert('Please enter a full delivery address with a 6-digit pincode');
+    // Inline, field-level validation (no browser alerts).
+    const e = {};
+    if (!form.name.trim()) e.name = 'Please enter your name';
+    if (phone.length !== 10) e.phone = 'Enter a valid 10-digit phone number';
+    if (!form.address.trim()) e.address = 'Enter your full delivery address';
+    if (!form.city.trim()) e.city = 'Enter your city';
+    if (form.pincode.replace(/\D/g, '').length !== 6) e.pincode = 'Enter a 6-digit pincode';
+    setErrs(e);
+    if (Object.keys(e).length) {
+      setNotice('Please fix the highlighted fields to continue.');
+      const first = document.querySelector(`[data-field="${Object.keys(e)[0]}"]`);
+      if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    setNotice('');
     setPlacing(true);
     try {
       const items = cart.map((c) => ({ id: c.id, qty: c.qty }));
@@ -218,7 +250,7 @@ export default function StoreFront() {
       const { data } = await axios.post(`${API}/shop/checkout/create`, body);
       if (data.cod) { trackPurchase({ orderNumber: data.order_number, total: data.total, cart: detailCart() }); setLastOrder(data.order_number); setCart([]); setView('success'); goTop(); return; }
       const ok = await loadRzp();
-      if (!ok) { alert('Could not load the payment gateway. Please try again.'); return; }
+      if (!ok) { setNotice('Could not load the payment gateway. Please check your connection and try again.'); return; }
       const rzp = new window.Razorpay({
         key: data.key_id, order_id: data.razorpay_order_id, amount: data.amount, currency: data.currency || 'INR',
         name: 'MuscleGrid', description: data.order_number, image: '/redesign/mg-monogram.png',
@@ -228,14 +260,14 @@ export default function StoreFront() {
             await axios.post(`${API}/shop/checkout/verify`, { order_id: data.order_id, razorpay_order_id: resp.razorpay_order_id, razorpay_payment_id: resp.razorpay_payment_id, razorpay_signature: resp.razorpay_signature });
             trackPurchase({ orderNumber: data.order_number, total: data.total, cart: detailCart() });
             setLastOrder(data.order_number); setCart([]); setView('success'); goTop();
-          } catch (e) { alert('Payment captured but verification failed — our team will confirm your order shortly.'); }
+          } catch (e2) { setLastOrder(data.order_number); setCart([]); setView('success'); goTop(); }
         },
         modal: { ondismiss: () => setPlacing(false) },
       });
-      rzp.on('payment.failed', () => { alert('Payment failed or was cancelled. You can try again.'); setPlacing(false); });
+      rzp.on('payment.failed', () => { setNotice('Payment failed or was cancelled. You can try again.'); setPlacing(false); });
       rzp.open();
     } catch (e) {
-      alert(e.response?.data?.detail || 'Could not place the order. Please try again.');
+      setNotice(e.response?.data?.detail || 'Could not place the order. Please try again.');
     } finally { setPlacing(false); }
   };
 
@@ -249,12 +281,12 @@ export default function StoreFront() {
         </div>
       </div>
       <div style={{ flex: 1 }} />
-      <div style={{ position: 'relative', maxWidth: 360, flex: 1, display: view === 'catalog' ? 'block' : 'none' }}>
+      <div style={{ position: 'relative', maxWidth: 360, flex: 1, display: view === 'catalog' && !isMobile ? 'block' : 'none' }}>
         <Search size={16} color={MUT} style={{ position: 'absolute', left: 11, top: 10 }} />
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search inverters, batteries, stabilizers…" style={{ width: '100%', height: 38, border: `1px solid ${LINE}`, borderRadius: 8, padding: '0 12px 0 34px', fontFamily: F, fontSize: 13.5, outline: 'none', background: '#fff' }} />
       </div>
       <button className="mgs-btn" onClick={() => { setView('track'); goTop(); }} style={{ border: 'none', background: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontFamily: FH, fontWeight: 700, fontSize: 13, color: SUB }}>
-        <PackageSearch size={17} /> Track Order
+        <PackageSearch size={17} />{!isMobile && ' Track Order'}
       </button>
       <button className="mgs-btn" onClick={() => { setView('cart'); goTop(); }} style={{ position: 'relative', border: `1px solid ${LINE}`, background: '#fff', borderRadius: 8, height: 40, padding: '0 14px', display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontFamily: FH, fontWeight: 700, fontSize: 13, color: INK }}>
         <ShoppingCart size={17} /> Cart
@@ -294,6 +326,13 @@ export default function StoreFront() {
               ))}
             </div>
           </div>
+          {/* Mobile search (header search is hidden on small screens) */}
+          {isMobile && (
+            <div style={{ position: 'relative', marginBottom: 14 }}>
+              <Search size={16} color={MUT} style={{ position: 'absolute', left: 12, top: 13 }} />
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search inverters, batteries, stabilizers…" style={{ width: '100%', height: 42, border: `1px solid ${LINE}`, borderRadius: 10, padding: '0 12px 0 36px', fontFamily: F, fontSize: 14, outline: 'none', background: '#fff', boxSizing: 'border-box' }} />
+            </div>
+          )}
           {/* Category chips */}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 18 }}>
             {['', ...cats].map((c) => (
@@ -321,8 +360,8 @@ export default function StoreFront() {
       ) : view === 'product' && sel ? (
         <div style={{ maxWidth: 1080, margin: '0 auto', padding: '18px 20px 60px' }}>
           <button className="mgs-qty" onClick={() => { setView('catalog'); goTop(); }} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, border: `1px solid ${LINE}`, background: '#fff', borderRadius: 8, padding: '7px 12px', cursor: 'pointer', fontFamily: FH, fontWeight: 600, fontSize: 12.5, color: SUB, marginBottom: 18 }}><ChevronLeft size={15} /> Back to store</button>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 32, alignItems: 'start' }}>
-            <div style={{ background: '#fff', border: `1px solid ${LINE}`, borderRadius: 14, aspectRatio: '1', display: 'grid', placeItems: 'center', overflow: 'hidden', position: 'sticky', top: 78 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? 22 : 32, alignItems: 'start' }}>
+            <div style={{ background: '#fff', border: `1px solid ${LINE}`, borderRadius: 14, aspectRatio: '1', display: 'grid', placeItems: 'center', overflow: 'hidden', position: isMobile ? 'static' : 'sticky', top: 78 }}>
               {sel.image ? <img src={sel.image} alt={sel.title} style={{ width: '100%', height: '100%', objectFit: 'contain', padding: 20 }} /> : <span style={{ color: MUT }}>No image</span>}
             </div>
             <div>
@@ -348,7 +387,7 @@ export default function StoreFront() {
                     style={{ border: 'none', background: INK, color: '#fff', borderRadius: 8, padding: '0 16px', cursor: 'pointer', fontFamily: FH, fontWeight: 700, fontSize: 12.5 }}>{pin.loading ? '…' : 'Check'}</button>
                 </div>
                 {pin.res && (pin.res.serviceable
-                  ? <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, color: GREEN, fontSize: 12 }}><Check size={14} /> Delivers to {pin.v} · Free delivery{pin.res.cod ? ' · COD available' : ''}</div>
+                  ? <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, color: GREEN, fontSize: 12 }}><Check size={14} /> Delivers to {pin.res.city || pin.v}{pin.res.eta ? ` in ${pin.res.eta}` : ''} · Free delivery{pin.res.cod ? ' · COD available' : ''}</div>
                   : <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, color: OD, fontSize: 12 }}><X size={14} /> Sorry, we don't deliver to {pin.v} yet.</div>)}
               </div>
               <div style={{ display: 'flex', gap: 18, marginTop: 16, flexWrap: 'wrap' }}>
@@ -365,7 +404,7 @@ export default function StoreFront() {
               <div style={{ fontFamily: FH, fontWeight: 800, fontSize: 20 }}>Customer Reviews</div>
               {reviews.count > 0 && <div style={{ color: SUB, fontSize: 13 }}><Stars v={reviews.average} size={15} /> {reviews.average} out of 5 · {reviews.count} review{reviews.count > 1 ? 's' : ''}</div>}
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.4fr) minmax(0,1fr)', gap: 30 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'minmax(0,1.4fr) minmax(0,1fr)', gap: isMobile ? 22 : 30 }}>
               <div>
                 {reviews.reviews.length === 0 ? (
                   <div style={{ color: MUT, fontSize: 13.5 }}>No reviews yet. Be the first to review this product.</div>
@@ -396,6 +435,7 @@ export default function StoreFront() {
                     <input key={k} value={rev[k]} onChange={(e) => setRev((s) => ({ ...s, [k]: e.target.value }))} placeholder={ph} style={{ width: '100%', border: `1px solid ${LINE}`, borderRadius: 8, padding: '9px 10px', fontSize: 12.5, marginBottom: 8, outline: 'none' }} />
                   ))}
                   <textarea value={rev.comment} onChange={(e) => setRev((s) => ({ ...s, comment: e.target.value }))} placeholder="Share your experience…" rows={3} style={{ width: '100%', border: `1px solid ${LINE}`, borderRadius: 8, padding: '9px 10px', fontSize: 12.5, marginBottom: 10, outline: 'none', resize: 'vertical' }} />
+                  {rev.err && <div style={{ color: ERR, fontSize: 11.5, marginBottom: 8 }}>{rev.err}</div>}
                   <button className="mgs-btn" onClick={submitReview} disabled={rev.busy} style={{ width: '100%', border: 'none', background: O, color: '#fff', borderRadius: 8, padding: '11px 0', cursor: 'pointer', fontFamily: FH, fontWeight: 700, fontSize: 13, opacity: rev.busy ? 0.6 : 1 }}>{rev.busy ? 'Submitting…' : 'Submit review'}</button>
                 </>)}
               </div>
@@ -428,31 +468,33 @@ export default function StoreFront() {
               ))}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 18, background: '#fff', border: `1px solid ${LINE}`, borderRadius: 12, padding: '16px 18px' }}>
                 <div><div style={{ fontSize: 12, color: SUB }}>Subtotal (incl. GST)</div><div style={{ fontFamily: FM, fontWeight: 700, fontSize: 22 }}>{inr(subtotal)}</div></div>
-                <button className="mgs-btn" onClick={() => { trackBeginCheckout(detailCart(), cartTotal()); setView('checkout'); goTop(); }} style={{ border: 'none', background: O, color: '#fff', borderRadius: 10, padding: '13px 26px', cursor: 'pointer', fontFamily: FH, fontWeight: 700, fontSize: 14 }}>Proceed to Checkout</button>
+                <button className="mgs-btn" onClick={() => { setErrs({}); setNotice(''); trackBeginCheckout(detailCart(), cartTotal()); setView('checkout'); goTop(); }} style={{ border: 'none', background: O, color: '#fff', borderRadius: 10, padding: '13px 26px', cursor: 'pointer', fontFamily: FH, fontWeight: 700, fontSize: 14 }}>Proceed to Checkout</button>
               </div>
             </>
           )}
         </div>
       ) : view === 'checkout' ? (
-        <div style={{ maxWidth: 900, margin: '0 auto', padding: '22px 20px 60px', display: 'grid', gridTemplateColumns: '1fr 320px', gap: 24, alignItems: 'start' }}>
+        <div style={{ maxWidth: 900, margin: '0 auto', padding: '22px 20px 60px', display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 320px', gap: 24, alignItems: 'start' }}>
           <div>
             <div style={{ fontFamily: FH, fontWeight: 800, fontSize: 22, marginBottom: 16 }}>Delivery Details</div>
             <div style={{ background: '#fff', border: `1px solid ${LINE}`, borderRadius: 12, padding: 18, display: 'grid', gap: 12 }}>
               {[['name', 'Full Name *', 'text'], ['phone', 'Phone (10-digit) *', 'tel'], ['email', 'Email (for order updates)', 'email'], ['address', 'Full Address *', 'text']].map(([k, l, t]) => (
-                <div key={k}><label style={{ fontFamily: FH, fontWeight: 700, fontSize: 10.5, letterSpacing: '.06em', textTransform: 'uppercase', color: SUB, display: 'block', marginBottom: 5 }}>{l}</label>
-                  <input type={t} value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} style={{ width: '100%', height: 40, border: `1px solid ${LINE}`, borderRadius: 8, padding: '0 12px', fontFamily: F, fontSize: 13.5, outline: 'none' }} /></div>
+                <div key={k} data-field={k}><label style={{ fontFamily: FH, fontWeight: 700, fontSize: 10.5, letterSpacing: '.06em', textTransform: 'uppercase', color: SUB, display: 'block', marginBottom: 5 }}>{l}</label>
+                  <input type={t} value={form[k]} onChange={(e) => { setForm({ ...form, [k]: e.target.value }); if (errs[k]) setErrs((s) => ({ ...s, [k]: undefined })); }} style={{ width: '100%', height: 40, border: `1px solid ${errs[k] ? ERR : LINE}`, borderRadius: 8, padding: '0 12px', fontFamily: F, fontSize: 13.5, outline: 'none' }} />
+                  {errs[k] && <div style={{ color: ERR, fontSize: 11.5, marginTop: 4 }}>{errs[k]}</div>}</div>
               ))}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                 {[['city', 'City *'], ['pincode', 'Pincode *']].map(([k, l]) => (
-                  <div key={k}><label style={{ fontFamily: FH, fontWeight: 700, fontSize: 10.5, letterSpacing: '.06em', textTransform: 'uppercase', color: SUB, display: 'block', marginBottom: 5 }}>{l}</label>
-                    <input value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} style={{ width: '100%', height: 40, border: `1px solid ${LINE}`, borderRadius: 8, padding: '0 12px', fontFamily: F, fontSize: 13.5, outline: 'none' }} /></div>
+                  <div key={k} data-field={k}><label style={{ fontFamily: FH, fontWeight: 700, fontSize: 10.5, letterSpacing: '.06em', textTransform: 'uppercase', color: SUB, display: 'block', marginBottom: 5 }}>{l}</label>
+                    <input value={form[k]} onChange={(e) => { setForm({ ...form, [k]: e.target.value }); if (errs[k]) setErrs((s) => ({ ...s, [k]: undefined })); }} style={{ width: '100%', height: 40, border: `1px solid ${errs[k] ? ERR : LINE}`, borderRadius: 8, padding: '0 12px', fontFamily: F, fontSize: 13.5, outline: 'none' }} />
+                    {errs[k] && <div style={{ color: ERR, fontSize: 11.5, marginTop: 4 }}>{errs[k]}</div>}</div>
                 ))}
               </div>
               {form.pincode.replace(/\D/g, '').length === 6 && (
                 <div style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, color: svcLoading ? MUT : (svc && !svc.serviceable ? OD : GREEN) }}>
                   {svcLoading ? <><Loader2 size={13} className="animate-spin" /> Checking delivery…</>
                     : svc && !svc.serviceable ? <><X size={13} /> We don't deliver to {form.pincode} yet — please contact us to arrange it.</>
-                    : svc ? <><Check size={13} /> Delivers to {form.pincode} · Free delivery{svc.cod ? ' · COD available' : ''}</> : null}
+                    : svc ? <><Check size={13} /> Delivers to {svc.city || form.pincode}{svc.eta ? ` in ${svc.eta}` : ''} · Free delivery{svc.cod ? ' · COD available' : ''}</> : null}
                 </div>
               )}
               <div><label style={{ fontFamily: FH, fontWeight: 700, fontSize: 10.5, letterSpacing: '.06em', textTransform: 'uppercase', color: SUB, display: 'block', marginBottom: 5 }}>GSTIN (optional — for GST invoice)</label>
@@ -467,7 +509,7 @@ export default function StoreFront() {
               </div>
             </div>
           </div>
-          <div style={{ background: '#fff', border: `1px solid ${LINE}`, borderRadius: 12, padding: 18, position: 'sticky', top: 78 }}>
+          <div style={{ background: '#fff', border: `1px solid ${LINE}`, borderRadius: 12, padding: 18, position: isMobile ? 'static' : 'sticky', top: 78 }}>
             <div style={{ fontFamily: FH, fontWeight: 800, fontSize: 15, marginBottom: 12 }}>Order Summary</div>
             {cartLines.map((c) => (
               <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12.5, marginBottom: 8, color: SUB }}>
@@ -496,7 +538,8 @@ export default function StoreFront() {
                 <span style={{ fontFamily: FH, fontWeight: 700 }}>Total</span><span style={{ fontFamily: FM, fontWeight: 700, fontSize: 18 }}>{inr(payable)}</span>
               </div>
             </div>
-            <button className="mgs-btn" disabled={placing || cartLines.length === 0} onClick={placeOrder} style={{ width: '100%', marginTop: 14, border: 'none', background: O, color: '#fff', borderRadius: 10, padding: '13px 0', cursor: placing ? 'default' : 'pointer', opacity: placing ? .7 : 1, fontFamily: FH, fontWeight: 700, fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+            {notice && <div style={{ background: '#FDECEA', border: `1px solid #F5C6C0`, color: ERR, borderRadius: 8, padding: '9px 11px', fontSize: 12, marginTop: 12 }}>{notice}</div>}
+            <button className="mgs-btn" disabled={placing || cartLines.length === 0} onClick={placeOrder} style={{ width: '100%', marginTop: 12, border: 'none', background: O, color: '#fff', borderRadius: 10, padding: '13px 0', cursor: placing ? 'default' : 'pointer', opacity: placing ? .7 : 1, fontFamily: FH, fontWeight: 700, fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
               {placing && <Loader2 size={16} className="animate-spin" />}{pay === 'cod' ? 'Place Order (COD)' : `Pay ${inr(payable)}`}
             </button>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center', marginTop: 10, color: MUT, fontSize: 11 }}><ShieldCheck size={13} /> Secured by Razorpay</div>

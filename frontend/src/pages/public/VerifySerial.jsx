@@ -46,7 +46,7 @@ export default function VerifySerial() {
             </div>
 
             {!w?.registered && (
-              <a href="/warranty-registration" style={btn('#0b7d3e')}>Register your warranty →</a>
+              <a href={`/warranty/${encodeURIComponent(data.serial)}`} style={btn('#0b7d3e')}>Register your warranty →</a>
             )}
             <a href={`https://wa.me/${wa}?text=${encodeURIComponent('Hi, I need help with my MuscleGrid product. Serial: ' + data.serial)}`} style={btn('#111', true)}>💬 Get support on WhatsApp</a>
           </>

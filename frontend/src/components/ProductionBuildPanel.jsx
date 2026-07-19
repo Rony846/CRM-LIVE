@@ -29,6 +29,8 @@ export default function ProductionBuildPanel({ autoFocus = true }) {
   const [exc, setExc] = useState({ active: false });   // BMS-skip exception window (today only)
   const [skipBms, setSkipBms] = useState(false);
   const [count, setCount] = useState(1);
+  const [cellType, setCellType] = useState('');        // battery: cell chemistry
+  const [bmsType, setBmsType] = useState('');           // battery: BMS brand (blank until picked; JK scanned, others auto-serial)
   const bmsRef = useRef(null); const mbRef = useRef(null); const wifiRef = useRef(null);
   // Inventory intake (record EXISTING labelled units into stock by scanning their serial)
   const [action, setAction] = useState('build');   // 'build' | 'stock'
@@ -55,11 +57,17 @@ export default function ProductionBuildPanel({ autoFocus = true }) {
     const kw = mode === 'battery' ? ['batter', 'lithium', 'lifepo'] : ['inverter'];
     return skus.filter((s) => kw.some((k) => `${s.name || ''} ${s.category || ''}`.toLowerCase().includes(k)));
   }, [skus, mode]);
-  // Stock intake can be ANY product — filter the full catalogue by a search term.
+  // Stock intake can be ANY product — filter the FULL catalogue. Space-insensitive + token match so
+  // "4kva" finds "4 KVA", and "4kva 90" narrows to that variant. Shows all matches (not capped at 100).
   const stockProducts = useMemo(() => {
+    const norm = (s) => (s || '').toLowerCase().replace(/\s+/g, '');
     const q = stockSearch.trim().toLowerCase();
-    const list = q ? skus.filter((s) => `${s.name || ''} ${s.sku_code || ''}`.toLowerCase().includes(q)) : skus;
-    return list.slice(0, 100);
+    if (!q) return skus.slice(0, 300);
+    const tokens = q.split(/\s+/).filter(Boolean).map(norm);
+    return skus.filter((s) => {
+      const hay = norm(`${s.name || ''} ${s.sku_code || ''} ${s.category || ''}`);
+      return tokens.every((t) => hay.includes(t));
+    }).slice(0, 300);
   }, [skus, stockSearch]);
 
   const loadInStock = (sid) => {
@@ -86,21 +94,28 @@ export default function ProductionBuildPanel({ autoFocus = true }) {
   useEffect(() => { setSkuId(''); setBms(''); setMb(''); setWifi(''); setLastSerial(null); }, [mode]);
   useEffect(() => { if (!autoFocus) return; const t = setTimeout(() => (mode === 'battery' ? bmsRef : mbRef).current?.focus(), 150); return () => clearTimeout(t); }, [mode, skuId, autoFocus]);
 
+  const CELL_TYPES = ['Highstar 100Ah', 'Highstar 314Ah', 'GP 100Ah', 'GP 320Ah'];
+  const BMS_TYPES = ['JK', 'XJ', 'JBD', 'TDT'];
+  const bmsAuto = mode === 'battery' && bmsType && bmsType !== 'JK';   // XJ/JBD/TDT → CRM mints + prints the BMS serial
   const noScan = exc.active && skipBms;   // exception: build w/o scanning the raw-material components
   const build = async () => {
     if (!skuId) { toast.error('Pick the product first'); return; }
-    if (!noScan && mode === 'battery' && !bms.trim()) { toast.error('Scan the BMS'); return; }
+    if (!noScan && mode === 'battery') {
+      if (!cellType) { toast.error('Select the cell type'); return; }
+      if (!bmsType) { toast.error('Select the BMS type'); return; }
+      if (bmsType === 'JK' && !bms.trim()) { toast.error('Scan the JK BMS serial'); return; }
+    }
     if (!noScan && mode === 'inverter' && (!mb.trim() || !wifi.trim())) { toast.error('Scan motherboard and wifi board'); return; }
     setBusy(true);
     try {
       const body = { product_type: mode, master_sku_id: skuId };
       if (noScan) { body.skip_bms = true; body.count = Math.max(1, Math.min(100, parseInt(count, 10) || 1)); }
-      else if (mode === 'battery') body.bms_code = bms.trim();
+      else if (mode === 'battery') { body.cell_type = cellType; body.bms_type = bmsType; if (bmsType === 'JK') body.bms_code = bms.trim(); }
       else { body.motherboard_code = mb.trim(); body.wifi_code = wifi.trim(); }
       const { data } = await axios.post(`${API}/production/build`, body, { headers: H });
       const serials = data.serials || [data.serial];
       setLastSerial({ serial: serials.join(', '), components: data.components, exception: data.exception });
-      toast.success(serials.length > 1 ? `Built ${serials.length} serials — labels printing` : `Built ${data.serial} — label printing`);
+      toast.success(serials.length > 1 ? `Built ${serials.length} serials — labels printing` : `Built ${data.serial}${data.bms_serials?.length ? ' + BMS ' + data.bms_serials.join(', ') : ''} — label${data.bms_serials?.length ? 's' : ''} printing`);
       setBms(''); setMb(''); setWifi(''); loadSummary();
       setTimeout(() => (mode === 'battery' ? bmsRef : mbRef).current?.focus(), 120);
     } catch (e) { toast.error(e?.response?.data?.detail || 'Build failed'); }
@@ -221,9 +236,37 @@ export default function ProductionBuildPanel({ autoFocus = true }) {
           </>
         ) : mode === 'battery' ? (
           <>
-            <Caps size={9}>Scan BMS</Caps>
-            <input ref={bmsRef} value={bms} onChange={(e) => setBms(e.target.value)} placeholder="Scan the BMS label…"
-              onKeyDown={(e) => e.key === 'Enter' && bms.trim() && !busy && build()} style={{ ...scanInput, marginTop: 3 }} />
+            <div style={{ display: 'flex', gap: 10, marginBottom: 12 }}>
+              <div style={{ flex: 1 }}>
+                <Caps size={9}>Cell type</Caps>
+                <select value={cellType} onChange={(e) => setCellType(e.target.value)}
+                  style={{ width: '100%', height: 44, marginTop: 3, borderRadius: 10, border: '1px solid ' + (cellType ? T.iron200 : T.orange), padding: '0 10px', fontSize: 14, fontWeight: 700, color: T.iron900, background: '#fff' }}>
+                  <option value="">Select cell…</option>
+                  {CELL_TYPES.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div style={{ flex: 1 }}>
+                <Caps size={9}>BMS type</Caps>
+                <select value={bmsType} onChange={(e) => setBmsType(e.target.value)}
+                  style={{ width: '100%', height: 44, marginTop: 3, borderRadius: 10, border: '1px solid ' + (bmsType ? T.iron200 : T.orange), padding: '0 10px', fontSize: 14, fontWeight: 700, color: T.iron900, background: '#fff' }}>
+                  <option value="">Select BMS…</option>
+                  {BMS_TYPES.map((b) => <option key={b} value={b}>{b}{b === 'JK' ? ' (scan serial)' : ' (auto-serial)'}</option>)}
+                </select>
+              </div>
+            </div>
+            {!bmsType ? (
+              <div style={{ fontSize: 12, color: T.iron400 }}>Pick the BMS type. JK = scan its serial. XJ / JBD / TDT = no serial, we print one for you.</div>
+            ) : bmsType === 'JK' ? (
+              <>
+                <Caps size={9}>Scan JK BMS serial</Caps>
+                <input ref={bmsRef} value={bms} onChange={(e) => setBms(e.target.value)} placeholder="Scan the JK BMS label…"
+                  onKeyDown={(e) => e.key === 'Enter' && bms.trim() && !busy && build()} style={{ ...scanInput, marginTop: 3 }} />
+              </>
+            ) : (
+              <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 10, padding: '10px 12px', fontSize: 12.5, color: '#1e40af' }}>
+                <b>{bmsType} BMS has no serial</b> — no need to scan or type anything. MuscleGrid will auto-generate a BMS serial and <b>print its sticker</b> when you press Build. Stick it on the BMS.
+              </div>
+            )}
           </>
         ) : (
           <>

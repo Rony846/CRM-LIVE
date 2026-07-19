@@ -25,11 +25,15 @@ import ServiceAgentDashboard from './pages/service/ServiceAgentDashboardIron';
 import AccountantDashboard from './pages/accountant/AccountantDashboardIron';
 import CADashboard from './pages/ca/CADashboardIron';
 import ImporterPortal from './pages/importer/ImporterPortalIron';
+import ImporterLedger from './pages/importer/ImporterLedger';
 import ImporterReconciliation from './pages/admin/ImporterReconciliationIron';
 import DispatcherDashboard from './pages/dispatcher/DispatcherDashboardIron';
 import DispatcherTVMode from './pages/dispatcher/DispatcherTVModeIron';
 import AdminDashboard1a from './pages/admin/AdminDashboard1a';
 import ClaudeFiles from './pages/admin/ClaudeFilesIron';
+import RefundRecovery from './pages/admin/RefundRecovery';
+import PhoneAlerts from './pages/admin/PhoneAlerts';
+import PIPaymentApprovals from './pages/admin/PIPaymentApprovals';
 import AdminCustomers from './pages/admin/AdminCustomersIron';
 import AdminWarranties from './pages/admin/AdminWarrantiesIron';
 import AdminOrders from './pages/admin/AdminOrdersIron';
@@ -80,6 +84,7 @@ import ShipDesk from './pages/accountant/ShipDeskIron';
 import ShipDeskHome from './pages/ShipDeskHome';
 import ShipDeskBoard from './pages/ShipDeskBoard';
 import ProductionBuild from './pages/production/ProductionBuild';
+import Genealogy from './pages/production/Genealogy';
 import ReturnDeskBoard from './pages/ReturnDeskBoard';
 import MyPickups from './pages/customer/MyPickups';
 import DispatcherShipDesk from './pages/dispatcher/DispatcherShipDesk';
@@ -89,6 +94,8 @@ import SalesRegister from './pages/accountant/SalesRegisterIron';
 import PartyMaster from './pages/admin/PartyMasterIron';
 import ComplianceDashboard from './pages/admin/ComplianceDashboardIron';
 import PartyLedger from './pages/accountant/PartyLedgerIron';
+import TallyReconciliation from './pages/accountant/TallyReconciliationIron';
+import TallyIntercompany from './pages/accountant/TallyIntercompanyIron';
 import Payments from './pages/accountant/PaymentsIron';
 import AccountingReports from './pages/accountant/AccountingReportsIron';
 import GSTAudit from './pages/finance/GSTAuditIron';
@@ -107,6 +114,7 @@ import AmazonOrders from './pages/operations/AmazonOrdersIron';
 import SkuWeights from './pages/admin/SkuWeightsIron';
 import EmailAgent from './pages/admin/EmailAgentIron';
 import AmazonRefunds from './pages/admin/AmazonRefundsIron';
+import RefundsHub from './pages/admin/RefundsHubIron';
 import CronRuns from './pages/admin/CronRunsIron';
 import KnowledgeBase from './pages/admin/KnowledgeBaseIron';
 import QAScorecards from './pages/supervisor/QAScorecardsIron';
@@ -122,6 +130,7 @@ import OrdersFoldersPage from './pages/admin/OrdersFoldersPageIron';
 import WhatsAppAgentPage from './pages/admin/whatsapp/WhatsAppAgentPageIron';
 import PublicDatasheetView from './pages/public/PublicDatasheetView';
 import VerifySerial from './pages/public/VerifySerial';
+import WarrantyActivate from './pages/public/WarrantyActivate';
 import StoreFront from './pages/store/StoreFront';
 import CatalogueHome from './pages/public/CatalogueHome';
 import BatteryShowcase from './pages/public/BatteryShowcase';
@@ -154,6 +163,8 @@ import AdminOmnidimCalls from './pages/admin/AdminOmnidimCallsIron';
 import KommoBackupBrowse from './pages/admin/KommoBackupBrowse';
 import RTOReturns from './pages/RTOReturns';
 import AdminWhatsAppChats from './pages/admin/AdminWhatsAppChatsIron';
+import CriticalDecisions from './pages/admin/CriticalDecisionsIron';
+import CriticalDecisionPopup from './components/CriticalDecisionPopup';
 import AdminAttendance from './pages/admin/AdminAttendanceIron';
 import MyAttendance from './pages/employee/MyAttendanceIron';
 
@@ -412,6 +423,8 @@ function App() {
           {/* Public Datasheet View - shareable link for customers */}
           <Route path="/datasheet/:id" element={<PublicDatasheetView />} />
           <Route path="/verify/:serial" element={<VerifySerial />} />
+          <Route path="/warranty" element={<WarrantyActivate />} />
+          <Route path="/warranty/:serial" element={<WarrantyActivate />} />
           
           {/* Interactive Showcase Pages */}
           <Route path="/showcase/battery/:id" element={<BatteryShowcase />} />
@@ -524,6 +537,11 @@ function App() {
               <ProductionBuild />
             </ProtectedRoute>
           } />
+          <Route path="/production/genealogy" element={
+            <ProtectedRoute allowedRoles={['admin', 'supervisor', 'service_agent', 'technician', 'accountant', 'dispatcher']}>
+              <Genealogy />
+            </ProtectedRoute>
+          } />
           <Route path="/return-desk" element={
             <ProtectedRoute allowedRoles={['call_support', 'accountant', 'admin', 'supervisor', 'technician', 'service_agent', 'dispatcher', 'gate']}>
               <ReturnDeskBoard />
@@ -590,11 +608,31 @@ function App() {
               <ImporterPortal />
             </ProtectedRoute>
           } />
+          <Route path="/importer/ledger" element={
+            <ProtectedRoute allowedRoles={['importer', 'admin', 'accountant']}>
+              <ImporterLedger />
+            </ProtectedRoute>
+          } />
 
           {/* Admin: importer reconciliation — you-vs-them across all importers */}
           <Route path="/admin/importer-reconciliation" element={
             <ProtectedRoute allowedRoles={['admin', 'accountant']}>
               <ImporterReconciliation />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/refund-recovery" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <RefundRecovery />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/phone-alerts" element={
+            <ProtectedRoute allowedRoles={['admin', 'accountant']}>
+              <PhoneAlerts />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/pi-approvals" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <PIPaymentApprovals />
             </ProtectedRoute>
           } />
 
@@ -798,7 +836,7 @@ function App() {
           } />
           <Route path="/admin/refunds" element={
             <ProtectedRoute allowedRoles={['admin', 'accountant']}>
-              <AmazonRefunds />
+              <RefundsHub />
             </ProtectedRoute>
           } />
           <Route path="/admin/cron-runs" element={
@@ -844,6 +882,11 @@ function App() {
           <Route path="/admin/whatsapp-chats" element={
             <ProtectedRoute allowedRoles={['admin', 'call_support']}>
               <AdminWhatsAppChats />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/critical-decisions" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <CriticalDecisions />
             </ProtectedRoute>
           } />
           <Route path="/admin/zoho-tickets" element={
@@ -978,6 +1021,20 @@ function App() {
           <Route path="/accountant/ledger" element={
             <ProtectedRoute allowedRoles={['accountant', 'admin']}>
               <PartyLedger />
+            </ProtectedRoute>
+          } />
+
+          {/* CRM ⇄ Tally Reconciliation */}
+          <Route path="/accountant/tally-reconciliation" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin']}>
+              <TallyReconciliation />
+            </ProtectedRoute>
+          } />
+
+          {/* Intercompany Reconciliation */}
+          <Route path="/accountant/tally-intercompany" element={
+            <ProtectedRoute allowedRoles={['accountant', 'admin']}>
+              <TallyIntercompany />
             </ProtectedRoute>
           } />
           
@@ -1395,6 +1452,7 @@ function App() {
         </Routes>
         <RoleBasedOrderBot />
         <ChatErrorBoundary><ChatDock /></ChatErrorBoundary>
+        <CriticalDecisionPopup />
         </ChatProvider>
       </BrowserRouter>
     </AuthProvider>

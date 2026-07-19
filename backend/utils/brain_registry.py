@@ -61,6 +61,20 @@ def brains() -> dict:
             "provider": "anthropic",
             "model": _env("KALPANA_MODEL", "claude-opus-4-8"),
         },
+        # Fast + cheaper Anthropic brain for latency-sensitive work (voice replies) — Sonnet 4.6.
+        # Escalate to kalpana (Opus) only for genuinely hard turns.
+        "riya": {
+            "provider": "anthropic",
+            "model": _env("RIYA_MODEL", "claude-sonnet-4-6"),
+        },
+        # Kimi K2 (Moonshot) — OpenAI-compatible API. Cheap + strong tool-use. A candidate "hard-turn"
+        # / voice tier to A/B vs Sonnet on cost + Hindi + latency. Needs MOONSHOT_API_KEY.
+        "kimi": {
+            "provider": "openai",
+            "model": _env("KIMI_MODEL", "kimi-k2-0711-preview"),
+            "base_url": _env("KIMI_BASE_URL", "https://api.moonshot.ai/v1"),
+            "api_key_env": "MOONSHOT_API_KEY",
+        },
     }
 
 
@@ -85,6 +99,8 @@ def available(brain: str) -> bool:
     cfg = _cfg(brain)
     if cfg["provider"] == "anthropic":
         return bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+    if cfg["provider"] == "openai":
+        return bool(os.environ.get(cfg.get("api_key_env", "MOONSHOT_API_KEY"), "").strip())
     return _local_enabled()
 
 
@@ -116,7 +132,39 @@ async def complete(brain: str, *, system: str = None, messages: list = None,
     msgs = messages if messages is not None else [{"role": "user", "content": prompt or ""}]
     if cfg["provider"] == "anthropic":
         return await _anthropic_complete(cfg, system, msgs, max_tokens, tools)
+    if cfg["provider"] == "openai":
+        return await _openai_complete(cfg, system, msgs, max_tokens, temperature, timeout)
     return await _ollama_complete(brain, cfg, system, msgs, max_tokens, temperature, tools, timeout)
+
+
+async def _openai_complete(cfg, system, msgs, max_tokens, temperature, timeout):
+    """OpenAI-compatible chat completions (Moonshot/Kimi, OpenRouter, etc.). Returns model_ok=False
+    on any error (missing key, timeout, HTTP error) so the caller falls back to another brain."""
+    import time as _time
+    key = os.environ.get(cfg.get("api_key_env", "MOONSHOT_API_KEY"), "").strip()
+    if not key:
+        return {"text": "", "model_ok": False, "tool_calls": 0, "model": cfg["model"]}
+    body = {
+        "model": cfg["model"],
+        "messages": ([{"role": "system", "content": system}] if system else []) + list(msgs),
+        "max_tokens": max_tokens, "stream": False,
+    }
+    if temperature is not None:
+        body["temperature"] = temperature
+    t0 = _time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as hc:
+            r = await hc.post(f"{cfg['base_url'].rstrip('/')}/chat/completions",
+                              headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                              json=body)
+            r.raise_for_status()
+            data = r.json()
+        text = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        return {"text": text, "model_ok": bool(text), "tool_calls": 0, "model": cfg["model"],
+                "latency_ms": int((_time.monotonic() - t0) * 1000), "raw": data}
+    except Exception as e:
+        logger.error(f"brain[{cfg['model']}] openai-compat call failed: {e}")
+        return {"text": "", "model_ok": False, "tool_calls": 0, "model": cfg["model"]}
 
 
 async def _anthropic_complete(cfg, system, msgs, max_tokens, tools):

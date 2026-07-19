@@ -532,9 +532,15 @@ export default function CallsDashboard() {
     return 'dialed';
   };
 
+  // Prefer our archived copy (survives TATA's purge); fall back to the live Smartflo URL.
+  const recUrlOf = (call) => call?.archived_recording_url || call?.raw_data?.recording_url || call?.recording_url;
+
   const openRecording = (call) => {
-    const recordingUrl = call.raw_data?.recording_url || call.recording_url;
-    if (recordingUrl) {
+    if (call.recording_empty && !call.archived_recording_url) {
+      toast.info('Recording was empty — not captured by Smartflo for this call');
+      return;
+    }
+    if (recUrlOf(call)) {
       setSelectedCall(call);
       setRecordingOpen(true);
     } else {
@@ -835,7 +841,8 @@ export default function CallsDashboard() {
                       {paginatedCalls.map((call, idx) => {
                         const status = getCallStatus(call);
                         const duration = call.raw_data?.duration || call.duration;
-                        const hasRecording = call.raw_data?.recording_url || call.recording_url;
+                        const recordingEmpty = call.recording_empty && !call.archived_recording_url;
+                        const hasRecording = !recordingEmpty && (call.archived_recording_url || call.raw_data?.recording_url || call.recording_url);
                         const callerPhone = call.caller_id_number || call.caller_phone;
                         return (
                           <tr key={call.id || idx} className="iron-row" style={{ borderBottom: `1px solid ${T.iron200}` }}>
@@ -883,7 +890,7 @@ export default function CallsDashboard() {
                                 {hasRecording ? (
                                   inlinePlayingId === (call.id || call.uuid) ? (
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                                      <audio controls autoPlay preload="metadata" src={call.raw_data?.recording_url || call.recording_url} style={{ height: 28, maxWidth: 180 }} />
+                                      <audio controls autoPlay preload="metadata" src={recUrlOf(call)} style={{ height: 28, maxWidth: 180 }} />
                                       <button style={{ ...iconBtn, color: T.iron400 }} onClick={() => setInlinePlayingId(null)} title="Hide player"><XCircle size={15} /></button>
                                     </div>
                                   ) : (
@@ -892,6 +899,8 @@ export default function CallsDashboard() {
                                       <button style={{ ...iconBtn, color: T.iron400 }} onClick={() => openRecording(call)} title="Open in dialog"><FileText size={14} /></button>
                                     </div>
                                   )
+                                ) : recordingEmpty ? (
+                                  <span style={{ color: T.iron400, fontSize: 10.5 }} title="Smartflo did not capture audio for this call">empty</span>
                                 ) : (
                                   <span style={{ color: T.iron400, fontSize: 12 }}>—</span>
                                 )}
@@ -1067,7 +1076,7 @@ export default function CallsDashboard() {
                 <CallInfoBlock call={selectedCall} formatDate={formatDate} formatDuration={formatDuration} />
               )}
               <div className="rounded-lg bg-muted/40 border border-border p-3">
-                <audio controls className="w-full" src={selectedCall?.raw_data?.recording_url || selectedCall?.recording_url}>
+                <audio controls className="w-full" src={recUrlOf(selectedCall)}>
                   Your browser does not support the audio element.
                 </audio>
               </div>
